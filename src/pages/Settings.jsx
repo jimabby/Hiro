@@ -4,6 +4,11 @@ export default function Settings() {
   const [form, setForm] = useState(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [addingResume, setAddingResume] = useState(false)
+  const [newResumeName, setNewResumeName] = useState('')
+  const [newResumeText, setNewResumeText] = useState('')
+  const [improvingId, setImprovingId] = useState(null)
+  const [improveModal, setImproveModal] = useState(null) // { sourceId, sourceName, text }
   const [testingAi, setTestingAi] = useState(false)
   const [testingEmail, setTestingEmail] = useState(false)
   const [aiResult, setAiResult] = useState(null)
@@ -238,13 +243,152 @@ export default function Settings() {
         </div>
       </div>
 
-      {/* Resume */}
+      {/* Resumes */}
       <div className="card">
-        <h3 style={{ marginBottom: 16, fontSize: 15 }}>Master Resume</h3>
-        <div className="form-group">
-          <textarea value={form.masterResume} onChange={e => set('masterResume', e.target.value)} style={{ minHeight: 240 }} />
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <h3 style={{ fontSize: 15, margin: 0 }}>Resumes <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: 13 }}>({(form.resumes || []).length}/3)</span></h3>
+          {(form.resumes || []).length < 3 && !addingResume && (
+            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => { setAddingResume(true); setNewResumeName(''); setNewResumeText('') }}>
+              + Add Resume
+            </button>
+          )}
         </div>
+
+        {(form.resumes || []).length === 0 && !addingResume && (
+          <div style={{ color: 'var(--text-muted)', fontSize: 13, textAlign: 'center', padding: '20px 0' }}>
+            No resumes added yet.
+          </div>
+        )}
+
+        {(form.resumes || []).map(r => (
+          <div key={r.id} style={{
+            border: `1px solid ${r.id === form.defaultResumeId ? 'var(--accent)' : 'var(--border)'}`,
+            borderRadius: 8, padding: 12, marginBottom: 10,
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontWeight: 600, fontSize: 13 }}>{r.name}</span>
+                {r.id === form.defaultResumeId && (
+                  <span style={{ fontSize: 11, background: 'var(--accent)', color: '#fff', borderRadius: 4, padding: '1px 6px' }}>Default</span>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {r.id !== form.defaultResumeId && (
+                  <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={() => set('defaultResumeId', r.id)}>
+                    Set Default
+                  </button>
+                )}
+                <button className="btn btn-ghost" style={{ fontSize: 11 }}
+                  disabled={improvingId === r.id}
+                  onClick={async () => {
+                    setImprovingId(r.id)
+                    const res = await window.api.improveResume(r.text)
+                    setImprovingId(null)
+                    if (res.success) setImproveModal({ sourceId: r.id, sourceName: r.name, text: res.text })
+                  }}>
+                  {improvingId === r.id ? 'Improving...' : 'Improve with AI'}
+                </button>
+                <button className="btn btn-ghost" style={{ fontSize: 11 }}
+                  onClick={() => window.api.downloadResume(r.text, r.name)}>
+                  Download
+                </button>
+                <button className="btn btn-ghost" style={{ fontSize: 11, color: 'var(--red)' }} onClick={() => {
+                  const resumes = (form.resumes || []).filter(x => x.id !== r.id)
+                  setForm(f => ({
+                    ...f,
+                    resumes,
+                    defaultResumeId: f.defaultResumeId === r.id ? (resumes[0]?.id || '') : f.defaultResumeId,
+                  }))
+                }}>
+                  Delete
+                </button>
+              </div>
+            </div>
+            <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 6 }}>
+              {r.text.slice(0, 120).replace(/\n/g, ' ')}…
+            </div>
+          </div>
+        ))}
+
+        {addingResume && (
+          <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
+            <div className="form-group" style={{ marginBottom: 8 }}>
+              <label style={{ fontSize: 12 }}>Name</label>
+              <input value={newResumeName} onChange={e => setNewResumeName(e.target.value)} placeholder="e.g. Software Engineer Resume" />
+            </div>
+            <div className="form-group" style={{ marginBottom: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <label style={{ fontSize: 12, marginBottom: 0 }}>Resume Text</label>
+                <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={async () => {
+                  const res = await window.api.importResumeFile()
+                  if (res.success) { setNewResumeText(res.text); if (!newResumeName) setNewResumeName(res.fileName) }
+                }}>
+                  Upload File
+                </button>
+              </div>
+              <textarea value={newResumeText} onChange={e => setNewResumeText(e.target.value)}
+                placeholder="Paste resume text or upload a file..." style={{ minHeight: 120 }} />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => setAddingResume(false)}>Cancel</button>
+              <button className="btn btn-primary" style={{ fontSize: 12 }}
+                disabled={!newResumeName.trim() || !newResumeText.trim()}
+                onClick={() => {
+                  const id = Date.now().toString()
+                  const resumes = [...(form.resumes || []), { id, name: newResumeName.trim(), text: newResumeText.trim() }]
+                  setForm(f => ({ ...f, resumes, defaultResumeId: f.defaultResumeId || id }))
+                  setAddingResume(false)
+                }}>
+                Save Resume
+              </button>
+            </div>
+          </div>
+        )}
       </div>
+
+      {improveModal && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200,
+        }}>
+          <div className="card" style={{ width: 680, maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <h2 style={{ fontSize: 17 }}>AI-Improved Resume</h2>
+              <button className="btn btn-ghost" onClick={() => setImproveModal(null)}>✕</button>
+            </div>
+            <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 12 }}>
+              Review the improved version below. Replace the original or save as a new resume.
+            </p>
+            <textarea
+              value={improveModal.text}
+              onChange={e => setImproveModal(m => ({ ...m, text: e.target.value }))}
+              style={{ flex: 1, minHeight: 340, marginBottom: 16, fontFamily: 'monospace', fontSize: 12 }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button className="btn btn-ghost" onClick={() => setImproveModal(null)}>Cancel</button>
+              {(form.resumes || []).length < 3 && (
+                <button className="btn btn-ghost" onClick={() => {
+                  const id = Date.now().toString()
+                  const resumes = [...(form.resumes || []), { id, name: `${improveModal.sourceName} (Improved)`, text: improveModal.text }]
+                  setForm(f => ({ ...f, resumes }))
+                  setImproveModal(null)
+                }}>
+                  Save as New
+                </button>
+              )}
+              <button className="btn btn-primary" onClick={() => {
+                setForm(f => ({
+                  ...f,
+                  resumes: (f.resumes || []).map(r => r.id === improveModal.sourceId ? { ...r, text: improveModal.text } : r),
+                }))
+                setImproveModal(null)
+              }}>
+                Replace Original
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

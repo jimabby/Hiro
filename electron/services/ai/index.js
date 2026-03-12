@@ -34,4 +34,8 @@ async function scoreMatch(provider, apiKey, jobDescription, masterResume, gemini
   return getAdapter(provider).scoreMatch(jobDescription, masterResume, apiKey, geminiModel)
 }
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch }
+async function improveResume(provider, apiKey, resumeText, geminiModel) {
+  return getAdapter(provider).improveResume(resumeText, apiKey, geminiModel)
+}
+
+module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, improveResume }

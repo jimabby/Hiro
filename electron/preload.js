@@ -29,6 +29,11 @@ contextBridge.exposeInMainWorld('api', {
   linkedinLogin: () => ipcRenderer.invoke('linkedin:login'),
   linkedinLogout: () => ipcRenderer.invoke('linkedin:logout'),
 
+  // Resume file import / improve / download
+  importResumeFile: () => ipcRenderer.invoke('resume:importFile'),
+  improveResume: (text) => ipcRenderer.invoke('resume:improve', text),
+  downloadResume: (text, name) => ipcRenderer.invoke('resume:download', text, name),
+
   // Events from main process
   onNotification: (cb) => ipcRenderer.on('notification', (_, data) => cb(data)),
   onAutomationLog: (cb) => ipcRenderer.on('automation:log', (_, msg) => cb(msg)),

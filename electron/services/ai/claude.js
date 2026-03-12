@@ -90,4 +90,23 @@ RESUME: ${masterResume.slice(0, 1000)}`,
   return isNaN(score) ? 50 : Math.min(100, Math.max(0, score))
 }
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch }
+async function improveResume(resumeText, apiKey) {
+  const client = new Anthropic({ apiKey })
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 2000,
+    messages: [{
+      role: 'user',
+      content: `You are an expert resume writer. Improve the following resume to be more impactful, professional, and ATS-friendly.
+Strengthen bullet points, improve language clarity, and highlight achievements with metrics where possible.
+Keep all facts truthful and accurate — do not invent experience.
+Return ONLY the improved resume text, no commentary.
+
+RESUME:
+${resumeText}`,
+    }],
+  })
+  return response.content[0].text
+}
+
+module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, improveResume }

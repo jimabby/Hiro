@@ -17,6 +17,8 @@ export default function App() {
   const [toast, setToast] = useState(null)
   const [logs, setLogs] = useState([])
   const [scanRunning, setScanRunning] = useState(false)
+  const [resumeModal, setResumeModal] = useState(false)
+  const [resumeUploading, setResumeUploading] = useState(false)
 
   useEffect(() => {
     window.api.getConfig().then(cfg => setSetupDone(cfg.setupComplete))
@@ -57,8 +59,34 @@ export default function App() {
     return <Setup onComplete={() => setSetupDone(true)} />
   }
 
+  async function handleScanStart() {
+    const cfg = await window.api.getConfig()
+    const hasResume = (cfg.resumes || []).length > 0 || cfg.masterResume
+    if (!hasResume) {
+      setResumeModal(true)
+      return
+    }
+    setScanRunning(true)
+    window.api.startAutomation()
+  }
+
+  async function handleResumeUpload() {
+    setResumeUploading(true)
+    const res = await window.api.importResumeFile()
+    setResumeUploading(false)
+    if (res.canceled || !res.success) return
+    const cfg = await window.api.getConfig()
+    const id = Date.now().toString()
+    const newResume = { id, name: res.fileName || 'My Resume', text: res.text }
+    const resumes = [...(cfg.resumes || []), newResume]
+    await window.api.saveConfig({ ...cfg, resumes, defaultResumeId: cfg.defaultResumeId || id })
+    setResumeModal(false)
+    setScanRunning(true)
+    window.api.startAutomation()
+  }
+
   const pages = {
-    dashboard: <Dashboard logs={logs} scanRunning={scanRunning} onScanStart={() => { setScanRunning(true); window.api.startAutomation() }} />,
+    dashboard: <Dashboard logs={logs} scanRunning={scanRunning} onScanStart={handleScanStart} />,
     attention: <NeedsAttention onCountChange={setAttentionCount} />,
     settings: <Settings />,
   }
@@ -113,6 +141,26 @@ export default function App() {
       </main>
 
       {toast && <div className="toast">{toast}</div>}
+
+      {resumeModal && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200,
+        }}>
+          <div className="card" style={{ width: 420 }}>
+            <h2 style={{ fontSize: 18, marginBottom: 8 }}>Resume Required</h2>
+            <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 20 }}>
+              A resume is needed to match and apply to jobs. Upload yours to start scanning.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button className="btn btn-ghost" onClick={() => setResumeModal(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={handleResumeUpload} disabled={resumeUploading}>
+                {resumeUploading ? 'Uploading...' : 'Upload Resume'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

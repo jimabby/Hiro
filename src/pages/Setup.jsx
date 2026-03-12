@@ -47,8 +47,13 @@ export default function Setup({ onComplete }) {
 
   async function finish() {
     setSaving(true)
+    const resumes = form.masterResume
+      ? [{ id: Date.now().toString(), name: 'My Resume', text: form.masterResume }]
+      : []
     await window.api.saveConfig({
       ...form,
+      resumes,
+      defaultResumeId: resumes[0]?.id || '',
       salaryMin: parseInt(form.salaryMin) || 0,
       matchThreshold: parseInt(form.matchThreshold) || 80,
       dailyLimitSeek: parseInt(form.dailyLimitSeek) || 10,
@@ -222,14 +227,22 @@ export default function Setup({ onComplete }) {
             <div>
               <h2 style={{ marginBottom: 8, fontSize: 18 }}>Your Master Resume</h2>
               <p style={{ color: 'var(--text-muted)', marginBottom: 16, fontSize: 13 }}>
-                Paste your full resume as plain text. The AI will tailor it per job without changing facts.
+                Upload or paste your resume. The AI will tailor it per job without changing facts.
               </p>
               <div className="form-group">
-                <label>Resume Text</label>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <label style={{ marginBottom: 0 }}>Resume Text</label>
+                  <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={async () => {
+                    const res = await window.api.importResumeFile()
+                    if (res.success) set('masterResume', res.text)
+                  }}>
+                    Upload File (PDF / DOCX / TXT)
+                  </button>
+                </div>
                 <textarea
                   value={form.masterResume}
                   onChange={e => set('masterResume', e.target.value)}
-                  placeholder="Paste your resume here..."
+                  placeholder="Paste your resume here, or upload a file above..."
                   style={{ minHeight: 280 }}
                 />
               </div>
@@ -266,9 +279,17 @@ export default function Setup({ onComplete }) {
               Back
             </button>
             {step < STEPS.length - 1 ? (
-              <button className="btn btn-primary" onClick={() => setStep(s => s + 1)}>
-                Continue
-              </button>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                {step === 3 && (
+                  <button className="btn btn-ghost" style={{ color: 'var(--text-muted)', fontSize: 13 }}
+                    onClick={() => { set('masterResume', ''); setStep(s => s + 1) }}>
+                    Skip for now
+                  </button>
+                )}
+                <button className="btn btn-primary" onClick={() => setStep(s => s + 1)}>
+                  Continue
+                </button>
+              </div>
             ) : (
               <button className="btn btn-primary" onClick={finish} disabled={saving}>
                 {saving ? 'Saving...' : 'Start Hiro'}

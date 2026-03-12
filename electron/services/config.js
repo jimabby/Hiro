@@ -15,6 +15,8 @@ const DEFAULTS = {
   jobLocation: '',
   salaryMin: 0,
   masterResume: '',
+  resumes: [],
+  defaultResumeId: '',
   matchThreshold: 80,
   dailyLimitSeek: 10,
   dailyLimitIndeed: 10,

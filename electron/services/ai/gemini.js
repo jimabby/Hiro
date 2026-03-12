@@ -62,4 +62,16 @@ RESUME: ${masterResume.slice(0, 1000)}`)
   return isNaN(score) ? 50 : Math.min(100, Math.max(0, score))
 }
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch }
+async function improveResume(resumeText, apiKey, modelName) {
+  const model = getModel(apiKey, modelName)
+  const result = await model.generateContent(`You are an expert resume writer. Improve the following resume to be more impactful, professional, and ATS-friendly.
+Strengthen bullet points, improve language clarity, and highlight achievements with metrics where possible.
+Keep all facts truthful and accurate — do not invent experience.
+Return ONLY the improved resume text, no commentary.
+
+RESUME:
+${resumeText}`)
+  return result.response.text()
+}
+
+module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, improveResume }

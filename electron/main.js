@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog } = require('electron')
 const path = require('path')
 const configService = require('./services/config')
 const database = require('./services/database')
@@ -111,6 +111,75 @@ ipcMain.handle('linkedin:login', async () => {
 ipcMain.handle('linkedin:logout', () => {
   linkedinSession.clearCookies()
   return { success: true }
+})
+
+// ─── IPC: Resume file import ────────────────────────────────────
+ipcMain.handle('resume:importFile', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+    title: 'Select Resume File',
+    filters: [
+      { name: 'Resume Files', extensions: ['pdf', 'docx', 'doc', 'txt'] },
+    ],
+    properties: ['openFile'],
+  })
+  if (canceled || !filePaths.length) return { canceled: true }
+
+  const filePath = filePaths[0]
+  const fileName = require('path').basename(filePath, require('path').extname(filePath))
+  const ext = filePath.split('.').pop().toLowerCase()
+  const fs = require('fs')
+
+  try {
+    let text = ''
+    if (ext === 'txt') {
+      text = fs.readFileSync(filePath, 'utf8')
+    } else if (ext === 'pdf') {
+      const pdfParse = require('pdf-parse')
+      const buffer = fs.readFileSync(filePath)
+      const data = await pdfParse(buffer)
+      text = data.text
+    } else if (ext === 'docx' || ext === 'doc') {
+      const mammoth = require('mammoth')
+      const result = await mammoth.extractRawText({ path: filePath })
+      text = result.value
+    }
+    return { success: true, text, fileName }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+// ─── IPC: Resume AI improve ─────────────────────────────────────
+ipcMain.handle('resume:improve', async (_, resumeText) => {
+  try {
+    const cfg = configService.load()
+    const improved = await aiAdapter.improveResume(cfg.aiProvider, cfg.aiApiKey, resumeText, cfg.geminiModel)
+    return { success: true, text: improved }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+// ─── IPC: Resume download ────────────────────────────────────────
+ipcMain.handle('resume:download', async (_, resumeText, suggestedName) => {
+  const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+    title: 'Save Resume',
+    defaultPath: `${suggestedName || 'resume'}.docx`,
+    filters: [{ name: 'Word Document', extensions: ['docx'] }],
+  })
+  if (canceled || !filePath) return { canceled: true }
+  try {
+    const { Document, Packer, Paragraph, TextRun } = require('docx')
+    const paragraphs = resumeText.split('\n').map(line =>
+      new Paragraph({ children: [new TextRun(line)] })
+    )
+    const doc = new Document({ sections: [{ children: paragraphs }] })
+    const buffer = await Packer.toBuffer(doc)
+    require('fs').writeFileSync(filePath, buffer)
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
 })
 
 // ─── IPC: Database ──────────────────────────────────────────────

@@ -14,6 +14,9 @@ function cancel() {
 async function run(cfg, { log, notifyAttention }) {
   cancelled = false
 
+  const activeResume = (cfg.resumes || []).find(r => r.id === cfg.defaultResumeId)?.text || cfg.masterResume || ''
+  cfg = { ...cfg, masterResume: activeResume }
+
   const scrapers = []
   if (cfg.enableSeek) scrapers.push({ name: 'Seek', scraper: seek, limit: cfg.dailyLimitSeek })
   if (cfg.enableIndeed) scrapers.push({ name: 'Indeed', scraper: indeed, limit: cfg.dailyLimitIndeed })
