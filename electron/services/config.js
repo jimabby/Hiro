@@ -1,0 +1,49 @@
+const fs = require('fs')
+const path = require('path')
+const os = require('os')
+
+const CONFIG_DIR = path.join(os.homedir(), '.hiro')
+const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json')
+
+const DEFAULTS = {
+  aiProvider: '',
+  aiApiKey: '',
+  geminiModel: '',
+  gmailAddress: '',
+  gmailAppPassword: '',
+  jobKeywords: '',
+  jobLocation: '',
+  salaryMin: 0,
+  masterResume: '',
+  matchThreshold: 80,
+  dailyLimitSeek: 10,
+  dailyLimitIndeed: 10,
+  dailyLimitLinkedIn: 10,
+  blacklistedCompanies: [],
+  enableSeek: true,
+  enableIndeed: true,
+  enableLinkedIn: true,
+  setupComplete: false,
+}
+
+function ensureDir() {
+  if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
+}
+
+function load() {
+  ensureDir()
+  if (!fs.existsSync(CONFIG_FILE)) return { ...DEFAULTS }
+  try {
+    const raw = fs.readFileSync(CONFIG_FILE, 'utf8')
+    return { ...DEFAULTS, ...JSON.parse(raw) }
+  } catch {
+    return { ...DEFAULTS }
+  }
+}
+
+function save(config) {
+  ensureDir()
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8')
+}
+
+module.exports = { load, save, CONFIG_DIR }
