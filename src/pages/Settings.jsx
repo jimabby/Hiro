@@ -1,5 +1,51 @@
 import { useState, useEffect } from 'react'
 
+function IndeedAccountCard() {
+  const [loggedIn, setLoggedIn] = useState(false)
+  const [logging, setLogging] = useState(false)
+  const [msg, setMsg] = useState('')
+
+  useEffect(() => {
+    window.api.indeedStatus().then(s => setLoggedIn(s.loggedIn))
+    window.api.onIndeedStatusUpdate(m => setMsg(m))
+    return () => window.api.removeAllListeners('indeed:status-update')
+  }, [])
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <h3 style={{ marginBottom: 8, fontSize: 15 }}>Indeed Account</h3>
+      <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 16 }}>
+        Required for Indeed Easy Apply. Without logging in, applications won't be submitted under your account.
+      </p>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: loggedIn ? 'var(--green)' : 'var(--text-muted)', fontSize: 13 }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: loggedIn ? 'var(--green)' : 'var(--border)' }} />
+          {loggedIn ? 'Logged in' : 'Not logged in'}
+        </div>
+        {loggedIn ? (
+          <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={async () => {
+            await window.api.indeedLogout()
+            setLoggedIn(false)
+            setMsg('')
+          }}>Log Out</button>
+        ) : (
+          <button className="btn btn-primary" style={{ fontSize: 12 }} disabled={logging} onClick={async () => {
+            setLogging(true)
+            setMsg('')
+            const res = await window.api.indeedLogin()
+            setLogging(false)
+            if (res.success) { setLoggedIn(true); setMsg('Logged in successfully!') }
+            else setMsg(res.error || 'Login failed')
+          }}>
+            {logging ? 'Waiting for login...' : 'Login to Indeed'}
+          </button>
+        )}
+      </div>
+      {msg && <div style={{ marginTop: 10, fontSize: 12, color: loggedIn ? 'var(--green)' : 'var(--red)' }}>{msg}</div>}
+    </div>
+  )
+}
+
 function SeekAccountCard() {
   const [loggedIn, setLoggedIn] = useState(false)
   const [logging, setLogging] = useState(false)
@@ -218,6 +264,9 @@ export default function Settings() {
           </div>
         )}
       </div>
+
+      {/* Indeed */}
+      <IndeedAccountCard />
 
       {/* Seek */}
       <SeekAccountCard />

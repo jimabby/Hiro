@@ -75,8 +75,9 @@ function createTables() {
 }
 
 function migrate() {
-  // Add cover_letter column if it doesn't exist (for existing databases)
+  // Add columns if they don't exist (for existing databases)
   try { db.run('ALTER TABLE applications ADD COLUMN cover_letter TEXT DEFAULT ""') } catch {}
+  try { db.run('ALTER TABLE applications ADD COLUMN comment TEXT DEFAULT ""') } catch {}
 }
 
 // Convert sql.js result to array of objects
@@ -148,6 +149,11 @@ function insertApplication(data) {
 
 function updateApplicationStatus(id, status) {
   run("UPDATE applications SET status = ?, updated_at = datetime('now') WHERE id = ?", [status, id])
+  return { success: true }
+}
+
+function updateApplicationComment(id, comment) {
+  run("UPDATE applications SET comment = ?, updated_at = datetime('now') WHERE id = ?", [comment, id])
   return { success: true }
 }
 
@@ -257,7 +263,7 @@ function getTodayCountByPlatform(platform) {
 module.exports = {
   init,
   getApplications, getApplication, hasAppliedToCompany, insertApplication, updateApplicationStatus,
-  deleteApplication, clearAllApplications,
+  updateApplicationComment, deleteApplication, clearAllApplications,
   getAttentionJobs, getAttentionJob, insertAttentionJob, dismissAttentionJob, deleteAttentionJob, clearAllAttentionJobs,
   getCachedAnswer, saveCachedAnswer, getAllCachedAnswers, deleteCachedAnswer,
   getStats, getTodayCountByPlatform,

@@ -7,6 +7,7 @@ const emailService = require('./services/email')
 const aiAdapter = require('./services/ai/index')
 const linkedinSession = require('./services/linkedinSession')
 const seekSession = require('./services/seekSession')
+const indeedSession = require('./services/indeedSession')
 const applicator = require('./services/applicator')
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
@@ -152,6 +153,27 @@ ipcMain.handle('seek:logout', () => {
   return { success: true }
 })
 
+// ─── IPC: Indeed ─────────────────────────────────────────────────
+ipcMain.handle('indeed:status', () => ({ loggedIn: indeedSession.hasCookies() }))
+
+ipcMain.handle('indeed:login', async () => {
+  try {
+    const result = await indeedSession.loginWithBrowser((msg) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('indeed:status-update', msg)
+      }
+    })
+    return result
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('indeed:logout', () => {
+  indeedSession.clearCookies()
+  return { success: true }
+})
+
 // ─── IPC: Resume file import ────────────────────────────────────
 ipcMain.handle('resume:importFile', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
@@ -226,6 +248,7 @@ ipcMain.handle('resume:download', async (_, resumeText, suggestedName) => {
 ipcMain.handle('db:getApplications', (_, filters) => database.getApplications(filters))
 ipcMain.handle('db:getApplication', (_, id) => database.getApplication(id))
 ipcMain.handle('db:updateStatus', (_, id, status) => database.updateApplicationStatus(id, status))
+ipcMain.handle('db:updateComment', (_, id, comment) => database.updateApplicationComment(id, comment))
 ipcMain.handle('db:deleteApplication', (_, id) => database.deleteApplication(id))
 ipcMain.handle('db:clearAllApplications', () => database.clearAllApplications())
 ipcMain.handle('db:getAttentionJobs', () => database.getAttentionJobs())

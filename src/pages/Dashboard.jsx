@@ -42,6 +42,12 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
     if (selected?.id === id) setSelected(s => ({ ...s, status }))
   }
 
+  async function saveComment(id, comment) {
+    await window.api.updateApplicationComment(id, comment)
+    setApps(prev => prev.map(a => a.id === id ? { ...a, comment } : a))
+    if (selected?.id === id) setSelected(s => ({ ...s, comment }))
+  }
+
   async function deleteApp(id, e) {
     e.stopPropagation()
     await window.api.deleteApplication(id)
@@ -145,7 +151,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
               <thead>
                 <tr>
                   <th>Role</th><th>Company</th><th>Platform</th>
-                  <th>Match</th><th>Status</th><th>Date</th><th></th>
+                  <th>Match</th><th>Status</th><th>Comment</th><th>Date</th><th></th>
                 </tr>
               </thead>
               <tbody>
@@ -172,6 +178,19 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
                           <option value="pending">Pending</option>
                         </select>
                       )}
+                    </td>
+                    <td onClick={e => e.stopPropagation()} style={{ minWidth: 140 }}>
+                      <input
+                        defaultValue={a.comment || ''}
+                        placeholder="Add note..."
+                        onBlur={e => saveComment(a.id, e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }}
+                        style={{
+                          background: 'transparent', border: 'none', borderBottom: '1px solid var(--border)',
+                          color: 'var(--text)', fontSize: 12, width: '100%', padding: '2px 4px',
+                          outline: 'none',
+                        }}
+                      />
                     </td>
                     <td style={{ color: 'var(--text-muted)' }}>
                       {new Date(a.applied_at).toLocaleDateString()}
@@ -225,6 +244,16 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
             <div style={{ marginBottom: 16 }}>
               <a href={selected.job_url} target="_blank" rel="noreferrer"
                 style={{ color: 'var(--accent)', fontSize: 13 }}>View original posting →</a>
+            </div>
+
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ marginBottom: 6 }}>Comment</label>
+              <textarea
+                defaultValue={selected.comment || ''}
+                placeholder="Add a note about this application..."
+                onBlur={e => saveComment(selected.id, e.target.value)}
+                style={{ minHeight: 60, resize: 'vertical', fontSize: 13 }}
+              />
             </div>
 
             {selected.job_description && (

@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('api', {
   getApplications: (filters) => ipcRenderer.invoke('db:getApplications', filters),
   getApplication: (id) => ipcRenderer.invoke('db:getApplication', id),
   updateApplicationStatus: (id, status) => ipcRenderer.invoke('db:updateStatus', id, status),
+  updateApplicationComment: (id, comment) => ipcRenderer.invoke('db:updateComment', id, comment),
   deleteApplication: (id) => ipcRenderer.invoke('db:deleteApplication', id),
   clearAllApplications: () => ipcRenderer.invoke('db:clearAllApplications'),
 
@@ -40,6 +41,12 @@ contextBridge.exposeInMainWorld('api', {
   seekLogin: () => ipcRenderer.invoke('seek:login'),
   seekLogout: () => ipcRenderer.invoke('seek:logout'),
   onSeekStatusUpdate: (cb) => ipcRenderer.on('seek:status-update', (_, msg) => cb(msg)),
+
+  // Indeed session
+  indeedStatus: () => ipcRenderer.invoke('indeed:status'),
+  indeedLogin: () => ipcRenderer.invoke('indeed:login'),
+  indeedLogout: () => ipcRenderer.invoke('indeed:logout'),
+  onIndeedStatusUpdate: (cb) => ipcRenderer.on('indeed:status-update', (_, msg) => cb(msg)),
 
   // Resume file import / improve / download
   importResumeFile: () => ipcRenderer.invoke('resume:importFile'),

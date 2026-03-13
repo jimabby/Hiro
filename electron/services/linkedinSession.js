@@ -2,37 +2,49 @@ const { chromium } = require('playwright')
 const fs = require('fs')
 const path = require('path')
 const { CONFIG_DIR } = require('./config')
+const { randomUserAgent } = require('./scraper/utils')
 
+const STORAGE_PATH = path.join(CONFIG_DIR, 'linkedin-storage.json')
+// Legacy cookies path — kept for backward-compat check
 const COOKIES_PATH = path.join(CONFIG_DIR, 'linkedin-cookies.json')
 
-function hasCookies() {
-  if (!fs.existsSync(COOKIES_PATH)) return false
-  try {
-    const cookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf8'))
-    // Check li_at cookie (LinkedIn session token) hasn't expired
-    const liAt = cookies.find(c => c.name === 'li_at')
-    if (!liAt) return false
-    if (liAt.expires && liAt.expires < Date.now() / 1000) return false
-    return true
-  } catch {
-    return false
+function hasSession() {
+  if (fs.existsSync(STORAGE_PATH)) {
+    try {
+      const s = JSON.parse(fs.readFileSync(STORAGE_PATH, 'utf8'))
+      const cookies = s.cookies || []
+      const now = Date.now() / 1000
+      const liAt = cookies.find(c => c.name === 'li_at' && c.domain?.includes('linkedin.com'))
+      if (liAt && (!liAt.expires || liAt.expires < 0 || liAt.expires > now)) return true
+    } catch {}
   }
+  // Fall back to legacy cookies file
+  if (fs.existsSync(COOKIES_PATH)) {
+    try {
+      const cookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf8'))
+      const liAt = cookies.find(c => c.name === 'li_at')
+      if (liAt && (!liAt.expires || liAt.expires > Date.now() / 1000)) return true
+    } catch {}
+  }
+  return false
 }
 
+function hasCookies() { return hasSession() }
+
+function getStoragePath() { return STORAGE_PATH }
+
+// loadCookies kept for any legacy callers
 function loadCookies() {
+  if (fs.existsSync(STORAGE_PATH)) return [] // storageState used instead
   if (!fs.existsSync(COOKIES_PATH)) return []
-  try {
-    return JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf8'))
-  } catch {
-    return []
-  }
+  try { return JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf8')) } catch { return [] }
 }
 
 function clearCookies() {
+  if (fs.existsSync(STORAGE_PATH)) fs.unlinkSync(STORAGE_PATH)
   if (fs.existsSync(COOKIES_PATH)) fs.unlinkSync(COOKIES_PATH)
 }
 
-// Opens a visible browser for the user to log into LinkedIn, saves cookies when done
 async function loginWithBrowser(onStatus) {
   onStatus('Opening LinkedIn login window...')
 
@@ -43,6 +55,7 @@ async function loginWithBrowser(onStatus) {
 
   const context = await browser.newContext({
     viewport: { width: 1024, height: 700 },
+    userAgent: randomUserAgent(),
   })
 
   const page = await context.newPage()
@@ -50,13 +63,12 @@ async function loginWithBrowser(onStatus) {
 
   onStatus('Please log into LinkedIn in the browser window. The window will close automatically when done.')
 
-  // Poll until user reaches the feed / home page (logged in)
+  // Wait until user reaches a logged-in page
   let loggedIn = false
-  const timeout = Date.now() + 5 * 60 * 1000 // 5 min timeout
+  const timeout = Date.now() + 5 * 60 * 1000
 
   while (Date.now() < timeout) {
     await new Promise(r => setTimeout(r, 2000))
-
     try {
       const url = page.url()
       if (
@@ -68,9 +80,7 @@ async function loginWithBrowser(onStatus) {
         loggedIn = true
         break
       }
-    } catch {
-      // page may have navigated
-    }
+    } catch {}
   }
 
   if (!loggedIn) {
@@ -78,20 +88,20 @@ async function loginWithBrowser(onStatus) {
     return { success: false, error: 'Login timed out (5 minutes). Please try again.' }
   }
 
-  // Save cookies
+  // Let session cookies fully settle
+  await new Promise(r => setTimeout(r, 2000))
+
   try {
-    await new Promise(r => setTimeout(r, 1500)) // wait for session to settle
-    const cookies = await context.cookies()
     if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
-    fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2))
-    onStatus('LinkedIn login successful. Cookies saved.')
+    await context.storageState({ path: STORAGE_PATH })
+    onStatus('LinkedIn login successful. Session saved.')
   } catch (err) {
     await browser.close()
-    return { success: false, error: `Failed to save cookies: ${err.message}` }
+    return { success: false, error: `Failed to save session: ${err.message}` }
   }
 
   await browser.close()
   return { success: true }
 }
 
-module.exports = { hasCookies, loadCookies, clearCookies, loginWithBrowser }
+module.exports = { hasCookies, hasSession, loadCookies, getStoragePath, clearCookies, loginWithBrowser }
