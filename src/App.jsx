@@ -13,6 +13,12 @@ const NAV = [
 export default function App() {
   const [page, setPage] = useState('dashboard')
   const [setupDone, setSetupDone] = useState(null)
+  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark')
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('theme', theme)
+  }, [theme])
   const [attentionCount, setAttentionCount] = useState(0)
   const [toast, setToast] = useState(null)
   const [logs, setLogs] = useState([])
@@ -128,7 +134,7 @@ export default function App() {
           </button>
         ))}
 
-        <div style={{ marginTop: 'auto', padding: '0 12px' }}>
+        <div style={{ marginTop: 'auto', padding: '0 12px', display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{
             display: 'flex', alignItems: 'center', gap: 6,
             color: scanRunning ? 'var(--green)' : 'var(--text-muted)', fontSize: 12,
@@ -140,6 +146,16 @@ export default function App() {
             }} />
             {scanRunning ? 'Scanning...' : 'Idle'}
           </div>
+          <button
+            onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+            style={{
+              background: 'transparent', border: '1px solid var(--border)',
+              color: 'var(--text-muted)', borderRadius: 8, padding: '6px 10px',
+              cursor: 'pointer', fontSize: 12, textAlign: 'left',
+            }}
+          >
+            {theme === 'dark' ? '☀ Light' : '☾ Dark'}
+          </button>
         </div>
       </nav>
 

@@ -68,7 +68,10 @@ async function generateCoverLetter(jobDescription, masterResume, apiKey, modelNa
 Base it on the candidate's resume and the job description.
 3-4 paragraphs, natural and human-sounding. Be specific to the role and company.
 Avoid generic filler phrases. Highlight the most relevant experience from the resume.
-Return ONLY the cover letter text, starting with "Dear Hiring Manager," or similar.
+Start with "Dear Hiring Manager," or similar.
+End with a formal closing (e.g. "Sincerely,") on its own line, then a blank line, then the candidate's full name as it appears at the top of the resume.
+Do not use any markdown formatting — no asterisks, no pound signs, no underscores.
+Return ONLY the cover letter text.
 
 JOB DESCRIPTION:
 ${jobDescription}

@@ -231,10 +231,36 @@ ipcMain.handle('resume:download', async (_, resumeText, suggestedName) => {
   })
   if (canceled || !filePath) return { canceled: true }
   try {
-    const { Document, Packer, Paragraph, TextRun } = require('docx')
-    const paragraphs = resumeText.split('\n').map(line =>
-      new Paragraph({ children: [new TextRun(line)] })
-    )
+    const { Document, Packer, Paragraph, TextRun, AlignmentType } = require('docx')
+    function stripMd(text) {
+      return (text || '')
+        .replace(/\*\*(.*?)\*\*/g, '$1').replace(/__(.*?)__/g, '$1')
+        .replace(/\*(.*?)\*/g, '$1').replace(/_(.*?)_/g, '$1')
+        .replace(/^#{1,6}\s+/gm, '').replace(/^\*\s+/gm, '- ')
+        .replace(/^-{3,}\s*$/gm, '').trim()
+    }
+    const lines = stripMd(resumeText).split('\n')
+    const paragraphs = []
+    let firstLineDone = false
+    for (const line of lines) {
+      if (!firstLineDone && !line.trim()) continue
+      if (!firstLineDone) {
+        paragraphs.push(new Paragraph({
+          alignment: AlignmentType.CENTER,
+          children: [new TextRun({ text: line.trim(), bold: true, size: 32 })],
+        }))
+        firstLineDone = true
+      } else if (line.trim() && /^[A-Z][A-Z\s\/&-]{2,}$/.test(line.trim())) {
+        paragraphs.push(new Paragraph({
+          spacing: { before: 200, after: 60 },
+          children: [new TextRun({ text: line.trim(), bold: true, size: 22 })],
+        }))
+      } else {
+        paragraphs.push(new Paragraph({
+          children: [new TextRun({ text: line, size: 22 })],
+        }))
+      }
+    }
     const doc = new Document({ sections: [{ children: paragraphs }] })
     const buffer = await Packer.toBuffer(doc)
     require('fs').writeFileSync(filePath, buffer)
