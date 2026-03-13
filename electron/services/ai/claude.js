@@ -94,7 +94,7 @@ async function improveResume(resumeText, apiKey) {
   const client = new Anthropic({ apiKey })
   const response = await client.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 2000,
+    max_tokens: 4000,
     messages: [{
       role: 'user',
       content: `You are an expert resume writer. Improve the following resume to be more impactful, professional, and ATS-friendly.

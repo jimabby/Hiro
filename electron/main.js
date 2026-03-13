@@ -6,6 +6,7 @@ const scheduler = require('./services/scheduler')
 const emailService = require('./services/email')
 const aiAdapter = require('./services/ai/index')
 const linkedinSession = require('./services/linkedinSession')
+const seekSession = require('./services/seekSession')
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
@@ -113,6 +114,27 @@ ipcMain.handle('linkedin:logout', () => {
   return { success: true }
 })
 
+// ─── IPC: Seek ───────────────────────────────────────────────────
+ipcMain.handle('seek:status', () => ({ loggedIn: seekSession.hasCookies() }))
+
+ipcMain.handle('seek:login', async () => {
+  try {
+    const result = await seekSession.loginWithBrowser((msg) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('seek:status-update', msg)
+      }
+    })
+    return result
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('seek:logout', () => {
+  seekSession.clearCookies()
+  return { success: true }
+})
+
 // ─── IPC: Resume file import ────────────────────────────────────
 ipcMain.handle('resume:importFile', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
@@ -134,10 +156,11 @@ ipcMain.handle('resume:importFile', async () => {
     if (ext === 'txt') {
       text = fs.readFileSync(filePath, 'utf8')
     } else if (ext === 'pdf') {
-      const pdfParse = require('pdf-parse')
-      const buffer = fs.readFileSync(filePath)
-      const data = await pdfParse(buffer)
-      text = data.text
+      const { PDFParse } = require('pdf-parse')
+      const { pathToFileURL } = require('url')
+      const parser = new PDFParse({ url: pathToFileURL(filePath).toString() })
+      const result = await parser.getText()
+      text = result.text
     } else if (ext === 'docx' || ext === 'doc') {
       const mammoth = require('mammoth')
       const result = await mammoth.extractRawText({ path: filePath })
@@ -186,6 +209,8 @@ ipcMain.handle('resume:download', async (_, resumeText, suggestedName) => {
 ipcMain.handle('db:getApplications', (_, filters) => database.getApplications(filters))
 ipcMain.handle('db:getApplication', (_, id) => database.getApplication(id))
 ipcMain.handle('db:updateStatus', (_, id, status) => database.updateApplicationStatus(id, status))
+ipcMain.handle('db:deleteApplication', (_, id) => database.deleteApplication(id))
+ipcMain.handle('db:clearAllApplications', () => database.clearAllApplications())
 ipcMain.handle('db:getAttentionJobs', () => database.getAttentionJobs())
 ipcMain.handle('db:dismissAttention', (_, id) => database.dismissAttentionJob(id))
 ipcMain.handle('db:getStats', () => database.getStats())

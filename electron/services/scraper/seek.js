@@ -1,5 +1,6 @@
 const { chromium } = require('playwright')
 const { randomDelay, humanType, randomUserAgent } = require('./utils')
+const seekSession = require('../seekSession')
 
 async function scrape(cfg) {
   const { jobKeywords, jobLocation, salaryMin } = cfg
@@ -57,14 +58,30 @@ async function apply(jobUrl, tailoredResume, screeningAnswers, cfg) {
   // Seek's easy apply flow varies by employer — this handles the common case
   const browser = await chromium.launch({ headless: true })
   const context = await browser.newContext({ userAgent: randomUserAgent() })
+
+  // Inject saved Seek session cookies so the application is submitted under the user's account
+  const cookies = seekSession.loadCookies()
+  if (cookies.length) await context.addCookies(cookies)
   const page = await context.newPage()
 
   try {
     await page.goto(jobUrl, { waitUntil: 'domcontentloaded', timeout: 30000 })
     await randomDelay(2000, 4000)
 
-    // Look for Quick Apply button
-    const quickApply = await page.$('[data-automation="job-detail-apply"]')
+    // Look for Quick Apply button — try multiple selectors as Seek's DOM changes
+    const applySelectors = [
+      '[data-automation="job-detail-apply"]',
+      '[data-automation="apply-button"]',
+      'a[data-automation="job-detail-apply"]',
+      'button:has-text("Quick apply")',
+      'a:has-text("Quick apply")',
+      'button:has-text("Apply")',
+    ]
+    let quickApply = null
+    for (const sel of applySelectors) {
+      quickApply = await page.$(sel).catch(() => null)
+      if (quickApply) break
+    }
     if (!quickApply) return { success: false, reason: 'No apply button found' }
 
     await quickApply.click()

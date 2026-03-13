@@ -1,5 +1,51 @@
 import { useState, useEffect } from 'react'
 
+function SeekAccountCard() {
+  const [loggedIn, setLoggedIn] = useState(false)
+  const [logging, setLogging] = useState(false)
+  const [msg, setMsg] = useState('')
+
+  useEffect(() => {
+    window.api.seekStatus().then(s => setLoggedIn(s.loggedIn))
+    window.api.onSeekStatusUpdate(m => setMsg(m))
+    return () => window.api.removeAllListeners('seek:status-update')
+  }, [])
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <h3 style={{ marginBottom: 8, fontSize: 15 }}>Seek Account</h3>
+      <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 16 }}>
+        Required for Seek applications. Without logging in, submitted applications won't be recorded and you won't receive confirmation emails.
+      </p>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: loggedIn ? 'var(--green)' : 'var(--text-muted)', fontSize: 13 }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: loggedIn ? 'var(--green)' : 'var(--border)' }} />
+          {loggedIn ? 'Logged in' : 'Not logged in'}
+        </div>
+        {loggedIn ? (
+          <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={async () => {
+            await window.api.seekLogout()
+            setLoggedIn(false)
+            setMsg('')
+          }}>Log Out</button>
+        ) : (
+          <button className="btn btn-primary" style={{ fontSize: 12 }} disabled={logging} onClick={async () => {
+            setLogging(true)
+            setMsg('')
+            const res = await window.api.seekLogin()
+            setLogging(false)
+            if (res.success) { setLoggedIn(true); setMsg('Logged in successfully!') }
+            else setMsg(res.error || 'Login failed')
+          }}>
+            {logging ? 'Waiting for login...' : 'Login to Seek'}
+          </button>
+        )}
+      </div>
+      {msg && <div style={{ marginTop: 10, fontSize: 12, color: loggedIn ? 'var(--green)' : 'var(--red)' }}>{msg}</div>}
+    </div>
+  )
+}
+
 export default function Settings() {
   const [form, setForm] = useState(null)
   const [saving, setSaving] = useState(false)
@@ -7,6 +53,7 @@ export default function Settings() {
   const [addingResume, setAddingResume] = useState(false)
   const [newResumeName, setNewResumeName] = useState('')
   const [newResumeText, setNewResumeText] = useState('')
+  const [uploadError, setUploadError] = useState('')
   const [improvingId, setImprovingId] = useState(null)
   const [improveModal, setImproveModal] = useState(null) // { sourceId, sourceName, text }
   const [testingAi, setTestingAi] = useState(false)
@@ -32,6 +79,12 @@ export default function Settings() {
   }, [])
 
   const set = (key, val) => setForm(f => ({ ...f, [key]: val }))
+
+  async function saveResumes(resumes, defaultResumeId) {
+    const cfg = await window.api.getConfig()
+    await window.api.saveConfig({ ...cfg, resumes, defaultResumeId })
+    setForm(f => ({ ...f, resumes, defaultResumeId }))
+  }
 
   async function save() {
     setSaving(true)
@@ -166,6 +219,9 @@ export default function Settings() {
         )}
       </div>
 
+      {/* Seek */}
+      <SeekAccountCard />
+
       {/* Email */}
       <div className="card" style={{ marginBottom: 16 }}>
         <h3 style={{ marginBottom: 16, fontSize: 15 }}>Gmail Notifications</h3>
@@ -248,7 +304,7 @@ export default function Settings() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
           <h3 style={{ fontSize: 15, margin: 0 }}>Resumes <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: 13 }}>({(form.resumes || []).length}/3)</span></h3>
           {(form.resumes || []).length < 3 && !addingResume && (
-            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => { setAddingResume(true); setNewResumeName(''); setNewResumeText('') }}>
+            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => { setAddingResume(true); setNewResumeName(''); setNewResumeText(''); setUploadError('') }}>
               + Add Resume
             </button>
           )}
@@ -274,7 +330,7 @@ export default function Settings() {
               </div>
               <div style={{ display: 'flex', gap: 6 }}>
                 {r.id !== form.defaultResumeId && (
-                  <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={() => set('defaultResumeId', r.id)}>
+                  <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={() => saveResumes(form.resumes, r.id)}>
                     Set Default
                   </button>
                 )}
@@ -294,11 +350,8 @@ export default function Settings() {
                 </button>
                 <button className="btn btn-ghost" style={{ fontSize: 11, color: 'var(--red)' }} onClick={() => {
                   const resumes = (form.resumes || []).filter(x => x.id !== r.id)
-                  setForm(f => ({
-                    ...f,
-                    resumes,
-                    defaultResumeId: f.defaultResumeId === r.id ? (resumes[0]?.id || '') : f.defaultResumeId,
-                  }))
+                  const defaultResumeId = form.defaultResumeId === r.id ? (resumes[0]?.id || '') : form.defaultResumeId
+                  saveResumes(resumes, defaultResumeId)
                 }}>
                   Delete
                 </button>
@@ -320,14 +373,22 @@ export default function Settings() {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
                 <label style={{ fontSize: 12, marginBottom: 0 }}>Resume Text</label>
                 <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={async () => {
+                  setUploadError('')
                   const res = await window.api.importResumeFile()
-                  if (res.success) { setNewResumeText(res.text); if (!newResumeName) setNewResumeName(res.fileName) }
+                  if (res.canceled) return
+                  if (res.success) {
+                    setNewResumeText(res.text)
+                    if (!newResumeName) setNewResumeName(res.fileName)
+                  } else {
+                    setUploadError(res.error || 'Failed to read file')
+                  }
                 }}>
                   Upload File
                 </button>
               </div>
               <textarea value={newResumeText} onChange={e => setNewResumeText(e.target.value)}
                 placeholder="Paste resume text or upload a file..." style={{ minHeight: 120 }} />
+              {uploadError && <div style={{ color: 'var(--red)', fontSize: 12, marginTop: 4 }}>{uploadError}</div>}
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
               <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => setAddingResume(false)}>Cancel</button>
@@ -336,7 +397,8 @@ export default function Settings() {
                 onClick={() => {
                   const id = Date.now().toString()
                   const resumes = [...(form.resumes || []), { id, name: newResumeName.trim(), text: newResumeText.trim() }]
-                  setForm(f => ({ ...f, resumes, defaultResumeId: f.defaultResumeId || id }))
+                  const defaultResumeId = form.defaultResumeId || id
+                  saveResumes(resumes, defaultResumeId)
                   setAddingResume(false)
                 }}>
                 Save Resume
@@ -370,17 +432,15 @@ export default function Settings() {
                 <button className="btn btn-ghost" onClick={() => {
                   const id = Date.now().toString()
                   const resumes = [...(form.resumes || []), { id, name: `${improveModal.sourceName} (Improved)`, text: improveModal.text }]
-                  setForm(f => ({ ...f, resumes }))
+                  saveResumes(resumes, form.defaultResumeId)
                   setImproveModal(null)
                 }}>
                   Save as New
                 </button>
               )}
               <button className="btn btn-primary" onClick={() => {
-                setForm(f => ({
-                  ...f,
-                  resumes: (f.resumes || []).map(r => r.id === improveModal.sourceId ? { ...r, text: improveModal.text } : r),
-                }))
+                const resumes = (form.resumes || []).map(r => r.id === improveModal.sourceId ? { ...r, text: improveModal.text } : r)
+                saveResumes(resumes, form.defaultResumeId)
                 setImproveModal(null)
               }}>
                 Replace Original

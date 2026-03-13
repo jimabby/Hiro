@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('api', {
   getApplications: (filters) => ipcRenderer.invoke('db:getApplications', filters),
   getApplication: (id) => ipcRenderer.invoke('db:getApplication', id),
   updateApplicationStatus: (id, status) => ipcRenderer.invoke('db:updateStatus', id, status),
+  deleteApplication: (id) => ipcRenderer.invoke('db:deleteApplication', id),
+  clearAllApplications: () => ipcRenderer.invoke('db:clearAllApplications'),
 
   // Jobs needing attention
   getAttentionJobs: () => ipcRenderer.invoke('db:getAttentionJobs'),
@@ -28,6 +30,12 @@ contextBridge.exposeInMainWorld('api', {
   linkedinStatus: () => ipcRenderer.invoke('linkedin:status'),
   linkedinLogin: () => ipcRenderer.invoke('linkedin:login'),
   linkedinLogout: () => ipcRenderer.invoke('linkedin:logout'),
+
+  // Seek session
+  seekStatus: () => ipcRenderer.invoke('seek:status'),
+  seekLogin: () => ipcRenderer.invoke('seek:login'),
+  seekLogout: () => ipcRenderer.invoke('seek:logout'),
+  onSeekStatusUpdate: (cb) => ipcRenderer.on('seek:status-update', (_, msg) => cb(msg)),
 
   // Resume file import / improve / download
   importResumeFile: () => ipcRenderer.invoke('resume:importFile'),

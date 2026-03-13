@@ -129,6 +129,16 @@ function updateApplicationStatus(id, status) {
   return { success: true }
 }
 
+function deleteApplication(id) {
+  run('DELETE FROM applications WHERE id = ?', [id])
+  return { success: true }
+}
+
+function clearAllApplications() {
+  run('DELETE FROM applications')
+  return { success: true }
+}
+
 // ─── Attention Jobs ──────────────────────────────────────────────
 
 function getAttentionJobs() {
@@ -181,6 +191,7 @@ function getTodayCountByPlatform(platform) {
 module.exports = {
   init,
   getApplications, getApplication, insertApplication, updateApplicationStatus,
+  deleteApplication, clearAllApplications,
   getAttentionJobs, insertAttentionJob, dismissAttentionJob,
   getStats, getTodayCountByPlatform,
 }

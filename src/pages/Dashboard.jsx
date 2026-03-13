@@ -13,6 +13,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
   const [apps, setApps] = useState([])
   const [selected, setSelected] = useState(null)
   const [filter, setFilter] = useState({ status: '', platform: '' })
+  const [resumeExpanded, setResumeExpanded] = useState(false)
   const logRef = useRef(null)
 
   useEffect(() => { loadData() }, [])
@@ -39,6 +40,21 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
     await window.api.updateApplicationStatus(id, status)
     setApps(prev => prev.map(a => a.id === id ? { ...a, status } : a))
     if (selected?.id === id) setSelected(s => ({ ...s, status }))
+  }
+
+  async function deleteApp(id, e) {
+    e.stopPropagation()
+    await window.api.deleteApplication(id)
+    setApps(prev => prev.filter(a => a.id !== id))
+    if (selected?.id === id) setSelected(null)
+  }
+
+  async function clearAll() {
+    if (!window.confirm('Delete all application history? This cannot be undone.')) return
+    await window.api.clearAllApplications()
+    setApps([])
+    setSelected(null)
+    loadData()
   }
 
   const filtered = apps.filter(a => {
@@ -96,6 +112,11 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
           <span style={{ fontWeight: 600, fontSize: 15 }}>Jobs ({filtered.length})</span>
           <div style={{ display: 'flex', gap: 8 }}>
+            {apps.length > 0 && (
+              <button className="btn btn-ghost" style={{ fontSize: 12, color: 'var(--red)' }} onClick={clearAll}>
+                Clear All
+              </button>
+            )}
             <select value={filter.status} onChange={e => setFilter(f => ({ ...f, status: e.target.value }))} style={{ width: 'auto' }}>
               <option value="">All Statuses</option>
               <option value="applied">Applied</option>
@@ -124,12 +145,12 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
               <thead>
                 <tr>
                   <th>Role</th><th>Company</th><th>Platform</th>
-                  <th>Match</th><th>Status</th><th>Date</th>
+                  <th>Match</th><th>Status</th><th>Date</th><th></th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.map(a => (
-                  <tr key={a.id} style={{ cursor: 'pointer' }} onClick={() => setSelected(a)}>
+                  <tr key={a.id} style={{ cursor: 'pointer' }} onClick={() => { setSelected(a); setResumeExpanded(false) }}>
                     <td style={{ fontWeight: 500 }}>{a.job_title}</td>
                     <td>{a.company}</td>
                     <td><span className="badge badge-blue">{a.platform}</span></td>
@@ -154,6 +175,10 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
                     </td>
                     <td style={{ color: 'var(--text-muted)' }}>
                       {new Date(a.applied_at).toLocaleDateString()}
+                    </td>
+                    <td onClick={e => e.stopPropagation()}>
+                      <button className="btn btn-ghost" style={{ fontSize: 11, color: 'var(--red)', padding: '2px 6px' }}
+                        onClick={e => deleteApp(a.id, e)}>✕</button>
                     </td>
                   </tr>
                 ))}
@@ -186,7 +211,15 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
                   </span>
                 </div>
               </div>
-              <button className="btn btn-ghost" onClick={() => setSelected(null)}>✕</button>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="btn btn-ghost" style={{ fontSize: 12, color: 'var(--red)' }}
+                  onClick={async () => {
+                    await window.api.deleteApplication(selected.id)
+                    setApps(prev => prev.filter(a => a.id !== selected.id))
+                    setSelected(null)
+                  }}>Delete</button>
+                <button className="btn btn-ghost" onClick={() => setSelected(null)}>✕</button>
+              </div>
             </div>
 
             <div style={{ marginBottom: 16 }}>
@@ -206,10 +239,23 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
 
             {selected.tailored_resume && (
               <div style={{ marginBottom: 16 }}>
-                <label style={{ marginBottom: 8 }}>Tailored Resume</label>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <label style={{ marginBottom: 0 }}>Tailored Resume</label>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button className="btn btn-ghost" style={{ fontSize: 11 }}
+                      onClick={() => setResumeExpanded(e => !e)}>
+                      {resumeExpanded ? 'Collapse' : 'Expand'}
+                    </button>
+                    <button className="btn btn-ghost" style={{ fontSize: 11 }}
+                      onClick={() => window.api.downloadResume(selected.tailored_resume, `${selected.job_title} - ${selected.company}`)}>
+                      Download .docx
+                    </button>
+                  </div>
+                </div>
                 <pre style={{
                   background: 'var(--surface2)', borderRadius: 8, padding: 12,
-                  fontSize: 12, whiteSpace: 'pre-wrap', maxHeight: 200, overflow: 'auto',
+                  fontSize: 12, whiteSpace: 'pre-wrap',
+                  maxHeight: resumeExpanded ? 'none' : 200, overflow: 'auto',
                 }}>{selected.tailored_resume}</pre>
               </div>
             )}
