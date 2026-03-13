@@ -8,5 +8,7 @@ const tailorResume = (jobDesc, resume, apiKey) => openai.tailorResume(jobDesc, r
 const answerScreeningQuestion = (q, jobDesc, resume, apiKey) => openai.answerScreeningQuestion(q, jobDesc, resume, apiKey, DEEPSEEK_BASE_URL)
 const generateTalkingPoints = (jobDesc, resume, apiKey) => openai.generateTalkingPoints(jobDesc, resume, apiKey, DEEPSEEK_BASE_URL)
 const scoreMatch = (jobDesc, resume, apiKey) => openai.scoreMatch(jobDesc, resume, apiKey, DEEPSEEK_BASE_URL)
+const generateCoverLetter = (jobDesc, resume, apiKey) => openai.generateCoverLetter(jobDesc, resume, apiKey, DEEPSEEK_BASE_URL)
+const improveResume = (resumeText, apiKey) => openai.improveResume(resumeText, apiKey, DEEPSEEK_BASE_URL)
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch }
+module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, generateCoverLetter, improveResume }

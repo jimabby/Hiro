@@ -62,6 +62,22 @@ RESUME: ${masterResume.slice(0, 1000)}`)
   return isNaN(score) ? 50 : Math.min(100, Math.max(0, score))
 }
 
+async function generateCoverLetter(jobDescription, masterResume, apiKey, modelName) {
+  const model = getModel(apiKey, modelName)
+  const result = await model.generateContent(`Write a concise, professional cover letter for this job application.
+Base it on the candidate's resume and the job description.
+3-4 paragraphs, natural and human-sounding. Be specific to the role and company.
+Avoid generic filler phrases. Highlight the most relevant experience from the resume.
+Return ONLY the cover letter text, starting with "Dear Hiring Manager," or similar.
+
+JOB DESCRIPTION:
+${jobDescription}
+
+RESUME:
+${masterResume}`)
+  return result.response.text()
+}
+
 async function improveResume(resumeText, apiKey, modelName) {
   const model = getModel(apiKey, modelName)
   const result = await model.generateContent(`You are an expert resume writer. Improve the following resume to be more impactful, professional, and ATS-friendly.
@@ -74,4 +90,4 @@ ${resumeText}`)
   return result.response.text()
 }
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, improveResume }
+module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, improveResume, generateCoverLetter }

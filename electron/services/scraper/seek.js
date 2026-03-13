@@ -1,6 +1,25 @@
 const { chromium } = require('playwright')
 const { randomDelay, humanType, randomUserAgent } = require('./utils')
+
+// Node.js substitute for the browser-only CSS.escape()
+function cssEscape(str) {
+  return str.replace(/([^\w-])/g, '\\$1')
+}
+
+function stripMarkdown(text) {
+  return (text || '')
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/__(.*?)__/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/_(.*?)_/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^\*\s+/gm, '- ')
+    .replace(/^-{3,}\s*$/gm, '')
+    .trim()
+}
 const seekSession = require('../seekSession')
+const aiAdapter = require('../ai/index')
+const database = require('../database')
 
 async function scrape(cfg) {
   const { jobKeywords, jobLocation, salaryMin } = cfg
@@ -54,15 +73,46 @@ async function getJobDescription(jobUrl) {
   }
 }
 
-async function apply(jobUrl, tailoredResume, screeningAnswers, cfg) {
-  // Seek's easy apply flow varies by employer — this handles the common case
-  const browser = await chromium.launch({ headless: true })
-  const context = await browser.newContext({ userAgent: randomUserAgent() })
+async function buildResumePath(tailoredResume, candidateName) {
+  const os = require('os')
+  const path = require('path')
+  const fs = require('fs')
+  const { Document, Packer, Paragraph, TextRun } = require('docx')
+  const safeName = (candidateName || 'Resume').replace(/[^a-zA-Z0-9 _-]/g, '').trim()
+  const fileName = `Resume - ${safeName}.docx`
+  const tempPath = path.join(os.tmpdir(), fileName)
+  const cleanText = stripMarkdown(tailoredResume)
+  const paragraphs = cleanText.split('\n').map(line =>
+    new Paragraph({ children: [new TextRun(line)] })
+  )
+  const doc = new Document({ sections: [{ children: paragraphs }] })
+  const buffer = await Packer.toBuffer(doc)
+  fs.writeFileSync(tempPath, buffer)
+  return tempPath
+}
 
-  // Inject saved Seek session cookies so the application is submitted under the user's account
-  const cookies = seekSession.loadCookies()
-  if (cookies.length) await context.addCookies(cookies)
+async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
+  // Run headed so the user can watch if debugging is needed
+  const browser = await chromium.launch({ headless: false, slowMo: 50 })
+
+  // Restore full Seek session (all cookies + localStorage) from saved storage state
+  const storagePath = seekSession.getStoragePath()
+  const fs = require('fs')
+  const contextOptions = { userAgent: randomUserAgent() }
+  if (fs.existsSync(storagePath)) contextOptions.storageState = storagePath
+
+  const context = await browser.newContext(contextOptions)
   const page = await context.newPage()
+
+  // Extract candidate name from master resume first line for a clean filename
+  const candidateName = (cfg?.masterResume || tailoredResume || '')
+    .split('\n').find(l => l.trim())?.trim() || 'Resume'
+
+  // Pre-build resume docx for upload
+  let resumePath = null
+  if (tailoredResume) {
+    resumePath = await buildResumePath(tailoredResume, candidateName).catch(() => null)
+  }
 
   try {
     await page.goto(jobUrl, { waitUntil: 'domcontentloaded', timeout: 30000 })
@@ -84,47 +134,195 @@ async function apply(jobUrl, tailoredResume, screeningAnswers, cfg) {
     }
     if (!quickApply) return { success: false, reason: 'No apply button found' }
 
-    await quickApply.click()
+    // Dismiss any overlays that might intercept clicks (cookie banners, dropdowns)
+    await page.keyboard.press('Escape').catch(() => {})
+    await randomDelay(300, 500)
+    await quickApply.evaluate(el => el.click())
+    await page.waitForLoadState('domcontentloaded').catch(() => {})
     await randomDelay(2000, 3000)
 
-    // Check if redirected to external site
+    // Check destination URL
     const currentUrl = page.url()
     if (!currentUrl.includes('seek.com.au')) {
       return { success: false, reason: 'Redirected to external application site' }
     }
-
-    // Fill in cover letter / resume text if field exists
-    const coverField = await page.$('textarea[name="coverLetter"], textarea[placeholder*="cover"], textarea[placeholder*="Cover"]')
-    if (coverField) {
-      await coverField.click()
-      await humanType(page, coverField, tailoredResume.slice(0, 3000))
-      await randomDelay(500, 1000)
+    if (currentUrl.includes('/login') || currentUrl.includes('/oauth') || currentUrl.includes('/sign-in') || currentUrl.includes('id.seek.com')) {
+      return { success: false, reason: 'Seek session expired — please re-login in Settings → Seek Session' }
     }
 
-    // Answer screening questions
-    for (const qa of screeningAnswers) {
-      const label = await page.$(`label:has-text("${qa.question.slice(0, 30)}")`).catch(() => null)
-      if (label) {
-        const input = await label.$('input, textarea, select').catch(() => null)
-        if (input) {
-          const tag = await input.evaluate(el => el.tagName.toLowerCase())
-          if (tag === 'select') {
-            await input.selectOption({ label: qa.answer }).catch(() => {})
+    // Wait for the application form to appear
+    await page.waitForSelector('form, [role="dialog"], [data-automation="apply-form"]', { timeout: 10000 }).catch(() => {})
+
+    // Double-check we're not on a login page after the form wait
+    if (page.url().includes('/login') || page.url().includes('/oauth')) {
+      return { success: false, reason: 'Seek session expired — please re-login in Settings → Seek Session' }
+    }
+    await randomDelay(1500, 2000)
+
+    const submitSelectors = [
+      '[data-automation="submit-application"]',
+      '[data-automation="submit-action"]',
+      'button:has-text("Submit application")',
+      'button:has-text("Send application")',
+    ]
+    const nextSelectors = [
+      'button:has-text("Review and apply")',
+      'button:has-text("Continue")',
+      'button:has-text("Next")',
+      'button:has-text("Review")',
+      '[data-automation="continue-button"]',
+      '[data-automation="next-button"]',
+    ]
+
+    // Navigate through multi-step form up to 8 steps
+    for (let step = 0; step < 8; step++) {
+      await randomDelay(1500, 2500)
+
+      // Upload tailored resume if there's a file input on this step
+      if (resumePath) {
+        const fileInput = await page.$('input[type="file"]').catch(() => null)
+        if (fileInput) {
+          await fileInput.setInputFiles(resumePath).catch(() => {})
+          await randomDelay(500, 1000)
+        }
+      }
+
+      // Fill cover letter field — always overwrite any pre-filled content
+      const coverFieldSelectors = [
+        '[data-automation="coverLetterField"]',
+        '[data-automation="cover-letter-field"]',
+        '[data-automation="cover-letter"] textarea',
+        'textarea[name="coverLetter"]',
+        'textarea[name="cover_letter"]',
+        'textarea[placeholder*="cover"]',
+        'textarea[placeholder*="Cover"]',
+        'textarea[aria-label*="cover"]',
+        'textarea[aria-label*="Cover"]',
+      ]
+      const coverText = (coverLetter || tailoredResume).slice(0, 3000)
+      let coverFilled = false
+      for (const sel of coverFieldSelectors) {
+        const field = await page.$(sel).catch(() => null)
+        if (field) {
+          await field.evaluate(el => { el.value = ''; el.dispatchEvent(new Event('input', { bubbles: true })) })
+          await field.fill(coverText)
+          await field.dispatchEvent('input')
+          await field.dispatchEvent('change')
+          await randomDelay(300, 500)
+          coverFilled = true
+          break
+        }
+      }
+      // Also try contenteditable rich text editor (Seek sometimes uses these)
+      if (!coverFilled) {
+        const richText = await page.$('[contenteditable="true"]').catch(() => null)
+        if (richText) {
+          await richText.evaluate((el, text) => {
+            el.textContent = text
+            el.dispatchEvent(new Event('input', { bubbles: true }))
+            el.dispatchEvent(new Event('change', { bubbles: true }))
+          }, coverText)
+          await randomDelay(300, 500)
+        }
+      }
+
+      // Dynamically detect and answer screening questions on this step
+      if (cfg.aiProvider && cfg.aiApiKey) {
+        const labels = await page.$$('label').catch(() => [])
+        for (const labelEl of labels) {
+          const questionText = await labelEl.evaluate(el => el.textContent?.trim()).catch(() => '')
+          if (!questionText || questionText.length < 3) continue
+          // Skip cover letter labels (handled above)
+          if (/cover.?letter/i.test(questionText)) continue
+
+          // Find the associated input/textarea/select
+          const forId = await labelEl.evaluate(el => el.getAttribute('for')).catch(() => null)
+          let input = null
+          if (forId) {
+            input = await page.$(`#${cssEscape(forId)}`).catch(() => null)
+          }
+          if (!input) {
+            input = await labelEl.$('input:not([type="hidden"]):not([type="file"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"]), textarea, select').catch(() => null)
+          }
+          if (!input) continue
+
+          const tag = await input.evaluate(el => el.tagName.toLowerCase()).catch(() => '')
+          if (!tag) continue
+
+          // Skip already filled fields
+          const currentVal = await input.inputValue().catch(() => '')
+          if (currentVal.trim()) continue
+
+          let answer = ''
+
+          // 1. Check cache first — use saved answer immediately
+          const cached = database.getCachedAnswer(questionText)
+          if (cached) {
+            answer = cached
           } else {
-            await humanType(page, input, qa.answer)
+            // 2. Ask AI
+            let aiAnswer = ''
+            try {
+              aiAnswer = await aiAdapter.answerScreeningQuestion(
+                cfg.aiProvider, cfg.aiApiKey,
+                questionText,
+                cfg.jobDescription || '',
+                cfg.masterResume || '',
+                cfg.geminiModel
+              )
+            } catch {}
+
+            const isUncertain = !aiAnswer || aiAnswer.trim().length < 3 ||
+              /i'm not sure|i don't know|unclear|unsure|cannot determine|not enough information/i.test(aiAnswer)
+
+            if (isUncertain && cfg.askQuestion) {
+              // 3. AI unsure — pause and ask the user
+              const userAnswer = await cfg.askQuestion(questionText).catch(() => '')
+              if (userAnswer) {
+                answer = userAnswer
+                database.saveCachedAnswer(questionText, userAnswer)
+              }
+            } else if (aiAnswer) {
+              answer = aiAnswer
+              database.saveCachedAnswer(questionText, aiAnswer)
+            }
+          }
+
+          if (!answer) continue
+
+          if (tag === 'select') {
+            await input.selectOption({ label: answer }).catch(() => {})
+          } else {
+            await input.click()
+            await humanType(page, input, answer)
           }
           await randomDelay(300, 700)
         }
       }
-    }
 
-    // Submit
-    const submitBtn = await page.$('[data-automation="submit-application"], button[type="submit"]')
-    if (submitBtn) {
-      await randomDelay(1000, 2000)
-      await submitBtn.click()
-      await randomDelay(2000, 4000)
-      return { success: true }
+      // Check for final submit button
+      let submitBtn = null
+      for (const sel of submitSelectors) {
+        submitBtn = await page.$(sel).catch(() => null)
+        if (submitBtn) break
+      }
+      if (submitBtn) {
+        await submitBtn.scrollIntoViewIfNeeded().catch(() => {})
+        await randomDelay(1000, 2000)
+        await submitBtn.evaluate(el => el.click())
+        await randomDelay(2000, 4000)
+        return { success: true }
+      }
+
+      // Look for Next/Continue button to advance the wizard
+      let nextBtn = null
+      for (const sel of nextSelectors) {
+        nextBtn = await page.$(sel).catch(() => null)
+        if (nextBtn) break
+      }
+      if (!nextBtn) break
+      await nextBtn.scrollIntoViewIfNeeded().catch(() => {})
+      await nextBtn.evaluate(el => el.click())
     }
 
     return { success: false, reason: 'Submit button not found' }

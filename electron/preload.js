@@ -22,6 +22,10 @@ contextBridge.exposeInMainWorld('api', {
   // Jobs needing attention
   getAttentionJobs: () => ipcRenderer.invoke('db:getAttentionJobs'),
   dismissAttentionJob: (id) => ipcRenderer.invoke('db:dismissAttention', id),
+  deleteAttentionJob: (id) => ipcRenderer.invoke('db:deleteAttentionJob', id),
+  clearAllAttentionJobs: () => ipcRenderer.invoke('db:clearAllAttentionJobs'),
+  applyAttentionJob: (id) => ipcRenderer.invoke('attention:apply', id),
+  onAttentionLog: (cb) => ipcRenderer.on('attention:log', (_, msg) => cb(msg)),
 
   // Stats
   getStats: () => ipcRenderer.invoke('db:getStats'),
@@ -41,6 +45,10 @@ contextBridge.exposeInMainWorld('api', {
   importResumeFile: () => ipcRenderer.invoke('resume:importFile'),
   improveResume: (text) => ipcRenderer.invoke('resume:improve', text),
   downloadResume: (text, name) => ipcRenderer.invoke('resume:download', text, name),
+
+  // Screening question prompts (mid-apply)
+  onQuestionAsk: (cb) => ipcRenderer.on('question:ask', (_, question) => cb(question)),
+  sendQuestionAnswer: (answer) => ipcRenderer.send('question:answer', answer),
 
   // Events from main process
   onNotification: (cb) => ipcRenderer.on('notification', (_, data) => cb(data)),

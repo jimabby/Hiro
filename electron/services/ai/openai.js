@@ -97,6 +97,30 @@ RESUME: ${masterResume.slice(0, 1000)}`,
   return isNaN(score) ? 50 : Math.min(100, Math.max(0, score))
 }
 
+async function generateCoverLetter(jobDescription, masterResume, apiKey, baseURL) {
+  const client = getClient(apiKey, baseURL)
+  const model = baseURL ? 'deepseek-chat' : 'gpt-4o'
+  const response = await client.chat.completions.create({
+    model,
+    max_tokens: 800,
+    messages: [{
+      role: 'user',
+      content: `Write a concise, professional cover letter for this job application.
+Base it on the candidate's resume and the job description.
+3-4 paragraphs, natural and human-sounding. Be specific to the role and company.
+Avoid generic filler phrases. Highlight the most relevant experience from the resume.
+Return ONLY the cover letter text, starting with "Dear Hiring Manager," or similar.
+
+JOB DESCRIPTION:
+${jobDescription}
+
+RESUME:
+${masterResume}`,
+    }],
+  })
+  return response.choices[0].message.content
+}
+
 async function improveResume(resumeText, apiKey, baseURL) {
   const client = getClient(apiKey, baseURL)
   const model = baseURL ? 'deepseek-chat' : 'gpt-4o'
@@ -117,4 +141,4 @@ ${resumeText}`,
   return response.choices[0].message.content
 }
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, improveResume }
+module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, improveResume, generateCoverLetter }

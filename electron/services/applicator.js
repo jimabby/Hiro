@@ -56,6 +56,12 @@ async function run(cfg, { log, notifyAttention }) {
         .find(a => a.job_url === job.job_url)
       if (existing) continue
 
+      // Skip companies we've already successfully applied to
+      if (database.hasAppliedToCompany(job.company)) {
+        log(`  Skipping ${job.company} — already applied`)
+        continue
+      }
+
       log(`Processing: ${job.job_title} at ${job.company}`)
 
       // Get full job description
@@ -119,13 +125,22 @@ async function run(cfg, { log, notifyAttention }) {
         log(`  Resume tailoring error: ${err.message}`)
       }
 
+      // Generate cover letter
+      let coverLetter = ''
+      try {
+        coverLetter = await aiAdapter.generateCoverLetter(cfg.aiProvider, cfg.aiApiKey, jobDescription, cfg.masterResume, cfg.geminiModel)
+        log(`  Cover letter generated`)
+      } catch (err) {
+        log(`  Cover letter error: ${err.message}`)
+      }
+
       if (cancelled) { log('Scan cancelled.'); return }
 
       // Apply
       await randomDelay(3000, 8000)
       let result
       try {
-        result = await scraper.apply(job.job_url, tailoredResume, [], cfg)
+        result = await scraper.apply(job.job_url, tailoredResume, coverLetter, { ...cfg, jobDescription })
         log(`  Apply result: ${result.success ? 'SUCCESS' : 'FAILED — ' + result.reason}`)
       } catch (err) {
         result = { success: false, reason: err.message }
@@ -141,6 +156,7 @@ async function run(cfg, { log, notifyAttention }) {
           job_description: jobDescription,
           match_score: matchScore,
           tailored_resume: tailoredResume,
+          cover_letter: coverLetter,
           screening_qa: [],
           status: 'applied',
         })
@@ -177,4 +193,68 @@ async function addAttentionJob(job, cfg, log, notifyAttention) {
   notifyAttention(attentionJob)
 }
 
-module.exports = { run, cancel }
+async function applyAttentionJob(jobId, cfg, log) {
+  const job = database.getAttentionJob(jobId)
+  if (!job) return { success: false, reason: 'Job not found' }
+
+  const activeResume = (cfg.resumes || []).find(r => r.id === cfg.defaultResumeId)?.text || cfg.masterResume || ''
+  cfg = { ...cfg, masterResume: activeResume }
+
+  if (database.hasAppliedToCompany(job.company)) {
+    return { success: false, reason: `Already applied to ${job.company} — skipping to avoid duplicate` }
+  }
+
+  const platformMap = { Seek: seek, Indeed: indeed, LinkedIn: linkedin }
+  const scraper = platformMap[job.platform]
+  if (!scraper) return { success: false, reason: `No scraper for platform: ${job.platform}` }
+
+  log(`Tailoring resume for ${job.job_title} at ${job.company}...`)
+  let tailoredResume = cfg.masterResume
+  try {
+    tailoredResume = await aiAdapter.tailorResume(cfg.aiProvider, cfg.aiApiKey, job.job_description || job.job_title, cfg.masterResume, cfg.geminiModel)
+    log('Resume tailored')
+  } catch (err) {
+    log(`Resume tailoring error: ${err.message}`)
+  }
+
+  log('Generating cover letter...')
+  let coverLetter = ''
+  try {
+    coverLetter = await aiAdapter.generateCoverLetter(cfg.aiProvider, cfg.aiApiKey, job.job_description || job.job_title, cfg.masterResume, cfg.geminiModel)
+    log('Cover letter generated')
+  } catch (err) {
+    log(`Cover letter error: ${err.message}`)
+  }
+
+  log('Applying...')
+  let result
+  try {
+    result = await scraper.apply(job.job_url, tailoredResume, coverLetter, { ...cfg, jobDescription: job.job_description })
+    log(`Apply result: ${result.success ? 'SUCCESS' : 'FAILED — ' + result.reason}`)
+  } catch (err) {
+    result = { success: false, reason: err.message }
+    log(`Apply error: ${err.message}`)
+  }
+
+  if (result.success) {
+    database.insertApplication({
+      job_title: job.job_title,
+      company: job.company,
+      platform: job.platform,
+      salary: job.salary || '',
+      job_url: job.job_url,
+      job_description: job.job_description,
+      match_score: job.match_score,
+      tailored_resume: tailoredResume,
+      cover_letter: coverLetter,
+      screening_qa: [],
+      status: 'applied',
+    })
+    database.dismissAttentionJob(jobId)
+    log('Saved to history and removed from Needs Attention')
+  }
+
+  return result
+}
+
+module.exports = { run, cancel, applyAttentionJob }

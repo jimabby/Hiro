@@ -21,6 +21,7 @@ async function init() {
 
   db.run('PRAGMA journal_mode = WAL')
   createTables()
+  migrate()
   persist()
 }
 
@@ -62,8 +63,20 @@ function createTables() {
       dismissed INTEGER DEFAULT 0,
       found_at TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS screening_cache (
+      question_hash TEXT PRIMARY KEY,
+      question TEXT NOT NULL,
+      answer TEXT NOT NULL,
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
   `)
   persist()
+}
+
+function migrate() {
+  // Add cover_letter column if it doesn't exist (for existing databases)
+  try { db.run('ALTER TABLE applications ADD COLUMN cover_letter TEXT DEFAULT ""') } catch {}
 }
 
 // Convert sql.js result to array of objects
@@ -111,15 +124,24 @@ function getApplication(id) {
   return queryOne('SELECT * FROM applications WHERE id = ?', [id])
 }
 
+function hasAppliedToCompany(company) {
+  const result = queryOne(
+    "SELECT COUNT(*) as c FROM applications WHERE LOWER(company) = LOWER(?) AND status != 'skipped'",
+    [company]
+  )
+  return (result?.c || 0) > 0
+}
+
 function insertApplication(data) {
   run(`
     INSERT INTO applications
-      (job_title, company, platform, salary, job_url, job_description, match_score, tailored_resume, screening_qa, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (job_title, company, platform, salary, job_url, job_description, match_score, tailored_resume, cover_letter, screening_qa, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     data.job_title, data.company, data.platform, data.salary || '',
     data.job_url, data.job_description, data.match_score,
-    data.tailored_resume, JSON.stringify(data.screening_qa || []),
+    data.tailored_resume, data.cover_letter || '',
+    JSON.stringify(data.screening_qa || []),
     data.status || 'applied',
   ])
 }
@@ -145,6 +167,10 @@ function getAttentionJobs() {
   return query('SELECT * FROM attention_jobs WHERE dismissed = 0 ORDER BY found_at DESC')
 }
 
+function getAttentionJob(id) {
+  return queryOne('SELECT * FROM attention_jobs WHERE id = ?', [id])
+}
+
 function insertAttentionJob(data) {
   run(`
     INSERT INTO attention_jobs
@@ -159,6 +185,46 @@ function insertAttentionJob(data) {
 
 function dismissAttentionJob(id) {
   run('UPDATE attention_jobs SET dismissed = 1 WHERE id = ?', [id])
+  return { success: true }
+}
+
+function deleteAttentionJob(id) {
+  run('DELETE FROM attention_jobs WHERE id = ?', [id])
+  return { success: true }
+}
+
+function clearAllAttentionJobs() {
+  run('DELETE FROM attention_jobs')
+  return { success: true }
+}
+
+// ─── Screening Answer Cache ──────────────────────────────────────
+
+function normalizeQuestion(question) {
+  return question.toLowerCase().trim().replace(/\s+/g, ' ')
+}
+
+function getCachedAnswer(question) {
+  const hash = normalizeQuestion(question)
+  return queryOne('SELECT answer FROM screening_cache WHERE question_hash = ?', [hash])?.answer || null
+}
+
+function saveCachedAnswer(question, answer) {
+  const hash = normalizeQuestion(question)
+  run(
+    `INSERT INTO screening_cache (question_hash, question, answer) VALUES (?, ?, ?)
+     ON CONFLICT(question_hash) DO UPDATE SET answer = excluded.answer, updated_at = datetime('now')`,
+    [hash, question, answer]
+  )
+}
+
+function getAllCachedAnswers() {
+  return query('SELECT question, answer, updated_at FROM screening_cache ORDER BY updated_at DESC')
+}
+
+function deleteCachedAnswer(question) {
+  const hash = normalizeQuestion(question)
+  run('DELETE FROM screening_cache WHERE question_hash = ?', [hash])
   return { success: true }
 }
 
@@ -190,8 +256,9 @@ function getTodayCountByPlatform(platform) {
 
 module.exports = {
   init,
-  getApplications, getApplication, insertApplication, updateApplicationStatus,
+  getApplications, getApplication, hasAppliedToCompany, insertApplication, updateApplicationStatus,
   deleteApplication, clearAllApplications,
-  getAttentionJobs, insertAttentionJob, dismissAttentionJob,
+  getAttentionJobs, getAttentionJob, insertAttentionJob, dismissAttentionJob, deleteAttentionJob, clearAllAttentionJobs,
+  getCachedAnswer, saveCachedAnswer, getAllCachedAnswers, deleteCachedAnswer,
   getStats, getTodayCountByPlatform,
 }

@@ -7,6 +7,7 @@ const emailService = require('./services/email')
 const aiAdapter = require('./services/ai/index')
 const linkedinSession = require('./services/linkedinSession')
 const seekSession = require('./services/seekSession')
+const applicator = require('./services/applicator')
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
@@ -114,6 +115,22 @@ ipcMain.handle('linkedin:logout', () => {
   return { success: true }
 })
 
+// ─── Screening question helper ───────────────────────────────────
+function makeAskQuestion(win) {
+  return (question) => new Promise((resolve) => {
+    if (!win || win.isDestroyed()) return resolve('')
+    win.webContents.send('question:ask', question)
+    const timeout = setTimeout(() => resolve(''), 5 * 60 * 1000) // 5 min timeout
+    ipcMain.once('question:answer', (_, answer) => {
+      clearTimeout(timeout)
+      resolve(answer || '')
+    })
+  })
+}
+
+// ─── IPC: Screening answer from user ────────────────────────────
+// (Renderer sends this via ipcRenderer.send — not invoke)
+
 // ─── IPC: Seek ───────────────────────────────────────────────────
 ipcMain.handle('seek:status', () => ({ loggedIn: seekSession.hasCookies() }))
 
@@ -213,4 +230,21 @@ ipcMain.handle('db:deleteApplication', (_, id) => database.deleteApplication(id)
 ipcMain.handle('db:clearAllApplications', () => database.clearAllApplications())
 ipcMain.handle('db:getAttentionJobs', () => database.getAttentionJobs())
 ipcMain.handle('db:dismissAttention', (_, id) => database.dismissAttentionJob(id))
+ipcMain.handle('db:deleteAttentionJob', (_, id) => database.deleteAttentionJob(id))
+ipcMain.handle('db:clearAllAttentionJobs', () => database.clearAllAttentionJobs())
 ipcMain.handle('db:getStats', () => database.getStats())
+
+// ─── IPC: AI Apply from Needs Attention ─────────────────────────
+ipcMain.handle('attention:apply', async (_, jobId) => {
+  try {
+    const cfg = { ...configService.load(), askQuestion: makeAskQuestion(mainWindow) }
+    const result = await applicator.applyAttentionJob(jobId, cfg, (msg) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('attention:log', msg)
+      }
+    })
+    return result
+  } catch (err) {
+    return { success: false, reason: err.message }
+  }
+})

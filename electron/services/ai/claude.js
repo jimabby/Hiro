@@ -18,7 +18,8 @@ async function tailorResume(jobDescription, masterResume, apiKey) {
       role: 'user',
       content: `You are an expert resume writer. Tailor the following resume for the job description below.
 Keep it truthful — only reorder, rephrase, and emphasise existing experience.
-Return ONLY the tailored resume text, no commentary.
+Return ONLY the plain text resume. No markdown, no asterisks, no pound signs, no bold/italic markers.
+Use plain section headers (e.g. "EXPERIENCE", "SKILLS") and plain hyphens or dashes for bullets.
 
 JOB DESCRIPTION:
 ${jobDescription}
@@ -90,6 +91,29 @@ RESUME: ${masterResume.slice(0, 1000)}`,
   return isNaN(score) ? 50 : Math.min(100, Math.max(0, score))
 }
 
+async function generateCoverLetter(jobDescription, masterResume, apiKey) {
+  const client = new Anthropic({ apiKey })
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 800,
+    messages: [{
+      role: 'user',
+      content: `Write a concise, professional cover letter for this job application.
+Base it on the candidate's resume and the job description.
+3-4 paragraphs, natural and human-sounding. Be specific to the role and company.
+Avoid generic filler phrases. Highlight the most relevant experience from the resume.
+Return ONLY the cover letter text, starting with "Dear Hiring Manager," or similar.
+
+JOB DESCRIPTION:
+${jobDescription}
+
+RESUME:
+${masterResume}`,
+    }],
+  })
+  return response.content[0].text
+}
+
 async function improveResume(resumeText, apiKey) {
   const client = new Anthropic({ apiKey })
   const response = await client.messages.create({
@@ -100,7 +124,8 @@ async function improveResume(resumeText, apiKey) {
       content: `You are an expert resume writer. Improve the following resume to be more impactful, professional, and ATS-friendly.
 Strengthen bullet points, improve language clarity, and highlight achievements with metrics where possible.
 Keep all facts truthful and accurate — do not invent experience.
-Return ONLY the improved resume text, no commentary.
+Return ONLY the plain text resume, no commentary. No markdown, no asterisks, no pound signs, no bold/italic markers.
+Use plain section headers (e.g. "EXPERIENCE", "SKILLS") and plain hyphens or dashes for bullets.
 
 RESUME:
 ${resumeText}`,
@@ -109,4 +134,4 @@ ${resumeText}`,
   return response.content[0].text
 }
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, improveResume }
+module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, improveResume, generateCoverLetter }

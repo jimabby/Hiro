@@ -3,31 +3,37 @@ const fs = require('fs')
 const path = require('path')
 const { CONFIG_DIR } = require('./config')
 
+const STORAGE_PATH = path.join(CONFIG_DIR, 'seek-storage.json')
+// Legacy path — checked for backward compat
 const COOKIES_PATH = path.join(CONFIG_DIR, 'seek-cookies.json')
 
-function hasCookies() {
-  if (!fs.existsSync(COOKIES_PATH)) return false
-  try {
-    const cookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf8'))
-    if (!cookies.length) return false
-    // Check at least one non-expired session cookie exists
-    const now = Date.now() / 1000
-    return cookies.some(c => c.domain?.includes('seek.com.au') && (!c.expires || c.expires > now))
-  } catch {
-    return false
+function hasSession() {
+  if (fs.existsSync(STORAGE_PATH)) {
+    try {
+      const s = JSON.parse(fs.readFileSync(STORAGE_PATH, 'utf8'))
+      const cookies = s.cookies || []
+      const now = Date.now() / 1000
+      return cookies.some(c => c.domain?.includes('seek.com.au') && (!c.expires || c.expires < 0 || c.expires > now))
+    } catch { return false }
   }
+  // Fall back to legacy cookies file
+  if (fs.existsSync(COOKIES_PATH)) {
+    try {
+      const cookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf8'))
+      const now = Date.now() / 1000
+      return cookies.some(c => c.domain?.includes('seek.com.au') && (!c.expires || c.expires > now))
+    } catch { return false }
+  }
+  return false
 }
 
-function loadCookies() {
-  if (!fs.existsSync(COOKIES_PATH)) return []
-  try {
-    return JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf8'))
-  } catch {
-    return []
-  }
-}
+// Keep hasCookies as an alias so existing callers don't break
+function hasCookies() { return hasSession() }
+
+function getStoragePath() { return STORAGE_PATH }
 
 function clearCookies() {
+  if (fs.existsSync(STORAGE_PATH)) fs.unlinkSync(STORAGE_PATH)
   if (fs.existsSync(COOKIES_PATH)) fs.unlinkSync(COOKIES_PATH)
 }
 
@@ -41,47 +47,67 @@ async function loginWithBrowser(onStatus) {
 
   const context = await browser.newContext({ viewport: { width: 1024, height: 700 } })
   const page = await context.newPage()
-  await page.goto('https://www.seek.com.au/login', { waitUntil: 'domcontentloaded' })
+  await page.goto('https://www.seek.com.au', { waitUntil: 'domcontentloaded' })
 
-  onStatus('Please log into Seek in the browser window. It will close automatically when done.')
+  onStatus('Please sign in using the Sign in button (top right). The window will close automatically once logged in.')
 
+  // Phase 1: wait for user to start the sign-in flow (navigate to auth page)
+  let signInStarted = false
+  const phase1End = Date.now() + 5 * 60 * 1000
+  while (Date.now() < phase1End && !signInStarted) {
+    await new Promise(r => setTimeout(r, 1000))
+    try {
+      const url = page.url()
+      if (url.includes('id.seek.com') || url.includes('/login') || url.includes('/oauth') || url.includes('/sign-in')) {
+        signInStarted = true
+        onStatus('Sign-in detected, waiting for you to complete login...')
+      }
+    } catch {}
+  }
+
+  if (!signInStarted) {
+    await browser.close()
+    return { success: false, error: 'No sign-in attempt detected. Please click Sign in on the Seek page.' }
+  }
+
+  // Phase 2: wait for redirect back to seek.com.au (login complete)
   let loggedIn = false
-  const timeout = Date.now() + 5 * 60 * 1000
-
-  while (Date.now() < timeout) {
-    await new Promise(r => setTimeout(r, 2000))
+  const phase2End = Date.now() + 3 * 60 * 1000
+  while (Date.now() < phase2End && !loggedIn) {
+    await new Promise(r => setTimeout(r, 1000))
     try {
       const url = page.url()
       if (
         url.includes('seek.com.au') &&
+        !url.includes('id.seek.com') &&
         !url.includes('/login') &&
-        !url.includes('/register') &&
         !url.includes('/oauth')
       ) {
         loggedIn = true
-        break
       }
-    } catch { /* page navigating */ }
+    } catch {}
   }
 
   if (!loggedIn) {
     await browser.close()
-    return { success: false, error: 'Login timed out (5 minutes). Please try again.' }
+    return { success: false, error: 'Login timed out. Please try again.' }
   }
 
+  // Wait for page to fully settle and all cookies to be written
+  await new Promise(r => setTimeout(r, 4000))
+
   try {
-    await new Promise(r => setTimeout(r, 1500))
-    const cookies = await context.cookies()
     if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
-    fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2))
-    onStatus('Seek login successful. Cookies saved.')
+    // Save full storage state (all cookies from all domains + localStorage)
+    await context.storageState({ path: STORAGE_PATH })
+    onStatus('Seek login successful. Session saved.')
   } catch (err) {
     await browser.close()
-    return { success: false, error: `Failed to save cookies: ${err.message}` }
+    return { success: false, error: `Failed to save session: ${err.message}` }
   }
 
   await browser.close()
   return { success: true }
 }
 
-module.exports = { hasCookies, loadCookies, clearCookies, loginWithBrowser }
+module.exports = { hasCookies, hasSession, getStoragePath, clearCookies, loginWithBrowser }

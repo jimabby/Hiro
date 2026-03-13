@@ -237,6 +237,22 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
               </div>
             )}
 
+            {selected.cover_letter && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <label style={{ marginBottom: 0 }}>Cover Letter</label>
+                  <button className="btn btn-ghost" style={{ fontSize: 11 }}
+                    onClick={() => window.api.downloadResume(selected.cover_letter, `Cover Letter - ${selected.job_title} - ${selected.company}`)}>
+                    Download .docx
+                  </button>
+                </div>
+                <pre style={{
+                  background: 'var(--surface2)', borderRadius: 8, padding: 12,
+                  fontSize: 12, whiteSpace: 'pre-wrap', maxHeight: 200, overflow: 'auto',
+                }}>{selected.cover_letter}</pre>
+              </div>
+            )}
+
             {selected.tailored_resume && (
               <div style={{ marginBottom: 16 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>

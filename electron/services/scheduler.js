@@ -65,7 +65,14 @@ async function runScan() {
       log('Setup not complete. Skipping scan.')
       return
     }
-    await applicator.run(cfg, { log, notifyAttention })
+    const { ipcMain } = require('electron')
+    const askQuestion = (question) => new Promise((resolve) => {
+      if (!win || win.isDestroyed()) return resolve('')
+      win.webContents.send('question:ask', question)
+      const timeout = setTimeout(() => resolve(''), 5 * 60 * 1000)
+      ipcMain.once('question:answer', (_, answer) => { clearTimeout(timeout); resolve(answer || '') })
+    })
+    await applicator.run({ ...cfg, askQuestion }, { log, notifyAttention })
   } catch (err) {
     log(`Scan error: ${err.message}`)
   } finally {

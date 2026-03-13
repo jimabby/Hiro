@@ -19,6 +19,8 @@ export default function App() {
   const [scanRunning, setScanRunning] = useState(false)
   const [resumeModal, setResumeModal] = useState(false)
   const [resumeUploading, setResumeUploading] = useState(false)
+  const [question, setQuestion] = useState(null)
+  const [questionAnswer, setQuestionAnswer] = useState('')
 
   useEffect(() => {
     window.api.getConfig().then(cfg => setSetupDone(cfg.setupComplete))
@@ -42,9 +44,15 @@ export default function App() {
       if (msg.includes('Starting')) setScanRunning(true)
     })
 
+    window.api.onQuestionAsk((q) => {
+      setQuestion(q)
+      setQuestionAnswer('')
+    })
+
     return () => {
       window.api.removeAllListeners('notification')
       window.api.removeAllListeners('automation:log')
+      window.api.removeAllListeners('question:ask')
     }
   }, [])
 
@@ -157,6 +165,55 @@ export default function App() {
               <button className="btn btn-primary" onClick={handleResumeUpload} disabled={resumeUploading}>
                 {resumeUploading ? 'Uploading...' : 'Upload Resume'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Screening question modal — shown mid-apply when AI is unsure */}
+      {question && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300,
+        }}>
+          <div className="card" style={{ width: 500 }}>
+            <h2 style={{ fontSize: 16, marginBottom: 8 }}>Application Question</h2>
+            <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 14 }}>
+              The AI couldn't confidently answer this. Your answer will be saved for future applications.
+            </p>
+            <div style={{
+              padding: '10px 14px', background: 'var(--surface2)', borderRadius: 8,
+              marginBottom: 14, fontSize: 14, borderLeft: '3px solid var(--accent)',
+            }}>
+              {question}
+            </div>
+            <textarea
+              autoFocus
+              value={questionAnswer}
+              onChange={e => setQuestionAnswer(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                  window.api.sendQuestionAnswer(questionAnswer)
+                  setQuestion(null)
+                }
+              }}
+              placeholder="Type your answer... (Ctrl+Enter to submit)"
+              style={{
+                width: '100%', minHeight: 80, resize: 'vertical',
+                background: 'var(--surface2)', border: '1px solid var(--border)',
+                borderRadius: 8, padding: '10px 12px', color: 'var(--text)',
+                fontSize: 13, marginBottom: 14, boxSizing: 'border-box',
+              }}
+            />
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn btn-ghost" onClick={() => {
+                window.api.sendQuestionAnswer('')
+                setQuestion(null)
+              }}>Skip</button>
+              <button className="btn btn-primary" onClick={() => {
+                window.api.sendQuestionAnswer(questionAnswer)
+                setQuestion(null)
+              }}>Submit Answer</button>
             </div>
           </div>
         </div>
