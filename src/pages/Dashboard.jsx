@@ -1,5 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 
+function safeParseJSON(str) {
+  try { return JSON.parse(str || '[]') } catch { return [] }
+}
+
 const STATUS_BADGE = {
   applied: { label: 'Applied', color: 'badge-blue' },
   interview: { label: 'Interview', color: 'badge-green' },
@@ -18,10 +22,19 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
   const [loadingQuestions, setLoadingQuestions] = useState(false)
   const [keywordGap, setKeywordGap] = useState(null)
   const [loadingGap, setLoadingGap] = useState(false)
+  const [pdfModal, setPdfModal] = useState(null) // { base64, title }
+  const [pdfLoading, setPdfLoading] = useState(false)
   const logRef = useRef(null)
   const searchRef = useRef(null)
 
   useEffect(() => { loadData() }, [])
+
+  // Auto-refresh data when scan finishes
+  const prevScanRunning = useRef(scanRunning)
+  useEffect(() => {
+    if (prevScanRunning.current && !scanRunning) loadData()
+    prevScanRunning.current = scanRunning
+  }, [scanRunning])
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
@@ -31,6 +44,13 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
     setInterviewQuestions(null)
     setKeywordGap(null)
   }, [selected?.id])
+
+  async function viewPDF(text, title) {
+    setPdfLoading(true)
+    const res = await window.api.getResumePDFBase64(text)
+    setPdfLoading(false)
+    if (res.success) setPdfModal({ base64: res.base64, title })
+  }
 
   const filtered = apps.filter(a => {
     if (filter.status && a.status !== filter.status) return false
@@ -44,7 +64,10 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
 
   useEffect(() => {
     function handler(e) {
-      if (e.key === 'Escape') setSelected(null)
+      if (e.key === 'Escape') {
+        if (pdfModal) { setPdfModal(null); return }
+        setSelected(null)
+      }
       if (e.key === '/' && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
         e.preventDefault()
         searchRef.current?.focus()
@@ -64,7 +87,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [selected, filtered])
+  }, [selected, filtered, pdfModal])
 
   async function loadData() {
     const [s, a] = await Promise.all([
@@ -124,6 +147,16 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
       </div>
 
       {/* Stats */}
+      {!stats && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16, marginBottom: 24 }}>
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div key={i} className="card stat-card" style={{ opacity: 0.5 }}>
+              <div className="stat-value">—</div>
+              <div className="stat-label">Loading...</div>
+            </div>
+          ))}
+        </div>
+      )}
       {stats && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16, marginBottom: 24 }}>
           {[
@@ -154,39 +187,64 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
 
       {/* Applications */}
       <div className="card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-          <span style={{ fontWeight: 600, fontSize: 15 }}>Jobs ({filtered.length})</span>
+        {/* Status tabs */}
+        {(() => {
+          const TAB_STATUSES = [
+            { value: '', label: 'All' },
+            { value: 'applied', label: 'Applied' },
+            { value: 'interview', label: 'Interview' },
+            { value: 'pending', label: 'Pending' },
+            { value: 'rejected', label: 'Rejected' },
+            { value: 'skipped', label: 'Skipped' },
+          ]
+          return (
+            <div style={{ display: 'flex', gap: 2, marginBottom: 16, borderBottom: '1px solid var(--border)', paddingBottom: 0 }}>
+              {TAB_STATUSES.map(tab => {
+                const count = tab.value ? apps.filter(a => a.status === tab.value).length : apps.length
+                const active = filter.status === tab.value
+                return (
+                  <button key={tab.value} onClick={() => setFilter(f => ({ ...f, status: tab.value }))}
+                    style={{
+                      background: 'none', border: 'none', cursor: 'pointer',
+                      padding: '8px 14px', fontSize: 13, fontWeight: active ? 600 : 400,
+                      color: active ? 'var(--accent)' : 'var(--text-muted)',
+                      borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
+                      marginBottom: -1, transition: 'color 0.15s',
+                    }}>
+                    {tab.label}
+                    <span style={{
+                      marginLeft: 6, fontSize: 11, background: active ? 'var(--accent)' : 'var(--surface2)',
+                      color: active ? '#fff' : 'var(--text-muted)',
+                      borderRadius: 10, padding: '1px 6px',
+                    }}>{count}</span>
+                  </button>
+                )
+              })}
+            </div>
+          )
+        })()}
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-muted)' }}>{filtered.length} job{filtered.length !== 1 ? 's' : ''}</span>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <input
               ref={searchRef}
               value={filter.search}
               onChange={e => setFilter(f => ({ ...f, search: e.target.value }))}
               placeholder="Search... (/)"
-              style={{ width: 160, padding: '5px 10px', fontSize: 12 }}
+              style={{ width: 150, padding: '5px 10px', fontSize: 12 }}
             />
-            {apps.length > 0 && (
-              <button className="btn btn-ghost" style={{ fontSize: 12, color: 'var(--red)' }} onClick={clearAll}>
-                Clear All
-              </button>
-            )}
-            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => window.api.exportCSV(filter)}>
-              Export CSV
-            </button>
-            <select value={filter.status} onChange={e => setFilter(f => ({ ...f, status: e.target.value }))} style={{ width: 'auto' }}>
-              <option value="">All Statuses</option>
-              <option value="applied">Applied</option>
-              <option value="interview">Interview</option>
-              <option value="rejected">Rejected</option>
-              <option value="pending">Pending</option>
-              <option value="skipped">Skipped (low score)</option>
-            </select>
             <select value={filter.platform} onChange={e => setFilter(f => ({ ...f, platform: e.target.value }))} style={{ width: 'auto' }}>
               <option value="">All Platforms</option>
               <option value="Seek">Seek</option>
               <option value="Indeed">Indeed</option>
               <option value="LinkedIn">LinkedIn</option>
             </select>
+            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => window.api.exportCSV(filter)}>Export CSV</button>
             <button className="btn btn-ghost" onClick={loadData} style={{ whiteSpace: 'nowrap' }}>Refresh</button>
+            {apps.length > 0 && (
+              <button className="btn btn-ghost" style={{ fontSize: 12, color: 'var(--red)' }} onClick={clearAll}>Clear All</button>
+            )}
           </div>
         </div>
 
@@ -200,7 +258,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
               <thead>
                 <tr>
                   <th>Role</th><th>Company</th><th>Platform</th>
-                  <th>Match</th><th>Status</th><th>Comment</th><th>Date</th><th></th>
+                  <th>Match</th><th>Comment</th><th>Status</th><th>Date</th><th></th>
                 </tr>
               </thead>
               <tbody>
@@ -215,19 +273,6 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
                         fontWeight: 600,
                       }}>{a.match_score}%</span>
                     </td>
-                    <td onClick={e => e.stopPropagation()}>
-                      {a.status === 'skipped' ? (
-                        <span className="badge badge-gray">Skipped</span>
-                      ) : (
-                        <select value={a.status} style={{ width: 'auto', padding: '3px 6px', fontSize: 12 }}
-                          onChange={e => changeStatus(a.id, e.target.value, e)}>
-                          <option value="applied">Applied</option>
-                          <option value="interview">Interview</option>
-                          <option value="rejected">Rejected</option>
-                          <option value="pending">Pending</option>
-                        </select>
-                      )}
-                    </td>
                     <td onClick={e => e.stopPropagation()} style={{ minWidth: 140 }}>
                       <input
                         defaultValue={a.comment || ''}
@@ -240,6 +285,19 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
                           outline: 'none',
                         }}
                       />
+                    </td>
+                    <td onClick={e => e.stopPropagation()}>
+                      {a.status === 'skipped' ? (
+                        <span className="badge badge-gray">Skipped</span>
+                      ) : (
+                        <select value={a.status} style={{ width: 'auto', padding: '3px 6px', fontSize: 12 }}
+                          onChange={e => changeStatus(a.id, e.target.value, e)}>
+                          <option value="applied">Applied</option>
+                          <option value="interview">Interview</option>
+                          <option value="rejected">Rejected</option>
+                          <option value="pending">Pending</option>
+                        </select>
+                      )}
                     </td>
                     <td style={{ color: 'var(--text-muted)' }}>
                       {new Date(a.applied_at).toLocaleDateString()}
@@ -262,7 +320,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
         }} onClick={() => setSelected(null)}>
-          <div className="card" style={{ width: 680, maxHeight: '80vh', overflow: 'auto' }}
+          <div className="card" style={{ width: '70vw', maxWidth: 900, maxHeight: '85vh', overflow: 'auto' }}
             onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
               <div>
@@ -361,10 +419,20 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
               <div style={{ marginBottom: 16 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                   <label style={{ marginBottom: 0 }}>Cover Letter</label>
-                  <button className="btn btn-ghost" style={{ fontSize: 11 }}
-                    onClick={() => window.api.downloadResume(selected.cover_letter, `Cover Letter - ${selected.job_title} - ${selected.company}`)}>
-                    Download .docx
-                  </button>
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    <button className="btn btn-ghost" style={{ fontSize: 11 }} disabled={pdfLoading}
+                      onClick={() => viewPDF(selected.cover_letter, 'Cover Letter')}>
+                      {pdfLoading ? 'Loading...' : 'View PDF'}
+                    </button>
+                    <button className="btn btn-ghost" style={{ fontSize: 11 }}
+                      onClick={() => window.api.downloadResume(selected.cover_letter, `Cover Letter - ${selected.job_title} - ${selected.company}`, 'pdf')}>
+                      Save PDF
+                    </button>
+                    <button className="btn btn-ghost" style={{ fontSize: 11 }}
+                      onClick={() => window.api.downloadResume(selected.cover_letter, `Cover Letter - ${selected.job_title} - ${selected.company}`, 'docx')}>
+                      Save DOCX
+                    </button>
+                  </div>
                 </div>
                 <pre style={{
                   background: 'var(--surface2)', borderRadius: 8, padding: 12,
@@ -377,14 +445,18 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
               <div style={{ marginBottom: 16 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                   <label style={{ marginBottom: 0 }}>Tailored Resume</label>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <button className="btn btn-ghost" style={{ fontSize: 11 }}
-                      onClick={() => setResumeExpanded(e => !e)}>
-                      {resumeExpanded ? 'Collapse' : 'Expand'}
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    <button className="btn btn-ghost" style={{ fontSize: 11 }} disabled={pdfLoading}
+                      onClick={() => viewPDF(selected.tailored_resume, 'Tailored Resume')}>
+                      {pdfLoading ? 'Loading...' : 'View PDF'}
                     </button>
                     <button className="btn btn-ghost" style={{ fontSize: 11 }}
-                      onClick={() => window.api.downloadResume(selected.tailored_resume, `${selected.job_title} - ${selected.company}`)}>
-                      Download .docx
+                      onClick={() => window.api.downloadResume(selected.tailored_resume, `Resume - ${selected.job_title} - ${selected.company}`, 'pdf')}>
+                      Save PDF
+                    </button>
+                    <button className="btn btn-ghost" style={{ fontSize: 11 }}
+                      onClick={() => window.api.downloadResume(selected.tailored_resume, `Resume - ${selected.job_title} - ${selected.company}`, 'docx')}>
+                      Save DOCX
                     </button>
                   </div>
                 </div>
@@ -396,10 +468,10 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
               </div>
             )}
 
-            {selected.screening_qa && JSON.parse(selected.screening_qa || '[]').length > 0 && (
+            {safeParseJSON(selected.screening_qa).length > 0 && (
               <div style={{ marginBottom: 16 }}>
                 <label style={{ marginBottom: 8 }}>Screening Q&A</label>
-                {JSON.parse(selected.screening_qa).map((qa, i) => (
+                {safeParseJSON(selected.screening_qa).map((qa, i) => (
                   <div key={i} style={{ marginBottom: 10, padding: 12, background: 'var(--surface2)', borderRadius: 8 }}>
                     <div style={{ fontWeight: 500, marginBottom: 4, fontSize: 13 }}>Q: {qa.question}</div>
                     <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>A: {qa.answer}</div>
@@ -410,12 +482,23 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
 
             {interviewQuestions && interviewQuestions.length > 0 && (
               <div style={{ marginBottom: 16 }}>
-                <label style={{ marginBottom: 8 }}>Interview Questions</label>
-                {interviewQuestions.map((q, i) => (
-                  <div key={i} style={{ padding: '8px 12px', background: 'var(--surface2)', borderRadius: 6, marginBottom: 6, fontSize: 13, borderLeft: '3px solid var(--green)' }}>
-                    {i + 1}. {q}
-                  </div>
-                ))}
+                <label style={{ marginBottom: 8 }}>Interview Questions & Sample Answers</label>
+                {interviewQuestions.map((item, i) => {
+                  const q = typeof item === 'string' ? item : item.question
+                  const a = typeof item === 'string' ? null : item.answer
+                  return (
+                    <div key={i} style={{ marginBottom: 10, borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)' }}>
+                      <div style={{ padding: '8px 12px', background: 'var(--surface2)', fontSize: 13, fontWeight: 500, borderLeft: '3px solid var(--accent)' }}>
+                        {i + 1}. {q}
+                      </div>
+                      {a && (
+                        <div style={{ padding: '8px 12px', fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                          {a}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             )}
 
@@ -440,6 +523,29 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
                 )}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {pdfModal && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300,
+        }}>
+          <div style={{
+            width: '82vw', height: '92vh', display: 'flex', flexDirection: 'column',
+            background: 'var(--surface)', borderRadius: 12, overflow: 'hidden',
+            boxShadow: '0 24px 60px rgba(0,0,0,0.5)',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+              <span style={{ fontWeight: 600, fontSize: 15 }}>{pdfModal.title}</span>
+              <button className="btn btn-ghost" style={{ fontSize: 13 }} onClick={() => setPdfModal(null)}>✕ Close</button>
+            </div>
+            <iframe
+              src={`data:application/pdf;base64,${pdfModal.base64}`}
+              style={{ flex: 1, border: 'none', width: '100%' }}
+              title={pdfModal.title}
+            />
           </div>
         </div>
       )}

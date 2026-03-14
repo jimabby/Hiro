@@ -1,23 +1,11 @@
 const { chromium } = require('playwright')
-const { randomDelay, randomUserAgent } = require('./utils')
+const { randomDelay, randomUserAgent, buildResumePDF } = require('./utils')
 const linkedinSession = require('../linkedinSession')
 const aiAdapter = require('../ai/index')
 const database = require('../database')
 
 function cssEscape(str) {
   return str.replace(/([^\w-])/g, '\\$1')
-}
-
-function stripMarkdown(text) {
-  return (text || '')
-    .replace(/\*\*(.*?)\*\*/g, '$1')
-    .replace(/__(.*?)__/g, '$1')
-    .replace(/\*(.*?)\*/g, '$1')
-    .replace(/_(.*?)_/g, '$1')
-    .replace(/^#{1,6}\s+/gm, '')
-    .replace(/^\*\s+/gm, '- ')
-    .replace(/^-{3,}\s*$/gm, '')
-    .trim()
 }
 
 function extractRecentJob(resumeText) {
@@ -38,42 +26,6 @@ function extractRecentJob(resumeText) {
   return { title: '', company: '' }
 }
 
-async function buildResumePath(tailoredResume, candidateName) {
-  const os = require('os')
-  const path = require('path')
-  const fs = require('fs')
-  const { Document, Packer, Paragraph, TextRun, AlignmentType } = require('docx')
-  const safeName = (candidateName || 'Resume').replace(/[^a-zA-Z0-9 _-]/g, '').trim()
-  const fileName = `Resume - ${safeName}.docx`
-  const tempPath = path.join(os.tmpdir(), fileName)
-  const cleanText = stripMarkdown(tailoredResume)
-  const lines = cleanText.split('\n')
-  const paragraphs = []
-  let firstLineDone = false
-  for (const line of lines) {
-    if (!firstLineDone && !line.trim()) continue
-    if (!firstLineDone) {
-      paragraphs.push(new Paragraph({
-        alignment: AlignmentType.CENTER,
-        children: [new TextRun({ text: line.trim(), bold: true, size: 32 })],
-      }))
-      firstLineDone = true
-    } else if (line.trim() && /^[A-Z][A-Z\s\/&-]{2,}$/.test(line.trim())) {
-      paragraphs.push(new Paragraph({
-        spacing: { before: 200, after: 60 },
-        children: [new TextRun({ text: line.trim(), bold: true, size: 22 })],
-      }))
-    } else {
-      paragraphs.push(new Paragraph({
-        children: [new TextRun({ text: line, size: 22 })],
-      }))
-    }
-  }
-  const doc = new Document({ sections: [{ children: paragraphs }] })
-  const buffer = await Packer.toBuffer(doc)
-  fs.writeFileSync(tempPath, buffer)
-  return tempPath
-}
 
 async function scrape(cfg) {
   const { jobKeywords, jobLocation } = cfg
@@ -171,7 +123,7 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
 
   let resumePath = null
   if (tailoredResume) {
-    resumePath = await buildResumePath(tailoredResume, candidateName).catch(() => null)
+    resumePath = await buildResumePDF(tailoredResume, candidateName).catch(() => null)
   }
 
   const recentJob = extractRecentJob(cfg?.masterResume || tailoredResume || '')

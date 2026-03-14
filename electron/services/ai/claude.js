@@ -1,5 +1,11 @@
 const Anthropic = require('@anthropic-ai/sdk')
 
+// Strip markdown code fences that AI models sometimes wrap JSON in
+function parseJSON(text) {
+  const cleaned = text.replace(/```(?:json)?\s*/gi, '').replace(/```\s*/g, '').trim()
+  return JSON.parse(cleaned)
+}
+
 async function testConnection(apiKey) {
   const client = new Anthropic({ apiKey })
   await client.messages.create({
@@ -145,16 +151,17 @@ RESUME: ${masterResume.slice(0, 1000)}` }],
 async function generateInterviewQuestions(jobDescription, masterResume, apiKey) {
   const client = new Anthropic({ apiKey })
   const response = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 800,
-    messages: [{ role: 'user', content: `Generate 8 likely interview questions for this job based on the job description and candidate resume.
-Return a JSON array of strings only. No numbering, no commentary.
+    model: 'claude-sonnet-4-6',
+    max_tokens: 2500,
+    messages: [{ role: 'user', content: `Generate 8 likely interview questions for this job with a tailored sample answer for each, based on the candidate's actual resume experience.
+Return a JSON array: [{ "question": "...", "answer": "..." }, ...]
+Answers should be 2-4 sentences, specific to the candidate's real experience. No markdown in answers.
 
 JOB: ${jobDescription.slice(0, 1000)}
-RESUME: ${masterResume.slice(0, 800)}` }],
+RESUME: ${masterResume.slice(0, 1200)}` }],
   })
-  try { return JSON.parse(response.content[0].text) }
-  catch { return response.content[0].text.split('\n').filter(l => l.trim().length > 5) }
+  try { return parseJSON(response.content[0].text) }
+  catch { return [] }
 }
 
 async function analyzeKeywordGap(jobDescription, masterResume, apiKey) {
@@ -163,13 +170,13 @@ async function analyzeKeywordGap(jobDescription, masterResume, apiKey) {
     model: 'claude-haiku-4-5-20251001',
     max_tokens: 600,
     messages: [{ role: 'user', content: `Analyze which key skills and qualifications from this job are present or missing in this resume.
-Return JSON only: { "missing": ["skill1", ...], "present": ["skill2", ...] }
+Return JSON only, no code fences: { "missing": ["skill1", ...], "present": ["skill2", ...] }
 Max 10 items each. Focus on specific technical skills, tools, certifications.
 
 JOB: ${jobDescription.slice(0, 1000)}
 RESUME: ${masterResume.slice(0, 800)}` }],
   })
-  try { return JSON.parse(response.content[0].text) }
+  try { return parseJSON(response.content[0].text) }
   catch { return { missing: [], present: [] } }
 }
 

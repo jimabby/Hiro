@@ -51,7 +51,9 @@ contextBridge.exposeInMainWorld('api', {
   // Resume file import / improve / download
   importResumeFile: () => ipcRenderer.invoke('resume:importFile'),
   improveResume: (text) => ipcRenderer.invoke('resume:improve', text),
-  downloadResume: (text, name) => ipcRenderer.invoke('resume:download', text, name),
+  downloadResume: (text, name, format) => ipcRenderer.invoke('resume:download', text, name, format),
+  getResumePDFBase64: (text) => ipcRenderer.invoke('resume:getPDFBase64', text),
+  openResumeDocx: (text) => ipcRenderer.invoke('resume:openDocx', text),
 
   // Screening question prompts (mid-apply)
   onQuestionAsk: (cb) => ipcRenderer.on('question:ask', (_, question) => cb(question)),

@@ -105,26 +105,35 @@ RESUME: ${masterResume.slice(0, 1000)}`)
   }
 }
 
+function parseJSON(text) {
+  const cleaned = text.replace(/```(?:json)?\s*/gi, '').replace(/```\s*/g, '').trim()
+  return JSON.parse(cleaned)
+}
+
 async function generateInterviewQuestions(jobDescription, masterResume, apiKey, modelName) {
   const model = getModel(apiKey, modelName)
-  const result = await model.generateContent(`Generate 8 likely interview questions for this job based on the job description and candidate resume.
-Return a JSON array of strings only. No numbering, no commentary.
+  const result = await model.generateContent({
+    contents: [{ role: 'user', parts: [{ text: `Generate 8 likely interview questions for this job with a tailored sample answer for each, based on the candidate's actual resume experience.
+Return a JSON array: [{ "question": "...", "answer": "..." }, ...]
+Answers should be 2-4 sentences, specific to the candidate's real experience. No markdown in answers.
 
 JOB: ${jobDescription.slice(0, 1000)}
-RESUME: ${masterResume.slice(0, 800)}`)
-  try { return JSON.parse(result.response.text()) }
-  catch { return result.response.text().split('\n').filter(l => l.trim().length > 5) }
+RESUME: ${masterResume.slice(0, 1200)}` }] }],
+    generationConfig: { maxOutputTokens: 4096 },
+  })
+  try { return parseJSON(result.response.text()) }
+  catch { return [] }
 }
 
 async function analyzeKeywordGap(jobDescription, masterResume, apiKey, modelName) {
   const model = getModel(apiKey, modelName)
   const result = await model.generateContent(`Analyze which key skills and qualifications from this job are present or missing in this resume.
-Return JSON only: { "missing": ["skill1", ...], "present": ["skill2", ...] }
+Return JSON only, no code fences: { "missing": ["skill1", ...], "present": ["skill2", ...] }
 Max 10 items each. Focus on specific technical skills, tools, certifications.
 
 JOB: ${jobDescription.slice(0, 1000)}
 RESUME: ${masterResume.slice(0, 800)}`)
-  try { return JSON.parse(result.response.text()) }
+  try { return parseJSON(result.response.text()) }
   catch { return { missing: [], present: [] } }
 }
 

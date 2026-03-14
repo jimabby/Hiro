@@ -19,7 +19,6 @@ async function init() {
     db = new SQL.Database()
   }
 
-  db.run('PRAGMA journal_mode = WAL')
   createTables()
   migrate()
   persist()
@@ -126,6 +125,10 @@ function getApplications(filters = {}) {
 
 function getApplication(id) {
   return queryOne('SELECT * FROM applications WHERE id = ?', [id])
+}
+
+function hasJobUrl(jobUrl) {
+  return !!queryOne('SELECT 1 FROM applications WHERE job_url = ? LIMIT 1', [jobUrl])
 }
 
 function hasAppliedToCompany(company) {
@@ -294,7 +297,7 @@ function markFollowUpSent(id) {
 
 module.exports = {
   init,
-  getApplications, getApplication, hasAppliedToCompany, insertApplication, updateApplicationStatus,
+  getApplications, getApplication, hasJobUrl, hasAppliedToCompany, insertApplication, updateApplicationStatus,
   updateApplicationComment, deleteApplication, clearAllApplications,
   getAttentionJobs, getAttentionJob, insertAttentionJob, dismissAttentionJob, deleteAttentionJob, clearAllAttentionJobs,
   getCachedAnswer, saveCachedAnswer, getAllCachedAnswers, deleteCachedAnswer,

@@ -1,5 +1,10 @@
 const OpenAI = require('openai')
 
+function parseJSON(text) {
+  const cleaned = text.replace(/```(?:json)?\s*/gi, '').replace(/```\s*/g, '').trim()
+  return JSON.parse(cleaned)
+}
+
 function getClient(apiKey, baseURL) {
   return new OpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) })
 }
@@ -152,18 +157,19 @@ RESUME: ${masterResume.slice(0, 1000)}` }],
 
 async function generateInterviewQuestions(jobDescription, masterResume, apiKey, baseURL) {
   const client = getClient(apiKey, baseURL)
-  const model = baseURL ? 'deepseek-chat' : 'gpt-4o-mini'
+  const model = baseURL ? 'deepseek-chat' : 'gpt-4o'
   const response = await client.chat.completions.create({
     model,
-    max_tokens: 800,
-    messages: [{ role: 'user', content: `Generate 8 likely interview questions for this job based on the job description and candidate resume.
-Return a JSON array of strings only. No numbering, no commentary.
+    max_tokens: 2500,
+    messages: [{ role: 'user', content: `Generate 8 likely interview questions for this job with a tailored sample answer for each, based on the candidate's actual resume experience.
+Return a JSON array: [{ "question": "...", "answer": "..." }, ...]
+Answers should be 2-4 sentences, specific to the candidate's real experience. No markdown in answers.
 
 JOB: ${jobDescription.slice(0, 1000)}
-RESUME: ${masterResume.slice(0, 800)}` }],
+RESUME: ${masterResume.slice(0, 1200)}` }],
   })
-  try { return JSON.parse(response.choices[0].message.content) }
-  catch { return response.choices[0].message.content.split('\n').filter(l => l.trim().length > 5) }
+  try { return parseJSON(response.choices[0].message.content) }
+  catch { return [] }
 }
 
 async function analyzeKeywordGap(jobDescription, masterResume, apiKey, baseURL) {
@@ -173,13 +179,13 @@ async function analyzeKeywordGap(jobDescription, masterResume, apiKey, baseURL) 
     model,
     max_tokens: 600,
     messages: [{ role: 'user', content: `Analyze which key skills and qualifications from this job are present or missing in this resume.
-Return JSON only: { "missing": ["skill1", ...], "present": ["skill2", ...] }
+Return JSON only, no code fences: { "missing": ["skill1", ...], "present": ["skill2", ...] }
 Max 10 items each. Focus on specific technical skills, tools, certifications.
 
 JOB: ${jobDescription.slice(0, 1000)}
 RESUME: ${masterResume.slice(0, 800)}` }],
   })
-  try { return JSON.parse(response.choices[0].message.content) }
+  try { return parseJSON(response.choices[0].message.content) }
   catch { return { missing: [], present: [] } }
 }
 

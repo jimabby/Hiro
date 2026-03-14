@@ -6,16 +6,46 @@
 
 ## Features
 
-- **Multi-platform scraping** — Seek, Indeed, LinkedIn (with session login)
-- **AI match scoring** — rates each job against your resume (0–100%). Skips jobs below your threshold
+### Automation
+- **Multi-platform scraping** — Seek, Indeed, LinkedIn (with stealth session login)
+- **AI match scoring** — rates each job against your resume (0–100%) with a one-sentence explanation of the score
 - **Resume tailoring** — AI rewrites your resume to match each job description (without changing facts)
-- **Screening Q&A** — AI answers common application questions
-- **Auto-apply** — submits LinkedIn Easy Apply applications automatically
-- **Email notifications** — Gmail alerts for jobs needing attention and daily summary reports
-- **Scheduled runs** — scans hourly 9am–5pm, daily report at 6pm
-- **Full job history** — every application (including skipped ones) stored locally with status tracking
-- **LinkedIn session** — log in once via a real browser; cookies are saved for future scraping
-- **Stop scan** — cancel a running scan at any time from the dashboard
+- **Cover letter generation** — AI writes a tailored cover letter with configurable tone (Professional / Casual / Confident) and optional custom template
+- **Screening Q&A** — AI answers common application questions; answers are cached and reused
+- **Auto-apply** — submits Seek Quick Apply, LinkedIn Easy Apply, and Indeed applications automatically
+- **Cross-platform duplicate detection** — skips jobs already applied to via another platform
+- **Tech stack auto-selection** — automatically checks Seek skill/tech checkboxes matching your resume
+- **Salary expectation** — fills salary fields from your configured minimum
+
+### Scheduling
+- **Configurable scan time** — set a daily scan time (Mon–Fri) in Settings
+- **Auto follow-up emails** — after a configurable number of days, AI drafts and sends a follow-up for unanswered applications
+- **Daily email report** — summary of applications sent to your Gmail at 6pm
+
+### Dashboard
+- **Stats** — applications today, this week, all time, interviews, and response rate
+- **Search** — live search by job title or company (`/` to focus)
+- **Keyboard navigation** — `↑`/`↓` to move between rows, `Escape` to close detail panel
+- **Export CSV** — download all applications (respects active filters)
+- **Inline comments** — add notes to any application directly in the table
+- **Filterable table** — filter by status and platform
+
+### Job Detail Panel
+- **Match explanation** — one-sentence AI summary of why the job scored the way it did
+- **Interview Questions** — generate 8 likely interview questions for jobs in "Interview" status
+- **Keyword Gap** — see which skills from the job posting are missing from or present in your resume
+- **Blacklist Company** — instantly exclude a company from all future scans
+- **Full tailored resume and screening Q&A** — download resume as DOCX
+
+### Analytics & Timeline
+- **Analytics page** — SVG bar chart of applications over the last 7 days, platform donut chart, by-status breakdown, response rate
+- **Timeline page** — collapsible day-by-day history of all applications grouped by platform
+
+### Settings
+- **Cover letter tone** — Professional, Casual & Warm, or Confident & Direct
+- **Cover letter template** — optional structural base for AI to fill in
+- **Daily scan time picker** — choose exactly when the automated scan runs
+- **Auto follow-up** — toggle on/off with configurable day threshold
 
 ---
 
@@ -26,7 +56,7 @@
 | Desktop shell | Electron |
 | Frontend | React + Vite |
 | Database | sql.js (WebAssembly SQLite, no native build required) |
-| Scraping | Playwright (Chromium) |
+| Scraping | Playwright + playwright-extra + stealth plugin (Chromium) |
 | Scheduling | node-cron |
 | Email | Nodemailer (Gmail SMTP) |
 | AI | Claude / ChatGPT / DeepSeek / Gemini (user's choice) |
@@ -79,16 +109,24 @@ Output is placed in `dist-electron/`. Supports Windows (NSIS installer), macOS (
 
 ---
 
-## LinkedIn Login
+## Platform Login
 
-To enable LinkedIn scraping and Easy Apply:
+Hiro uses full browser session storage (cookies + localStorage) for all platforms. Log in once and the session is reused for all future scrapes and applications.
 
-1. Go to **Settings** in the app
-2. Click **Login to LinkedIn**
-3. A browser window opens — log in normally
-4. The window closes automatically and your session is saved
+### LinkedIn
+1. Go to **Settings** → **LinkedIn Account** → **Login**
+2. A browser window opens — log in normally
+3. The window closes automatically and your session is saved
 
-Session cookies are stored at `~/.hiro/linkedin-cookies.json` and reused for all subsequent scrapes.
+### Seek
+1. Go to **Settings** → **Seek Account** → **Login**
+2. Log in via the browser window that opens
+
+### Indeed
+1. Go to **Settings** → **Indeed Account** → **Login**
+2. Log in via the browser window that opens (stealth mode is used to avoid bot detection)
+
+Sessions are stored at `~/.hiro/` and reused automatically.
 
 ---
 
@@ -96,22 +134,15 @@ Session cookies are stored at `~/.hiro/linkedin-cookies.json` and reused for all
 
 | Provider | Notes |
 |---|---|
-| Claude (Anthropic) | Recommended. Best at resume tailoring |
+| Claude (Anthropic) | Recommended. Best at resume tailoring and cover letters |
 | ChatGPT (OpenAI) | GPT-4o or GPT-4-turbo work well |
 | DeepSeek | Cost-effective option |
 | Gemini (Google) | Enter your model name (e.g. `gemini-2.5-flash`) — check [aistudio.google.com](https://aistudio.google.com) for available models |
 
----
-
-## Dashboard
-
-- **Stats** — applications today, this week, all time, and interviews
-- **Jobs table** — filterable by status and platform; click any row for full details including tailored resume and screening Q&A
-- **Activity log** — real-time log of the current scan
-- **Run Scan Now** / **Stop Scan** — manual control
+All AI features (match scoring, resume tailoring, cover letter, interview questions, keyword gap, follow-up email) work with any supported provider.
 
 ---
 
 ## Data & Privacy
 
-All data (config, database, cookies) is stored **locally** on your machine under `~/.hiro/`. Nothing is sent to any server except the AI API you configure.
+All data (config, database, session files) is stored **locally** on your machine under `~/.hiro/`. Nothing is sent to any server except the AI API you configure and the job platforms you log into.

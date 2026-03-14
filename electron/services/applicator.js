@@ -52,9 +52,7 @@ async function run(cfg, { log, notifyAttention }) {
       if (currentCount >= limit) break
 
       // Skip already-seen jobs (applied or skipped)
-      const existing = database.getApplications({ platform: name })
-        .find(a => a.job_url === job.job_url)
-      if (existing) continue
+      if (database.hasJobUrl(job.job_url)) continue
 
       // Skip companies we've already successfully applied to
       if (database.hasAppliedToCompany(job.company)) {

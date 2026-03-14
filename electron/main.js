@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
 const path = require('path')
 const configService = require('./services/config')
 const database = require('./services/database')
@@ -177,9 +177,9 @@ ipcMain.handle('indeed:logout', () => {
 // ─── IPC: Resume file import ────────────────────────────────────
 ipcMain.handle('resume:importFile', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
-    title: 'Select Resume File',
+    title: 'Select File',
     filters: [
-      { name: 'Resume Files', extensions: ['pdf', 'docx', 'doc', 'txt'] },
+      { name: 'Document Files', extensions: ['pdf', 'docx', 'doc', 'txt'] },
     ],
     properties: ['openFile'],
   })
@@ -223,47 +223,88 @@ ipcMain.handle('resume:improve', async (_, resumeText) => {
 })
 
 // ─── IPC: Resume download ────────────────────────────────────────
-ipcMain.handle('resume:download', async (_, resumeText, suggestedName) => {
+ipcMain.handle('resume:download', async (_, resumeText, suggestedName, format = 'pdf') => {
+  const ext = format === 'docx' ? 'docx' : 'pdf'
   const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
-    title: 'Save Resume',
-    defaultPath: `${suggestedName || 'resume'}.docx`,
-    filters: [{ name: 'Word Document', extensions: ['docx'] }],
+    title: `Save as ${ext.toUpperCase()}`,
+    defaultPath: `${suggestedName || 'resume'}.${ext}`,
+    filters: ext === 'pdf'
+      ? [{ name: 'PDF Document', extensions: ['pdf'] }]
+      : [{ name: 'Word Document', extensions: ['docx'] }],
   })
   if (canceled || !filePath) return { canceled: true }
   try {
-    const { Document, Packer, Paragraph, TextRun, AlignmentType } = require('docx')
-    function stripMd(text) {
-      return (text || '')
-        .replace(/\*\*(.*?)\*\*/g, '$1').replace(/__(.*?)__/g, '$1')
-        .replace(/\*(.*?)\*/g, '$1').replace(/_(.*?)_/g, '$1')
-        .replace(/^#{1,6}\s+/gm, '').replace(/^\*\s+/gm, '- ')
-        .replace(/^-{3,}\s*$/gm, '').trim()
+    const fs = require('fs')
+    if (ext === 'pdf') {
+      const { buildResumePDF } = require('./services/scraper/utils')
+      const candidateName = (resumeText || '').split('\n').find(l => l.trim())?.trim() || 'Resume'
+      const tmpPath = await buildResumePDF(resumeText, candidateName)
+      fs.copyFileSync(tmpPath, filePath)
+    } else {
+      const { Document, Packer, Paragraph, TextRun, AlignmentType } = require('docx')
+      const { stripMarkdown } = require('./services/scraper/utils')
+      const lines = stripMarkdown(resumeText).split('\n')
+      const paragraphs = []
+      let firstLineDone = false
+      for (const line of lines) {
+        if (!firstLineDone && !line.trim()) continue
+        if (!firstLineDone) {
+          paragraphs.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: line.trim(), bold: true, size: 32 })] }))
+          firstLineDone = true
+        } else if (line.trim() && /^[A-Z][A-Z\s\/&-]{2,}$/.test(line.trim())) {
+          paragraphs.push(new Paragraph({ spacing: { before: 200, after: 60 }, children: [new TextRun({ text: line.trim(), bold: true, size: 22 })] }))
+        } else {
+          paragraphs.push(new Paragraph({ children: [new TextRun({ text: line, size: 22 })] }))
+        }
+      }
+      const doc = new Document({ sections: [{ children: paragraphs }] })
+      const buffer = await Packer.toBuffer(doc)
+      fs.writeFileSync(filePath, buffer)
     }
-    const lines = stripMd(resumeText).split('\n')
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+// ─── IPC: Resume PDF base64 (in-app viewer) ──────────────────────
+ipcMain.handle('resume:getPDFBase64', async (_, resumeText) => {
+  try {
+    const { buildResumePDF } = require('./services/scraper/utils')
+    const candidateName = (resumeText || '').split('\n').find(l => l.trim())?.trim() || 'Resume'
+    const tmpPath = await buildResumePDF(resumeText, candidateName)
+    const base64 = require('fs').readFileSync(tmpPath).toString('base64')
+    return { success: true, base64 }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+// ─── IPC: Resume open DOCX in system app ─────────────────────────
+ipcMain.handle('resume:openDocx', async (_, resumeText) => {
+  try {
+    const { Document, Packer, Paragraph, TextRun, AlignmentType } = require('docx')
+    const { stripMarkdown } = require('./services/scraper/utils')
+    const path = require('path')
+    const os = require('os')
+    const filePath = path.join(os.tmpdir(), 'resume-preview.docx')
+    const lines = stripMarkdown(resumeText).split('\n')
     const paragraphs = []
     let firstLineDone = false
     for (const line of lines) {
       if (!firstLineDone && !line.trim()) continue
       if (!firstLineDone) {
-        paragraphs.push(new Paragraph({
-          alignment: AlignmentType.CENTER,
-          children: [new TextRun({ text: line.trim(), bold: true, size: 32 })],
-        }))
+        paragraphs.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: line.trim(), bold: true, size: 32 })] }))
         firstLineDone = true
       } else if (line.trim() && /^[A-Z][A-Z\s\/&-]{2,}$/.test(line.trim())) {
-        paragraphs.push(new Paragraph({
-          spacing: { before: 200, after: 60 },
-          children: [new TextRun({ text: line.trim(), bold: true, size: 22 })],
-        }))
+        paragraphs.push(new Paragraph({ spacing: { before: 200, after: 60 }, children: [new TextRun({ text: line.trim(), bold: true, size: 22 })] }))
       } else {
-        paragraphs.push(new Paragraph({
-          children: [new TextRun({ text: line, size: 22 })],
-        }))
+        paragraphs.push(new Paragraph({ children: [new TextRun({ text: line, size: 22 })] }))
       }
     }
     const doc = new Document({ sections: [{ children: paragraphs }] })
-    const buffer = await Packer.toBuffer(doc)
-    require('fs').writeFileSync(filePath, buffer)
+    require('fs').writeFileSync(filePath, await Packer.toBuffer(doc))
+    await shell.openPath(filePath)
     return { success: true }
   } catch (err) {
     return { success: false, error: err.message }

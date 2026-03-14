@@ -39,6 +39,7 @@
     "nodemailer": "^6.9.16",
     "openai": "^4.77.0",
     "pdf-parse": "^2.4.5",
+    "pdfkit": "^0.17.2",
     "playwright": "^1.49.1",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",

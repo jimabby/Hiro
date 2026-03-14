@@ -12,7 +12,7 @@ function IndeedAccountCard() {
   }, [])
 
   return (
-    <div className="card" style={{ marginBottom: 16 }}>
+    <div className="card">
       <h3 style={{ marginBottom: 8, fontSize: 15 }}>Indeed Account</h3>
       <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 16 }}>
         Required for Indeed Easy Apply. Without logging in, applications won't be submitted under your account.
@@ -58,7 +58,7 @@ function SeekAccountCard() {
   }, [])
 
   return (
-    <div className="card" style={{ marginBottom: 16 }}>
+    <div className="card">
       <h3 style={{ marginBottom: 8, fontSize: 15 }}>Seek Account</h3>
       <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 16 }}>
         Required for Seek applications. Without logging in, submitted applications won't be recorded and you won't receive confirmation emails.
@@ -100,6 +100,10 @@ export default function Settings() {
   const [newResumeName, setNewResumeName] = useState('')
   const [newResumeText, setNewResumeText] = useState('')
   const [uploadError, setUploadError] = useState('')
+  const [clUploadError, setClUploadError] = useState('')
+  const [settingsTab, setSettingsTab] = useState('accounts')
+  const [pdfModal, setPdfModal] = useState(null) // { base64, title }
+  const [pdfLoading, setPdfLoading] = useState(false)
   const [improvingId, setImprovingId] = useState(null)
   const [improveModal, setImproveModal] = useState(null) // { sourceId, sourceName, text }
   const [testingAi, setTestingAi] = useState(false)
@@ -125,6 +129,13 @@ export default function Settings() {
   }, [])
 
   const set = (key, val) => setForm(f => ({ ...f, [key]: val }))
+
+  async function viewPDF(text, title) {
+    setPdfLoading(title)
+    const res = await window.api.getResumePDFBase64(text)
+    setPdfLoading(false)
+    if (res.success) setPdfModal({ base64: res.base64, title })
+  }
 
   async function saveResumes(resumes, defaultResumeId) {
     const cfg = await window.api.getConfig()
@@ -165,17 +176,44 @@ export default function Settings() {
   if (!form) return <div style={{ color: 'var(--text-muted)' }}>Loading...</div>
 
   return (
-    <div style={{ maxWidth: 680 }}>
+    <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700 }}>Settings</h1>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {saved && <span style={{ color: 'var(--green)', fontSize: 13 }}>✓ Saved</span>}
-          <button className="btn btn-primary" onClick={save} disabled={saving}>
-            {saving ? 'Saving...' : 'Save Changes'}
-          </button>
-        </div>
+        {settingsTab !== 'about' && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {saved && <span style={{ color: 'var(--green)', fontSize: 13 }}>✓ Saved</span>}
+            <button className="btn btn-primary" onClick={save} disabled={saving}>
+              {saving ? 'Saving...' : 'Save Changes'}
+            </button>
+          </div>
+        )}
       </div>
 
+      {/* Tab bar */}
+      {(() => {
+        const TABS = [
+          { id: 'accounts', label: 'Accounts & Schedule' },
+          { id: 'criteria', label: 'Job, Resume & Cover Letter' },
+          { id: 'about', label: 'About' },
+        ]
+        return (
+          <div style={{ display: 'flex', gap: 2, marginBottom: 24, borderBottom: '1px solid var(--border)' }}>
+            {TABS.map(tab => (
+              <button key={tab.id} onClick={() => setSettingsTab(tab.id)} style={{
+                background: 'none', border: 'none', cursor: 'pointer',
+                padding: '8px 18px', fontSize: 14, fontWeight: settingsTab === tab.id ? 600 : 400,
+                color: settingsTab === tab.id ? 'var(--text)' : 'var(--text-muted)',
+                borderBottom: settingsTab === tab.id ? '2px solid var(--accent)' : '2px solid transparent',
+                marginBottom: -1,
+              }}>
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        )
+      })()}
+
+      {settingsTab === 'accounts' && <div>
       {/* AI */}
       <div className="card" style={{ marginBottom: 16 }}>
         <h3 style={{ marginBottom: 16, fontSize: 15 }}>AI Provider</h3>
@@ -217,21 +255,9 @@ export default function Settings() {
         </div>
       </div>
 
-      {/* Cover Letter Template */}
-      <div className="card" style={{ marginBottom: 16 }}>
-        <h3 style={{ marginBottom: 8, fontSize: 15 }}>Cover Letter Template</h3>
-        <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 12 }}>
-          Optional. AI will use this as a structural base. Leave blank for fully AI-generated letters.
-        </p>
-        <div className="form-group">
-          <label>Template</label>
-          <textarea value={form.coverLetterTemplate || ''} onChange={e => set('coverLetterTemplate', e.target.value)}
-            placeholder="Leave blank to let AI write freely..." style={{ minHeight: 120, fontSize: 12, fontFamily: 'monospace' }} />
-        </div>
-      </div>
-
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 16 }}>
       {/* LinkedIn */}
-      <div className="card" style={{ marginBottom: 16 }}>
+      <div className="card" style={{ marginBottom: 0 }}>
         <h3 style={{ marginBottom: 8, fontSize: 15 }}>LinkedIn Account</h3>
         <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 16 }}>
           Required for LinkedIn Easy Apply. A browser window will open — log in normally, it closes automatically.
@@ -284,6 +310,7 @@ export default function Settings() {
 
       {/* Seek */}
       <SeekAccountCard />
+      </div> {/* end account cards grid */}
 
       {/* Email */}
       <div className="card" style={{ marginBottom: 16 }}>
@@ -332,7 +359,9 @@ export default function Settings() {
           </div>
         )}
       </div>
+      </div>} {/* end accounts tab */}
 
+      {settingsTab === 'criteria' && <div>
       {/* Job Criteria */}
       <div className="card" style={{ marginBottom: 16 }}>
         <h3 style={{ marginBottom: 16, fontSize: 15 }}>Job Criteria</h3>
@@ -383,18 +412,10 @@ export default function Settings() {
           <label>Blacklisted Companies (comma-separated)</label>
           <input value={form.blacklistedCompanies} onChange={e => set('blacklistedCompanies', e.target.value)} />
         </div>
-        <div className="form-group">
-          <label>Cover Letter Tone</label>
-          <select value={form.coverLetterTone || 'professional'} onChange={e => set('coverLetterTone', e.target.value)}>
-            <option value="professional">Professional (default)</option>
-            <option value="casual">Casual &amp; Warm</option>
-            <option value="confident">Confident &amp; Direct</option>
-          </select>
-        </div>
       </div>
 
       {/* Resumes */}
-      <div className="card">
+      <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
           <h3 style={{ fontSize: 15, margin: 0 }}>Resumes <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: 13 }}>({(form.resumes || []).length}/3)</span></h3>
           {(form.resumes || []).length < 3 && !addingResume && (
@@ -439,8 +460,17 @@ export default function Settings() {
                   {improvingId === r.id ? 'Improving...' : 'Improve with AI'}
                 </button>
                 <button className="btn btn-ghost" style={{ fontSize: 11 }}
-                  onClick={() => window.api.downloadResume(r.text, r.name)}>
-                  Download
+                  disabled={pdfLoading === r.name}
+                  onClick={() => viewPDF(r.text, r.name)}>
+                  {pdfLoading === r.name ? 'Loading...' : 'View PDF'}
+                </button>
+                <button className="btn btn-ghost" style={{ fontSize: 11 }}
+                  onClick={() => window.api.downloadResume(r.text, r.name, 'pdf')}>
+                  Save PDF
+                </button>
+                <button className="btn btn-ghost" style={{ fontSize: 11 }}
+                  onClick={() => window.api.downloadResume(r.text, r.name, 'docx')}>
+                  Save DOCX
                 </button>
                 <button className="btn btn-ghost" style={{ fontSize: 11, color: 'var(--red)' }} onClick={() => {
                   const resumes = (form.resumes || []).filter(x => x.id !== r.id)
@@ -501,6 +531,138 @@ export default function Settings() {
           </div>
         )}
       </div>
+
+      {/* Cover Letter */}
+      <div className="card">
+        <h3 style={{ marginBottom: 8, fontSize: 15 }}>Cover Letter</h3>
+        <div className="form-group">
+          <label>Tone</label>
+          <select value={form.coverLetterTone || 'professional'} onChange={e => set('coverLetterTone', e.target.value)}>
+            <option value="professional">Professional (default)</option>
+            <option value="casual">Casual &amp; Warm</option>
+            <option value="confident">Confident &amp; Direct</option>
+          </select>
+        </div>
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+            <label style={{ marginBottom: 0 }}>Template <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: 12 }}>(optional)</span></label>
+            <div style={{ display: 'flex', gap: 6 }}>
+            {form.coverLetterTemplate && (
+              <button className="btn btn-ghost" style={{ fontSize: 11 }}
+                disabled={pdfLoading === 'cl'}
+                onClick={() => viewPDF(form.coverLetterTemplate, 'Cover Letter Template')}>
+                {pdfLoading === 'cl' ? 'Loading...' : 'Preview PDF'}
+              </button>
+            )}
+            <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={async () => {
+              setClUploadError('')
+              const res = await window.api.importResumeFile()
+              if (res.canceled) return
+              if (res.success) set('coverLetterTemplate', res.text)
+              else setClUploadError(res.error || 'Failed to read file')
+            }}>
+              Upload File
+            </button>
+            </div>
+          </div>
+          <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 8 }}>
+            AI will use this as a structural base. Leave blank for fully AI-generated letters. Supports .txt, .docx, .pdf
+          </p>
+          <textarea value={form.coverLetterTemplate || ''} onChange={e => set('coverLetterTemplate', e.target.value)}
+            placeholder="Leave blank to let AI write freely..." style={{ minHeight: 120, fontSize: 12, fontFamily: 'monospace' }} />
+          {clUploadError && <div style={{ color: 'var(--red)', fontSize: 12, marginTop: 4 }}>{clUploadError}</div>}
+        </div>
+      </div>
+      </div>} {/* end criteria tab */}
+
+      {settingsTab === 'about' && <div>
+        {/* About */}
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 16 }}>
+            <div style={{ width: 48, height: 48, borderRadius: 12, background: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 26, fontWeight: 700, color: '#fff', flexShrink: 0 }}>H</div>
+            <div>
+              <div style={{ fontSize: 20, fontWeight: 700 }}>Hiro</div>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Version 1.0.0</div>
+            </div>
+          </div>
+          <p style={{ fontSize: 14, lineHeight: 1.7, color: 'var(--text-muted)', marginBottom: 16 }}>
+            Hiro is an AI-powered desktop app that automatically finds and applies to jobs for you. It scrapes Seek, Indeed, and LinkedIn on a schedule, uses AI to score each job against your resume, tailors your application, and submits — all while you sleep.
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+            {[
+              { label: 'Desktop', value: 'Electron' },
+              { label: 'Frontend', value: 'React + Vite' },
+              { label: 'Database', value: 'SQLite (sql.js)' },
+              { label: 'Scraping', value: 'Playwright' },
+              { label: 'Scheduling', value: 'node-cron' },
+              { label: 'AI', value: 'Claude / GPT / DeepSeek / Gemini' },
+            ].map(({ label, value }) => (
+              <div key={label} style={{ background: 'var(--surface2)', borderRadius: 8, padding: '10px 12px' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 2 }}>{label}</div>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>{value}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Privacy Policy */}
+        <div className="card">
+          <h3 style={{ marginBottom: 16, fontSize: 15 }}>Privacy Policy</h3>
+          {[
+            {
+              title: 'Local-only data storage',
+              body: 'All your data — config, resume text, application history, session cookies — is stored exclusively on your local machine under ~/.hiro/. Nothing is uploaded to any Hiro server.',
+            },
+            {
+              title: 'AI API calls',
+              body: 'When AI features are used (resume tailoring, cover letter generation, match scoring, etc.), your resume text and job descriptions are sent to the AI provider you configured (Anthropic, OpenAI, DeepSeek, or Google). This is governed by that provider\'s own privacy policy. Hiro does not store or forward this data.',
+            },
+            {
+              title: 'Job platforms',
+              body: 'Hiro interacts with Seek, Indeed, and LinkedIn on your behalf using your saved session. Your credentials are never stored by Hiro — only the browser session state (cookies) needed to stay logged in.',
+            },
+            {
+              title: 'Email notifications',
+              body: 'If you configure Gmail notifications, your Gmail address and App Password are stored locally in your config file. Emails are sent directly via Gmail SMTP — no third-party relay is involved.',
+            },
+            {
+              title: 'No telemetry',
+              body: 'Hiro collects no analytics, crash reports, or usage data of any kind. The app operates entirely offline except for the AI API calls and job platform interactions you explicitly trigger.',
+            },
+          ].map(({ title, body }) => (
+            <div key={title} style={{ marginBottom: 16, paddingBottom: 16, borderBottom: '1px solid var(--border)' }}>
+              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>{title}</div>
+              <p style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.65, margin: 0 }}>{body}</p>
+            </div>
+          ))}
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0 }}>
+            Last updated: March 2026
+          </p>
+        </div>
+      </div>} {/* end about tab */}
+
+      {pdfModal && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300,
+        }} onClick={() => setPdfModal(null)} onKeyDown={e => { if (e.key === 'Escape') setPdfModal(null) }}>
+          <div onClick={e => e.stopPropagation()} style={{
+            width: '82vw', height: '92vh', display: 'flex', flexDirection: 'column',
+            background: 'var(--surface)', borderRadius: 12, overflow: 'hidden',
+            boxShadow: '0 24px 60px rgba(0,0,0,0.5)',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+              <span style={{ fontWeight: 600, fontSize: 15 }}>{pdfModal.title}</span>
+              <button className="btn btn-ghost" style={{ fontSize: 13 }} onClick={() => setPdfModal(null)}>✕ Close</button>
+            </div>
+            <iframe
+              src={`data:application/pdf;base64,${pdfModal.base64}`}
+              style={{ flex: 1, border: 'none', width: '100%' }}
+              title={pdfModal.title}
+            />
+          </div>
+        </div>
+      )}
 
       {improveModal && (
         <div style={{

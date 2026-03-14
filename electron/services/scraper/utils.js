@@ -25,4 +25,49 @@ async function humanType(page, element, text) {
   }
 }
 
-module.exports = { randomUserAgent, randomDelay, humanType }
+function stripMarkdown(text) {
+  return (text || '')
+    .replace(/\*\*(.*?)\*\*/g, '$1').replace(/__(.*?)__/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1').replace(/_(.*?)_/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '').replace(/^\*\s+/gm, '- ')
+    .replace(/^-{3,}\s*$/gm, '').trim()
+}
+
+async function buildResumePDF(tailoredResume, candidateName) {
+  const os = require('os')
+  const path = require('path')
+  const fs = require('fs')
+  const PDFDocument = require('pdfkit')
+  const safeName = (candidateName || 'Resume').replace(/[^a-zA-Z0-9 _-]/g, '').trim()
+  const fileName = `Resume - ${safeName}.pdf`
+  const tempPath = path.join(os.tmpdir(), fileName)
+  const cleanText = stripMarkdown(tailoredResume)
+  const lines = cleanText.split('\n')
+
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ margin: 50, size: 'A4' })
+    const stream = fs.createWriteStream(tempPath)
+    doc.pipe(stream)
+
+    let firstLineDone = false
+    for (const line of lines) {
+      if (!firstLineDone && !line.trim()) continue
+      if (!firstLineDone) {
+        doc.fontSize(16).font('Helvetica-Bold').text(line.trim(), { align: 'center' })
+        firstLineDone = true
+      } else if (line.trim() && /^[A-Z][A-Z\s\/&-]{2,}$/.test(line.trim())) {
+        doc.moveDown(0.5).fontSize(11).font('Helvetica-Bold').text(line.trim())
+        doc.moveTo(50, doc.y).lineTo(545, doc.y).strokeColor('#cccccc').stroke()
+        doc.moveDown(0.2)
+      } else {
+        doc.fontSize(10).font('Helvetica').text(line, { lineGap: 1 })
+      }
+    }
+
+    doc.end()
+    stream.on('finish', () => resolve(tempPath))
+    stream.on('error', reject)
+  })
+}
+
+module.exports = { randomUserAgent, randomDelay, humanType, stripMarkdown, buildResumePDF }
