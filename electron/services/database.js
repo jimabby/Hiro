@@ -79,6 +79,7 @@ function migrate() {
   try { db.run('ALTER TABLE applications ADD COLUMN comment TEXT DEFAULT ""') } catch {}
   try { db.run('ALTER TABLE applications ADD COLUMN match_explanation TEXT DEFAULT ""') } catch {}
   try { db.run('ALTER TABLE applications ADD COLUMN follow_up_sent INTEGER DEFAULT 0') } catch {}
+  try { db.run('ALTER TABLE applications ADD COLUMN recruiter_email TEXT DEFAULT ""') } catch {}
 }
 
 // Convert sql.js result to array of objects
@@ -159,8 +160,20 @@ function updateApplicationStatus(id, status) {
   return { success: true }
 }
 
+function updateApplicationAfterApply(id, tailoredResume, coverLetter) {
+  run(
+    "UPDATE applications SET status = 'applied', tailored_resume = ?, cover_letter = ?, updated_at = datetime('now') WHERE id = ?",
+    [tailoredResume, coverLetter, id]
+  )
+}
+
 function updateApplicationComment(id, comment) {
   run("UPDATE applications SET comment = ?, updated_at = datetime('now') WHERE id = ?", [comment, id])
+  return { success: true }
+}
+
+function updateRecruiterEmail(id, email) {
+  run("UPDATE applications SET recruiter_email = ?, updated_at = datetime('now') WHERE id = ?", [email, id])
   return { success: true }
 }
 
@@ -298,7 +311,7 @@ function markFollowUpSent(id) {
 module.exports = {
   init,
   getApplications, getApplication, hasJobUrl, hasAppliedToCompany, insertApplication, updateApplicationStatus,
-  updateApplicationComment, deleteApplication, clearAllApplications,
+  updateApplicationAfterApply, updateApplicationComment, updateRecruiterEmail, deleteApplication, clearAllApplications,
   getAttentionJobs, getAttentionJob, insertAttentionJob, dismissAttentionJob, deleteAttentionJob, clearAllAttentionJobs,
   getCachedAnswer, saveCachedAnswer, getAllCachedAnswers, deleteCachedAnswer,
   getStats, getTodayCountByPlatform,

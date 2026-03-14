@@ -5,6 +5,7 @@ import NeedsAttention from './pages/NeedsAttention'
 import Settings from './pages/Settings'
 import Timeline from './pages/Timeline'
 import Analytics from './pages/Analytics'
+import HiroLogo from './components/HiroLogo'
 
 const NAV = [
   { id: 'dashboard', label: 'Dashboard' },
@@ -95,7 +96,7 @@ export default function App() {
     if (res.canceled || !res.success) return
     const cfg = await window.api.getConfig()
     const id = Date.now().toString()
-    const newResume = { id, name: res.fileName || 'My Resume', text: res.text }
+    const newResume = { id, name: res.fileName || 'My Resume', text: res.text, originalPath: res.originalPath, originalExt: res.originalExt }
     const resumes = [...(cfg.resumes || []), newResume]
     await window.api.saveConfig({ ...cfg, resumes, defaultResumeId: cfg.defaultResumeId || id })
     setResumeModal(false)
@@ -118,8 +119,9 @@ export default function App() {
         width: 200, background: 'var(--surface)', borderRight: '1px solid var(--border)',
         display: 'flex', flexDirection: 'column', padding: '20px 12px', gap: 4, flexShrink: 0
       }}>
-        <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--accent)', padding: '8px 12px 20px' }}>
-          Hiro
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px 20px' }}>
+          <HiroLogo size={28} />
+          <span style={{ fontSize: 18, fontWeight: 700, color: 'var(--accent)' }}>Hiro</span>
         </div>
         {NAV.map(n => (
           <button key={n.id} onClick={() => setPage(n.id)} style={{

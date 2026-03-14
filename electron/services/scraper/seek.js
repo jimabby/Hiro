@@ -1,5 +1,5 @@
 const { chromium } = require('playwright')
-const { randomDelay, randomUserAgent, buildResumePDF } = require('./utils')
+const { randomDelay, randomUserAgent, buildResumeFile } = require('./utils')
 
 // Node.js substitute for the browser-only CSS.escape()
 function cssEscape(str) {
@@ -76,14 +76,10 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
   const context = await browser.newContext(contextOptions)
   const page = await context.newPage()
 
-  // Extract candidate name from master resume first line for a clean filename
-  const candidateName = (cfg?.masterResume || tailoredResume || '')
-    .split('\n').find(l => l.trim())?.trim() || 'Resume'
-
-  // Pre-build resume PDF for upload
+  // Pre-build resume file for upload (uses original DOCX/PDF if available, else generates PDF)
   let resumePath = null
   if (tailoredResume) {
-    resumePath = await buildResumePDF(tailoredResume, candidateName).catch(() => null)
+    resumePath = await buildResumeFile(tailoredResume, cfg).catch(() => null)
   }
 
   try {

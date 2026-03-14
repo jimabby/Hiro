@@ -1,21 +1,41 @@
 const nodemailer = require('nodemailer')
 const configService = require('./config')
 
+function getEmailDomain(address) {
+  return (address || '').split('@')[1]?.toLowerCase() || ''
+}
+
 function createTransport(cfg) {
+  const domain = getEmailDomain(cfg.gmailAddress)
+  if (domain === 'outlook.com' || domain === 'hotmail.com' || domain === 'live.com' || domain === 'msn.com') {
+    return nodemailer.createTransport({
+      host: 'smtp-mail.outlook.com', port: 587, secure: false,
+      auth: { user: cfg.gmailAddress, pass: cfg.gmailAppPassword },
+      tls: { ciphers: 'SSLv3' },
+    })
+  }
+  if (domain === 'yahoo.com' || domain === 'ymail.com') {
+    return nodemailer.createTransport({
+      host: 'smtp.mail.yahoo.com', port: 465, secure: true,
+      auth: { user: cfg.gmailAddress, pass: cfg.gmailAppPassword },
+    })
+  }
+  if (domain === 'icloud.com' || domain === 'me.com' || domain === 'mac.com') {
+    return nodemailer.createTransport({
+      host: 'smtp.mail.me.com', port: 587, secure: false,
+      auth: { user: cfg.gmailAddress, pass: cfg.gmailAppPassword },
+    })
+  }
+  // Default: Gmail
   return nodemailer.createTransport({
     service: 'gmail',
-    auth: {
-      user: cfg.gmailAddress,
-      pass: cfg.gmailAppPassword,
-    },
+    auth: { user: cfg.gmailAddress, pass: cfg.gmailAppPassword },
   })
 }
 
 async function testConnection(email, password) {
-  const transport = nodemailer.createTransport({
-    service: 'gmail',
-    auth: { user: email, pass: password },
-  })
+  const fakeCfg = { gmailAddress: email, gmailAppPassword: password }
+  const transport = createTransport(fakeCfg)
   await transport.verify()
 }
 
@@ -93,10 +113,11 @@ async function sendDailyReport(stats) {
 async function sendFollowUpEmail(job, emailText, cfg) {
   if (!cfg.gmailAddress || !cfg.gmailAppPassword) return
   const transport = createTransport(cfg)
+  const to = job.recruiter_email || cfg.gmailAddress
   await transport.sendMail({
     from: cfg.gmailAddress,
-    to: cfg.gmailAddress,
-    subject: `[Hiro] Follow-up: ${job.job_title} at ${job.company}`,
+    to,
+    subject: `Follow-up: ${job.job_title} at ${job.company}`,
     text: emailText,
   })
 }

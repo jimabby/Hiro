@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('api', {
   getApplication: (id) => ipcRenderer.invoke('db:getApplication', id),
   updateApplicationStatus: (id, status) => ipcRenderer.invoke('db:updateStatus', id, status),
   updateApplicationComment: (id, comment) => ipcRenderer.invoke('db:updateComment', id, comment),
+  updateRecruiterEmail: (id, email) => ipcRenderer.invoke('db:updateRecruiterEmail', id, email),
   deleteApplication: (id) => ipcRenderer.invoke('db:deleteApplication', id),
   clearAllApplications: () => ipcRenderer.invoke('db:clearAllApplications'),
 
@@ -27,6 +28,8 @@ contextBridge.exposeInMainWorld('api', {
   clearAllAttentionJobs: () => ipcRenderer.invoke('db:clearAllAttentionJobs'),
   applyAttentionJob: (id) => ipcRenderer.invoke('attention:apply', id),
   onAttentionLog: (cb) => ipcRenderer.on('attention:log', (_, msg) => cb(msg)),
+  applySkippedJob: (id) => ipcRenderer.invoke('application:applySkipped', id),
+  onSkippedApplyLog: (cb) => ipcRenderer.on('skipped:apply-log', (_, msg) => cb(msg)),
 
   // Stats
   getStats: () => ipcRenderer.invoke('db:getStats'),
@@ -52,8 +55,9 @@ contextBridge.exposeInMainWorld('api', {
   importResumeFile: () => ipcRenderer.invoke('resume:importFile'),
   improveResume: (text) => ipcRenderer.invoke('resume:improve', text),
   downloadResume: (text, name, format) => ipcRenderer.invoke('resume:download', text, name, format),
-  getResumePDFBase64: (text) => ipcRenderer.invoke('resume:getPDFBase64', text),
-  openResumeDocx: (text) => ipcRenderer.invoke('resume:openDocx', text),
+  getResumePDFBase64: (text, originalPath, originalExt) => ipcRenderer.invoke('resume:getPDFBase64', text, originalPath, originalExt),
+  getCoverLetterPDFBase64: (text) => ipcRenderer.invoke('coverLetter:getPDFBase64', text),
+  openResumeDocx: (text, originalPath) => ipcRenderer.invoke('resume:openDocx', text, originalPath),
 
   // Screening question prompts (mid-apply)
   onQuestionAsk: (cb) => ipcRenderer.on('question:ask', (_, question) => cb(question)),
@@ -76,4 +80,12 @@ contextBridge.exposeInMainWorld('api', {
   onAutomationLog: (cb) => ipcRenderer.on('automation:log', (_, msg) => cb(msg)),
   onLinkedInStatusUpdate: (cb) => ipcRenderer.on('linkedin:status-update', (_, msg) => cb(msg)),
   removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel),
+
+  // Gmail sign-in & inbox
+  gmailStatus: () => ipcRenderer.invoke('gmail:status'),
+  gmailLogin: (email) => ipcRenderer.invoke('gmail:login', email),
+  gmailLogout: () => ipcRenderer.invoke('gmail:logout'),
+  onGmailStatusUpdate: (cb) => ipcRenderer.on('gmail:status-update', (_, msg) => cb(msg)),
+  checkInboxNow: () => ipcRenderer.invoke('inbox:checkNow'),
+  onInboxReply: (cb) => ipcRenderer.on('notification', (_, data) => { if (data.type === 'inbox-reply') cb(data.item) }),
 })

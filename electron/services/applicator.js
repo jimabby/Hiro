@@ -14,8 +14,9 @@ function cancel() {
 async function run(cfg, { log, notifyAttention }) {
   cancelled = false
 
-  const activeResume = (cfg.resumes || []).find(r => r.id === cfg.defaultResumeId)?.text || cfg.masterResume || ''
-  cfg = { ...cfg, masterResume: activeResume }
+  const activeResumeObj = (cfg.resumes || []).find(r => r.id === cfg.defaultResumeId)
+  const activeResume = activeResumeObj?.text || cfg.masterResume || ''
+  cfg = { ...cfg, masterResume: activeResume, activeResumeOriginalPath: activeResumeObj?.originalPath, activeResumeOriginalExt: activeResumeObj?.originalExt }
 
   const scrapers = []
   if (cfg.enableSeek) scrapers.push({ name: 'Seek', scraper: seek, limit: cfg.dailyLimitSeek })
@@ -207,8 +208,9 @@ async function applyAttentionJob(jobId, cfg, log) {
   const job = database.getAttentionJob(jobId)
   if (!job) return { success: false, reason: 'Job not found' }
 
-  const activeResume = (cfg.resumes || []).find(r => r.id === cfg.defaultResumeId)?.text || cfg.masterResume || ''
-  cfg = { ...cfg, masterResume: activeResume }
+  const activeResumeObj = (cfg.resumes || []).find(r => r.id === cfg.defaultResumeId)
+  const activeResume = activeResumeObj?.text || cfg.masterResume || ''
+  cfg = { ...cfg, masterResume: activeResume, activeResumeOriginalPath: activeResumeObj?.originalPath, activeResumeOriginalExt: activeResumeObj?.originalExt }
 
   if (database.hasAppliedToCompany(job.company)) {
     return { success: false, reason: `Already applied to ${job.company} — skipping to avoid duplicate` }
@@ -268,4 +270,52 @@ async function applyAttentionJob(jobId, cfg, log) {
   return result
 }
 
-module.exports = { run, cancel, applyAttentionJob }
+async function applySkippedJob(jobId, cfg, log) {
+  const job = database.getApplication(jobId)
+  if (!job) return { success: false, reason: 'Job not found' }
+
+  const activeResumeObj = (cfg.resumes || []).find(r => r.id === cfg.defaultResumeId)
+  const activeResume = activeResumeObj?.text || cfg.masterResume || ''
+  cfg = { ...cfg, masterResume: activeResume, activeResumeOriginalPath: activeResumeObj?.originalPath, activeResumeOriginalExt: activeResumeObj?.originalExt }
+
+  const platformMap = { Seek: seek, Indeed: indeed, LinkedIn: linkedin }
+  const scraper = platformMap[job.platform]
+  if (!scraper) return { success: false, reason: `No scraper for platform: ${job.platform}` }
+
+  log(`Tailoring resume for ${job.job_title} at ${job.company}...`)
+  let tailoredResume = cfg.masterResume
+  try {
+    tailoredResume = await aiAdapter.tailorResume(cfg.aiProvider, cfg.aiApiKey, job.job_description || job.job_title, cfg.masterResume, cfg.geminiModel)
+    log('Resume tailored')
+  } catch (err) {
+    log(`Resume tailoring error: ${err.message}`)
+  }
+
+  log('Generating cover letter...')
+  let coverLetter = ''
+  try {
+    coverLetter = await aiAdapter.generateCoverLetter(cfg.aiProvider, cfg.aiApiKey, job.job_description || job.job_title, cfg.masterResume, cfg.geminiModel, cfg.coverLetterTone, cfg.coverLetterTemplate)
+    log('Cover letter generated')
+  } catch (err) {
+    log(`Cover letter error: ${err.message}`)
+  }
+
+  log('Applying...')
+  let result
+  try {
+    result = await scraper.apply(job.job_url, tailoredResume, coverLetter, { ...cfg, jobDescription: job.job_description })
+    log(`Apply result: ${result.success ? 'SUCCESS' : 'FAILED — ' + result.reason}`)
+  } catch (err) {
+    result = { success: false, reason: err.message }
+    log(`Apply error: ${err.message}`)
+  }
+
+  if (result.success) {
+    database.updateApplicationAfterApply(jobId, tailoredResume, coverLetter)
+    log('Status updated to Applied')
+  }
+
+  return result
+}
+
+module.exports = { run, cancel, applyAttentionJob, applySkippedJob }

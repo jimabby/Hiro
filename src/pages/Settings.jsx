@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import HiroLogo from '../components/HiroLogo'
 
 function IndeedAccountCard() {
   const [loggedIn, setLoggedIn] = useState(false)
@@ -99,6 +100,8 @@ export default function Settings() {
   const [addingResume, setAddingResume] = useState(false)
   const [newResumeName, setNewResumeName] = useState('')
   const [newResumeText, setNewResumeText] = useState('')
+  const [newResumeOriginalPath, setNewResumeOriginalPath] = useState(null)
+  const [newResumeOriginalExt, setNewResumeOriginalExt] = useState(null)
   const [uploadError, setUploadError] = useState('')
   const [clUploadError, setClUploadError] = useState('')
   const [settingsTab, setSettingsTab] = useState('accounts')
@@ -113,6 +116,10 @@ export default function Settings() {
   const [linkedinLoggedIn, setLinkedinLoggedIn] = useState(false)
   const [linkedinLogging, setLinkedinLogging] = useState(false)
   const [linkedinMsg, setLinkedinMsg] = useState('')
+  const [gmailLogging, setGmailLogging] = useState(false)
+  const [gmailMsg, setGmailMsg] = useState('')
+  const [checkingInbox, setCheckingInbox] = useState(false)
+  const [inboxResult, setInboxResult] = useState(null)
 
   useEffect(() => {
     window.api.getConfig().then(cfg => {
@@ -125,14 +132,18 @@ export default function Settings() {
     })
     window.api.linkedinStatus().then(s => setLinkedinLoggedIn(s.loggedIn))
     window.api.onLinkedInStatusUpdate(msg => setLinkedinMsg(msg))
-    return () => window.api.removeAllListeners('linkedin:status-update')
+    window.api.onGmailStatusUpdate(msg => setGmailMsg(msg))
+    return () => {
+      window.api.removeAllListeners('linkedin:status-update')
+      window.api.removeAllListeners('gmail:status-update')
+    }
   }, [])
 
   const set = (key, val) => setForm(f => ({ ...f, [key]: val }))
 
-  async function viewPDF(text, title) {
+  async function viewPDF(text, title, originalPath, originalExt) {
     setPdfLoading(title)
-    const res = await window.api.getResumePDFBase64(text)
+    const res = await window.api.getResumePDFBase64(text, originalPath || null, originalExt || null)
     setPdfLoading(false)
     if (res.success) setPdfModal({ base64: res.base64, title })
   }
@@ -312,20 +323,44 @@ export default function Settings() {
       <SeekAccountCard />
       </div> {/* end account cards grid */}
 
-      {/* Email */}
+      {/* Email Notifications */}
       <div className="card" style={{ marginBottom: 16 }}>
-        <h3 style={{ marginBottom: 16, fontSize: 15 }}>Gmail Notifications</h3>
+        <h3 style={{ marginBottom: 8, fontSize: 15 }}>Email Notifications</h3>
+        <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 16 }}>
+          Used to send job alerts, daily reports, follow-up emails, and check your inbox for recruiter replies. Supports Gmail, Outlook, Yahoo, and iCloud.
+        </p>
+
+        {/* App Password helper */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+          <button className="btn btn-ghost" style={{ fontSize: 12 }} disabled={gmailLogging} onClick={async () => {
+            setGmailLogging(true); setGmailMsg('')
+            const res = await window.api.gmailLogin(form.gmailAddress)
+            setGmailLogging(false)
+            if (!res.success) setGmailMsg(res.error || 'Failed to open browser')
+          }}>
+            {gmailLogging ? 'Opening...' : 'Open App Passwords Page ↗'}
+          </button>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            Opens the correct page for your email provider
+          </span>
+        </div>
+        {gmailMsg && (
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, padding: '8px 12px', background: 'var(--surface2)', borderRadius: 6 }}>
+            {gmailMsg}
+          </div>
+        )}
+
         <div className="form-row">
           <div className="form-group">
-            <label>Gmail Address</label>
-            <input type="email" value={form.gmailAddress} onChange={e => set('gmailAddress', e.target.value)} />
+            <label>Email Address</label>
+            <input type="email" value={form.gmailAddress} onChange={e => set('gmailAddress', e.target.value)} placeholder="you@gmail.com / outlook.com / yahoo.com" />
           </div>
           <div className="form-group">
-            <label>App Password</label>
-            <input type="password" value={form.gmailAppPassword} onChange={e => set('gmailAppPassword', e.target.value)} />
+            <label>App Password <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: 11 }}>(generated in your email provider's security settings)</span></label>
+            <input type="password" value={form.gmailAppPassword} onChange={e => set('gmailAppPassword', e.target.value)} placeholder="App-specific password" />
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <button className="btn btn-ghost" onClick={testEmail} disabled={!form.gmailAddress || !form.gmailAppPassword || testingEmail}>
             {testingEmail ? 'Testing...' : 'Test Connection'}
           </button>
@@ -333,6 +368,39 @@ export default function Settings() {
             <span style={{ color: emailResult.success ? 'var(--green)' : 'var(--red)', fontSize: 13 }}>
               {emailResult.success ? '✓ Connected' : `✗ ${emailResult.error}`}
             </span>
+          )}
+        </div>
+
+        {/* Inbox check */}
+        <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: 0 }}>
+              <input type="checkbox" style={{ width: 'auto' }} checked={!!form.enableInboxCheck} onChange={e => set('enableInboxCheck', e.target.checked)} />
+              Auto-check inbox for recruiter replies (every 2 hours)
+            </label>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button className="btn btn-ghost" style={{ fontSize: 12 }}
+              disabled={checkingInbox || !form.gmailAddress || !form.gmailAppPassword}
+              onClick={async () => {
+                setCheckingInbox(true); setInboxResult(null)
+                const res = await window.api.checkInboxNow()
+                setCheckingInbox(false); setInboxResult(res)
+              }}>
+              {checkingInbox ? 'Checking...' : 'Check Inbox Now'}
+            </button>
+            {inboxResult && (
+              <span style={{ fontSize: 12, color: inboxResult.success ? 'var(--green)' : 'var(--red)' }}>
+                {inboxResult.success
+                  ? `✓ Scanned ${inboxResult.checked} emails — ${inboxResult.updated?.length || 0} status${inboxResult.updated?.length === 1 ? '' : 'es'} updated`
+                  : `✗ ${inboxResult.error}`}
+              </span>
+            )}
+          </div>
+          {form.lastInboxCheck && (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+              Last checked: {new Date(form.lastInboxCheck).toLocaleString()}
+            </div>
           )}
         </div>
       </div>
@@ -354,7 +422,7 @@ export default function Settings() {
         </div>
         {form.enableFollowUp && (
           <div className="form-group">
-            <label>Days before follow-up</label>
+            <label>Send follow-up email after how many days of no response</label>
             <input type="number" min={1} max={30} value={form.followUpDays || 7} onChange={e => set('followUpDays', e.target.value)} />
           </div>
         )}
@@ -461,9 +529,20 @@ export default function Settings() {
                 </button>
                 <button className="btn btn-ghost" style={{ fontSize: 11 }}
                   disabled={pdfLoading === r.name}
-                  onClick={() => viewPDF(r.text, r.name)}>
+                  onClick={() => viewPDF(r.text, r.name, r.originalPath, r.originalExt)}>
                   {pdfLoading === r.name ? 'Loading...' : 'View PDF'}
                 </button>
+                {r.originalExt === 'docx' || r.originalExt === 'doc' ? (
+                  <button className="btn btn-ghost" style={{ fontSize: 11 }}
+                    disabled={pdfLoading === r.name + '_docx'}
+                    onClick={async () => {
+                      setPdfLoading(r.name + '_docx')
+                      await window.api.openResumeDocx(r.text, r.originalPath || null)
+                      setPdfLoading(false)
+                    }}>
+                    {pdfLoading === r.name + '_docx' ? 'Opening...' : 'Preview DOCX'}
+                  </button>
+                ) : null}
                 <button className="btn btn-ghost" style={{ fontSize: 11 }}
                   onClick={() => window.api.downloadResume(r.text, r.name, 'pdf')}>
                   Save PDF
@@ -494,36 +573,58 @@ export default function Settings() {
               <input value={newResumeName} onChange={e => setNewResumeName(e.target.value)} placeholder="e.g. Software Engineer Resume" />
             </div>
             <div className="form-group" style={{ marginBottom: 10 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                <label style={{ fontSize: 12, marginBottom: 0 }}>Resume Text</label>
-                <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={async () => {
-                  setUploadError('')
-                  const res = await window.api.importResumeFile()
-                  if (res.canceled) return
-                  if (res.success) {
-                    setNewResumeText(res.text)
-                    if (!newResumeName) setNewResumeName(res.fileName)
-                  } else {
-                    setUploadError(res.error || 'Failed to read file')
-                  }
-                }}>
-                  Upload File
-                </button>
-              </div>
-              <textarea value={newResumeText} onChange={e => setNewResumeText(e.target.value)}
-                placeholder="Paste resume text or upload a file..." style={{ minHeight: 120 }} />
+              {newResumeOriginalPath ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: 'var(--bg-secondary)', borderRadius: 6, border: '1px solid var(--border)' }}>
+                  <span style={{ fontSize: 20 }}>{newResumeOriginalExt === 'pdf' ? '📄' : '📝'}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{newResumeName || 'Resume'}.{newResumeOriginalExt}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>File uploaded — AI can tailor this for each job</div>
+                  </div>
+                  <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={async () => {
+                    setUploadError('')
+                    const res = await window.api.importResumeFile()
+                    if (res.canceled) return
+                    if (res.success) {
+                      setNewResumeText(res.text)
+                      if (!newResumeName) setNewResumeName(res.fileName)
+                      setNewResumeOriginalPath(res.originalPath || null)
+                      setNewResumeOriginalExt(res.originalExt || null)
+                    } else { setUploadError(res.error || 'Failed to read file') }
+                  }}>Replace</button>
+                </div>
+              ) : (
+                <>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                    <label style={{ fontSize: 12, marginBottom: 0 }}>Resume</label>
+                    <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={async () => {
+                      setUploadError('')
+                      const res = await window.api.importResumeFile()
+                      if (res.canceled) return
+                      if (res.success) {
+                        setNewResumeText(res.text)
+                        if (!newResumeName) setNewResumeName(res.fileName)
+                        setNewResumeOriginalPath(res.originalPath || null)
+                        setNewResumeOriginalExt(res.originalExt || null)
+                      } else { setUploadError(res.error || 'Failed to read file') }
+                    }}>Upload File (PDF / DOCX)</button>
+                  </div>
+                  <textarea value={newResumeText} onChange={e => setNewResumeText(e.target.value)}
+                    placeholder="Paste resume text or upload a file..." style={{ minHeight: 120 }} />
+                </>
+              )}
               {uploadError && <div style={{ color: 'var(--red)', fontSize: 12, marginTop: 4 }}>{uploadError}</div>}
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => setAddingResume(false)}>Cancel</button>
+              <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => { setAddingResume(false); setNewResumeName(''); setNewResumeText(''); setNewResumeOriginalPath(null); setNewResumeOriginalExt(null) }}>Cancel</button>
               <button className="btn btn-primary" style={{ fontSize: 12 }}
                 disabled={!newResumeName.trim() || !newResumeText.trim()}
                 onClick={() => {
                   const id = Date.now().toString()
-                  const resumes = [...(form.resumes || []), { id, name: newResumeName.trim(), text: newResumeText.trim() }]
+                  const resumes = [...(form.resumes || []), { id, name: newResumeName.trim(), text: newResumeText.trim(), originalPath: newResumeOriginalPath, originalExt: newResumeOriginalExt }]
                   const defaultResumeId = form.defaultResumeId || id
                   saveResumes(resumes, defaultResumeId)
                   setAddingResume(false)
+                  setNewResumeName(''); setNewResumeText(''); setNewResumeOriginalPath(null); setNewResumeOriginalExt(null)
                 }}>
                 Save Resume
               </button>
@@ -550,7 +651,12 @@ export default function Settings() {
             {form.coverLetterTemplate && (
               <button className="btn btn-ghost" style={{ fontSize: 11 }}
                 disabled={pdfLoading === 'cl'}
-                onClick={() => viewPDF(form.coverLetterTemplate, 'Cover Letter Template')}>
+                onClick={async () => {
+                  setPdfLoading('cl')
+                  const res = await window.api.getCoverLetterPDFBase64(form.coverLetterTemplate)
+                  setPdfLoading(false)
+                  if (res.success) setPdfModal({ base64: res.base64, title: 'Cover Letter Template' })
+                }}>
                 {pdfLoading === 'cl' ? 'Loading...' : 'Preview PDF'}
               </button>
             )}
@@ -579,7 +685,7 @@ export default function Settings() {
         {/* About */}
         <div className="card" style={{ marginBottom: 16 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 16 }}>
-            <div style={{ width: 48, height: 48, borderRadius: 12, background: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 26, fontWeight: 700, color: '#fff', flexShrink: 0 }}>H</div>
+            <HiroLogo size={48} style={{ flexShrink: 0 }} />
             <div>
               <div style={{ fontSize: 20, fontWeight: 700 }}>Hiro</div>
               <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Version 1.0.0</div>
@@ -695,7 +801,12 @@ export default function Settings() {
                 </button>
               )}
               <button className="btn btn-primary" onClick={() => {
-                const resumes = (form.resumes || []).map(r => r.id === improveModal.sourceId ? { ...r, text: improveModal.text } : r)
+                const resumes = (form.resumes || []).map(r => {
+                  if (r.id !== improveModal.sourceId) return r
+                  // For PDF originals, the old file no longer reflects improved text — clear it so View PDF regenerates
+                  const keepOriginal = r.originalExt === 'docx' || r.originalExt === 'doc'
+                  return { ...r, text: improveModal.text, originalPath: keepOriginal ? r.originalPath : null, originalExt: keepOriginal ? r.originalExt : null }
+                })
                 saveResumes(resumes, form.defaultResumeId)
                 setImproveModal(null)
               }}>

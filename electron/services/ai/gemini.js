@@ -14,7 +14,8 @@ async function tailorResume(jobDescription, masterResume, apiKey, modelName) {
   const model = getModel(apiKey, modelName)
   const result = await model.generateContent({
     contents: [{ role: 'user', parts: [{ text: `You are an expert resume writer. Tailor the following resume for the job description below.
-Keep it truthful — only reorder, rephrase, and emphasise existing experience.
+Keep it truthful — only rephrase and emphasise existing experience to match the job.
+IMPORTANT: Preserve the EXACT section names, section order, and overall structure of the master resume. Do NOT add, remove, or reorder sections. Do NOT invent new experience.
 Return ONLY the tailored resume text, no commentary.
 
 JOB DESCRIPTION:
@@ -155,7 +156,9 @@ async function improveResume(resumeText, apiKey, modelName) {
     contents: [{ role: 'user', parts: [{ text: `You are an expert resume writer. Improve the following resume to be more impactful, professional, and ATS-friendly.
 Strengthen bullet points, improve language clarity, and highlight achievements with metrics where possible.
 Keep all facts truthful and accurate — do not invent experience.
-Return ONLY the improved resume text, no commentary.
+IMPORTANT: Preserve ALL contact information exactly as provided — name, email, phone number, address, portfolio URL, LinkedIn URL, and any other links. These must appear at the top unchanged.
+Return ONLY the improved resume text, no commentary. No markdown, no asterisks, no pound signs, no bold/italic markers.
+Use plain section headers (e.g. "EXPERIENCE", "SKILLS") and plain hyphens or dashes for bullets.
 
 RESUME:
 ${resumeText}` }] }],

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, nativeImage } = require('electron')
 const path = require('path')
 const configService = require('./services/config')
 const database = require('./services/database')
@@ -9,17 +9,20 @@ const linkedinSession = require('./services/linkedinSession')
 const seekSession = require('./services/seekSession')
 const indeedSession = require('./services/indeedSession')
 const applicator = require('./services/applicator')
+const gmailAuth = require('./services/gmailAuth')
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
 let mainWindow
 
 function createWindow() {
+  const iconPath = path.join(__dirname, '..', 'public', 'logo.png')
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     minWidth: 900,
     minHeight: 600,
+    icon: iconPath,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -186,9 +189,15 @@ ipcMain.handle('resume:importFile', async () => {
   if (canceled || !filePaths.length) return { canceled: true }
 
   const filePath = filePaths[0]
-  const fileName = require('path').basename(filePath, require('path').extname(filePath))
-  const ext = filePath.split('.').pop().toLowerCase()
   const fs = require('fs')
+  const pathMod = require('path')
+  const fileName = pathMod.basename(filePath, pathMod.extname(filePath))
+  const ext = filePath.split('.').pop().toLowerCase()
+
+  const { CONFIG_DIR } = require('./services/config')
+  const resumesDir = pathMod.join(CONFIG_DIR, 'resumes')
+  if (!fs.existsSync(resumesDir)) fs.mkdirSync(resumesDir, { recursive: true })
+  const fileId = Date.now().toString()
 
   try {
     let text = ''
@@ -205,7 +214,20 @@ ipcMain.handle('resume:importFile', async () => {
       const result = await mammoth.extractRawText({ path: filePath })
       text = result.value
     }
-    return { success: true, text, fileName }
+
+    // Copy original file so its format can be used during submission.
+    // DOCX: tailored text will be injected into the original DOCX XML.
+    // PDF: original PDF cannot have its text replaced; AI-tailored text will be
+    //      rendered into a fresh styled PDF at submission time.
+    let originalPath = null
+    let originalExt = null
+    if (ext === 'pdf' || ext === 'docx' || ext === 'doc') {
+      originalPath = pathMod.join(resumesDir, `${fileId}.${ext}`)
+      try { fs.copyFileSync(filePath, originalPath) } catch { originalPath = null }
+      if (originalPath) originalExt = ext
+    }
+
+    return { success: true, text, fileName, originalPath, originalExt }
   } catch (err) {
     return { success: false, error: err.message }
   }
@@ -268,11 +290,29 @@ ipcMain.handle('resume:download', async (_, resumeText, suggestedName, format = 
 })
 
 // ─── IPC: Resume PDF base64 (in-app viewer) ──────────────────────
-ipcMain.handle('resume:getPDFBase64', async (_, resumeText) => {
+ipcMain.handle('resume:getPDFBase64', async (_, resumeText, originalPath, originalExt) => {
   try {
+    const fs = require('fs')
+    // If uploaded as PDF, show the original file directly
+    if (originalPath && originalExt === 'pdf' && fs.existsSync(originalPath)) {
+      const base64 = fs.readFileSync(originalPath).toString('base64')
+      return { success: true, base64 }
+    }
     const { buildResumePDF } = require('./services/scraper/utils')
     const candidateName = (resumeText || '').split('\n').find(l => l.trim())?.trim() || 'Resume'
     const tmpPath = await buildResumePDF(resumeText, candidateName)
+    const base64 = fs.readFileSync(tmpPath).toString('base64')
+    return { success: true, base64 }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+// ─── IPC: Cover letter PDF base64 (plain text, no resume formatting) ─
+ipcMain.handle('coverLetter:getPDFBase64', async (_, text) => {
+  try {
+    const { buildCoverLetterPDF } = require('./services/scraper/utils')
+    const tmpPath = await buildCoverLetterPDF(text)
     const base64 = require('fs').readFileSync(tmpPath).toString('base64')
     return { success: true, base64 }
   } catch (err) {
@@ -280,30 +320,18 @@ ipcMain.handle('resume:getPDFBase64', async (_, resumeText) => {
   }
 })
 
-// ─── IPC: Resume open DOCX in system app ─────────────────────────
-ipcMain.handle('resume:openDocx', async (_, resumeText) => {
+// ─── IPC: Resume preview — open styled DOCX in system app ────────
+// Uses buildResumeDocx so the preview matches the format that will be submitted.
+ipcMain.handle('resume:openDocx', async (_, resumeText, originalPath) => {
   try {
-    const { Document, Packer, Paragraph, TextRun, AlignmentType } = require('docx')
-    const { stripMarkdown } = require('./services/scraper/utils')
-    const path = require('path')
-    const os = require('os')
-    const filePath = path.join(os.tmpdir(), 'resume-preview.docx')
-    const lines = stripMarkdown(resumeText).split('\n')
-    const paragraphs = []
-    let firstLineDone = false
-    for (const line of lines) {
-      if (!firstLineDone && !line.trim()) continue
-      if (!firstLineDone) {
-        paragraphs.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: line.trim(), bold: true, size: 32 })] }))
-        firstLineDone = true
-      } else if (line.trim() && /^[A-Z][A-Z\s\/&-]{2,}$/.test(line.trim())) {
-        paragraphs.push(new Paragraph({ spacing: { before: 200, after: 60 }, children: [new TextRun({ text: line.trim(), bold: true, size: 22 })] }))
-      } else {
-        paragraphs.push(new Paragraph({ children: [new TextRun({ text: line, size: 22 })] }))
-      }
+    const { buildResumeDocx, tailorDocx } = require('./services/scraper/utils')
+    const fs = require('fs')
+    let filePath
+    if (originalPath && fs.existsSync(originalPath)) {
+      filePath = await tailorDocx(originalPath, resumeText)
+    } else {
+      filePath = await buildResumeDocx(resumeText)
     }
-    const doc = new Document({ sections: [{ children: paragraphs }] })
-    require('fs').writeFileSync(filePath, await Packer.toBuffer(doc))
     await shell.openPath(filePath)
     return { success: true }
   } catch (err) {
@@ -366,6 +394,7 @@ ipcMain.handle('db:getApplications', (_, filters) => database.getApplications(fi
 ipcMain.handle('db:getApplication', (_, id) => database.getApplication(id))
 ipcMain.handle('db:updateStatus', (_, id, status) => database.updateApplicationStatus(id, status))
 ipcMain.handle('db:updateComment', (_, id, comment) => database.updateApplicationComment(id, comment))
+ipcMain.handle('db:updateRecruiterEmail', (_, id, email) => database.updateRecruiterEmail(id, email))
 ipcMain.handle('db:deleteApplication', (_, id) => database.deleteApplication(id))
 ipcMain.handle('db:clearAllApplications', () => database.clearAllApplications())
 ipcMain.handle('db:getAttentionJobs', () => database.getAttentionJobs())
@@ -375,6 +404,20 @@ ipcMain.handle('db:clearAllAttentionJobs', () => database.clearAllAttentionJobs(
 ipcMain.handle('db:getStats', () => database.getStats())
 
 // ─── IPC: AI Apply from Needs Attention ─────────────────────────
+ipcMain.handle('application:applySkipped', async (_, jobId) => {
+  try {
+    const cfg = { ...configService.load(), askQuestion: makeAskQuestion(mainWindow) }
+    const result = await applicator.applySkippedJob(jobId, cfg, (msg) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('skipped:apply-log', msg)
+      }
+    })
+    return result
+  } catch (err) {
+    return { success: false, reason: err.message }
+  }
+})
+
 ipcMain.handle('attention:apply', async (_, jobId) => {
   try {
     const cfg = { ...configService.load(), askQuestion: makeAskQuestion(mainWindow) }
@@ -386,5 +429,43 @@ ipcMain.handle('attention:apply', async (_, jobId) => {
     return result
   } catch (err) {
     return { success: false, reason: err.message }
+  }
+})
+
+// ─── IPC: Gmail Auth ─────────────────────────────────────────────
+ipcMain.handle('gmail:status', () => ({
+  loggedIn: gmailAuth.hasSession(),
+  email: gmailAuth.getSavedEmail(),
+}))
+
+ipcMain.handle('gmail:login', async (_, email) => {
+  try {
+    const result = await gmailAuth.loginWithBrowser(email || '', (msg) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('gmail:status-update', msg)
+      }
+    })
+    return result
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('gmail:logout', () => {
+  gmailAuth.clearSession()
+  return { success: true }
+})
+
+// ─── IPC: Inbox Check ────────────────────────────────────────────
+ipcMain.handle('inbox:checkNow', async () => {
+  try {
+    const inbox = require('./services/inbox')
+    const configService = require('./services/config')
+    const result = await inbox.checkInbox()
+    const cfg = configService.load()
+    configService.save({ ...cfg, lastInboxCheck: new Date().toISOString() })
+    return { success: true, checked: result.checked, updated: result.updated }
+  } catch (err) {
+    return { success: false, error: err.message }
   }
 })

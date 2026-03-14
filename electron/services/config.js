@@ -31,6 +31,8 @@ const DEFAULTS = {
   scheduledScanTime: '09:00',
   followUpDays: 7,
   enableFollowUp: false,
+  enableInboxCheck: false,
+  lastInboxCheck: null,
 }
 
 function ensureDir() {

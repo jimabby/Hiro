@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import HiroLogo from '../components/HiroLogo'
 
 const STEPS = ['AI Provider', 'Email', 'Job Criteria', 'Resume', 'Review']
 
@@ -74,7 +75,10 @@ export default function Setup({ onComplete }) {
       <div style={{ width: 540 }}>
         {/* Header */}
         <div style={{ textAlign: 'center', marginBottom: 32 }}>
-          <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--accent)', marginBottom: 4 }}>Hiro</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 4 }}>
+            <HiroLogo size={36} />
+            <span style={{ fontSize: 28, fontWeight: 700, color: 'var(--accent)' }}>Hiro</span>
+          </div>
           <div style={{ color: 'var(--text-muted)' }}>Setup Wizard — {STEPS[step]} ({step + 1}/{STEPS.length})</div>
         </div>
 

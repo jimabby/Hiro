@@ -7,6 +7,7 @@ const applicator = require('./applicator')
 let scanTask = null
 let reportTask = null
 let followUpTask = null
+let inboxTask = null
 let running = false
 let win = null
 
@@ -31,12 +32,18 @@ function startTasks() {
   if (cfg.enableFollowUp && cfg.followUpDays > 0) {
     followUpTask = cron.schedule('0 10 * * 1-5', async () => { await runFollowUp() })
   }
+
+  if (cfg.enableInboxCheck) {
+    // Check inbox every 2 hours on weekdays
+    inboxTask = cron.schedule('0 */2 * * 1-5', async () => { await runInboxCheck() })
+  }
 }
 
 function stop() {
   if (scanTask) { scanTask.stop(); scanTask = null }
   if (reportTask) { reportTask.stop(); reportTask = null }
   if (followUpTask) { followUpTask.stop(); followUpTask = null }
+  if (inboxTask) { inboxTask.stop(); inboxTask = null }
   applicator.cancel()
   running = false
 }
@@ -104,6 +111,10 @@ async function runFollowUp() {
     const aiAdapter = require('./ai/index')
     const jobs = database.getApplicationsForFollowUp(cfg.followUpDays || 7)
     for (const job of jobs) {
+      if (!job.recruiter_email) {
+        log(`Follow-up skipped for ${job.job_title} at ${job.company} — no recruiter email`)
+        continue
+      }
       const activeResume = (cfg.resumes || []).find(r => r.id === cfg.defaultResumeId)?.text || cfg.masterResume || ''
       const emailText = await aiAdapter.generateFollowUpEmail(
         cfg.aiProvider, cfg.aiApiKey, job.job_title, job.company, activeResume, cfg.geminiModel
@@ -114,6 +125,28 @@ async function runFollowUp() {
     }
   } catch (err) {
     log(`Follow-up error: ${err.message}`)
+  }
+}
+
+async function runInboxCheck() {
+  try {
+    const cfg = configService.load()
+    if (!cfg.enableInboxCheck || !cfg.gmailAddress || !cfg.gmailAppPassword) return
+    const inbox = require('./inbox')
+    log('Checking inbox for replies...')
+    const result = await inbox.checkInbox()
+    configService.save({ ...cfg, lastInboxCheck: new Date().toISOString() })
+    if (result.updated.length > 0) {
+      for (const item of result.updated) {
+        log(`Inbox: ${item.company} replied — status updated to ${item.newStatus}`)
+        notify({ type: 'inbox-reply', item })
+      }
+    } else {
+      log(`Inbox checked: ${result.checked} emails scanned, no new replies.`)
+    }
+    return result
+  } catch (err) {
+    log(`Inbox check error: ${err.message}`)
   }
 }
 
@@ -138,4 +171,4 @@ function getStatus() {
   return { running, tasksActive: !!scanTask }
 }
 
-module.exports = { init, restart, stop, cancelScan, runNow, getStatus }
+module.exports = { init, restart, stop, cancelScan, runNow, runInboxCheck, getStatus }

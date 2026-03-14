@@ -23,9 +23,10 @@ async function tailorResume(jobDescription, masterResume, apiKey) {
     messages: [{
       role: 'user',
       content: `You are an expert resume writer. Tailor the following resume for the job description below.
-Keep it truthful — only reorder, rephrase, and emphasise existing experience.
+Keep it truthful — only rephrase and emphasise existing experience to match the job.
+IMPORTANT: Preserve the EXACT section names, section order, and overall structure of the master resume. Do NOT add, remove, or reorder sections. Do NOT invent new experience.
 Return ONLY the plain text resume. No markdown, no asterisks, no pound signs, no bold/italic markers.
-Use plain section headers (e.g. "EXPERIENCE", "SKILLS") and plain hyphens or dashes for bullets.
+Use the same section headers and bullet style as the original.
 
 JOB DESCRIPTION:
 ${jobDescription}
@@ -206,6 +207,7 @@ async function improveResume(resumeText, apiKey) {
       content: `You are an expert resume writer. Improve the following resume to be more impactful, professional, and ATS-friendly.
 Strengthen bullet points, improve language clarity, and highlight achievements with metrics where possible.
 Keep all facts truthful and accurate — do not invent experience.
+IMPORTANT: Preserve ALL contact information exactly as provided — name, email, phone number, address, portfolio URL, LinkedIn URL, and any other links. These must appear at the top unchanged.
 Return ONLY the plain text resume, no commentary. No markdown, no asterisks, no pound signs, no bold/italic markers.
 Use plain section headers (e.g. "EXPERIENCE", "SKILLS") and plain hyphens or dashes for bullets.
 

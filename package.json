@@ -17,23 +17,30 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "public/**/*",
       "node_modules/**/*"
     ],
+    "icon": "public/logo.png",
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "public/logo.png"
     },
     "mac": {
-      "target": "dmg"
+      "target": "dmg",
+      "icon": "public/logo.png"
     },
     "linux": {
-      "target": "AppImage"
+      "target": "AppImage",
+      "icon": "public/logo.png"
     },
     "extraResources": []
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",
     "@google/generative-ai": "^0.21.0",
+    "adm-zip": "^0.5.16",
     "docx": "^9.6.1",
+    "imapflow": "^1.2.13",
     "mammoth": "^1.11.0",
     "node-cron": "^3.0.3",
     "nodemailer": "^6.9.16",

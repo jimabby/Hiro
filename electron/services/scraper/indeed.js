@@ -1,7 +1,7 @@
 const { chromium } = require('playwright-extra')
 const StealthPlugin = require('puppeteer-extra-plugin-stealth')
 chromium.use(StealthPlugin())
-const { randomDelay, randomUserAgent, buildResumePDF } = require('./utils')
+const { randomDelay, randomUserAgent, buildResumeFile } = require('./utils')
 const indeedSession = require('../indeedSession')
 const aiAdapter = require('../ai/index')
 const database = require('../database')
@@ -108,12 +108,9 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
   const context = await browser.newContext(contextOptions)
   const page = await context.newPage()
 
-  const candidateName = (cfg?.masterResume || tailoredResume || '')
-    .split('\n').find(l => l.trim())?.trim()?.replace(/\*\*/g, '') || 'Resume'
-
   let resumePath = null
   if (tailoredResume) {
-    resumePath = await buildResumePDF(tailoredResume, candidateName).catch(() => null)
+    resumePath = await buildResumeFile(tailoredResume, cfg).catch(() => null)
   }
 
   // Extract most recent job title + company for work history fields

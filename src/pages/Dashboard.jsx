@@ -24,6 +24,10 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
   const [loadingGap, setLoadingGap] = useState(false)
   const [pdfModal, setPdfModal] = useState(null) // { base64, title }
   const [pdfLoading, setPdfLoading] = useState(false)
+  const [skippedApplying, setSkippedApplying] = useState(false)
+  const [skippedApplyLog, setSkippedApplyLog] = useState([])
+  const [skippedApplyResult, setSkippedApplyResult] = useState(null)
+  const skippedLogEndRef = useRef(null)
   const logRef = useRef(null)
   const searchRef = useRef(null)
 
@@ -39,6 +43,15 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
   }, [logs])
+
+  useEffect(() => {
+    window.api.onSkippedApplyLog(msg => setSkippedApplyLog(prev => [...prev, msg]))
+    return () => window.api.removeAllListeners('skipped:apply-log')
+  }, [])
+
+  useEffect(() => {
+    skippedLogEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [skippedApplyLog])
 
   useEffect(() => {
     setInterviewQuestions(null)
@@ -102,6 +115,19 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
     await window.api.stopAutomation()
   }
 
+  async function aiApplySkipped(job) {
+    setSelected(null)
+    setSkippedApplying(true)
+    setSkippedApplyLog([`Starting AI apply for ${job.job_title} at ${job.company}...`])
+    setSkippedApplyResult(null)
+    const result = await window.api.applySkippedJob(job.id)
+    setSkippedApplyResult(result)
+    if (result.success) {
+      setApps(prev => prev.map(a => a.id === job.id ? { ...a, status: 'applied' } : a))
+      loadData()
+    }
+  }
+
   async function changeStatus(id, status, e) {
     e.stopPropagation()
     await window.api.updateApplicationStatus(id, status)
@@ -113,6 +139,12 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
     await window.api.updateApplicationComment(id, comment)
     setApps(prev => prev.map(a => a.id === id ? { ...a, comment } : a))
     if (selected?.id === id) setSelected(s => ({ ...s, comment }))
+  }
+
+  async function saveRecruiterEmail(id, email) {
+    await window.api.updateRecruiterEmail(id, email)
+    setApps(prev => prev.map(a => a.id === id ? { ...a, recruiter_email: email } : a))
+    if (selected?.id === id) setSelected(s => ({ ...s, recruiter_email: email }))
   }
 
   async function deleteApp(id, e) {
@@ -381,6 +413,12 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
                   {loadingGap ? 'Analyzing...' : 'Keyword Gap'}
                 </button>
               )}
+              {selected.status === 'skipped' && (
+                <button className="btn btn-primary" style={{ fontSize: 12 }}
+                  onClick={() => aiApplySkipped(selected)}>
+                  AI Apply
+                </button>
+              )}
               <button className="btn btn-ghost" style={{ fontSize: 12, color: 'var(--red)' }}
                 onClick={async () => {
                   if (!window.confirm(`Blacklist ${selected.company}? It will be excluded from future scans.`)) return
@@ -402,6 +440,24 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
                 placeholder="Add a note about this application..."
                 onBlur={e => saveComment(selected.id, e.target.value)}
                 style={{ minHeight: 60, resize: 'vertical', fontSize: 13 }}
+              />
+            </div>
+
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ marginBottom: 6 }}>
+                Recruiter Email
+                <span style={{ fontWeight: 400, color: 'var(--text-muted)', marginLeft: 8, fontSize: 12 }}>
+                  (follow-up emails go here; leave blank to receive them yourself)
+                </span>
+              </label>
+              <input
+                type="email"
+                key={selected.id}
+                defaultValue={selected.recruiter_email || ''}
+                placeholder="recruiter@company.com"
+                onBlur={e => saveRecruiterEmail(selected.id, e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }}
+                style={{ fontSize: 13 }}
               />
             </div>
 
@@ -521,6 +577,47 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
                     </div>
                   </div>
                 )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {skippedApplying && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200,
+        }}>
+          <div className="card" style={{ width: 560, maxHeight: '70vh', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h2 style={{ fontSize: 16 }}>AI Applying...</h2>
+              {skippedApplyResult && (
+                <button className="btn btn-ghost" onClick={() => { setSkippedApplying(false); setSkippedApplyLog([]); setSkippedApplyResult(null) }}>Close</button>
+              )}
+            </div>
+            <div style={{
+              flex: 1, overflowY: 'auto', background: 'var(--surface2)',
+              borderRadius: 8, padding: '12px 14px', fontFamily: 'monospace',
+              fontSize: 12, minHeight: 160,
+            }}>
+              {skippedApplyLog.map((line, i) => (
+                <div key={i} style={{ marginBottom: 4, color: 'var(--text-muted)' }}>{line}</div>
+              ))}
+              <div ref={skippedLogEndRef} />
+            </div>
+            {skippedApplyResult && (
+              <div style={{
+                marginTop: 16, padding: '12px 14px', borderRadius: 8,
+                background: skippedApplyResult.success ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
+                color: skippedApplyResult.success ? 'var(--green)' : 'var(--red)',
+                fontSize: 13, fontWeight: 600,
+              }}>
+                {skippedApplyResult.success ? 'Application submitted successfully!' : `Failed: ${skippedApplyResult.reason}`}
+              </div>
+            )}
+            {!skippedApplyResult && (
+              <div style={{ marginTop: 12, color: 'var(--text-muted)', fontSize: 12, textAlign: 'center' }}>
+                A browser window will open — please do not close it.
               </div>
             )}
           </div>
