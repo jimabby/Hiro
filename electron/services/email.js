@@ -90,4 +90,15 @@ async function sendDailyReport(stats) {
   })
 }
 
-module.exports = { testConnection, sendNewJobAlert, sendDailyReport }
+async function sendFollowUpEmail(job, emailText, cfg) {
+  if (!cfg.gmailAddress || !cfg.gmailAppPassword) return
+  const transport = createTransport(cfg)
+  await transport.sendMail({
+    from: cfg.gmailAddress,
+    to: cfg.gmailAddress,
+    subject: `[Hiro] Follow-up: ${job.job_title} at ${job.company}`,
+    text: emailText,
+  })
+}
+
+module.exports = { testConnection, sendNewJobAlert, sendDailyReport, sendFollowUpEmail }

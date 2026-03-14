@@ -62,6 +62,12 @@ async function run(cfg, { log, notifyAttention }) {
         continue
       }
 
+      const crossPlatformDuplicate = database.findDuplicateAcrossPlatforms(job.job_title, job.company, name)
+      if (crossPlatformDuplicate) {
+        log(`  Duplicate: already applied via ${crossPlatformDuplicate.platform} — skipping`)
+        continue
+      }
+
       log(`Processing: ${job.job_title} at ${job.company}`)
 
       // Get full job description
@@ -79,14 +85,18 @@ async function run(cfg, { log, notifyAttention }) {
 
       // Score match
       let matchScore = 50
+      let matchExplanation = ''
       try {
-        matchScore = await aiAdapter.scoreMatch(cfg.aiProvider, cfg.aiApiKey, jobDescription || job.job_title, cfg.masterResume, cfg.geminiModel)
+        const matchResult = await aiAdapter.scoreMatchWithExplanation(cfg.aiProvider, cfg.aiApiKey, jobDescription || job.job_title, cfg.masterResume, cfg.geminiModel)
+        matchScore = matchResult.score
+        matchExplanation = matchResult.explanation
         log(`  Match score: ${matchScore}%`)
       } catch (err) {
         log(`  Scoring error: ${err.message}`)
       }
 
       job.match_score = matchScore
+      job.match_explanation = matchExplanation
 
       // Below threshold — save as skipped so user can still view it
       if (matchScore < cfg.matchThreshold) {
@@ -98,6 +108,7 @@ async function run(cfg, { log, notifyAttention }) {
           job_url: job.job_url,
           job_description: jobDescription,
           match_score: matchScore,
+          match_explanation: matchExplanation,
           tailored_resume: '',
           screening_qa: [],
           status: 'skipped',
@@ -128,7 +139,7 @@ async function run(cfg, { log, notifyAttention }) {
       // Generate cover letter
       let coverLetter = ''
       try {
-        coverLetter = await aiAdapter.generateCoverLetter(cfg.aiProvider, cfg.aiApiKey, jobDescription, cfg.masterResume, cfg.geminiModel)
+        coverLetter = await aiAdapter.generateCoverLetter(cfg.aiProvider, cfg.aiApiKey, jobDescription, cfg.masterResume, cfg.geminiModel, cfg.coverLetterTone, cfg.coverLetterTemplate)
         log(`  Cover letter generated`)
       } catch (err) {
         log(`  Cover letter error: ${err.message}`)
@@ -155,6 +166,7 @@ async function run(cfg, { log, notifyAttention }) {
           job_url: job.job_url,
           job_description: jobDescription,
           match_score: matchScore,
+          match_explanation: matchExplanation,
           tailored_resume: tailoredResume,
           cover_letter: coverLetter,
           screening_qa: [],
@@ -220,7 +232,7 @@ async function applyAttentionJob(jobId, cfg, log) {
   log('Generating cover letter...')
   let coverLetter = ''
   try {
-    coverLetter = await aiAdapter.generateCoverLetter(cfg.aiProvider, cfg.aiApiKey, job.job_description || job.job_title, cfg.masterResume, cfg.geminiModel)
+    coverLetter = await aiAdapter.generateCoverLetter(cfg.aiProvider, cfg.aiApiKey, job.job_description || job.job_title, cfg.masterResume, cfg.geminiModel, cfg.coverLetterTone, cfg.coverLetterTemplate)
     log('Cover letter generated')
   } catch (err) {
     log(`Cover letter error: ${err.message}`)
@@ -245,6 +257,7 @@ async function applyAttentionJob(jobId, cfg, log) {
       job_url: job.job_url,
       job_description: job.job_description,
       match_score: job.match_score,
+      match_explanation: job.match_explanation || '',
       tailored_resume: tailoredResume,
       cover_letter: coverLetter,
       screening_qa: [],

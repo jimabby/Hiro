@@ -1,5 +1,5 @@
 const { chromium } = require('playwright')
-const { randomDelay, humanType, randomUserAgent } = require('./utils')
+const { randomDelay, randomUserAgent } = require('./utils')
 
 // Node.js substitute for the browser-only CSS.escape()
 function cssEscape(str) {
@@ -245,6 +245,58 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
         }
       }
 
+      // Fill salary expectation from config before general screening loop
+      if (cfg.salaryMin) {
+        const salarySelectors = [
+          'input[id*="salary" i]', 'input[name*="salary" i]',
+          'input[placeholder*="salary" i]', 'input[aria-label*="salary" i]',
+          'input[data-automation*="salary" i]',
+        ]
+        for (const sel of salarySelectors) {
+          const salaryInput = await page.$(sel).catch(() => null)
+          if (!salaryInput) continue
+          const currentVal = await salaryInput.inputValue().catch(() => '')
+          if (!currentVal.trim()) {
+            await salaryInput.fill(String(cfg.salaryMin)).catch(() => {})
+            await salaryInput.dispatchEvent('input').catch(() => {})
+            await salaryInput.dispatchEvent('change').catch(() => {})
+            await randomDelay(200, 400)
+          }
+          break
+        }
+      }
+
+      // Auto-check tech stack checkboxes whose labels match skills in the resume
+      const fieldsets = await page.$$('fieldset').catch(() => [])
+      for (const fieldset of fieldsets) {
+        const checkboxes = await fieldset.$$('input[type="checkbox"]').catch(() => [])
+        if (checkboxes.length === 0) continue
+        // Skip if any are already checked (user or pre-fill)
+        const anyChecked = await fieldset.$('input[type="checkbox"]:checked').catch(() => null)
+        if (anyChecked) continue
+        const resumeText = (cfg?.masterResume || '').toLowerCase()
+        for (const checkbox of checkboxes) {
+          const id = await checkbox.evaluate(el => el.id).catch(() => '')
+          let labelText = ''
+          if (id) {
+            const lbl = await page.$(`label[for="${id}"]`).catch(() => null)
+            if (lbl) labelText = await lbl.evaluate(el => el.textContent?.trim() || '').catch(() => '')
+          }
+          if (!labelText) {
+            // Try sibling label or parent label text
+            labelText = await checkbox.evaluate(el => el.closest('label')?.textContent?.trim() || '').catch(() => '')
+          }
+          if (!labelText || labelText.length < 2) continue
+          if (resumeText.includes(labelText.toLowerCase())) {
+            await checkbox.evaluate(el => {
+              el.checked = true
+              el.dispatchEvent(new Event('change', { bubbles: true }))
+            }).catch(() => {})
+            await randomDelay(80, 150)
+          }
+        }
+      }
+
       // Dynamically detect and answer screening questions on this step
       if (cfg.aiProvider && cfg.aiApiKey) {
         const labels = await page.$$('label').catch(() => [])
@@ -266,6 +318,7 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
           if (!input) continue
 
           const tag = await input.evaluate(el => el.tagName.toLowerCase()).catch(() => '')
+          const inputType = await input.evaluate(el => el.type || 'text').catch(() => 'text')
           if (!tag) continue
 
           // Skip already filled fields
@@ -274,7 +327,7 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
 
           let answer = ''
 
-          // 1. Check cache first — use saved answer immediately
+          // 1. Check cache first
           const cached = database.getCachedAnswer(questionText)
           if (cached) {
             answer = cached
@@ -295,7 +348,7 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
               /i'm not sure|i don't know|unclear|unsure|cannot determine|not enough information/i.test(aiAnswer)
 
             if (isUncertain && cfg.askQuestion) {
-              // 3. AI unsure — pause and ask the user
+              // 3. AI unsure — ask the user
               const userAnswer = await cfg.askQuestion(questionText).catch(() => '')
               if (userAnswer) {
                 answer = userAnswer
@@ -310,12 +363,26 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
           if (!answer) continue
 
           if (tag === 'select') {
-            await input.selectOption({ label: answer }).catch(() => {})
+            await input.selectOption({ label: answer }).catch(async () => {
+              // Fallback: try matching by value or partial text
+              await input.selectOption({ value: answer }).catch(() => {})
+            })
+          } else if (inputType === 'number') {
+            // Extract numeric value from answer (strip $, commas, k suffix)
+            const numStr = answer.replace(/[$,]/g, '').replace(/k$/i, '000')
+            const num = numStr.match(/\d+/)
+            if (num) {
+              await input.fill(num[0]).catch(() => {})
+              await input.dispatchEvent('input').catch(() => {})
+              await input.dispatchEvent('change').catch(() => {})
+            }
           } else {
-            await input.click()
-            await humanType(page, input, answer)
+            // Instant fill for text/textarea — no character-by-character delay
+            await input.fill(answer).catch(() => {})
+            await input.dispatchEvent('input').catch(() => {})
+            await input.dispatchEvent('change').catch(() => {})
           }
-          await randomDelay(300, 700)
+          await randomDelay(200, 400)
         }
       }
 

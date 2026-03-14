@@ -53,9 +53,25 @@ async function improveResume(provider, apiKey, resumeText, geminiModel) {
   return stripMarkdown(result)
 }
 
-async function generateCoverLetter(provider, apiKey, jobDescription, masterResume, geminiModel) {
-  const result = await getAdapter(provider).generateCoverLetter(jobDescription, masterResume, apiKey, geminiModel)
+async function generateCoverLetter(provider, apiKey, jobDescription, masterResume, geminiModel, tone, template) {
+  const result = await getAdapter(provider).generateCoverLetter(jobDescription, masterResume, apiKey, geminiModel, tone, template)
   return stripMarkdown(result)
 }
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, improveResume, generateCoverLetter }
+async function scoreMatchWithExplanation(provider, apiKey, jobDescription, masterResume, geminiModel) {
+  return getAdapter(provider).scoreMatchWithExplanation(jobDescription, masterResume, apiKey, geminiModel)
+}
+
+async function generateInterviewQuestions(provider, apiKey, jobDescription, masterResume, geminiModel) {
+  return getAdapter(provider).generateInterviewQuestions(jobDescription, masterResume, apiKey, geminiModel)
+}
+
+async function analyzeKeywordGap(provider, apiKey, jobDescription, masterResume, geminiModel) {
+  return getAdapter(provider).analyzeKeywordGap(jobDescription, masterResume, apiKey, geminiModel)
+}
+
+async function generateFollowUpEmail(provider, apiKey, jobTitle, company, masterResume, geminiModel) {
+  return getAdapter(provider).generateFollowUpEmail(jobTitle, company, masterResume, apiKey, geminiModel)
+}
+
+module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, analyzeKeywordGap, generateFollowUpEmail }

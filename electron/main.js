@@ -270,6 +270,56 @@ ipcMain.handle('resume:download', async (_, resumeText, suggestedName) => {
   }
 })
 
+// ─── IPC: Export CSV ─────────────────────────────────────────────
+ipcMain.handle('db:exportCSV', async (_, filters) => {
+  const apps = database.getApplications(filters || {})
+  const header = ['ID', 'Job Title', 'Company', 'Platform', 'Salary', 'Match Score', 'Match Explanation', 'Status', 'Comment', 'Applied At', 'Job URL']
+  const rows = apps.map(a => [
+    a.id, a.job_title, a.company, a.platform, a.salary,
+    a.match_score, a.match_explanation || '', a.status, a.comment || '',
+    a.applied_at, a.job_url,
+  ].map(v => `"${String(v || '').replace(/"/g, '""')}"`).join(','))
+  const csv = [header.join(','), ...rows].join('\n')
+  const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+    title: 'Export Applications',
+    defaultPath: `hiro-applications-${new Date().toISOString().split('T')[0]}.csv`,
+    filters: [{ name: 'CSV', extensions: ['csv'] }],
+  })
+  if (canceled || !filePath) return { canceled: true }
+  require('fs').writeFileSync(filePath, csv, 'utf8')
+  return { success: true }
+})
+
+// ─── IPC: Timeline & Analytics data ──────────────────────────────
+ipcMain.handle('db:getApplicationsByDate', () => database.getApplicationsByDate())
+ipcMain.handle('db:getApplicationsPerDay', (_, days) => database.getApplicationsPerDay(days || 7))
+
+// ─── IPC: AI features ────────────────────────────────────────────
+ipcMain.handle('ai:interviewQuestions', async (_, jobDescription, resumeText) => {
+  try {
+    const cfg = configService.load()
+    const questions = await aiAdapter.generateInterviewQuestions(cfg.aiProvider, cfg.aiApiKey, jobDescription, resumeText, cfg.geminiModel)
+    return { success: true, questions }
+  } catch (err) { return { success: false, error: err.message } }
+})
+
+ipcMain.handle('ai:keywordGap', async (_, jobDescription, resumeText) => {
+  try {
+    const cfg = configService.load()
+    const result = await aiAdapter.analyzeKeywordGap(cfg.aiProvider, cfg.aiApiKey, jobDescription, resumeText, cfg.geminiModel)
+    return { success: true, ...result }
+  } catch (err) { return { success: false, error: err.message } }
+})
+
+ipcMain.handle('config:blacklistCompany', async (_, company) => {
+  const cfg = configService.load()
+  const list = Array.isArray(cfg.blacklistedCompanies) ? cfg.blacklistedCompanies : []
+  if (!list.map(c => c.toLowerCase()).includes(company.toLowerCase())) {
+    configService.save({ ...cfg, blacklistedCompanies: [...list, company] })
+  }
+  return { success: true }
+})
+
 // ─── IPC: Database ──────────────────────────────────────────────
 ipcMain.handle('db:getApplications', (_, filters) => database.getApplications(filters))
 ipcMain.handle('db:getApplication', (_, id) => database.getApplication(id))

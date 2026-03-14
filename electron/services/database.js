@@ -78,6 +78,8 @@ function migrate() {
   // Add columns if they don't exist (for existing databases)
   try { db.run('ALTER TABLE applications ADD COLUMN cover_letter TEXT DEFAULT ""') } catch {}
   try { db.run('ALTER TABLE applications ADD COLUMN comment TEXT DEFAULT ""') } catch {}
+  try { db.run('ALTER TABLE applications ADD COLUMN match_explanation TEXT DEFAULT ""') } catch {}
+  try { db.run('ALTER TABLE applications ADD COLUMN follow_up_sent INTEGER DEFAULT 0') } catch {}
 }
 
 // Convert sql.js result to array of objects
@@ -115,6 +117,7 @@ function getApplications(filters = {}) {
   if (filters.status) { conditions.push('status = ?'); params.push(filters.status) }
   if (filters.platform) { conditions.push('platform = ?'); params.push(filters.platform) }
   if (filters.dateFrom) { conditions.push('applied_at >= ?'); params.push(filters.dateFrom) }
+  if (filters.dateTo) { conditions.push('applied_at <= ?'); params.push(filters.dateTo) }
 
   if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ')
   sql += ' ORDER BY applied_at DESC'
@@ -136,11 +139,12 @@ function hasAppliedToCompany(company) {
 function insertApplication(data) {
   run(`
     INSERT INTO applications
-      (job_title, company, platform, salary, job_url, job_description, match_score, tailored_resume, cover_letter, screening_qa, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (job_title, company, platform, salary, job_url, job_description, match_score, match_explanation, tailored_resume, cover_letter, screening_qa, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     data.job_title, data.company, data.platform, data.salary || '',
     data.job_url, data.job_description, data.match_score,
+    data.match_explanation || '',
     data.tailored_resume, data.cover_letter || '',
     JSON.stringify(data.screening_qa || []),
     data.status || 'applied',
@@ -240,15 +244,19 @@ function getStats() {
   const today = new Date().toISOString().split('T')[0]
   const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0]
 
+  const interviews = queryOne("SELECT COUNT(*) as c FROM applications WHERE status = 'interview'")?.c || 0
+  const appliedCount = queryOne("SELECT COUNT(*) as c FROM applications WHERE status != 'skipped'")?.c || 0
+
   return {
     totalAllTime: queryOne('SELECT COUNT(*) as c FROM applications')?.c || 0,
     totalToday: queryOne("SELECT COUNT(*) as c FROM applications WHERE applied_at >= ?", [today + 'T00:00:00'])?.c || 0,
     totalThisWeek: queryOne("SELECT COUNT(*) as c FROM applications WHERE applied_at >= ?", [weekAgo + 'T00:00:00'])?.c || 0,
-    interviews: queryOne("SELECT COUNT(*) as c FROM applications WHERE status = 'interview'")?.c || 0,
+    interviews,
     attentionCount: queryOne('SELECT COUNT(*) as c FROM attention_jobs WHERE dismissed = 0')?.c || 0,
     byPlatform: query("SELECT platform, COUNT(*) as count FROM applications GROUP BY platform"),
     byStatus: query("SELECT status, COUNT(*) as count FROM applications GROUP BY status"),
     todayJobs: query("SELECT job_title, company, platform, match_score, status FROM applications WHERE applied_at >= ? ORDER BY applied_at DESC", [today + 'T00:00:00']),
+    responseRate: appliedCount > 0 ? Math.round((interviews / appliedCount) * 100) : 0,
   }
 }
 
@@ -260,6 +268,30 @@ function getTodayCountByPlatform(platform) {
   )?.c || 0
 }
 
+function findDuplicateAcrossPlatforms(jobTitle, company, currentPlatform) {
+  return queryOne(
+    "SELECT id, platform FROM applications WHERE LOWER(job_title) = LOWER(?) AND LOWER(company) = LOWER(?) AND platform != ? AND status != 'skipped' LIMIT 1",
+    [jobTitle, company, currentPlatform]
+  )
+}
+
+function getApplicationsByDate() {
+  return query("SELECT DATE(applied_at) as date, platform, COUNT(*) as count FROM applications GROUP BY DATE(applied_at), platform ORDER BY date DESC")
+}
+
+function getApplicationsPerDay(days) {
+  const from = new Date(Date.now() - (days - 1) * 86400000).toISOString().split('T')[0]
+  return query("SELECT DATE(applied_at) as date, COUNT(*) as count FROM applications WHERE applied_at >= ? GROUP BY DATE(applied_at) ORDER BY date ASC", [from + 'T00:00:00'])
+}
+
+function getApplicationsForFollowUp(daysOld) {
+  return query("SELECT * FROM applications WHERE status = 'applied' AND follow_up_sent = 0 AND applied_at <= datetime('now', '-' || ? || ' days')", [daysOld])
+}
+
+function markFollowUpSent(id) {
+  run('UPDATE applications SET follow_up_sent = 1 WHERE id = ?', [id])
+}
+
 module.exports = {
   init,
   getApplications, getApplication, hasAppliedToCompany, insertApplication, updateApplicationStatus,
@@ -267,4 +299,6 @@ module.exports = {
   getAttentionJobs, getAttentionJob, insertAttentionJob, dismissAttentionJob, deleteAttentionJob, clearAllAttentionJobs,
   getCachedAnswer, saveCachedAnswer, getAllCachedAnswers, deleteCachedAnswer,
   getStats, getTodayCountByPlatform,
+  findDuplicateAcrossPlatforms, getApplicationsByDate, getApplicationsPerDay,
+  getApplicationsForFollowUp, markFollowUpSent,
 }

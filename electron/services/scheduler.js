@@ -6,6 +6,7 @@ const applicator = require('./applicator')
 
 let scanTask = null
 let reportTask = null
+let followUpTask = null
 let running = false
 let win = null
 
@@ -18,20 +19,24 @@ function startTasks() {
   const cfg = configService.load()
   if (!cfg.setupComplete) return
 
-  // Scan every hour 9am–5pm Mon–Fri
-  scanTask = cron.schedule('0 9-17 * * 1-5', async () => {
-    await runScan()
-  })
+  // Scan once daily at configured time Mon–Fri
+  const [h, m] = (cfg.scheduledScanTime || '09:00').split(':').map(Number)
+  scanTask = cron.schedule(`${m} ${h} * * 1-5`, async () => { await runScan() })
 
   // Daily report at 6pm
   reportTask = cron.schedule('0 18 * * 1-5', async () => {
     await runDailyReport()
   })
+
+  if (cfg.enableFollowUp && cfg.followUpDays > 0) {
+    followUpTask = cron.schedule('0 10 * * 1-5', async () => { await runFollowUp() })
+  }
 }
 
 function stop() {
   if (scanTask) { scanTask.stop(); scanTask = null }
   if (reportTask) { reportTask.stop(); reportTask = null }
+  if (followUpTask) { followUpTask.stop(); followUpTask = null }
   applicator.cancel()
   running = false
 }
@@ -89,6 +94,26 @@ async function runDailyReport() {
     log('Daily report sent.')
   } catch (err) {
     log(`Daily report error: ${err.message}`)
+  }
+}
+
+async function runFollowUp() {
+  try {
+    const cfg = configService.load()
+    if (!cfg.enableFollowUp || !cfg.gmailAddress) return
+    const aiAdapter = require('./ai/index')
+    const jobs = database.getApplicationsForFollowUp(cfg.followUpDays || 7)
+    for (const job of jobs) {
+      const activeResume = (cfg.resumes || []).find(r => r.id === cfg.defaultResumeId)?.text || cfg.masterResume || ''
+      const emailText = await aiAdapter.generateFollowUpEmail(
+        cfg.aiProvider, cfg.aiApiKey, job.job_title, job.company, activeResume, cfg.geminiModel
+      )
+      await emailService.sendFollowUpEmail(job, emailText, cfg)
+      database.markFollowUpSent(job.id)
+      log(`Follow-up sent for ${job.job_title} at ${job.company}`)
+    }
+  } catch (err) {
+    log(`Follow-up error: ${err.message}`)
   }
 }
 

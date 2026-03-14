@@ -26,6 +26,11 @@ const DEFAULTS = {
   enableIndeed: true,
   enableLinkedIn: true,
   setupComplete: false,
+  coverLetterTone: 'professional',
+  coverLetterTemplate: '',
+  scheduledScanTime: '09:00',
+  followUpDays: 7,
+  enableFollowUp: false,
 }
 
 function ensureDir() {

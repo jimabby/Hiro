@@ -143,6 +143,7 @@ export default function Settings() {
       dailyLimitIndeed: parseInt(form.dailyLimitIndeed) || 10,
       dailyLimitLinkedIn: parseInt(form.dailyLimitLinkedIn) || 10,
       blacklistedCompanies: (form.blacklistedCompanies || '').split(',').map(s => s.trim()).filter(Boolean),
+      followUpDays: parseInt(form.followUpDays) || 7,
     })
     setSaving(false)
     setSaved(true)
@@ -213,6 +214,19 @@ export default function Settings() {
               {aiResult.success ? '✓ Connected' : `✗ ${aiResult.error}`}
             </span>
           )}
+        </div>
+      </div>
+
+      {/* Cover Letter Template */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <h3 style={{ marginBottom: 8, fontSize: 15 }}>Cover Letter Template</h3>
+        <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 12 }}>
+          Optional. AI will use this as a structural base. Leave blank for fully AI-generated letters.
+        </p>
+        <div className="form-group">
+          <label>Template</label>
+          <textarea value={form.coverLetterTemplate || ''} onChange={e => set('coverLetterTemplate', e.target.value)}
+            placeholder="Leave blank to let AI write freely..." style={{ minHeight: 120, fontSize: 12, fontFamily: 'monospace' }} />
         </div>
       </div>
 
@@ -296,6 +310,29 @@ export default function Settings() {
         </div>
       </div>
 
+      {/* Automation Schedule */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <h3 style={{ marginBottom: 16, fontSize: 15 }}>Automation Schedule</h3>
+        <div className="form-row">
+          <div className="form-group">
+            <label>Daily Scan Time (Mon–Fri)</label>
+            <input type="time" value={form.scheduledScanTime || '09:00'} onChange={e => set('scheduledScanTime', e.target.value)} />
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: 0 }}>
+            <input type="checkbox" style={{ width: 'auto' }} checked={!!form.enableFollowUp} onChange={e => set('enableFollowUp', e.target.checked)} />
+            Auto follow-up emails for unanswered applications
+          </label>
+        </div>
+        {form.enableFollowUp && (
+          <div className="form-group">
+            <label>Days before follow-up</label>
+            <input type="number" min={1} max={30} value={form.followUpDays || 7} onChange={e => set('followUpDays', e.target.value)} />
+          </div>
+        )}
+      </div>
+
       {/* Job Criteria */}
       <div className="card" style={{ marginBottom: 16 }}>
         <h3 style={{ marginBottom: 16, fontSize: 15 }}>Job Criteria</h3>
@@ -345,6 +382,14 @@ export default function Settings() {
         <div className="form-group">
           <label>Blacklisted Companies (comma-separated)</label>
           <input value={form.blacklistedCompanies} onChange={e => set('blacklistedCompanies', e.target.value)} />
+        </div>
+        <div className="form-group">
+          <label>Cover Letter Tone</label>
+          <select value={form.coverLetterTone || 'professional'} onChange={e => set('coverLetterTone', e.target.value)}>
+            <option value="professional">Professional (default)</option>
+            <option value="casual">Casual &amp; Warm</option>
+            <option value="confident">Confident &amp; Direct</option>
+          </select>
         </div>
       </div>
 

@@ -57,6 +57,18 @@ contextBridge.exposeInMainWorld('api', {
   onQuestionAsk: (cb) => ipcRenderer.on('question:ask', (_, question) => cb(question)),
   sendQuestionAnswer: (answer) => ipcRenderer.send('question:answer', answer),
 
+  // Export CSV
+  exportCSV: (filters) => ipcRenderer.invoke('db:exportCSV', filters),
+
+  // Timeline & Analytics
+  getApplicationsByDate: () => ipcRenderer.invoke('db:getApplicationsByDate'),
+  getApplicationsPerDay: (days) => ipcRenderer.invoke('db:getApplicationsPerDay', days),
+
+  // AI features
+  generateInterviewQuestions: (jobDesc, resume) => ipcRenderer.invoke('ai:interviewQuestions', jobDesc, resume),
+  analyzeKeywordGap: (jobDesc, resume) => ipcRenderer.invoke('ai:keywordGap', jobDesc, resume),
+  blacklistCompany: (company) => ipcRenderer.invoke('config:blacklistCompany', company),
+
   // Events from main process
   onNotification: (cb) => ipcRenderer.on('notification', (_, data) => cb(data)),
   onAutomationLog: (cb) => ipcRenderer.on('automation:log', (_, msg) => cb(msg)),

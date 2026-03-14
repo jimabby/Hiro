@@ -3,10 +3,14 @@ import Setup from './pages/Setup'
 import Dashboard from './pages/Dashboard'
 import NeedsAttention from './pages/NeedsAttention'
 import Settings from './pages/Settings'
+import Timeline from './pages/Timeline'
+import Analytics from './pages/Analytics'
 
 const NAV = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'attention', label: 'Needs Attention' },
+  { id: 'timeline', label: 'Timeline' },
+  { id: 'analytics', label: 'Analytics' },
   { id: 'settings', label: 'Settings' },
 ]
 
@@ -102,6 +106,8 @@ export default function App() {
   const pages = {
     dashboard: <Dashboard logs={logs} scanRunning={scanRunning} onScanStart={handleScanStart} />,
     attention: <NeedsAttention onCountChange={setAttentionCount} />,
+    timeline: <Timeline />,
+    analytics: <Analytics />,
     settings: <Settings />,
   }
 

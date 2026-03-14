@@ -12,15 +12,59 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
   const [stats, setStats] = useState(null)
   const [apps, setApps] = useState([])
   const [selected, setSelected] = useState(null)
-  const [filter, setFilter] = useState({ status: '', platform: '' })
+  const [filter, setFilter] = useState({ status: '', platform: '', search: '' })
   const [resumeExpanded, setResumeExpanded] = useState(false)
+  const [interviewQuestions, setInterviewQuestions] = useState(null)
+  const [loadingQuestions, setLoadingQuestions] = useState(false)
+  const [keywordGap, setKeywordGap] = useState(null)
+  const [loadingGap, setLoadingGap] = useState(false)
   const logRef = useRef(null)
+  const searchRef = useRef(null)
 
   useEffect(() => { loadData() }, [])
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
   }, [logs])
+
+  useEffect(() => {
+    setInterviewQuestions(null)
+    setKeywordGap(null)
+  }, [selected?.id])
+
+  const filtered = apps.filter(a => {
+    if (filter.status && a.status !== filter.status) return false
+    if (filter.platform && a.platform !== filter.platform) return false
+    if (filter.search) {
+      const q = filter.search.toLowerCase()
+      if (!a.job_title.toLowerCase().includes(q) && !a.company.toLowerCase().includes(q)) return false
+    }
+    return true
+  })
+
+  useEffect(() => {
+    function handler(e) {
+      if (e.key === 'Escape') setSelected(null)
+      if (e.key === '/' && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
+        e.preventDefault()
+        searchRef.current?.focus()
+      }
+      if (selected) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault()
+          const idx = filtered.findIndex(a => a.id === selected.id)
+          if (idx < filtered.length - 1) { setSelected(filtered[idx + 1]); setResumeExpanded(false) }
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault()
+          const idx = filtered.findIndex(a => a.id === selected.id)
+          if (idx > 0) { setSelected(filtered[idx - 1]); setResumeExpanded(false) }
+        }
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [selected, filtered])
 
   async function loadData() {
     const [s, a] = await Promise.all([
@@ -63,12 +107,6 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
     loadData()
   }
 
-  const filtered = apps.filter(a => {
-    if (filter.status && a.status !== filter.status) return false
-    if (filter.platform && a.platform !== filter.platform) return false
-    return true
-  })
-
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
@@ -87,12 +125,13 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
 
       {/* Stats */}
       {stats && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 24 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16, marginBottom: 24 }}>
           {[
             { label: 'Today', value: stats.totalToday },
             { label: 'This Week', value: stats.totalThisWeek },
             { label: 'All Time', value: stats.totalAllTime },
             { label: 'Interviews', value: stats.interviews },
+            { label: 'Response Rate', value: stats.responseRate != null ? `${stats.responseRate}%` : '—' },
           ].map(s => (
             <div key={s.label} className="card stat-card">
               <div className="stat-value">{s.value}</div>
@@ -117,12 +156,22 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
           <span style={{ fontWeight: 600, fontSize: 15 }}>Jobs ({filtered.length})</span>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              ref={searchRef}
+              value={filter.search}
+              onChange={e => setFilter(f => ({ ...f, search: e.target.value }))}
+              placeholder="Search... (/)"
+              style={{ width: 160, padding: '5px 10px', fontSize: 12 }}
+            />
             {apps.length > 0 && (
               <button className="btn btn-ghost" style={{ fontSize: 12, color: 'var(--red)' }} onClick={clearAll}>
                 Clear All
               </button>
             )}
+            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => window.api.exportCSV(filter)}>
+              Export CSV
+            </button>
             <select value={filter.status} onChange={e => setFilter(f => ({ ...f, status: e.target.value }))} style={{ width: 'auto' }}>
               <option value="">All Statuses</option>
               <option value="applied">Applied</option>
@@ -229,6 +278,9 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
                     {selected.match_score}% match
                   </span>
                 </div>
+                {selected.match_explanation && (
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{selected.match_explanation}</div>
+                )}
               </div>
               <div style={{ display: 'flex', gap: 6 }}>
                 <button className="btn btn-ghost" style={{ fontSize: 12, color: 'var(--red)' }}
@@ -239,6 +291,45 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
                   }}>Delete</button>
                 <button className="btn btn-ghost" onClick={() => setSelected(null)}>✕</button>
               </div>
+            </div>
+
+            {/* Action buttons */}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+              {selected.status === 'interview' && (
+                <button className="btn btn-ghost" style={{ fontSize: 12 }}
+                  disabled={loadingQuestions}
+                  onClick={async () => {
+                    setLoadingQuestions(true)
+                    const cfg = await window.api.getConfig()
+                    const resume = (cfg.resumes || []).find(r => r.id === cfg.defaultResumeId)?.text || cfg.masterResume || ''
+                    const res = await window.api.generateInterviewQuestions(selected.job_description || '', resume)
+                    setLoadingQuestions(false)
+                    if (res.success) setInterviewQuestions(res.questions)
+                  }}>
+                  {loadingQuestions ? 'Generating...' : 'Interview Questions'}
+                </button>
+              )}
+              {selected.job_description && (
+                <button className="btn btn-ghost" style={{ fontSize: 12 }}
+                  disabled={loadingGap}
+                  onClick={async () => {
+                    setLoadingGap(true)
+                    const cfg = await window.api.getConfig()
+                    const resume = (cfg.resumes || []).find(r => r.id === cfg.defaultResumeId)?.text || cfg.masterResume || ''
+                    const res = await window.api.analyzeKeywordGap(selected.job_description, resume)
+                    setLoadingGap(false)
+                    if (res.success) setKeywordGap({ missing: res.missing || [], present: res.present || [] })
+                  }}>
+                  {loadingGap ? 'Analyzing...' : 'Keyword Gap'}
+                </button>
+              )}
+              <button className="btn btn-ghost" style={{ fontSize: 12, color: 'var(--red)' }}
+                onClick={async () => {
+                  if (!window.confirm(`Blacklist ${selected.company}? It will be excluded from future scans.`)) return
+                  await window.api.blacklistCompany(selected.company)
+                }}>
+                Blacklist Company
+              </button>
             </div>
 
             <div style={{ marginBottom: 16 }}>
@@ -306,7 +397,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
             )}
 
             {selected.screening_qa && JSON.parse(selected.screening_qa || '[]').length > 0 && (
-              <div>
+              <div style={{ marginBottom: 16 }}>
                 <label style={{ marginBottom: 8 }}>Screening Q&A</label>
                 {JSON.parse(selected.screening_qa).map((qa, i) => (
                   <div key={i} style={{ marginBottom: 10, padding: 12, background: 'var(--surface2)', borderRadius: 8 }}>
@@ -314,6 +405,39 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
                     <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>A: {qa.answer}</div>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {interviewQuestions && interviewQuestions.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ marginBottom: 8 }}>Interview Questions</label>
+                {interviewQuestions.map((q, i) => (
+                  <div key={i} style={{ padding: '8px 12px', background: 'var(--surface2)', borderRadius: 6, marginBottom: 6, fontSize: 13, borderLeft: '3px solid var(--green)' }}>
+                    {i + 1}. {q}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {keywordGap && (
+              <div>
+                <label style={{ marginBottom: 8 }}>Keyword Gap</label>
+                {keywordGap.missing.length > 0 && (
+                  <div style={{ marginBottom: 8 }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>Missing from your resume:</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {keywordGap.missing.map(k => <span key={k} className="badge badge-red">{k}</span>)}
+                    </div>
+                  </div>
+                )}
+                {keywordGap.present.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>Present in your resume:</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {keywordGap.present.map(k => <span key={k} className="badge badge-green">{k}</span>)}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
