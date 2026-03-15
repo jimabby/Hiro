@@ -20,7 +20,7 @@ export default function Timeline() {
 
   async function toggleDay(date) {
     if (expanded === date) { setExpanded(null); return }
-    const jobs = await window.api.getApplications({ dateFrom: date + 'T00:00:00', dateTo: date + 'T23:59:59' })
+    const jobs = await window.api.getApplications({ dateFrom: date + ' 00:00:00', dateTo: date + ' 23:59:59' })
     setDayJobs(jobs)
     setExpanded(date)
   }

@@ -208,11 +208,26 @@ ipcMain.handle('resume:importFile', async () => {
       const { pathToFileURL } = require('url')
       const parser = new PDFParse({ url: pathToFileURL(filePath).toString() })
       const result = await parser.getText()
+      // PDF fonts often use non-standard encoding — strip same artifacts as DOCX
       text = result.text
+        .replace(/\r\n/g, '\n')
+        .replace(/[^\x09\x0A\x20-\x7E\u2013\u2014\u2018\u2019\u201C\u201D\u2022\u2026]/g, '')
+        .replace(/•(?!\s)/g, '')
+        .replace(/[ \t]{2,}/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim()
     } else if (ext === 'docx' || ext === 'doc') {
       const mammoth = require('mammoth')
       const result = await mammoth.extractRawText({ path: filePath })
+      // Some DOCX files use non-standard font encoding — mammoth extracts those as garbled
+      // Latin Extended characters. Strip anything outside ASCII + common punctuation symbols.
       text = result.value
+        .replace(/\r\n/g, '\n')
+        .replace(/[^\x09\x0A\x20-\x7E\u2013\u2014\u2018\u2019\u201C\u201D\u2022\u2026]/g, '')
+        .replace(/•(?!\s)/g, '')   // remove bullet-artifacts like •7B, •6W (no space after = artifact)
+        .replace(/[ \t]{2,}/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim()
     }
 
     // Copy original file so its format can be used during submission.
@@ -320,18 +335,18 @@ ipcMain.handle('coverLetter:getPDFBase64', async (_, text) => {
   }
 })
 
-// ─── IPC: Resume preview — open styled DOCX in system app ────────
-// Uses buildResumeDocx so the preview matches the format that will be submitted.
+// ─── IPC: Resume preview — open DOCX in system app ──────────────
 ipcMain.handle('resume:openDocx', async (_, resumeText, originalPath) => {
   try {
-    const { buildResumeDocx, tailorDocx } = require('./services/scraper/utils')
     const fs = require('fs')
-    let filePath
+    // If the original DOCX is available, open it directly — fastest and most accurate preview
     if (originalPath && fs.existsSync(originalPath)) {
-      filePath = await tailorDocx(originalPath, resumeText)
-    } else {
-      filePath = await buildResumeDocx(resumeText)
+      await shell.openPath(originalPath)
+      return { success: true }
     }
+    // No original — generate a styled DOCX from the resume text
+    const { buildResumeDocx } = require('./services/scraper/utils')
+    const filePath = await buildResumeDocx(resumeText)
     await shell.openPath(filePath)
     return { success: true }
   } catch (err) {

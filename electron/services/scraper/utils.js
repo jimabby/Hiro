@@ -15,7 +15,7 @@ function randomDelay(min = 1000, max = 3000) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-async function humanType(page, element, text) {
+async function humanType(_page, element, text) {
   await element.click()
   await randomDelay(100, 300)
   for (const char of text) {
@@ -42,20 +42,24 @@ async function buildResumePDF(tailoredResume, candidateName) {
   const safeName = (candidateName || 'Resume').replace(/[^a-zA-Z0-9 _-]/g, '').trim()
   const tempPath = path.join(os.tmpdir(), `Resume - ${safeName}.pdf`)
   const text = stripMarkdown(tailoredResume || '')
+  // Remove trailing blank lines so they don't trigger an extra empty page
   const lines = text.split('\n')
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop()
 
-  const ML = 52, CW = 491 // left margin, content width (A4 595pt - 52*2 margins)
-  const NAVY = '#1E3A5F'
-  const BLUE = '#2563EB'
-  const BODY = '#1a1a1a'
-  const GREY = '#6B7280'
+  const ML = 54, MR = 54, CW = 595 - ML - MR  // A4 width 595pt
+  const NAVY  = '#1E3A5F'
+  const BLUE  = '#2563EB'
+  const BODY  = '#111827'
+  const GREY  = '#6B7280'
+  const LGREY = '#9CA3AF'
 
   function isSectionHeader(t) {
     return t.length >= 3 && /^[A-Z][A-Z\s\/&\-]{2,}$/.test(t)
   }
 
+  // Detect "Company/Role   Date Range" lines — require 2+ spaces before date
   function splitDateLine(t) {
-    const m = t.match(/^(.+?)\s{3,}(.+)$/)
+    const m = t.match(/^(.+?)\s{2,}(.+)$/)
     if (m && /\b(19|20)\d{2}\b|present|current/i.test(m[2])) {
       return { left: m[1].trim(), right: m[2].trim() }
     }
@@ -70,80 +74,112 @@ async function buildResumePDF(tailoredResume, candidateName) {
     let idx = 0
     while (idx < lines.length && !lines[idx].trim()) idx++
 
-    // Name — explicitly positioned to guarantee centering
+    // ── Name ─────────────────────────────────────────────────────────
     if (idx < lines.length) {
-      doc.fontSize(22).font('Helvetica-Bold').fillColor(NAVY)
+      doc.fontSize(24).font('Helvetica-Bold').fillColor(NAVY)
         .text(lines[idx++].trim(), ML, doc.y, { align: 'center', width: CW })
-      doc.moveDown(0.2)
+      doc.moveDown(0.15)
     }
 
-    // Contact info: lines with email/phone/links or pipe separators
+    // ── Contact info (email / phone / links / location / pipe-separated) ──
+    // Collect ALL short lines between the name and the first section header.
+    // Stop only when we hit: a section header, a long prose line (>65 chars),
+    // or a line that looks like a job title (after at least one item collected).
+    const JOB_TITLE_RE = /\b(engineer|developer|analyst|designer|manager|architect|consultant|programmer|director|specialist|coordinator|officer|scientist)\b/i
     const contactParts = []
     while (idx < lines.length) {
       const l = lines[idx].trim()
       if (!l) { idx++; continue }
       if (isSectionHeader(l)) break
-      if (/[@|]|linkedin|github|http|\+\d|04\d{2}|\d{3}[-.\s]\d{3}/i.test(l) || contactParts.length === 0) {
-        contactParts.push(l.replace(/\s*\|\s*/g, ' | '))
-        idx++
-      } else break
+      if (l.length > 65) break
+      if (contactParts.length > 0 && JOB_TITLE_RE.test(l)) break
+      contactParts.push(l.replace(/\s*\|\s*/g, '  |  '))
+      idx++
+      if (contactParts.length >= 7) break
     }
     if (contactParts.length) {
-      doc.fontSize(9).font('Helvetica').fillColor(GREY)
-        .text(contactParts.join('  |  '), ML, doc.y, { align: 'center', width: CW })
-      doc.moveDown(0.25)
+      doc.fontSize(9.5).font('Helvetica').fillColor(GREY)
+        .text(contactParts.join('   |   '), ML, doc.y, { align: 'center', width: CW })
+      doc.moveDown(0.3)
     }
 
-    // Header rule
-    const ruleY = doc.y
-    doc.moveTo(ML, ruleY).lineTo(ML + CW, ruleY).strokeColor(BLUE).lineWidth(1.5).stroke()
-    doc.moveDown(0.5)
+    // ── Full-width divider ────────────────────────────────────────────
+    doc.moveTo(ML, doc.y).lineTo(ML + CW, doc.y).strokeColor(BLUE).lineWidth(1.8).stroke()
+    doc.moveDown(0.55)
 
-    // Body
+    // ── Body ──────────────────────────────────────────────────────────
+    // Every line in these sections gets a bullet
+    const AUTO_BULLET_RE  = /^(SKILL|CERTIF|QUALIF|AWARD|ACHIEVEMENT|LANGUAGE|INTEREST|REFERENCE|HONOR|PUBLICAT|VOLUNTEER|ACTIVIT)/i
+    // Only the FIRST line of each entry (school name) gets a bullet; rest are indented sub-lines
+    const ENTRY_BULLET_RE = /^(EDUCAT|TRAINING|COURSE)/i
+    let autoBullet  = false
+    let entryBullet = false   // education-style: bullet first line, indent the rest
+    let entryStart  = false   // true = next non-blank line is the start of a new entry
+
     while (idx < lines.length) {
       const t = lines[idx++].trim()
 
       if (!t) {
+        if (entryBullet) entryStart = true  // blank line = new entry coming next
         doc.moveDown(0.25)
         continue
       }
 
+      // Section header (ALL CAPS)
       if (isSectionHeader(t)) {
-        doc.moveDown(0.45)
+        autoBullet  = AUTO_BULLET_RE.test(t)
+        entryBullet = ENTRY_BULLET_RE.test(t)
+        entryStart  = entryBullet
+        if (entryBullet) autoBullet = false
+        doc.moveDown(0.5)
         doc.fontSize(10.5).font('Helvetica-Bold').fillColor(NAVY)
           .text(t, ML, doc.y, { align: 'center', width: CW })
-        const ry = doc.y + 1
-        doc.moveTo(ML, ry).lineTo(ML + CW, ry).strokeColor(BLUE).lineWidth(0.6).stroke()
-        doc.moveDown(0.3)
+        const ry = doc.y + 2
+        doc.moveTo(ML, ry).lineTo(ML + CW, ry).strokeColor(BLUE).lineWidth(0.5).stroke()
+        doc.moveDown(0.4)
         continue
       }
 
-      if (/^[-•*]\s/.test(t)) {
-        const bt = t.replace(/^[-•*]\s+/, '')
-        const INDENT = 13
-        const by = doc.y
-        doc.fontSize(9.5).font('Helvetica').fillColor(BODY)
-        doc.text('•', ML, by, { width: INDENT - 2, lineBreak: false })
-        doc.text(bt, ML + INDENT, by, { width: CW - INDENT })
+      const INDENT = 14
+      const isExplicitBullet = /^[-•*]\s/.test(t)
+
+      // Education sub-lines (degree, date) — indented, smaller, grey, no bullet
+      if (entryBullet && !entryStart && !isExplicitBullet) {
+        doc.fontSize(9.5).font('Helvetica').fillColor(GREY)
+          .text(t, ML + INDENT, doc.y, { width: CW - INDENT, lineGap: 1 })
         doc.moveDown(0.05)
         continue
       }
 
+      // Explicit bullet OR auto-bullet (Skills, Certifications…) OR first line of education entry
+      if (isExplicitBullet || autoBullet || (entryBullet && entryStart)) {
+        if (entryBullet && entryStart) entryStart = false
+        const bt = isExplicitBullet ? t.replace(/^[-•*]\s+/, '') : t
+        const by = doc.y
+        doc.fontSize(10).font('Helvetica').fillColor(BODY)
+        doc.text('•', ML + 2, by, { width: INDENT - 2, lineBreak: false })
+        doc.text(bt, ML + INDENT, by, { width: CW - INDENT, lineGap: 1.5 })
+        doc.moveDown(0.1)
+        continue
+      }
+
+      // Company / role + date (right-aligned date, bold left label)
       const dateSplit = splitDateLine(t)
       if (dateSplit) {
         const { left, right } = dateSplit
         const rowY = doc.y
-        doc.fontSize(9).font('Helvetica').fillColor(GREY)
+        doc.fontSize(9.5).font('Helvetica').fillColor(LGREY)
         const dateWidth = doc.widthOfString(right) + 4
         doc.text(right, ML, rowY, { width: CW, align: 'right', lineBreak: false })
-        doc.fontSize(10).font('Helvetica-Bold').fillColor(BODY)
+        doc.fontSize(10.5).font('Helvetica-Bold').fillColor(BODY)
           .text(left, ML, rowY, { width: CW - dateWidth - 8 })
-        doc.moveDown(0.05)
+        doc.moveDown(0.08)
         continue
       }
 
-      doc.fontSize(9.5).font('Helvetica').fillColor(BODY)
-        .text(t, ML, doc.y, { width: CW })
+      // Plain body line (job title, location, summary prose, etc.)
+      doc.fontSize(10).font('Helvetica').fillColor(BODY)
+        .text(t, ML, doc.y, { width: CW, lineGap: 1.5 })
     }
 
     doc.end()
@@ -168,8 +204,8 @@ async function buildCoverLetterPDF(text) {
     doc.pipe(stream)
     doc.fontSize(11).font('Helvetica').fillColor('#1a1a1a')
     for (let i = 0; i < paragraphs.length; i++) {
-      doc.text(paragraphs[i], { lineGap: 3 })
-      if (i < paragraphs.length - 1) doc.moveDown(0.55)
+      doc.text(paragraphs[i], { lineGap: 4 })
+      if (i < paragraphs.length - 1) doc.moveDown(1.5)
     }
     doc.end()
     stream.on('finish', () => resolve(tempPath))
