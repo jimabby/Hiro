@@ -1,7 +1,7 @@
 const { chromium } = require('playwright-extra')
 const StealthPlugin = require('puppeteer-extra-plugin-stealth')
 chromium.use(StealthPlugin())
-const { randomDelay, randomUserAgent, buildResumeFile } = require('./utils')
+const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown } = require('./utils')
 const indeedSession = require('../indeedSession')
 const aiAdapter = require('../ai/index')
 const database = require('../database')
@@ -225,7 +225,7 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
       }
 
       // Fill cover letter (instant paste, overwrite any pre-filled content)
-      const coverText = (coverLetter || tailoredResume || '').slice(0, 3000)
+      const coverText = stripMarkdown(coverLetter || tailoredResume || '').slice(0, 3000)
       const coverFieldSelectors = [
         'textarea[id*="coverletter" i]', 'textarea[name*="coverletter" i]',
         'textarea[aria-label*="cover letter" i]', 'textarea[placeholder*="cover letter" i]',
@@ -245,6 +245,74 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
 
       // Dynamically detect and answer screening questions on this step
       if (cfg.aiProvider && cfg.aiApiKey) {
+        async function getAnswer(questionText, optionHint) {
+          const cached = database.getCachedAnswer(questionText)
+          if (cached) return cached
+          let aiAnswer = ''
+          try {
+            aiAnswer = await aiAdapter.answerScreeningQuestion(
+              cfg.aiProvider, cfg.aiApiKey,
+              questionText + (optionHint ? ` (options: ${optionHint})` : ''),
+              cfg.jobDescription || '', cfg.masterResume || '', cfg.geminiModel
+            )
+          } catch {}
+          const isUncertain = !aiAnswer || aiAnswer.trim().length < 3 ||
+            /i'm not sure|i don't know|unclear|unsure|cannot determine|not enough information/i.test(aiAnswer)
+          if (isUncertain && cfg.askQuestion) {
+            const prompt = optionHint ? `${questionText} (${optionHint})` : questionText
+            const userAnswer = await cfg.askQuestion(prompt).catch(() => '')
+            if (userAnswer) { database.saveCachedAnswer(questionText, userAnswer); return userAnswer }
+            return ''
+          }
+          if (aiAnswer) database.saveCachedAnswer(questionText, aiAnswer)
+          return aiAnswer || ''
+        }
+
+        // ── Radio button groups ─────────────────────────────────────────────
+        const fieldsetEls = await workFrame.$$('fieldset').catch(() => [])
+        for (const fieldset of fieldsetEls) {
+          const radios = await fieldset.$$('input[type="radio"]').catch(() => [])
+          if (radios.length === 0) continue
+          const anyChecked = await fieldset.$('input[type="radio"]:checked').catch(() => null)
+          if (anyChecked) continue
+
+          const questionText = await fieldset.evaluate(el => {
+            const legend = el.querySelector('legend')
+            if (legend) return legend.textContent?.trim() || ''
+            return el.querySelector('p, [data-automation]')?.textContent?.trim() || ''
+          }).catch(() => '')
+          if (!questionText || questionText.length < 3) continue
+          if (/cover.?letter/i.test(questionText)) continue
+
+          const options = []
+          for (const radio of radios) {
+            const label = await radio.evaluate(el => {
+              const id = el.id
+              if (id) {
+                const lbl = document.querySelector(`label[for="${CSS.escape(id)}"]`)
+                if (lbl) return lbl.textContent?.trim() || ''
+              }
+              return el.closest('label')?.textContent?.trim() || el.value || ''
+            }).catch(() => '')
+            if (label) options.push({ radio, label })
+          }
+          if (options.length === 0) continue
+
+          const optionHint = options.map(o => o.label).join(' / ')
+          const answer = await getAnswer(questionText, optionHint)
+          if (!answer) continue
+
+          const answerLow = answer.trim().toLowerCase()
+          const matched = options.find(o =>
+            o.label.toLowerCase().includes(answerLow) || answerLow.includes(o.label.toLowerCase())
+          )
+          if (matched) {
+            await matched.radio.click().catch(() => {})
+            await randomDelay(200, 400)
+          }
+        }
+
+        // ── Text / select / number inputs ───────────────────────────────────
         const labels = await workFrame.$$('label').catch(() => [])
         for (const labelEl of labels) {
           const questionText = await labelEl.evaluate(el => el.textContent?.trim()).catch(() => '')
@@ -253,49 +321,64 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
 
           const forId = await labelEl.evaluate(el => el.getAttribute('for')).catch(() => null)
           let input = null
-          if (forId) {
-            input = await workFrame.$(`#${cssEscape(forId)}`).catch(() => null)
-          }
+          if (forId) input = await workFrame.$(`#${cssEscape(forId)}`).catch(() => null)
           if (!input) {
             input = await labelEl.$('input:not([type="hidden"]):not([type="file"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"]), textarea, select').catch(() => null)
           }
           if (!input) continue
 
           const tag = await input.evaluate(el => el.tagName.toLowerCase()).catch(() => '')
-          if (!tag) continue
+          const inputType = await input.evaluate(el => el.type || 'text').catch(() => 'text')
+          if (!tag || inputType === 'radio' || inputType === 'checkbox') continue
 
           const currentVal = await input.inputValue().catch(() => '')
           if (currentVal.trim()) continue
 
-          let answer = ''
-          const cached = database.getCachedAnswer(questionText)
-          if (cached) {
-            answer = cached
-          } else {
-            let aiAnswer = ''
-            try {
-              aiAnswer = await aiAdapter.answerScreeningQuestion(
-                cfg.aiProvider, cfg.aiApiKey,
-                questionText, cfg.jobDescription || '', cfg.masterResume || '', cfg.geminiModel
-              )
-            } catch {}
-
-            const isUncertain = !aiAnswer || aiAnswer.trim().length < 3 ||
-              /i'm not sure|i don't know|unclear|unsure|cannot determine|not enough information/i.test(aiAnswer)
-
-            if (isUncertain && cfg.askQuestion) {
-              const userAnswer = await cfg.askQuestion(questionText).catch(() => '')
-              if (userAnswer) { answer = userAnswer; database.saveCachedAnswer(questionText, userAnswer) }
-            } else if (aiAnswer) {
-              answer = aiAnswer
-              database.saveCachedAnswer(questionText, aiAnswer)
-            }
+          let optionHint = ''
+          if (tag === 'select') {
+            const opts = await input.evaluate(el =>
+              Array.from(el.options).map(o => o.text.trim()).filter(t => t)
+            ).catch(() => [])
+            if (opts.length) optionHint = opts.join(' / ')
           }
 
+          const answer = await getAnswer(questionText, optionHint)
           if (!answer) continue
 
           if (tag === 'select') {
-            await input.selectOption({ label: answer }).catch(() => {})
+            const options = await input.evaluate(el =>
+              Array.from(el.options).map(o => ({ text: o.text.trim(), value: o.value }))
+            ).catch(() => [])
+            const ansLow = answer.toLowerCase()
+            const ansNum = parseFloat(answer.replace(/[^0-9.]/g, '')) || 0
+
+            let match = options.find(o => o.text.toLowerCase() === ansLow)
+            if (!match) match = options.find(o => o.text.toLowerCase().includes(ansLow) || ansLow.includes(o.text.toLowerCase()))
+            if (!match && !isNaN(ansNum)) {
+              match = options.find(o => {
+                const nums = o.text.match(/(\d+)/g)
+                if (!nums) return false
+                if (nums.length === 1) return ansNum === parseFloat(nums[0])
+                if (nums.length >= 2) return ansNum >= parseFloat(nums[0]) && ansNum <= parseFloat(nums[1])
+                return false
+              })
+            }
+            if (!match && /^(no|0|none|n\/a)/i.test(answer)) {
+              match = options.find(o => /^(no|0|none|never|n\/a)/i.test(o.text)) || options[1]
+            }
+            if (!match && /^yes/i.test(answer)) {
+              match = options.find(o => /^yes/i.test(o.text))
+            }
+
+            if (match) {
+              await input.selectOption({ label: match.text }).catch(async () => {
+                await input.selectOption({ value: match.value }).catch(() => {})
+              })
+            } else {
+              await input.selectOption({ label: answer }).catch(async () => {
+                await input.selectOption({ value: answer }).catch(() => {})
+              })
+            }
           } else {
             await input.fill(answer).catch(() => {})
           }

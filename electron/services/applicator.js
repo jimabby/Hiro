@@ -3,7 +3,7 @@ const indeed = require('./scraper/indeed')
 const linkedin = require('./scraper/linkedin')
 const aiAdapter = require('./ai/index')
 const database = require('./database')
-const { randomDelay } = require('./scraper/utils')
+const { randomDelay, stripMarkdown } = require('./scraper/utils')
 
 let cancelled = false
 
@@ -129,7 +129,7 @@ async function run(cfg, { log, notifyAttention }) {
       // Tailor resume
       let tailoredResume = cfg.masterResume
       try {
-        tailoredResume = await aiAdapter.tailorResume(cfg.aiProvider, cfg.aiApiKey, jobDescription, cfg.masterResume, cfg.geminiModel)
+        tailoredResume = stripMarkdown(await aiAdapter.tailorResume(cfg.aiProvider, cfg.aiApiKey, jobDescription, cfg.masterResume, cfg.geminiModel))
         log(`  Resume tailored`)
       } catch (err) {
         log(`  Resume tailoring error: ${err.message}`)
@@ -138,7 +138,7 @@ async function run(cfg, { log, notifyAttention }) {
       // Generate cover letter
       let coverLetter = ''
       try {
-        coverLetter = await aiAdapter.generateCoverLetter(cfg.aiProvider, cfg.aiApiKey, jobDescription, cfg.masterResume, cfg.geminiModel, cfg.coverLetterTone, cfg.coverLetterTemplate)
+        coverLetter = stripMarkdown(await aiAdapter.generateCoverLetter(cfg.aiProvider, cfg.aiApiKey, jobDescription, cfg.masterResume, cfg.geminiModel, cfg.coverLetterTone, cfg.coverLetterTemplate))
         log(`  Cover letter generated`)
       } catch (err) {
         log(`  Cover letter error: ${err.message}`)
@@ -223,7 +223,7 @@ async function applyAttentionJob(jobId, cfg, log) {
   log(`Tailoring resume for ${job.job_title} at ${job.company}...`)
   let tailoredResume = cfg.masterResume
   try {
-    tailoredResume = await aiAdapter.tailorResume(cfg.aiProvider, cfg.aiApiKey, job.job_description || job.job_title, cfg.masterResume, cfg.geminiModel)
+    tailoredResume = stripMarkdown(await aiAdapter.tailorResume(cfg.aiProvider, cfg.aiApiKey, job.job_description || job.job_title, cfg.masterResume, cfg.geminiModel))
     log('Resume tailored')
   } catch (err) {
     log(`Resume tailoring error: ${err.message}`)
@@ -232,7 +232,7 @@ async function applyAttentionJob(jobId, cfg, log) {
   log('Generating cover letter...')
   let coverLetter = ''
   try {
-    coverLetter = await aiAdapter.generateCoverLetter(cfg.aiProvider, cfg.aiApiKey, job.job_description || job.job_title, cfg.masterResume, cfg.geminiModel, cfg.coverLetterTone, cfg.coverLetterTemplate)
+    coverLetter = stripMarkdown(await aiAdapter.generateCoverLetter(cfg.aiProvider, cfg.aiApiKey, job.job_description || job.job_title, cfg.masterResume, cfg.geminiModel, cfg.coverLetterTone, cfg.coverLetterTemplate))
     log('Cover letter generated')
   } catch (err) {
     log(`Cover letter error: ${err.message}`)
@@ -285,7 +285,7 @@ async function applySkippedJob(jobId, cfg, log) {
   log(`Tailoring resume for ${job.job_title} at ${job.company}...`)
   let tailoredResume = cfg.masterResume
   try {
-    tailoredResume = await aiAdapter.tailorResume(cfg.aiProvider, cfg.aiApiKey, job.job_description || job.job_title, cfg.masterResume, cfg.geminiModel)
+    tailoredResume = stripMarkdown(await aiAdapter.tailorResume(cfg.aiProvider, cfg.aiApiKey, job.job_description || job.job_title, cfg.masterResume, cfg.geminiModel))
     log('Resume tailored')
   } catch (err) {
     log(`Resume tailoring error: ${err.message}`)
@@ -294,7 +294,7 @@ async function applySkippedJob(jobId, cfg, log) {
   log('Generating cover letter...')
   let coverLetter = ''
   try {
-    coverLetter = await aiAdapter.generateCoverLetter(cfg.aiProvider, cfg.aiApiKey, job.job_description || job.job_title, cfg.masterResume, cfg.geminiModel, cfg.coverLetterTone, cfg.coverLetterTemplate)
+    coverLetter = stripMarkdown(await aiAdapter.generateCoverLetter(cfg.aiProvider, cfg.aiApiKey, job.job_description || job.job_title, cfg.masterResume, cfg.geminiModel, cfg.coverLetterTone, cfg.coverLetterTemplate))
     log('Cover letter generated')
   } catch (err) {
     log(`Cover letter error: ${err.message}`)

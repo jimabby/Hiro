@@ -54,7 +54,7 @@ contextBridge.exposeInMainWorld('api', {
   // Resume file import / improve / download
   importResumeFile: () => ipcRenderer.invoke('resume:importFile'),
   improveResume: (text) => ipcRenderer.invoke('resume:improve', text),
-  downloadResume: (text, name, format) => ipcRenderer.invoke('resume:download', text, name, format),
+  downloadResume: (text, name, format, type) => ipcRenderer.invoke('resume:download', text, name, format, type),
   getResumePDFBase64: (text, originalPath, originalExt) => ipcRenderer.invoke('resume:getPDFBase64', text, originalPath, originalExt),
   getCoverLetterPDFBase64: (text) => ipcRenderer.invoke('coverLetter:getPDFBase64', text),
   openResumeDocx: (text, originalPath) => ipcRenderer.invoke('resume:openDocx', text, originalPath),

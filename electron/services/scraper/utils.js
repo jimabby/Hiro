@@ -42,9 +42,13 @@ async function buildResumePDF(tailoredResume, candidateName) {
   const safeName = (candidateName || 'Resume').replace(/[^a-zA-Z0-9 _-]/g, '').trim()
   const tempPath = path.join(os.tmpdir(), `Resume - ${safeName}.pdf`)
   const text = stripMarkdown(tailoredResume || '')
-  // Remove trailing blank lines so they don't trigger an extra empty page
+  // Remove trailing blank / bullet-only lines so they don't trigger an extra empty page
   const lines = text.split('\n')
-  while (lines.length && !lines[lines.length - 1].trim()) lines.pop()
+  while (lines.length) {
+    const last = lines[lines.length - 1].trim()
+    if (!last || /^[-•*]\s*$/.test(last)) lines.pop()
+    else break
+  }
 
   const ML = 54, MR = 54, CW = 595 - ML - MR  // A4 width 595pt
   const NAVY  = '#1E3A5F'
@@ -116,6 +120,10 @@ async function buildResumePDF(tailoredResume, candidateName) {
     let entryBullet = false   // education-style: bullet first line, indent the rest
     let entryStart  = false   // true = next non-blank line is the start of a new entry
 
+    // Safety margin: if cursor is within 40pt of page bottom, start a new page
+    // so content (bullet + text, header + rule) isn't split across pages.
+    const PAGE_BOTTOM_LIMIT = () => doc.page.height - (doc.page.margins ? doc.page.margins.bottom : ML) - 40
+
     while (idx < lines.length) {
       const t = lines[idx++].trim()
 
@@ -124,6 +132,9 @@ async function buildResumePDF(tailoredResume, candidateName) {
         doc.moveDown(0.25)
         continue
       }
+
+      // Prevent orphaned content — ensure room before rendering anything
+      if (doc.y > PAGE_BOTTOM_LIMIT()) doc.addPage()
 
       // Section header (ALL CAPS)
       if (isSectionHeader(t)) {
@@ -140,6 +151,9 @@ async function buildResumePDF(tailoredResume, candidateName) {
         continue
       }
 
+      // Skip lone bullet markers (just "•", "-", "*" with no text)
+      if (/^[-•*]\s*$/.test(t)) continue
+
       const INDENT = 14
       const isExplicitBullet = /^[-•*]\s/.test(t)
 
@@ -155,10 +169,10 @@ async function buildResumePDF(tailoredResume, candidateName) {
       if (isExplicitBullet || autoBullet || (entryBullet && entryStart)) {
         if (entryBullet && entryStart) entryStart = false
         const bt = isExplicitBullet ? t.replace(/^[-•*]\s+/, '') : t
-        const by = doc.y
+        if (!bt.trim()) continue // skip empty bullets
+        // Single text call keeps bullet + text together across page breaks
         doc.fontSize(10).font('Helvetica').fillColor(BODY)
-        doc.text('•', ML + 2, by, { width: INDENT - 2, lineBreak: false })
-        doc.text(bt, ML + INDENT, by, { width: CW - INDENT, lineGap: 1.5 })
+          .text(`•   ${bt}`, ML, doc.y, { width: CW, lineGap: 1.5 })
         doc.moveDown(0.1)
         continue
       }
@@ -167,12 +181,11 @@ async function buildResumePDF(tailoredResume, candidateName) {
       const dateSplit = splitDateLine(t)
       if (dateSplit) {
         const { left, right } = dateSplit
-        const rowY = doc.y
-        doc.fontSize(9.5).font('Helvetica').fillColor(LGREY)
-        const dateWidth = doc.widthOfString(right) + 4
-        doc.text(right, ML, rowY, { width: CW, align: 'right', lineBreak: false })
+        // Render as single line: "Role                    Date" using tab-like spacing
         doc.fontSize(10.5).font('Helvetica-Bold').fillColor(BODY)
-          .text(left, ML, rowY, { width: CW - dateWidth - 8 })
+          .text(left, ML, doc.y, { width: CW, continued: true })
+        doc.fontSize(9.5).font('Helvetica').fillColor(LGREY)
+          .text(`   ${right}`, { width: CW, align: 'right' })
         doc.moveDown(0.08)
         continue
       }
@@ -321,7 +334,7 @@ async function buildResumeDocx(text) {
   return tempPath
 }
 
-async function tailorDocx(originalPath, tailoredText) {
+async function tailorDocx(originalPath, tailoredText, candidateName) {
   const AdmZip = require('adm-zip')
   const os = require('os')
   const path = require('path')
@@ -364,8 +377,23 @@ async function tailorDocx(originalPath, tailoredText) {
     return open + newContent + close
   })
 
-  const tempPath = path.join(os.tmpdir(), `Resume-tailored-${Date.now()}.docx`)
+  const safeName = (candidateName || 'Resume').replace(/[^a-zA-Z0-9 _-]/g, '').trim() || 'Resume'
+  const tempPath = path.join(os.tmpdir(), `Resume - ${safeName}.docx`)
   zip.updateFile('word/document.xml', Buffer.from(xml, 'utf8'))
+
+  // Update DOCX title metadata so portals (Seek/Indeed) show the candidate name
+  const coreEntry = zip.getEntry('docProps/core.xml')
+  if (coreEntry) {
+    let coreXml = coreEntry.getData().toString('utf8')
+    const escapedName = escXml(safeName)
+    if (/<dc:title>/.test(coreXml)) {
+      coreXml = coreXml.replace(/<dc:title>[^<]*<\/dc:title>/, `<dc:title>${escapedName}<\/dc:title>`)
+    } else {
+      coreXml = coreXml.replace(/<\/cp:coreProperties>/, `<dc:title>${escapedName}</dc:title></cp:coreProperties>`)
+    }
+    zip.updateFile('docProps/core.xml', Buffer.from(coreXml, 'utf8'))
+  }
+
   zip.writeZip(tempPath)
   return tempPath
 }
@@ -382,7 +410,7 @@ async function buildResumeFile(tailoredResume, cfg) {
     const fs = require('fs')
     if (fs.existsSync(originalPath) && (originalExt === 'docx' || originalExt === 'doc')) {
       try {
-        return await tailorDocx(originalPath, tailoredResume)
+        return await tailorDocx(originalPath, tailoredResume, candidateName)
       } catch { /* fall through to generated PDF */ }
     }
   }

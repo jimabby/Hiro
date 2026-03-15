@@ -42,10 +42,14 @@ async function loginWithBrowser(onStatus) {
 
   const browser = await chromium.launch({
     headless: false,
-    args: ['--window-size=1024,700'],
+    channel: 'chrome',
+    args: ['--window-size=1024,700', '--disable-blink-features=AutomationControlled'],
   })
 
-  const context = await browser.newContext({ viewport: { width: 1024, height: 700 } })
+  const context = await browser.newContext({
+    viewport: { width: 1024, height: 700 },
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  })
   const page = await context.newPage()
   await page.goto('https://www.seek.com.au', { waitUntil: 'domcontentloaded' })
 

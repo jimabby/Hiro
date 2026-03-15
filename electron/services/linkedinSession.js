@@ -50,12 +50,13 @@ async function loginWithBrowser(onStatus) {
 
   const browser = await chromium.launch({
     headless: false,
-    args: ['--window-size=1024,700'],
+    channel: 'chrome',  // Use real Chrome to avoid Google OAuth "insecure browser" block
+    args: ['--window-size=1024,700', '--disable-blink-features=AutomationControlled'],
   })
 
   const context = await browser.newContext({
     viewport: { width: 1024, height: 700 },
-    userAgent: randomUserAgent(),
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
   })
 
   const page = await context.newPage()

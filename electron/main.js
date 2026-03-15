@@ -260,7 +260,7 @@ ipcMain.handle('resume:improve', async (_, resumeText) => {
 })
 
 // ─── IPC: Resume download ────────────────────────────────────────
-ipcMain.handle('resume:download', async (_, resumeText, suggestedName, format = 'pdf') => {
+ipcMain.handle('resume:download', async (_, resumeText, suggestedName, format = 'pdf', type = 'resume') => {
   const ext = format === 'docx' ? 'docx' : 'pdf'
   const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
     title: `Save as ${ext.toUpperCase()}`,
@@ -273,10 +273,16 @@ ipcMain.handle('resume:download', async (_, resumeText, suggestedName, format = 
   try {
     const fs = require('fs')
     if (ext === 'pdf') {
-      const { buildResumePDF } = require('./services/scraper/utils')
-      const candidateName = (resumeText || '').split('\n').find(l => l.trim())?.trim() || 'Resume'
-      const tmpPath = await buildResumePDF(resumeText, candidateName)
-      fs.copyFileSync(tmpPath, filePath)
+      if (type === 'coverLetter') {
+        const { buildCoverLetterPDF } = require('./services/scraper/utils')
+        const tmpPath = await buildCoverLetterPDF(resumeText)
+        fs.copyFileSync(tmpPath, filePath)
+      } else {
+        const { buildResumePDF } = require('./services/scraper/utils')
+        const candidateName = (resumeText || '').split('\n').find(l => l.trim())?.trim() || 'Resume'
+        const tmpPath = await buildResumePDF(resumeText, candidateName)
+        fs.copyFileSync(tmpPath, filePath)
+      }
     } else {
       const { Document, Packer, Paragraph, TextRun, AlignmentType } = require('docx')
       const { stripMarkdown } = require('./services/scraper/utils')

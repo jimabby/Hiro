@@ -4,6 +4,13 @@ function safeParseJSON(str) {
   try { return JSON.parse(str || '[]') } catch { return [] }
 }
 
+function stripMd(t) {
+  return (t || '')
+    .replace(/\*\*(.*?)\*\*/g, '$1').replace(/__(.*?)__/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1').replace(/_(.*?)_/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '').replace(/^-{3,}\s*$/gm, '')
+}
+
 const STATUS_BADGE = {
   applied: { label: 'Applied', color: 'badge-blue' },
   interview: { label: 'Interview', color: 'badge-green' },
@@ -58,9 +65,11 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
     setKeywordGap(null)
   }, [selected?.id])
 
-  async function viewPDF(text, title) {
+  async function viewPDF(text, title, isCoverLetter = false) {
     setPdfLoading(true)
-    const res = await window.api.getResumePDFBase64(text)
+    const res = isCoverLetter
+      ? await window.api.getCoverLetterPDFBase64(text)
+      : await window.api.getResumePDFBase64(text)
     setPdfLoading(false)
     if (res.success) setPdfModal({ base64: res.base64, title })
   }
@@ -477,15 +486,15 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
                   <label style={{ marginBottom: 0 }}>Cover Letter</label>
                   <div style={{ display: 'flex', gap: 4 }}>
                     <button className="btn btn-ghost" style={{ fontSize: 11 }} disabled={pdfLoading}
-                      onClick={() => viewPDF(selected.cover_letter, 'Cover Letter')}>
+                      onClick={() => viewPDF(selected.cover_letter, 'Cover Letter', true)}>
                       {pdfLoading ? 'Loading...' : 'View PDF'}
                     </button>
                     <button className="btn btn-ghost" style={{ fontSize: 11 }}
-                      onClick={() => window.api.downloadResume(selected.cover_letter, `Cover Letter - ${selected.job_title} - ${selected.company}`, 'pdf')}>
+                      onClick={() => window.api.downloadResume(selected.cover_letter, `Cover Letter - ${selected.job_title} - ${selected.company}`, 'pdf', 'coverLetter')}>
                       Save PDF
                     </button>
                     <button className="btn btn-ghost" style={{ fontSize: 11 }}
-                      onClick={() => window.api.downloadResume(selected.cover_letter, `Cover Letter - ${selected.job_title} - ${selected.company}`, 'docx')}>
+                      onClick={() => window.api.downloadResume(selected.cover_letter, `Cover Letter - ${selected.job_title} - ${selected.company}`, 'docx', 'coverLetter')}>
                       Save DOCX
                     </button>
                   </div>
@@ -493,7 +502,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
                 <pre style={{
                   background: 'var(--surface2)', borderRadius: 8, padding: 12,
                   fontSize: 12, whiteSpace: 'pre-wrap', maxHeight: 200, overflow: 'auto',
-                }}>{selected.cover_letter}</pre>
+                }}>{stripMd(selected.cover_letter)}</pre>
               </div>
             )}
 
@@ -520,7 +529,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
                   background: 'var(--surface2)', borderRadius: 8, padding: 12,
                   fontSize: 12, whiteSpace: 'pre-wrap',
                   maxHeight: resumeExpanded ? 'none' : 200, overflow: 'auto',
-                }}>{selected.tailored_resume}</pre>
+                }}>{stripMd(selected.tailored_resume)}</pre>
               </div>
             )}
 

@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(node -e \"require\\(''docx''\\); console.log\\(''ok''\\)\")"
+      "Bash(node -e \"require\\(''docx''\\); console.log\\(''ok''\\)\")",
+      "Read(//c/Users/wksun/Documents/programming/Hiro/$USERPROFILE/**)",
+      "Bash(node -e \"const AdmZip = require\\(''adm-zip''\\); const fs = require\\(''fs''\\); const files = fs.readdirSync\\(''resumes''\\).filter\\(f => f.endsWith\\(''.docx''\\)\\).sort\\(\\); for \\(const f of files.slice\\(-5\\)\\) { console.log\\(''\\\\n=== '' + f + '' ===''\\); try { const z = new AdmZip\\(''resumes/'' + f\\); const e = z.getEntry\\(''docProps/core.xml''\\); if \\(e\\) { console.log\\(e.getData\\(\\).toString\\(''utf8''\\)\\); } else { console.log\\(''No core.xml''\\); } } catch\\(e\\) { console.log\\(''Error:'', e.message\\); } }\")",
+      "Bash(node -e \":*)"
     ]
   }
 }

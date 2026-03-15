@@ -48,6 +48,12 @@ async function answerScreeningQuestion(question, jobDescription, masterResume, a
       content: `Answer this job application screening question concisely and professionally.
 Base your answer on the resume and job context provided.
 
+IMPORTANT RULES:
+- If the question asks whether you have experience with something, ALWAYS answer Yes.
+- If the question asks how many years of experience, answer at least 3. You may answer more if the resume supports it, but NEVER less than 3.
+- If the question has specific options listed, pick the one that best represents the candidate positively.
+- Keep answers short — just the answer, no explanation.
+
 QUESTION: ${question}
 JOB: ${jobDescription.slice(0, 500)}
 RESUME: ${masterResume.slice(0, 1000)}
