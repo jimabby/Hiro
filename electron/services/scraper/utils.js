@@ -33,7 +33,7 @@ function stripMarkdown(text) {
     .replace(/^-{3,}\s*$/gm, '').trim()
 }
 
-async function buildResumePDF(tailoredResume, candidateName) {
+async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
   const os = require('os')
   const path = require('path')
   const fs = require('fs')
@@ -107,25 +107,44 @@ async function buildResumePDF(tailoredResume, candidateName) {
       if (contactParts.length >= 7) break
     }
     if (contactParts.length) {
-      const URL_EMBED_RE = /\{\{(https?:\/\/[^}]+)\}\}/
-      const hasLinks = contactParts.some(p => URL_EMBED_RE.test(p))
+      const URL_EMBED_RE = /\{\{(https?:\/\/[^}]+)\}\}/g
+      const URL_EMBED_RE_SINGLE = /\{\{(https?:\/\/[^}]+)\}\}/
+      const pl = personalLinks || {}
 
+      // Flatten contact parts into individual items
+      const items = []
+      for (const part of contactParts) {
+        for (const sub of part.split(/\s*\|\s*/)) {
+          if (sub.trim()) items.push(sub.trim())
+        }
+      }
+
+      // Resolve URLs: settings links override DOCX-embedded links
+      const segments = []
+      for (let i = 0; i < items.length; i++) {
+        let item = items[i]
+        const lt = item.toLowerCase()
+        let url = null
+
+        // Check settings links first (they take priority)
+        if (lt.includes('portfolio') && pl.portfolio) url = pl.portfolio
+        else if ((lt.includes('github') || lt.includes('git')) && pl.github) url = pl.github
+        else if (lt.includes('linkedin') && pl.linkedin) url = pl.linkedin
+
+        // Fall back to DOCX-embedded {{url}} if no settings link
+        if (!url) {
+          const em = item.match(URL_EMBED_RE_SINGLE)
+          if (em) url = em[1]
+        }
+
+        // Strip {{url}} markers from display text
+        const displayText = item.replace(URL_EMBED_RE, '').trim()
+        segments.push({ text: displayText, url })
+        if (i < items.length - 1) segments.push({ text: '   |   ', url: null })
+      }
+
+      const hasLinks = segments.some(s => s.url)
       if (hasLinks) {
-        // Parse all items and render with clickable links
-        const items = []
-        for (const part of contactParts) {
-          for (const sub of part.split(/\s*\|\s*/)) {
-            if (sub.trim()) items.push(sub.trim())
-          }
-        }
-        const segments = []
-        for (let i = 0; i < items.length; i++) {
-          const um = items[i].match(URL_EMBED_RE)
-          segments.push(um
-            ? { text: items[i].replace(URL_EMBED_RE, '').trim(), url: um[1] }
-            : { text: items[i], url: null })
-          if (i < items.length - 1) segments.push({ text: '   |   ', url: null })
-        }
         doc.fontSize(9.5).font('Helvetica')
         const totalW = segments.reduce((w, s) => w + doc.widthOfString(s.text), 0)
         const sx = ML + Math.max(0, (CW - totalW) / 2)
@@ -139,7 +158,7 @@ async function buildResumePDF(tailoredResume, candidateName) {
         }
       } else {
         doc.fontSize(9.5).font('Helvetica').fillColor(GREY)
-          .text(contactParts.join('   |   '), ML, doc.y, { align: 'center', width: CW })
+          .text(items.join('   |   '), ML, doc.y, { align: 'center', width: CW })
       }
       doc.moveDown(0.3)
     }
@@ -164,7 +183,8 @@ async function buildResumePDF(tailoredResume, candidateName) {
     const PAGE_BOTTOM_LIMIT = () => doc.page.height - (doc.page.margins ? doc.page.margins.bottom : ML) - 40
 
     while (idx < lines.length) {
-      const t = lines[idx++].trim()
+      // Strip any remaining {{url}} markers from body lines (contact section already handled them)
+      const t = lines[idx++].trim().replace(/\s*\{\{https?:\/\/[^}]+\}\}/g, '')
 
       if (!t) {
         if (entryBullet) entryStart = true  // blank line = new entry coming next
@@ -422,7 +442,7 @@ async function tailorDocx(originalPath, tailoredText, candidateName) {
 
   // Prepare tailored lines (plain text, XML-escaped)
   const escXml = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  const tailoredLines = stripMarkdown(tailoredText).split('\n').map(escXml)
+  const tailoredLines = stripMarkdown(tailoredText).replace(/\s*\{\{https?:\/\/[^}]+\}\}/g, '').split('\n').map(escXml)
 
   let lineIdx = 0
   // Replace each paragraph's text while keeping XML structure (fonts, spacing, styles)
@@ -490,7 +510,7 @@ async function buildResumeFile(tailoredResume, cfg) {
     }
   }
 
-  return buildResumePDF(tailoredResume, candidateName)
+  return buildResumePDF(tailoredResume, candidateName, cfg?.personalLinks)
 }
 
 module.exports = { randomUserAgent, randomDelay, humanType, stripMarkdown, buildResumePDF, buildResumeDocx, buildCoverLetterPDF, tailorDocx, buildResumeFile }

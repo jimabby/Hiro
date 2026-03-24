@@ -264,6 +264,22 @@ ipcMain.handle('resume:importFile', async () => {
       for (const [linkText, url] of linkMap) {
         text = text.replace(linkText, `${linkText} {{${url}}}`)
       }
+
+      // Auto-save extracted links to config (won't overwrite user-entered values)
+      if (linkMap.size > 0) {
+        try {
+          const cfg = configService.load()
+          const pl = cfg.personalLinks || {}
+          let changed = false
+          for (const [linkText, url] of linkMap) {
+            const lt = linkText.toLowerCase()
+            if (lt.includes('portfolio') && !pl.portfolio) { pl.portfolio = url; changed = true }
+            else if ((lt.includes('github') || lt.includes('git')) && !pl.github) { pl.github = url; changed = true }
+            else if (lt.includes('linkedin') && !pl.linkedin) { pl.linkedin = url; changed = true }
+          }
+          if (changed) configService.save({ ...cfg, personalLinks: pl })
+        } catch { /* non-critical */ }
+      }
     }
 
     // Copy original file so its format can be used during submission.
@@ -316,7 +332,8 @@ ipcMain.handle('resume:download', async (_, resumeText, suggestedName, format = 
       } else {
         const { buildResumePDF } = require('./services/scraper/utils')
         const candidateName = (resumeText || '').split('\n').find(l => l.trim())?.trim() || 'Resume'
-        const tmpPath = await buildResumePDF(resumeText, candidateName)
+        const cfg = configService.load()
+        const tmpPath = await buildResumePDF(resumeText, candidateName, cfg.personalLinks)
         fs.copyFileSync(tmpPath, filePath)
       }
     } else {
@@ -357,7 +374,8 @@ ipcMain.handle('resume:getPDFBase64', async (_, resumeText, originalPath, origin
     }
     const { buildResumePDF } = require('./services/scraper/utils')
     const candidateName = (resumeText || '').split('\n').find(l => l.trim())?.trim() || 'Resume'
-    const tmpPath = await buildResumePDF(resumeText, candidateName)
+    const cfg = configService.load()
+    const tmpPath = await buildResumePDF(resumeText, candidateName, cfg.personalLinks)
     const base64 = fs.readFileSync(tmpPath).toString('base64')
     return { success: true, base64 }
   } catch (err) {

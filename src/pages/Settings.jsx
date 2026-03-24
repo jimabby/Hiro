@@ -674,6 +674,38 @@ export default function Settings({ showToast }) {
         )}
       </div>
 
+      {/* Personal Links */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <h3 style={{ marginBottom: 4, fontSize: 15 }}>Personal Links</h3>
+        <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 14 }}>
+          Used in resume PDFs as clickable links. Auto-detected from DOCX uploads, or enter manually here. Settings override DOCX-extracted links.
+        </p>
+        <div className="form-group" style={{ marginBottom: 10 }}>
+          <label>Portfolio URL</label>
+          <input
+            placeholder="https://yourportfolio.com"
+            value={(form.personalLinks || {}).portfolio || ''}
+            onChange={e => set('personalLinks', { ...(form.personalLinks || {}), portfolio: e.target.value })}
+          />
+        </div>
+        <div className="form-group" style={{ marginBottom: 10 }}>
+          <label>GitHub URL</label>
+          <input
+            placeholder="https://github.com/username"
+            value={(form.personalLinks || {}).github || ''}
+            onChange={e => set('personalLinks', { ...(form.personalLinks || {}), github: e.target.value })}
+          />
+        </div>
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <label>LinkedIn URL</label>
+          <input
+            placeholder="https://linkedin.com/in/username"
+            value={(form.personalLinks || {}).linkedin || ''}
+            onChange={e => set('personalLinks', { ...(form.personalLinks || {}), linkedin: e.target.value })}
+          />
+        </div>
+      </div>
+
       {/* Cover Letter */}
       <div className="card">
         <h3 style={{ marginBottom: 8, fontSize: 15 }}>Cover Letter</h3>

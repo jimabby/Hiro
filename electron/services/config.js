@@ -33,6 +33,7 @@ const DEFAULTS = {
   enableFollowUp: false,
   enableInboxCheck: false,
   lastInboxCheck: null,
+  personalLinks: { portfolio: '', github: '', linkedin: '' },
 }
 
 function ensureDir() {
