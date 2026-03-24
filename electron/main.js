@@ -251,11 +251,15 @@ ipcMain.handle('resume:importFile', async () => {
 
       const result = await mammoth.extractRawText({ path: filePath })
       // Some DOCX files use non-standard font encoding — mammoth extracts those as garbled
-      // Latin Extended characters. Strip anything outside ASCII + common punctuation symbols.
+      // characters. Aggressively strip anything that isn't printable ASCII or common typographic symbols.
       text = result.value
         .replace(/\r\n/g, '\n')
+        // Remove bullet/symbol artifacts attached to words (e.g. "•7B", "•6W")
+        .replace(/•(?=[A-Za-z0-9])/g, '')
+        // Strip non-ASCII except allowed typographic characters
         .replace(/[^\x09\x0A\x20-\x7E\u2013\u2014\u2018\u2019\u201C\u201D\u2022\u2026]/g, '')
-        .replace(/•(?!\s)/g, '')   // remove bullet-artifacts like •7B, •6W (no space after = artifact)
+        // Clean up remaining isolated bullets with no content
+        .replace(/•(?!\s)/g, '')
         .replace(/[ \t]{2,}/g, ' ')
         .replace(/\n{3,}/g, '\n\n')
         .trim()

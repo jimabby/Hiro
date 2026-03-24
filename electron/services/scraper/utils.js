@@ -51,6 +51,11 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
   const safeName = (candidateName || 'Resume').replace(/[^a-zA-Z0-9 _-]/g, '').trim()
   const tempPath = path.join(os.tmpdir(), `Resume - ${safeName}.pdf`)
   const text = stripMarkdown(tailoredResume || '')
+    // Clean font-encoding artifacts from old DOCX imports
+    .replace(/•(?=[A-Za-z0-9])/g, '')
+    .replace(/[^\x09\x0A\x20-\x7E\u2013\u2014\u2018\u2019\u201C\u201D\u2022\u2026]/g, '')
+    .replace(/•(?!\s)/g, '')
+    .replace(/[ \t]{2,}/g, ' ')
   // Remove trailing blank / bullet-only lines so they don't trigger an extra empty page
   const lines = text.split('\n')
   while (lines.length) {
@@ -66,8 +71,12 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
   const GREY  = '#6B7280'
   const LGREY = '#9CA3AF'
 
+  const KNOWN_SECTIONS = /^(summary|experience|professional experience|work experience|education|skills|technical skills|certifications|qualifications|awards|achievements|languages|interests|reference|references|honors|publications|volunteer|activities|projects|training|courses|objective|profile)$/i
+
   function isSectionHeader(t) {
-    return t.length >= 3 && /^[A-Z][A-Z\s\/&\-]{2,}$/.test(t)
+    if (t.length >= 3 && /^[A-Z][A-Z\s\/&\-]{2,}$/.test(t)) return true
+    if (KNOWN_SECTIONS.test(t.trim())) return true
+    return false
   }
 
   // Detect "Company/Role   Date Range" lines — require 2+ spaces before date
@@ -217,8 +226,9 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
       // Prevent orphaned content — ensure room before rendering anything
       if (doc.y > PAGE_BOTTOM_LIMIT()) doc.addPage()
 
-      // Section header (ALL CAPS)
+      // Section header
       if (isSectionHeader(t)) {
+        const headerText = t.toUpperCase()
         autoBullet  = AUTO_BULLET_RE.test(t)
         entryBullet = ENTRY_BULLET_RE.test(t)
         entryStart  = entryBullet
@@ -227,7 +237,7 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
         firstEntryInSection = true
         doc.moveDown(0.5)
         doc.fontSize(10.5).font('Helvetica-Bold').fillColor(NAVY)
-          .text(t, ML, doc.y, { align: 'center', width: CW })
+          .text(headerText, ML, doc.y, { align: 'center', width: CW })
         const ry = doc.y + 2
         doc.moveTo(ML, ry).lineTo(ML + CW, ry).strokeColor(BLUE).lineWidth(0.5).stroke()
         doc.moveDown(0.4)
@@ -369,10 +379,19 @@ async function buildResumeDocx(text) {
   const { Document, Packer, Paragraph, TextRun, AlignmentType, BorderStyle,
     TabStopType, TabStopLeader } = require('docx')
 
-  const lines = stripMarkdown(text || '').split('\n')
+  const lines = stripMarkdown(text || '')
+    .replace(/•(?=[A-Za-z0-9])/g, '')
+    .replace(/[^\x09\x0A\x20-\x7E\u2013\u2014\u2018\u2019\u201C\u201D\u2022\u2026]/g, '')
+    .replace(/•(?!\s)/g, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .split('\n')
+
+  const KNOWN_SECTIONS_DOCX = /^(summary|experience|professional experience|work experience|education|skills|technical skills|certifications|qualifications|awards|achievements|languages|interests|reference|references|honors|publications|volunteer|activities|projects|training|courses|objective|profile)$/i
 
   function isSectionHeader(t) {
-    return t.length >= 3 && /^[A-Z][A-Z\s\/&\-]{2,}$/.test(t)
+    if (t.length >= 3 && /^[A-Z][A-Z\s\/&\-]{2,}$/.test(t)) return true
+    if (KNOWN_SECTIONS_DOCX.test(t.trim())) return true
+    return false
   }
 
   function splitDateLine(t) {
@@ -434,7 +453,7 @@ async function buildResumeDocx(text) {
       paragraphs.push(new Paragraph({
         spacing: { before: 160, after: 60 },
         border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: '2563EB' } },
-        children: [new TextRun({ text: t, bold: true, size: 22, color: '1E3A5F' })],
+        children: [new TextRun({ text: t.toUpperCase(), bold: true, size: 22, color: '1E3A5F' })],
       }))
       continue
     }

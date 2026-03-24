@@ -712,8 +712,8 @@ export default function Settings({ showToast }) {
       {/* Resumes */}
       <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-          <h3 style={{ fontSize: 15, margin: 0 }}>Resumes <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: 13 }}>({(form.resumes || []).length}/3)</span></h3>
-          {(form.resumes || []).length < 3 && !addingResume && (
+          <h3 style={{ fontSize: 15, margin: 0 }}>Resumes <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: 13 }}>({(form.resumes || []).length}/5)</span></h3>
+          {(form.resumes || []).length < 5 && !addingResume && (
             <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => { setAddingResume(true); setNewResumeName(''); setNewResumeText(''); setUploadError('') }}>
               + Add Resume
             </button>
@@ -1170,7 +1170,7 @@ export default function Settings({ showToast }) {
             />
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
               <button className="btn btn-ghost" onClick={() => setImproveModal(null)}>Cancel</button>
-              {(form.resumes || []).length < 3 && (
+              {(form.resumes || []).length < 5 && (
                 <button className="btn btn-ghost" onClick={() => {
                   const id = Date.now().toString()
                   const resumes = [...(form.resumes || []), { id, name: `${improveModal.sourceName} (Improved)`, text: improveModal.text }]
