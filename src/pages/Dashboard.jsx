@@ -697,7 +697,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart, showToast })
 
             {/* Action buttons */}
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
-              {selected.status === 'interview' && (
+              {(selected.status === 'applied' || selected.status === 'interview') && (
                 <button className="btn btn-ghost" style={{ fontSize: 12 }}
                   disabled={loadingQuestions}
                   onClick={async () => {
