@@ -337,25 +337,9 @@ ipcMain.handle('resume:download', async (_, resumeText, suggestedName, format = 
         fs.copyFileSync(tmpPath, filePath)
       }
     } else {
-      const { Document, Packer, Paragraph, TextRun, AlignmentType } = require('docx')
-      const { stripMarkdown } = require('./services/scraper/utils')
-      const lines = stripMarkdown(resumeText).split('\n')
-      const paragraphs = []
-      let firstLineDone = false
-      for (const line of lines) {
-        if (!firstLineDone && !line.trim()) continue
-        if (!firstLineDone) {
-          paragraphs.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: line.trim(), bold: true, size: 32 })] }))
-          firstLineDone = true
-        } else if (line.trim() && /^[A-Z][A-Z\s\/&-]{2,}$/.test(line.trim())) {
-          paragraphs.push(new Paragraph({ spacing: { before: 200, after: 60 }, children: [new TextRun({ text: line.trim(), bold: true, size: 22 })] }))
-        } else {
-          paragraphs.push(new Paragraph({ children: [new TextRun({ text: line, size: 22 })] }))
-        }
-      }
-      const doc = new Document({ sections: [{ children: paragraphs }] })
-      const buffer = await Packer.toBuffer(doc)
-      fs.writeFileSync(filePath, buffer)
+      const { buildResumeDocx } = require('./services/scraper/utils')
+      const tmpPath = await buildResumeDocx(resumeText)
+      fs.copyFileSync(tmpPath, filePath)
     }
     return { success: true }
   } catch (err) {

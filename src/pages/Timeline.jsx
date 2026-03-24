@@ -102,7 +102,20 @@ export default function Timeline() {
                 {allPlatforms.map(p => <option key={p} value={p}>{p}</option>)}
               </select>
             )}
-            <button className="btn btn-ghost" style={{ fontSize: 12, whiteSpace: 'nowrap' }} onClick={() => setExpandAll(!expandAll)}>
+            <button className="btn btn-ghost" style={{ fontSize: 12, whiteSpace: 'nowrap' }} onClick={async () => {
+              if (expandAll) {
+                setExpandAll(false)
+                setExpandedJobs({})
+              } else {
+                setExpandAll(true)
+                const allJobs = {}
+                for (const date of filteredDates) {
+                  const jobs = await window.api.getApplications({ dateFrom: date + ' 00:00:00', dateTo: date + ' 23:59:59' })
+                  allJobs[date] = jobs
+                }
+                setExpandedJobs(allJobs)
+              }
+            }}>
               {expandAll ? 'Collapse All' : 'Expand All'}
             </button>
           </div>

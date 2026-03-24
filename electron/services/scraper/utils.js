@@ -27,10 +27,19 @@ async function humanType(_page, element, text) {
 
 function stripMarkdown(text) {
   return (text || '')
-    .replace(/\*\*(.*?)\*\*/g, '$1').replace(/__(.*?)__/g, '$1')
-    .replace(/\*(.*?)\*/g, '$1').replace(/_(.*?)_/g, '$1')
-    .replace(/^#{1,6}\s+/gm, '').replace(/^\*\s+/gm, '- ')
-    .replace(/^-{3,}\s*$/gm, '').trim()
+    .replace(/```[\s\S]*?```/g, '')            // code fences
+    .replace(/`([^`]+)`/g, '$1')               // inline code
+    .replace(/\*\*(.*?)\*\*/g, '$1')           // **bold**
+    .replace(/__(.*?)__/g, '$1')               // __bold__
+    .replace(/\*(.*?)\*/g, '$1')               // *italic*
+    .replace(/_(.*?)_/g, '$1')                 // _italic_
+    .replace(/^#{1,6}\s+/gm, '')               // ## headings
+    .replace(/^\*\s+/gm, '- ')                 // * bullets → -
+    .replace(/^-{3,}\s*$/gm, '')               // --- dividers
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')   // [text](url) → text
+    .replace(/^\s*>\s?/gm, '')                 // > blockquotes
+    .replace(/\n{3,}/g, '\n\n')                // collapse excessive newlines
+    .trim()
 }
 
 async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
@@ -407,9 +416,14 @@ async function buildResumeDocx(text) {
     children: [],
   }))
 
+  function isDateOnlyLine(t) {
+    return /^(?:\(?(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[\s,]*\d{0,4}\s*[-–—to]+\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)?[a-z]*[\s,]*\d{0,4}\s*\)?|(?:19|20)\d{2}\s*[-–—to]+\s*(?:(?:19|20)\d{2}|[Pp]resent|[Cc]urrent))$/i.test(t)
+  }
+
   // Body
   while (idx < lines.length) {
-    const t = lines[idx++].trim()
+    const t = lines[idx].trim()
+    idx++
 
     if (!t) {
       paragraphs.push(new Paragraph({ spacing: { after: 40 }, children: [] }))
@@ -449,6 +463,22 @@ async function buildResumeDocx(text) {
       continue
     }
 
+    // Role line followed by standalone date line → combine as role + date
+    const nextLine = idx < lines.length ? lines[idx].trim() : ''
+    if (nextLine && isDateOnlyLine(nextLine) && !isSectionHeader(t) && !/^[-•*]\s/.test(t)) {
+      idx++
+      paragraphs.push(new Paragraph({
+        spacing: { after: 20 },
+        tabStops: [{ type: TabStopType.RIGHT, position: 9360, leader: TabStopLeader.NONE }],
+        children: [
+          new TextRun({ text: t, bold: true, size: 20, color: '1a1a1a' }),
+          new TextRun({ text: '\t' }),
+          new TextRun({ text: nextLine, size: 18, color: '6B7280', italics: true }),
+        ],
+      }))
+      continue
+    }
+
     paragraphs.push(new Paragraph({
       spacing: { after: 20 },
       children: [new TextRun({ text: t, size: 19, color: '1a1a1a' })],
@@ -473,37 +503,46 @@ async function tailorDocx(originalPath, tailoredText, candidateName) {
 
   let xml = xmlEntry.getData().toString('utf8')
 
-  // Prepare tailored lines (plain text, XML-escaped)
-  const escXml = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  const tailoredLines = stripMarkdown(tailoredText).replace(/\s*\{\{https?:\/\/[^}]+\}\}/g, '').split('\n').map(escXml)
+  // Prepare tailored lines (plain text, XML-escaped, stripped of markdown and URL markers)
+  const escXml = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+  const cleanedText = stripMarkdown(tailoredText).replace(/\s*\{\{https?:\/\/[^}]+\}\}/g, '')
+  const tailoredLines = cleanedText.split('\n').filter(l => l.trim()).map(escXml)
 
-  let lineIdx = 0
-  // Replace each paragraph's text while keeping XML structure (fonts, spacing, styles)
-  xml = xml.replace(/(<w:p[ >])([\s\S]*?)(<\/w:p>)/g, (match, open, content, close) => {
+  // Collect original paragraphs with text content
+  const paraRegex = /(<w:p[ >])([\s\S]*?)(<\/w:p>)/g
+  const origParas = []
+  let m
+  while ((m = paraRegex.exec(xml)) !== null) {
+    const content = m[2]
     const paraText = (content.match(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g) || [])
       .map(t => t.replace(/<[^>]+>/g, '')).join('').trim()
+    if (paraText) origParas.push({ full: m[0], open: m[1], content, close: m[3], text: paraText })
+  }
 
-    if (!paraText) return match // empty paragraph — preserve as-is
-
-    // Skip past blank tailored lines (empty lines in tailored text are spacing, not real content)
-    while (lineIdx < tailoredLines.length && !tailoredLines[lineIdx].trim()) lineIdx++
-    if (lineIdx >= tailoredLines.length) return match
-
+  // Map tailored lines to original paragraphs (1:1 for matching count, extras go to last paragraph)
+  let lineIdx = 0
+  for (const para of origParas) {
+    if (lineIdx >= tailoredLines.length) break
     const newText = tailoredLines[lineIdx++]
 
-    // Put all new text in the first <w:t> run, clear the rest
+    // Find the first <w:r> with a <w:t> and replace text there, keep all run properties
     let firstDone = false
-    const newContent = content.replace(/(<w:t)([^>]*)(>)([\s\S]*?)(<\/w:t>)/g, (m, tag, attrs, gt, _text, close2) => {
+    const newContent = para.content.replace(/<w:r>([\s\S]*?)<\/w:r>|<w:r [\s\S]*?>([\s\S]*?)<\/w:r>/g, (runMatch) => {
+      if (!/<w:t/.test(runMatch)) return runMatch  // no text in this run (e.g. field codes) — keep
       if (!firstDone) {
         firstDone = true
-        const hasSpace = /xml:space/.test(attrs)
-        return `${tag}${attrs}${hasSpace ? '' : ' xml:space="preserve"'}${gt}${newText}${close2}`
+        // Replace text content in this run only, preserve run properties
+        return runMatch.replace(/(<w:t)([^>]*)(>)([\s\S]*?)(<\/w:t>)/, (_, tag, attrs, gt, _oldText, closeTag) => {
+          const hasSpace = /xml:space/.test(attrs)
+          return `${tag}${attrs}${hasSpace ? '' : ' xml:space="preserve"'}${gt}${newText}${closeTag}`
+        })
       }
-      return '' // remove extra runs
+      // Clear text from subsequent runs but keep the run structure
+      return runMatch.replace(/(<w:t[^>]*>)([\s\S]*?)(<\/w:t>)/, '$1$3')
     })
 
-    return open + newContent + close
-  })
+    xml = xml.replace(para.full, para.open + newContent + para.close)
+  }
 
   const safeName = (candidateName || 'Resume').replace(/[^a-zA-Z0-9 _-]/g, '').trim() || 'Resume'
   const tempPath = path.join(os.tmpdir(), `Resume - ${safeName}.docx`)
