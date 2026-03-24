@@ -93,11 +93,14 @@ function SeekAccountCard() {
   )
 }
 
-export default function Settings() {
+export default function Settings({ showToast }) {
   const [form, setForm] = useState(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [addingResume, setAddingResume] = useState(false)
+  const [cachedAnswers, setCachedAnswers] = useState([])
+  const [cachedSearch, setCachedSearch] = useState('')
+  const [newBlacklist, setNewBlacklist] = useState('')
   const [newResumeName, setNewResumeName] = useState('')
   const [newResumeText, setNewResumeText] = useState('')
   const [newResumeOriginalPath, setNewResumeOriginalPath] = useState(null)
@@ -190,7 +193,7 @@ export default function Settings() {
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700 }}>Settings</h1>
-        {settingsTab !== 'about' && (
+        {settingsTab !== 'about' && settingsTab !== 'data' && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             {saved && <span style={{ color: 'var(--green)', fontSize: 13 }}>✓ Saved</span>}
             <button className="btn btn-primary" onClick={save} disabled={saving}>
@@ -205,6 +208,7 @@ export default function Settings() {
         const TABS = [
           { id: 'accounts', label: 'Accounts & Schedule' },
           { id: 'criteria', label: 'Job, Resume & Cover Letter' },
+          { id: 'data', label: 'Data Management' },
           { id: 'about', label: 'About' },
         ]
         return (
@@ -477,8 +481,45 @@ export default function Settings() {
           ))}
         </div>
         <div className="form-group">
-          <label>Blacklisted Companies (comma-separated)</label>
-          <input value={form.blacklistedCompanies} onChange={e => set('blacklistedCompanies', e.target.value)} />
+          <label>Blacklisted Companies</label>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+            {(form.blacklistedCompanies || '').split(',').map(c => c.trim()).filter(Boolean).map(company => (
+              <span key={company} className="chip">
+                {company}
+                <button className="chip-remove" onClick={() => {
+                  const list = (form.blacklistedCompanies || '').split(',').map(c => c.trim()).filter(Boolean).filter(c => c !== company)
+                  set('blacklistedCompanies', list.join(', '))
+                  window.api.removeBlacklistCompany(company)
+                }}>✕</button>
+              </span>
+            ))}
+            {!(form.blacklistedCompanies || '').trim() && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No companies blacklisted</span>}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              value={newBlacklist}
+              onChange={e => setNewBlacklist(e.target.value)}
+              placeholder="Add company to blacklist..."
+              onKeyDown={e => {
+                if (e.key === 'Enter' && newBlacklist.trim()) {
+                  const existing = (form.blacklistedCompanies || '').split(',').map(c => c.trim()).filter(Boolean)
+                  if (!existing.map(c => c.toLowerCase()).includes(newBlacklist.trim().toLowerCase())) {
+                    set('blacklistedCompanies', [...existing, newBlacklist.trim()].join(', '))
+                  }
+                  setNewBlacklist('')
+                }
+              }}
+              style={{ flex: 1 }}
+            />
+            <button className="btn btn-ghost" style={{ fontSize: 12, flexShrink: 0 }} onClick={() => {
+              if (!newBlacklist.trim()) return
+              const existing = (form.blacklistedCompanies || '').split(',').map(c => c.trim()).filter(Boolean)
+              if (!existing.map(c => c.toLowerCase()).includes(newBlacklist.trim().toLowerCase())) {
+                set('blacklistedCompanies', [...existing, newBlacklist.trim()].join(', '))
+              }
+              setNewBlacklist('')
+            }}>Add</button>
+          </div>
         </div>
       </div>
 
@@ -680,6 +721,113 @@ export default function Settings() {
         </div>
       </div>
       </div>} {/* end criteria tab */}
+
+      {settingsTab === 'data' && <div>
+        {/* Screening Answer Cache */}
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <div>
+              <h3 style={{ fontSize: 15, margin: 0 }}>Screening Answer Cache</h3>
+              <p style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 4 }}>
+                Answers saved from previous applications. These are reused automatically when the same question appears.
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={async () => {
+                const data = await window.api.getCachedAnswers()
+                setCachedAnswers(data)
+              }}>Load Cache</button>
+              {cachedAnswers.length > 0 && (
+                <button className="btn btn-ghost" style={{ fontSize: 12, color: 'var(--red)' }} onClick={async () => {
+                  if (!window.confirm('Delete all cached screening answers? This cannot be undone.')) return
+                  await window.api.clearAllCachedAnswers()
+                  setCachedAnswers([])
+                  showToast?.('Screening cache cleared', 'success')
+                }}>Clear All</button>
+              )}
+            </div>
+          </div>
+
+          {cachedAnswers.length > 0 && (
+            <>
+              <input
+                value={cachedSearch}
+                onChange={e => setCachedSearch(e.target.value)}
+                placeholder="Search questions..."
+                style={{ marginBottom: 12, fontSize: 12 }}
+              />
+              <div style={{ maxHeight: 400, overflowY: 'auto' }}>
+                {cachedAnswers
+                  .filter(ca => !cachedSearch || ca.question.toLowerCase().includes(cachedSearch.toLowerCase()) || ca.answer.toLowerCase().includes(cachedSearch.toLowerCase()))
+                  .map((ca, i) => (
+                    <div key={i} style={{
+                      padding: 12, background: 'var(--surface2)', borderRadius: 8,
+                      marginBottom: 8, border: '1px solid var(--border)',
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4, color: 'var(--text)' }}>Q: {ca.question}</div>
+                          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>A: {ca.answer}</div>
+                        </div>
+                        <button className="btn btn-ghost" style={{ fontSize: 11, color: 'var(--red)', padding: '2px 6px', flexShrink: 0 }}
+                          onClick={async () => {
+                            await window.api.deleteCachedAnswer(ca.question)
+                            setCachedAnswers(prev => prev.filter((_, j) => j !== i))
+                          }}>✕</button>
+                      </div>
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>
+                        Last used: {new Date(ca.updated_at).toLocaleDateString()}
+                      </div>
+                    </div>
+                  ))
+                }
+              </div>
+            </>
+          )}
+
+          {cachedAnswers.length === 0 && (
+            <div style={{ textAlign: 'center', padding: '20px 0', color: 'var(--text-muted)', fontSize: 13 }}>
+              Click "Load Cache" to view saved screening answers.
+            </div>
+          )}
+        </div>
+
+        {/* Data Actions */}
+        <div className="card">
+          <h3 style={{ fontSize: 15, marginBottom: 16 }}>Data Actions</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 14px', background: 'var(--surface2)', borderRadius: 8 }}>
+              <div>
+                <div style={{ fontWeight: 500, fontSize: 13 }}>Export Application History</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Download all applications as CSV</div>
+              </div>
+              <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => window.api.exportCSV({})}>Export CSV</button>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 14px', background: 'var(--surface2)', borderRadius: 8 }}>
+              <div>
+                <div style={{ fontWeight: 500, fontSize: 13, color: 'var(--red)' }}>Clear All Application History</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Permanently delete all application records</div>
+              </div>
+              <button className="btn btn-danger" style={{ fontSize: 12 }} onClick={async () => {
+                if (!window.confirm('Delete ALL application history? This cannot be undone.')) return
+                await window.api.clearAllApplications()
+                showToast?.('Application history cleared', 'success')
+              }}>Clear All</button>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 14px', background: 'var(--surface2)', borderRadius: 8 }}>
+              <div>
+                <div style={{ fontWeight: 500, fontSize: 13, color: 'var(--red)' }}>Clear Needs Attention Queue</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Remove all jobs from the attention queue</div>
+              </div>
+              <button className="btn btn-danger" style={{ fontSize: 12 }} onClick={async () => {
+                if (!window.confirm('Clear all attention jobs? This cannot be undone.')) return
+                await window.api.clearAllAttentionJobs()
+                showToast?.('Attention queue cleared', 'success')
+              }}>Clear All</button>
+            </div>
+          </div>
+        </div>
+      </div>}
 
       {settingsTab === 'about' && <div>
         {/* About */}

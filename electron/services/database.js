@@ -308,12 +308,17 @@ function markFollowUpSent(id) {
   run('UPDATE applications SET follow_up_sent = 1 WHERE id = ?', [id])
 }
 
+function clearAllCachedAnswers() {
+  run('DELETE FROM screening_cache')
+  return { success: true }
+}
+
 module.exports = {
   init,
   getApplications, getApplication, hasJobUrl, hasAppliedToCompany, insertApplication, updateApplicationStatus,
   updateApplicationAfterApply, updateApplicationComment, updateRecruiterEmail, deleteApplication, clearAllApplications,
   getAttentionJobs, getAttentionJob, insertAttentionJob, dismissAttentionJob, deleteAttentionJob, clearAllAttentionJobs,
-  getCachedAnswer, saveCachedAnswer, getAllCachedAnswers, deleteCachedAnswer,
+  getCachedAnswer, saveCachedAnswer, getAllCachedAnswers, deleteCachedAnswer, clearAllCachedAnswers,
   getStats, getTodayCountByPlatform,
   findDuplicateAcrossPlatforms, getApplicationsByDate, getApplicationsPerDay,
   getApplicationsForFollowUp, markFollowUpSent,

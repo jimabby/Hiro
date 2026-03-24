@@ -74,6 +74,12 @@ contextBridge.exposeInMainWorld('api', {
   generateInterviewQuestions: (jobDesc, resume) => ipcRenderer.invoke('ai:interviewQuestions', jobDesc, resume),
   analyzeKeywordGap: (jobDesc, resume) => ipcRenderer.invoke('ai:keywordGap', jobDesc, resume),
   blacklistCompany: (company) => ipcRenderer.invoke('config:blacklistCompany', company),
+  removeBlacklistCompany: (company) => ipcRenderer.invoke('config:removeBlacklistCompany', company),
+
+  // Screening cache management
+  getCachedAnswers: () => ipcRenderer.invoke('db:getCachedAnswers'),
+  deleteCachedAnswer: (question) => ipcRenderer.invoke('db:deleteCachedAnswer', question),
+  clearAllCachedAnswers: () => ipcRenderer.invoke('db:clearAllCachedAnswers'),
 
   // Events from main process
   onNotification: (cb) => ipcRenderer.on('notification', (_, data) => cb(data)),

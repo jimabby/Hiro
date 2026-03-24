@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import Setup from './pages/Setup'
 import Dashboard from './pages/Dashboard'
 import NeedsAttention from './pages/NeedsAttention'
@@ -8,11 +8,11 @@ import Analytics from './pages/Analytics'
 import HiroLogo from './components/HiroLogo'
 
 const NAV = [
-  { id: 'dashboard', label: 'Dashboard' },
-  { id: 'attention', label: 'Needs Attention' },
-  { id: 'timeline', label: 'Timeline' },
-  { id: 'analytics', label: 'Analytics' },
-  { id: 'settings', label: 'Settings' },
+  { id: 'dashboard', label: 'Dashboard', icon: '▦', shortcut: '1' },
+  { id: 'attention', label: 'Needs Attention', icon: '⚑', shortcut: '2' },
+  { id: 'timeline', label: 'Timeline', icon: '◷', shortcut: '3' },
+  { id: 'analytics', label: 'Analytics', icon: '◔', shortcut: '4' },
+  { id: 'settings', label: 'Settings', icon: '⚙', shortcut: '5' },
 ]
 
 export default function App() {
@@ -25,6 +25,7 @@ export default function App() {
     localStorage.setItem('theme', theme)
   }, [theme])
   const [attentionCount, setAttentionCount] = useState(0)
+  const [todayCount, setTodayCount] = useState(0)
   const [toast, setToast] = useState(null)
   const [logs, setLogs] = useState([])
   const [scanRunning, setScanRunning] = useState(false)
@@ -33,20 +34,31 @@ export default function App() {
   const [question, setQuestion] = useState(null)
   const [questionAnswer, setQuestionAnswer] = useState('')
 
+  const showToast = useCallback((msg, type = 'info') => {
+    setToast({ msg, type })
+    setTimeout(() => setToast(null), 4000)
+  }, [])
+
   useEffect(() => {
     window.api.getConfig().then(cfg => setSetupDone(cfg.setupComplete))
 
-    window.api.getStats().then(s => setAttentionCount(s.attentionCount || 0))
+    window.api.getStats().then(s => {
+      setAttentionCount(s.attentionCount || 0)
+      setTodayCount(s.totalToday || 0)
+    })
 
     window.api.onNotification((data) => {
       if (data.type === 'attention') {
         setAttentionCount(c => c + 1)
-        showToast(`New job needs attention: ${data.job?.job_title}`)
+        showToast(`New job needs attention: ${data.job?.job_title}`, 'info')
       }
       if (data.type === 'scan-complete') {
         setScanRunning(false)
-        window.api.getStats().then(s => setAttentionCount(s.attentionCount || 0))
-        showToast('Scan complete')
+        window.api.getStats().then(s => {
+          setAttentionCount(s.attentionCount || 0)
+          setTodayCount(s.totalToday || 0)
+        })
+        showToast('Scan complete', 'success')
       }
     })
 
@@ -65,12 +77,22 @@ export default function App() {
       window.api.removeAllListeners('automation:log')
       window.api.removeAllListeners('question:ask')
     }
-  }, [])
+  }, [showToast])
 
-  function showToast(msg) {
-    setToast(msg)
-    setTimeout(() => setToast(null), 4000)
-  }
+  // Global keyboard shortcuts for nav
+  useEffect(() => {
+    function handleGlobalKey(e) {
+      // Don't fire when typing in inputs
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return
+
+      const num = parseInt(e.key)
+      if (num >= 1 && num <= NAV.length) {
+        setPage(NAV[num - 1].id)
+      }
+    }
+    window.addEventListener('keydown', handleGlobalKey)
+    return () => window.removeEventListener('keydown', handleGlobalKey)
+  }, [])
 
   if (setupDone === null) return null // loading
 
@@ -105,49 +127,62 @@ export default function App() {
   }
 
   const pages = {
-    dashboard: <Dashboard logs={logs} scanRunning={scanRunning} onScanStart={handleScanStart} />,
-    attention: <NeedsAttention onCountChange={setAttentionCount} />,
+    dashboard: <Dashboard logs={logs} scanRunning={scanRunning} onScanStart={handleScanStart} showToast={showToast} />,
+    attention: <NeedsAttention onCountChange={setAttentionCount} showToast={showToast} />,
     timeline: <Timeline />,
     analytics: <Analytics />,
-    settings: <Settings />,
+    settings: <Settings showToast={showToast} />,
   }
 
   return (
     <div style={{ display: 'flex', height: '100vh' }}>
       {/* Sidebar */}
       <nav style={{
-        width: 200, background: 'var(--surface)', borderRight: '1px solid var(--border)',
-        display: 'flex', flexDirection: 'column', padding: '20px 12px', gap: 4, flexShrink: 0
+        width: 220, background: 'var(--surface)', borderRight: '1px solid var(--border)',
+        display: 'flex', flexDirection: 'column', padding: '20px 12px', gap: 2, flexShrink: 0,
+        transition: 'background 0.3s ease, border-color 0.3s ease',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px 20px' }}>
           <HiroLogo size={28} />
           <span style={{ fontSize: 18, fontWeight: 700, color: 'var(--accent)' }}>Hiro</span>
         </div>
+
         {NAV.map(n => (
           <button key={n.id} onClick={() => setPage(n.id)} style={{
             background: page === n.id ? 'var(--surface2)' : 'transparent',
             border: 'none', color: page === n.id ? 'var(--text)' : 'var(--text-muted)',
             padding: '9px 12px', borderRadius: 8, cursor: 'pointer',
-            textAlign: 'left', fontSize: 14, display: 'flex', alignItems: 'center',
-            justifyContent: 'space-between', fontWeight: page === n.id ? 600 : 400,
+            textAlign: 'left', fontSize: 13, display: 'flex', alignItems: 'center',
+            gap: 10, fontWeight: page === n.id ? 600 : 400,
             transition: 'all 0.15s',
           }}>
-            {n.label}
+            <span style={{ fontSize: 15, width: 20, textAlign: 'center', opacity: page === n.id ? 1 : 0.6 }}>{n.icon}</span>
+            <span style={{ flex: 1 }}>{n.label}</span>
             {n.id === 'attention' && attentionCount > 0 && (
               <span style={{
                 background: 'var(--red)', color: '#fff', borderRadius: 10,
-                fontSize: 11, padding: '1px 6px', fontWeight: 700,
+                fontSize: 10, padding: '1px 6px', fontWeight: 700, minWidth: 18, textAlign: 'center',
               }}>{attentionCount}</span>
             )}
+            <span className="kbd">{n.shortcut}</span>
           </button>
         ))}
 
         <div style={{ marginTop: 'auto', padding: '0 12px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {/* Quick stats */}
+          <div style={{
+            background: 'var(--surface2)', borderRadius: 8, padding: '10px 12px',
+            display: 'flex', flexDirection: 'column', gap: 4,
+          }}>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 500 }}>Today</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text)' }}>{todayCount} <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-muted)' }}>applied</span></div>
+          </div>
+
           <div style={{
             display: 'flex', alignItems: 'center', gap: 6,
             color: scanRunning ? 'var(--green)' : 'var(--text-muted)', fontSize: 12,
           }}>
-            <span style={{
+            <span className={scanRunning ? 'pulse' : ''} style={{
               width: 7, height: 7, borderRadius: '50%',
               background: scanRunning ? 'var(--green)' : 'var(--border)',
               flexShrink: 0,
@@ -160,6 +195,7 @@ export default function App() {
               background: 'transparent', border: '1px solid var(--border)',
               color: 'var(--text-muted)', borderRadius: 8, padding: '6px 10px',
               cursor: 'pointer', fontSize: 12, textAlign: 'left',
+              transition: 'all 0.15s',
             }}
           >
             {theme === 'dark' ? '☀ Light' : '☾ Dark'}
@@ -168,18 +204,27 @@ export default function App() {
       </nav>
 
       {/* Main content */}
-      <main style={{ flex: 1, overflow: 'auto', padding: 28 }}>
+      <main style={{ flex: 1, overflow: 'auto', padding: 28, transition: 'background 0.3s ease' }}>
         {pages[page]}
       </main>
 
-      {toast && <div className="toast">{toast}</div>}
+      {/* Toast notification */}
+      {toast && (
+        <div className={`toast toast-${toast.type}`}>
+          <span style={{ fontSize: 15 }}>
+            {toast.type === 'success' ? '✓' : toast.type === 'error' ? '✗' : 'ℹ'}
+          </span>
+          <span>{toast.msg}</span>
+        </div>
+      )}
 
+      {/* Resume required modal */}
       {resumeModal && (
-        <div style={{
+        <div className="modal-overlay" style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200,
         }}>
-          <div className="card" style={{ width: 420 }}>
+          <div className="card modal-content" style={{ width: 420 }}>
             <h2 style={{ fontSize: 18, marginBottom: 8 }}>Resume Required</h2>
             <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 20 }}>
               A resume is needed to match and apply to jobs. Upload yours to start scanning.
@@ -196,11 +241,11 @@ export default function App() {
 
       {/* Screening question modal — shown mid-apply when AI is unsure */}
       {question && (
-        <div style={{
+        <div className="modal-overlay" style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300,
         }}>
-          <div className="card" style={{ width: 500 }}>
+          <div className="card modal-content" style={{ width: 500 }}>
             <h2 style={{ fontSize: 16, marginBottom: 8 }}>Application Question</h2>
             <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 14 }}>
               The AI couldn't confidently answer this. Your answer will be saved for future applications.

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 
 function safeParseJSON(str) {
   try { return JSON.parse(str || '[]') } catch { return [] }
@@ -19,28 +19,33 @@ const STATUS_BADGE = {
   skipped: { label: 'Skipped', color: 'badge-gray' },
 }
 
-export default function Dashboard({ logs, scanRunning, onScanStart }) {
+const PAGE_SIZE = 25
+
+export default function Dashboard({ logs, scanRunning, onScanStart, showToast }) {
   const [stats, setStats] = useState(null)
   const [apps, setApps] = useState([])
   const [selected, setSelected] = useState(null)
   const [filter, setFilter] = useState({ status: '', platform: '', search: '' })
+  const [sort, setSort] = useState({ key: 'applied_at', dir: 'desc' })
+  const [currentPage, setCurrentPage] = useState(1)
+  const [selectedIds, setSelectedIds] = useState(new Set())
   const [resumeExpanded, setResumeExpanded] = useState(false)
   const [interviewQuestions, setInterviewQuestions] = useState(null)
   const [loadingQuestions, setLoadingQuestions] = useState(false)
   const [keywordGap, setKeywordGap] = useState(null)
   const [loadingGap, setLoadingGap] = useState(false)
-  const [pdfModal, setPdfModal] = useState(null) // { base64, title }
+  const [pdfModal, setPdfModal] = useState(null)
   const [pdfLoading, setPdfLoading] = useState(false)
   const [skippedApplying, setSkippedApplying] = useState(false)
   const [skippedApplyLog, setSkippedApplyLog] = useState([])
   const [skippedApplyResult, setSkippedApplyResult] = useState(null)
+  const [logCollapsed, setLogCollapsed] = useState(false)
   const skippedLogEndRef = useRef(null)
   const logRef = useRef(null)
   const searchRef = useRef(null)
 
   useEffect(() => { loadData() }, [])
 
-  // Auto-refresh data when scan finishes
   const prevScanRunning = useRef(scanRunning)
   useEffect(() => {
     if (prevScanRunning.current && !scanRunning) loadData()
@@ -74,15 +79,89 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
     if (res.success) setPdfModal({ base64: res.base64, title })
   }
 
-  const filtered = apps.filter(a => {
-    if (filter.status && a.status !== filter.status) return false
-    if (filter.platform && a.platform !== filter.platform) return false
-    if (filter.search) {
-      const q = filter.search.toLowerCase()
-      if (!a.job_title.toLowerCase().includes(q) && !a.company.toLowerCase().includes(q)) return false
+  // Sort + filter logic
+  const filtered = useMemo(() => {
+    let result = apps.filter(a => {
+      if (filter.status && a.status !== filter.status) return false
+      if (filter.platform && a.platform !== filter.platform) return false
+      if (filter.search) {
+        const q = filter.search.toLowerCase()
+        if (!a.job_title.toLowerCase().includes(q) && !a.company.toLowerCase().includes(q)) return false
+      }
+      return true
+    })
+
+    // Sort
+    result.sort((a, b) => {
+      let va = a[sort.key], vb = b[sort.key]
+      if (sort.key === 'match_score') { va = va || 0; vb = vb || 0 }
+      if (sort.key === 'applied_at') { va = va || ''; vb = vb || '' }
+      if (typeof va === 'number' && typeof vb === 'number') {
+        return sort.dir === 'asc' ? va - vb : vb - va
+      }
+      va = String(va || '').toLowerCase()
+      vb = String(vb || '').toLowerCase()
+      return sort.dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va)
+    })
+
+    return result
+  }, [apps, filter, sort])
+
+  // Pagination
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const paged = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE)
+
+  // Reset page when filters change
+  useEffect(() => { setCurrentPage(1) }, [filter, sort])
+
+  function toggleSort(key) {
+    setSort(prev => prev.key === key
+      ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+      : { key, dir: 'desc' }
+    )
+  }
+
+  function sortIndicator(key) {
+    if (sort.key !== key) return ''
+    return sort.dir === 'asc' ? ' ▲' : ' ▼'
+  }
+
+  // Bulk selection
+  function toggleSelectAll() {
+    if (selectedIds.size === paged.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(paged.map(a => a.id)))
     }
-    return true
-  })
+  }
+
+  function toggleSelect(id) {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+
+  async function bulkChangeStatus(newStatus) {
+    for (const id of selectedIds) {
+      await window.api.updateApplicationStatus(id, newStatus)
+    }
+    setApps(prev => prev.map(a => selectedIds.has(a.id) ? { ...a, status: newStatus } : a))
+    showToast?.(`${selectedIds.size} jobs updated to ${newStatus}`, 'success')
+    setSelectedIds(new Set())
+  }
+
+  async function bulkDelete() {
+    if (!window.confirm(`Delete ${selectedIds.size} selected applications? This cannot be undone.`)) return
+    for (const id of selectedIds) {
+      await window.api.deleteApplication(id)
+    }
+    setApps(prev => prev.filter(a => !selectedIds.has(a.id)))
+    showToast?.(`${selectedIds.size} applications deleted`, 'success')
+    setSelectedIds(new Set())
+    if (selected && selectedIds.has(selected.id)) setSelected(null)
+  }
 
   useEffect(() => {
     function handler(e) {
@@ -97,19 +176,19 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
       if (selected) {
         if (e.key === 'ArrowDown') {
           e.preventDefault()
-          const idx = filtered.findIndex(a => a.id === selected.id)
-          if (idx < filtered.length - 1) { setSelected(filtered[idx + 1]); setResumeExpanded(false) }
+          const idx = paged.findIndex(a => a.id === selected.id)
+          if (idx < paged.length - 1) { setSelected(paged[idx + 1]); setResumeExpanded(false) }
         }
         if (e.key === 'ArrowUp') {
           e.preventDefault()
-          const idx = filtered.findIndex(a => a.id === selected.id)
-          if (idx > 0) { setSelected(filtered[idx - 1]); setResumeExpanded(false) }
+          const idx = paged.findIndex(a => a.id === selected.id)
+          if (idx > 0) { setSelected(paged[idx - 1]); setResumeExpanded(false) }
         }
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [selected, filtered, pdfModal])
+  }, [selected, paged, pdfModal])
 
   async function loadData() {
     const [s, a] = await Promise.all([
@@ -218,11 +297,23 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
       {/* Log */}
       {logs.length > 0 && (
         <div className="card" style={{ marginBottom: 24 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
-            <span style={{ fontWeight: 600, fontSize: 13 }}>Activity Log</span>
-            <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{logs.length} entries</span>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: logCollapsed ? 0 : 10 }}>
+            <button onClick={() => setLogCollapsed(c => !c)} style={{
+              background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+              display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text)',
+            }}>
+              <span style={{ fontWeight: 600, fontSize: 13 }}>Activity Log</span>
+              <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>{logCollapsed ? '▼' : '▲'}</span>
+            </button>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{logs.length} entries</span>
+              <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }}
+                onClick={() => { /* logs are managed by parent — we just signal no interest */ setLogCollapsed(true) }}>
+                Hide
+              </button>
+            </div>
           </div>
-          <div className="log-box" ref={logRef}>{logs.join('\n')}</div>
+          {!logCollapsed && <div className="log-box" ref={logRef}>{logs.join('\n')}</div>}
         </div>
       )}
 
@@ -265,8 +356,28 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
           )
         })()}
 
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-muted)' }}>{filtered.length} job{filtered.length !== 1 ? 's' : ''}</span>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-muted)' }}>{filtered.length} job{filtered.length !== 1 ? 's' : ''}</span>
+            {/* Bulk actions */}
+            {selectedIds.size > 0 && (
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginLeft: 8, paddingLeft: 8, borderLeft: '1px solid var(--border)' }}>
+                <span style={{ fontSize: 12, color: 'var(--accent)', fontWeight: 600 }}>{selectedIds.size} selected</span>
+                <select
+                  defaultValue=""
+                  onChange={e => { if (e.target.value) bulkChangeStatus(e.target.value); e.target.value = '' }}
+                  style={{ width: 'auto', padding: '3px 6px', fontSize: 11 }}
+                >
+                  <option value="" disabled>Set status...</option>
+                  <option value="applied">Applied</option>
+                  <option value="interview">Interview</option>
+                  <option value="rejected">Rejected</option>
+                  <option value="pending">Pending</option>
+                </select>
+                <button className="btn btn-ghost" style={{ fontSize: 11, color: 'var(--red)', padding: '2px 8px' }} onClick={bulkDelete}>Delete</button>
+              </div>
+            )}
+          </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <input
               ref={searchRef}
@@ -291,77 +402,132 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
 
         {filtered.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-muted)' }}>
+            <div style={{ fontSize: 32, marginBottom: 8, opacity: 0.3 }}>▦</div>
             No jobs yet. Run a scan to get started.
           </div>
         ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Role</th><th>Company</th><th>Platform</th>
-                  <th>Match</th><th>Comment</th><th>Status</th><th>Date</th><th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map(a => (
-                  <tr key={a.id} style={{ cursor: 'pointer' }} onClick={() => { setSelected(a); setResumeExpanded(false) }}>
-                    <td style={{ fontWeight: 500 }}>{a.job_title}</td>
-                    <td>{a.company}</td>
-                    <td><span className="badge badge-blue">{a.platform}</span></td>
-                    <td>
-                      <span style={{
-                        color: a.match_score >= 85 ? 'var(--green)' : a.match_score >= 70 ? 'var(--yellow)' : 'var(--text-muted)',
-                        fontWeight: 600,
-                      }}>{a.match_score}%</span>
-                    </td>
-                    <td onClick={e => e.stopPropagation()} style={{ minWidth: 140 }}>
-                      <input
-                        defaultValue={a.comment || ''}
-                        placeholder="Add note..."
-                        onBlur={e => saveComment(a.id, e.target.value)}
-                        onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }}
-                        style={{
-                          background: 'transparent', border: 'none', borderBottom: '1px solid var(--border)',
-                          color: 'var(--text)', fontSize: 12, width: '100%', padding: '2px 4px',
-                          outline: 'none',
-                        }}
+          <>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th style={{ width: 32, padding: '10px 8px' }}>
+                      <input type="checkbox"
+                        checked={paged.length > 0 && selectedIds.size === paged.length}
+                        onChange={toggleSelectAll}
+                        style={{ width: 'auto' }}
                       />
-                    </td>
-                    <td onClick={e => e.stopPropagation()}>
-                      {a.status === 'skipped' ? (
-                        <span className="badge badge-gray">Skipped</span>
-                      ) : (
-                        <select value={a.status} style={{ width: 'auto', padding: '3px 6px', fontSize: 12 }}
-                          onChange={e => changeStatus(a.id, e.target.value, e)}>
-                          <option value="applied">Applied</option>
-                          <option value="interview">Interview</option>
-                          <option value="rejected">Rejected</option>
-                          <option value="pending">Pending</option>
-                        </select>
-                      )}
-                    </td>
-                    <td style={{ color: 'var(--text-muted)' }}>
-                      {new Date(a.applied_at).toLocaleDateString()}
-                    </td>
-                    <td onClick={e => e.stopPropagation()}>
-                      <button className="btn btn-ghost" style={{ fontSize: 11, color: 'var(--red)', padding: '2px 6px' }}
-                        onClick={e => deleteApp(a.id, e)}>✕</button>
-                    </td>
+                    </th>
+                    <th className="sortable" onClick={() => toggleSort('job_title')}>Role{sortIndicator('job_title')}</th>
+                    <th className="sortable" onClick={() => toggleSort('company')}>Company{sortIndicator('company')}</th>
+                    <th className="sortable" onClick={() => toggleSort('platform')}>Platform{sortIndicator('platform')}</th>
+                    <th className="sortable" onClick={() => toggleSort('match_score')}>Match{sortIndicator('match_score')}</th>
+                    <th>Comment</th>
+                    <th className="sortable" onClick={() => toggleSort('status')}>Status{sortIndicator('status')}</th>
+                    <th className="sortable" onClick={() => toggleSort('applied_at')}>Date{sortIndicator('applied_at')}</th>
+                    <th></th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {paged.map(a => (
+                    <tr key={a.id} style={{ cursor: 'pointer', background: selectedIds.has(a.id) ? 'var(--surface2)' : undefined }} onClick={() => { setSelected(a); setResumeExpanded(false) }}>
+                      <td style={{ padding: '10px 8px' }} onClick={e => e.stopPropagation()}>
+                        <input type="checkbox"
+                          checked={selectedIds.has(a.id)}
+                          onChange={() => toggleSelect(a.id)}
+                          style={{ width: 'auto' }}
+                        />
+                      </td>
+                      <td style={{ fontWeight: 500 }}>{a.job_title}</td>
+                      <td>{a.company}</td>
+                      <td><span className="badge badge-blue">{a.platform}</span></td>
+                      <td>
+                        <span style={{
+                          color: a.match_score >= 85 ? 'var(--green)' : a.match_score >= 70 ? 'var(--yellow)' : 'var(--text-muted)',
+                          fontWeight: 600,
+                        }}>{a.match_score}%</span>
+                      </td>
+                      <td onClick={e => e.stopPropagation()} style={{ minWidth: 140 }}>
+                        <input
+                          defaultValue={a.comment || ''}
+                          placeholder="Add note..."
+                          onBlur={e => saveComment(a.id, e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }}
+                          style={{
+                            background: 'transparent', border: 'none', borderBottom: '1px solid var(--border)',
+                            color: 'var(--text)', fontSize: 12, width: '100%', padding: '2px 4px',
+                            outline: 'none',
+                          }}
+                        />
+                      </td>
+                      <td onClick={e => e.stopPropagation()}>
+                        {a.status === 'skipped' ? (
+                          <span className="badge badge-gray">Skipped</span>
+                        ) : (
+                          <select value={a.status} style={{ width: 'auto', padding: '3px 6px', fontSize: 12 }}
+                            onChange={e => changeStatus(a.id, e.target.value, e)}>
+                            <option value="applied">Applied</option>
+                            <option value="interview">Interview</option>
+                            <option value="rejected">Rejected</option>
+                            <option value="pending">Pending</option>
+                          </select>
+                        )}
+                      </td>
+                      <td style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                        {new Date(a.applied_at).toLocaleDateString()}
+                      </td>
+                      <td onClick={e => e.stopPropagation()}>
+                        <button className="btn btn-ghost" style={{ fontSize: 11, color: 'var(--red)', padding: '2px 6px' }}
+                          onClick={e => deleteApp(a.id, e)}>✕</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pagination */}
+            {totalPages > 1 && (
+              <div className="pagination">
+                <button disabled={currentPage === 1} onClick={() => setCurrentPage(1)}>«</button>
+                <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)}>‹</button>
+                {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
+                  let page
+                  if (totalPages <= 7) {
+                    page = i + 1
+                  } else if (currentPage <= 4) {
+                    page = i + 1
+                  } else if (currentPage >= totalPages - 3) {
+                    page = totalPages - 6 + i
+                  } else {
+                    page = currentPage - 3 + i
+                  }
+                  return (
+                    <button key={page}
+                      className={page === currentPage ? 'active' : ''}
+                      onClick={() => setCurrentPage(page)}>
+                      {page}
+                    </button>
+                  )
+                })}
+                <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)}>›</button>
+                <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(totalPages)}>»</button>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 8 }}>
+                  {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, filtered.length)} of {filtered.length}
+                </span>
+              </div>
+            )}
+          </>
         )}
       </div>
 
       {/* Detail modal */}
       {selected && (
-        <div style={{
+        <div className="modal-overlay" style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
         }} onClick={() => setSelected(null)}>
-          <div className="card" style={{ width: '70vw', maxWidth: 900, maxHeight: '85vh', overflow: 'auto' }}
+          <div className="card modal-content" style={{ width: '70vw', maxWidth: 900, maxHeight: '85vh', overflow: 'auto' }}
             onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
               <div>
@@ -432,6 +598,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
                 onClick={async () => {
                   if (!window.confirm(`Blacklist ${selected.company}? It will be excluded from future scans.`)) return
                   await window.api.blacklistCompany(selected.company)
+                  showToast?.(`${selected.company} blacklisted`, 'success')
                 }}>
                 Blacklist Company
               </button>
@@ -593,11 +760,11 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
       )}
 
       {skippedApplying && (
-        <div style={{
+        <div className="modal-overlay" style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200,
         }}>
-          <div className="card" style={{ width: 560, maxHeight: '70vh', display: 'flex', flexDirection: 'column' }}>
+          <div className="card modal-content" style={{ width: 560, maxHeight: '70vh', display: 'flex', flexDirection: 'column' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <h2 style={{ fontSize: 16 }}>AI Applying...</h2>
               {skippedApplyResult && (
@@ -634,11 +801,11 @@ export default function Dashboard({ logs, scanRunning, onScanStart }) {
       )}
 
       {pdfModal && (
-        <div style={{
+        <div className="modal-overlay" style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300,
         }}>
-          <div style={{
+          <div className="modal-content" style={{
             width: '82vw', height: '92vh', display: 'flex', flexDirection: 'column',
             background: 'var(--surface)', borderRadius: 12, overflow: 'hidden',
             boxShadow: '0 24px 60px rgba(0,0,0,0.5)',

@@ -204,18 +204,8 @@ async function addAttentionJob(job, cfg, log, notifyAttention) {
   notifyAttention(attentionJob)
 }
 
-async function applyAttentionJob(jobId, cfg, log) {
-  const job = database.getAttentionJob(jobId)
-  if (!job) return { success: false, reason: 'Job not found' }
-
-  const activeResumeObj = (cfg.resumes || []).find(r => r.id === cfg.defaultResumeId)
-  const activeResume = activeResumeObj?.text || cfg.masterResume || ''
-  cfg = { ...cfg, masterResume: activeResume, activeResumeOriginalPath: activeResumeObj?.originalPath, activeResumeOriginalExt: activeResumeObj?.originalExt }
-
-  if (database.hasAppliedToCompany(job.company)) {
-    return { success: false, reason: `Already applied to ${job.company} — skipping to avoid duplicate` }
-  }
-
+// Shared helper: tailor resume, generate cover letter, submit application
+async function tailorAndApply(job, cfg, log) {
   const platformMap = { Seek: seek, Indeed: indeed, LinkedIn: linkedin }
   const scraper = platformMap[job.platform]
   if (!scraper) return { success: false, reason: `No scraper for platform: ${job.platform}` }
@@ -248,6 +238,27 @@ async function applyAttentionJob(jobId, cfg, log) {
     log(`Apply error: ${err.message}`)
   }
 
+  return { ...result, tailoredResume, coverLetter }
+}
+
+function resolveActiveResume(cfg) {
+  const activeResumeObj = (cfg.resumes || []).find(r => r.id === cfg.defaultResumeId)
+  const activeResume = activeResumeObj?.text || cfg.masterResume || ''
+  return { ...cfg, masterResume: activeResume, activeResumeOriginalPath: activeResumeObj?.originalPath, activeResumeOriginalExt: activeResumeObj?.originalExt }
+}
+
+async function applyAttentionJob(jobId, cfg, log) {
+  const job = database.getAttentionJob(jobId)
+  if (!job) return { success: false, reason: 'Job not found' }
+
+  cfg = resolveActiveResume(cfg)
+
+  if (database.hasAppliedToCompany(job.company)) {
+    return { success: false, reason: `Already applied to ${job.company} — skipping to avoid duplicate` }
+  }
+
+  const result = await tailorAndApply(job, cfg, log)
+
   if (result.success) {
     database.insertApplication({
       job_title: job.job_title,
@@ -258,8 +269,8 @@ async function applyAttentionJob(jobId, cfg, log) {
       job_description: job.job_description,
       match_score: job.match_score,
       match_explanation: job.match_explanation || '',
-      tailored_resume: tailoredResume,
-      cover_letter: coverLetter,
+      tailored_resume: result.tailoredResume,
+      cover_letter: result.coverLetter,
       screening_qa: [],
       status: 'applied',
     })
@@ -274,44 +285,12 @@ async function applySkippedJob(jobId, cfg, log) {
   const job = database.getApplication(jobId)
   if (!job) return { success: false, reason: 'Job not found' }
 
-  const activeResumeObj = (cfg.resumes || []).find(r => r.id === cfg.defaultResumeId)
-  const activeResume = activeResumeObj?.text || cfg.masterResume || ''
-  cfg = { ...cfg, masterResume: activeResume, activeResumeOriginalPath: activeResumeObj?.originalPath, activeResumeOriginalExt: activeResumeObj?.originalExt }
+  cfg = resolveActiveResume(cfg)
 
-  const platformMap = { Seek: seek, Indeed: indeed, LinkedIn: linkedin }
-  const scraper = platformMap[job.platform]
-  if (!scraper) return { success: false, reason: `No scraper for platform: ${job.platform}` }
-
-  log(`Tailoring resume for ${job.job_title} at ${job.company}...`)
-  let tailoredResume = cfg.masterResume
-  try {
-    tailoredResume = stripMarkdown(await aiAdapter.tailorResume(cfg.aiProvider, cfg.aiApiKey, job.job_description || job.job_title, cfg.masterResume, cfg.geminiModel))
-    log('Resume tailored')
-  } catch (err) {
-    log(`Resume tailoring error: ${err.message}`)
-  }
-
-  log('Generating cover letter...')
-  let coverLetter = ''
-  try {
-    coverLetter = stripMarkdown(await aiAdapter.generateCoverLetter(cfg.aiProvider, cfg.aiApiKey, job.job_description || job.job_title, cfg.masterResume, cfg.geminiModel, cfg.coverLetterTone, cfg.coverLetterTemplate))
-    log('Cover letter generated')
-  } catch (err) {
-    log(`Cover letter error: ${err.message}`)
-  }
-
-  log('Applying...')
-  let result
-  try {
-    result = await scraper.apply(job.job_url, tailoredResume, coverLetter, { ...cfg, jobDescription: job.job_description })
-    log(`Apply result: ${result.success ? 'SUCCESS' : 'FAILED — ' + result.reason}`)
-  } catch (err) {
-    result = { success: false, reason: err.message }
-    log(`Apply error: ${err.message}`)
-  }
+  const result = await tailorAndApply(job, cfg, log)
 
   if (result.success) {
-    database.updateApplicationAfterApply(jobId, tailoredResume, coverLetter)
+    database.updateApplicationAfterApply(jobId, result.tailoredResume, result.coverLetter)
     log('Status updated to Applied')
   }
 

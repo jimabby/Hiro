@@ -27,8 +27,31 @@ export default function Setup({ onComplete }) {
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState(null)
   const [saving, setSaving] = useState(false)
+  const [validationErrors, setValidationErrors] = useState([])
 
-  const set = (key, val) => { setForm(f => ({ ...f, [key]: val })); setTestResult(null) }
+  const set = (key, val) => { setForm(f => ({ ...f, [key]: val })); setTestResult(null); setValidationErrors([]) }
+
+  function validateStep(stepNum) {
+    const errors = []
+    if (stepNum === 0) {
+      if (!form.aiApiKey.trim()) errors.push('API key is required to use AI features.')
+    }
+    if (stepNum === 2) {
+      if (!form.jobKeywords.trim()) errors.push('At least one job keyword is required.')
+      if (!form.enableSeek && !form.enableIndeed && !form.enableLinkedIn) errors.push('Enable at least one platform.')
+    }
+    return errors
+  }
+
+  function nextStep() {
+    const errors = validateStep(step)
+    if (errors.length > 0) {
+      setValidationErrors(errors)
+      return
+    }
+    setValidationErrors([])
+    setStep(s => s + 1)
+  }
 
   async function testAI() {
     setTesting(true)
@@ -67,6 +90,15 @@ export default function Setup({ onComplete }) {
     onComplete()
   }
 
+  const completedSteps = (() => {
+    const done = []
+    if (form.aiApiKey) done.push(0)
+    if (form.gmailAddress && form.gmailAppPassword) done.push(1)
+    if (form.jobKeywords) done.push(2)
+    if (form.masterResume) done.push(3)
+    return done
+  })()
+
   return (
     <div style={{
       height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -84,12 +116,15 @@ export default function Setup({ onComplete }) {
 
         {/* Progress */}
         <div style={{ display: 'flex', gap: 4, marginBottom: 28 }}>
-          {STEPS.map((_, i) => (
-            <div key={i} style={{
-              flex: 1, height: 3, borderRadius: 2,
-              background: i <= step ? 'var(--accent)' : 'var(--border)',
-              transition: 'background 0.3s',
-            }} />
+          {STEPS.map((label, i) => (
+            <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+              <div style={{
+                height: 3, borderRadius: 2, width: '100%',
+                background: i <= step ? 'var(--accent)' : completedSteps.includes(i) ? 'var(--green)' : 'var(--border)',
+                transition: 'background 0.3s',
+              }} />
+              <span style={{ fontSize: 9, color: i <= step ? 'var(--accent)' : 'var(--text-muted)' }}>{label}</span>
+            </div>
           ))}
         </div>
 
@@ -144,16 +179,16 @@ export default function Setup({ onComplete }) {
           {/* Step 1: Email */}
           {step === 1 && (
             <div>
-              <h2 style={{ marginBottom: 8, fontSize: 18 }}>Gmail Notifications</h2>
+              <h2 style={{ marginBottom: 8, fontSize: 18 }}>Email Notifications</h2>
               <p style={{ color: 'var(--text-muted)', marginBottom: 20, fontSize: 13 }}>
-                Used to send you job alerts and daily reports. Create a Gmail App Password at myaccount.google.com → Security → App Passwords.
+                Used to send you job alerts and daily reports. Create an App Password in your email provider's security settings.
               </p>
               <div className="form-group">
-                <label>Gmail Address</label>
-                <input type="email" value={form.gmailAddress} onChange={e => set('gmailAddress', e.target.value)} placeholder="you@gmail.com" />
+                <label>Email Address</label>
+                <input type="email" value={form.gmailAddress} onChange={e => set('gmailAddress', e.target.value)} placeholder="you@gmail.com / outlook.com / yahoo.com" />
               </div>
               <div className="form-group">
-                <label>Gmail App Password</label>
+                <label>App Password</label>
                 <input type="password" value={form.gmailAppPassword} onChange={e => set('gmailAppPassword', e.target.value)} placeholder="xxxx xxxx xxxx xxxx" />
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -220,6 +255,10 @@ export default function Setup({ onComplete }) {
                 </div>
               </div>
               <div className="form-group">
+                <label>Daily Limit — LinkedIn</label>
+                <input type="number" min={1} max={50} value={form.dailyLimitLinkedIn} onChange={e => set('dailyLimitLinkedIn', e.target.value)} style={{ width: '50%' }} />
+              </div>
+              <div className="form-group">
                 <label>Blacklisted Companies (comma-separated)</label>
                 <input value={form.blacklistedCompanies} onChange={e => set('blacklistedCompanies', e.target.value)} placeholder="Company A, Company B" />
               </div>
@@ -258,39 +297,59 @@ export default function Setup({ onComplete }) {
             <div>
               <h2 style={{ marginBottom: 20, fontSize: 18 }}>Review & Start</h2>
               {[
-                ['AI Provider', form.aiProvider],
-                ['API Key', form.aiApiKey ? '••••••••' : 'Not set'],
-                ...(form.aiProvider === 'gemini' ? [['Gemini Model', form.geminiModel || 'Not set']] : []),
-                ['Gmail', form.gmailAddress || 'Not set'],
-                ['Keywords', form.jobKeywords || 'Not set'],
-                ['Location', form.jobLocation || 'Not set'],
-                ['Min Salary', form.salaryMin ? `$${form.salaryMin}` : 'Any'],
-                ['Match Threshold', `${form.matchThreshold}%`],
-                ['Platforms', [form.enableSeek && 'Seek', form.enableIndeed && 'Indeed', form.enableLinkedIn && 'LinkedIn'].filter(Boolean).join(', ')],
-                ['Resume', form.masterResume ? `${form.masterResume.slice(0, 60)}...` : 'Not set'],
-              ].map(([k, v]) => (
-                <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)', fontSize: 13 }}>
+                ['AI Provider', form.aiProvider, !!form.aiApiKey],
+                ['API Key', form.aiApiKey ? '••••••••' : 'Not set', !!form.aiApiKey],
+                ...(form.aiProvider === 'gemini' ? [['Gemini Model', form.geminiModel || 'Not set', !!form.geminiModel]] : []),
+                ['Email', form.gmailAddress || 'Skipped (optional)', !!form.gmailAddress],
+                ['Keywords', form.jobKeywords || 'Not set', !!form.jobKeywords],
+                ['Location', form.jobLocation || 'Not set', !!form.jobLocation],
+                ['Min Salary', form.salaryMin ? `$${Number(form.salaryMin).toLocaleString()}` : 'Any', true],
+                ['Match Threshold', `${form.matchThreshold}%`, true],
+                ['Platforms', [form.enableSeek && 'Seek', form.enableIndeed && 'Indeed', form.enableLinkedIn && 'LinkedIn'].filter(Boolean).join(', ') || 'None', form.enableSeek || form.enableIndeed || form.enableLinkedIn],
+                ['Resume', form.masterResume ? `${form.masterResume.slice(0, 60)}...` : 'Not set (can add later)', true],
+              ].map(([k, v, ok]) => (
+                <div key={k} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border)', fontSize: 13 }}>
                   <span style={{ color: 'var(--text-muted)' }}>{k}</span>
-                  <span>{v}</span>
+                  <span style={{ color: ok ? 'var(--text)' : 'var(--yellow)' }}>{v}</span>
                 </div>
+              ))}
+              {!form.aiApiKey && (
+                <div style={{ marginTop: 12, padding: '8px 12px', background: 'rgba(234,179,8,0.15)', borderRadius: 8, fontSize: 12, color: 'var(--yellow)' }}>
+                  Warning: No AI API key set. AI features won't work until you add one in Settings.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Validation errors */}
+          {validationErrors.length > 0 && (
+            <div style={{ marginTop: 12, padding: '8px 12px', background: 'rgba(239,68,68,0.15)', borderRadius: 8 }}>
+              {validationErrors.map((err, i) => (
+                <div key={i} style={{ fontSize: 12, color: 'var(--red)', marginBottom: i < validationErrors.length - 1 ? 4 : 0 }}>{err}</div>
               ))}
             </div>
           )}
 
           {/* Navigation */}
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 24 }}>
-            <button className="btn btn-ghost" onClick={() => setStep(s => s - 1)} disabled={step === 0}>
+            <button className="btn btn-ghost" onClick={() => { setStep(s => s - 1); setValidationErrors([]) }} disabled={step === 0}>
               Back
             </button>
             {step < STEPS.length - 1 ? (
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                {step === 1 && (
+                  <button className="btn btn-ghost" style={{ color: 'var(--text-muted)', fontSize: 13 }}
+                    onClick={() => { set('gmailAddress', ''); set('gmailAppPassword', ''); setStep(s => s + 1) }}>
+                    Skip for now
+                  </button>
+                )}
                 {step === 3 && (
                   <button className="btn btn-ghost" style={{ color: 'var(--text-muted)', fontSize: 13 }}
                     onClick={() => { set('masterResume', ''); setStep(s => s + 1) }}>
                     Skip for now
                   </button>
                 )}
-                <button className="btn btn-primary" onClick={() => setStep(s => s + 1)}>
+                <button className="btn btn-primary" onClick={nextStep}>
                   Continue
                 </button>
               </div>

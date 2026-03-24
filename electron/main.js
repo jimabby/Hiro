@@ -218,6 +218,22 @@ ipcMain.handle('resume:importFile', async () => {
         .trim()
     } else if (ext === 'docx' || ext === 'doc') {
       const mammoth = require('mammoth')
+
+      // Extract hyperlinks from HTML representation (Portfolio, GitHub, LinkedIn, etc.)
+      const linkMap = new Map()
+      try {
+        const htmlResult = await mammoth.convertToHtml({ path: filePath })
+        const linkRegex = /<a\s+[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi
+        let lm
+        while ((lm = linkRegex.exec(htmlResult.value)) !== null) {
+          const url = lm[1]
+          const linkText = lm[2].replace(/<[^>]+>/g, '').trim()
+          if (linkText && url && /^https?:\/\//.test(url)) {
+            linkMap.set(linkText, url)
+          }
+        }
+      } catch { /* link extraction is non-critical */ }
+
       const result = await mammoth.extractRawText({ path: filePath })
       // Some DOCX files use non-standard font encoding — mammoth extracts those as garbled
       // Latin Extended characters. Strip anything outside ASCII + common punctuation symbols.
@@ -228,6 +244,11 @@ ipcMain.handle('resume:importFile', async () => {
         .replace(/[ \t]{2,}/g, ' ')
         .replace(/\n{3,}/g, '\n\n')
         .trim()
+
+      // Embed extracted URLs so PDF builder can create clickable links
+      for (const [linkText, url] of linkMap) {
+        text = text.replace(linkText, `${linkText} {{${url}}}`)
+      }
     }
 
     // Copy original file so its format can be used during submission.
@@ -409,6 +430,20 @@ ipcMain.handle('config:blacklistCompany', async (_, company) => {
   }
   return { success: true }
 })
+
+ipcMain.handle('config:removeBlacklistCompany', async (_, company) => {
+  const cfg = configService.load()
+  const list = Array.isArray(cfg.blacklistedCompanies) ? cfg.blacklistedCompanies : []
+  configService.save({ ...cfg, blacklistedCompanies: list.filter(c => c.toLowerCase() !== company.toLowerCase()) })
+  return { success: true }
+})
+
+// ─── IPC: Screening cache management ────────────────────────────
+ipcMain.handle('db:getCachedAnswers', () => database.getAllCachedAnswers())
+
+ipcMain.handle('db:deleteCachedAnswer', (_, question) => database.deleteCachedAnswer(question))
+
+ipcMain.handle('db:clearAllCachedAnswers', () => database.clearAllCachedAnswers())
 
 // ─── IPC: Database ──────────────────────────────────────────────
 ipcMain.handle('db:getApplications', (_, filters) => database.getApplications(filters))

@@ -1,11 +1,14 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 
-export default function NeedsAttention({ onCountChange }) {
+export default function NeedsAttention({ onCountChange, showToast }) {
   const [jobs, setJobs] = useState([])
   const [selected, setSelected] = useState(null)
-  const [applying, setApplying] = useState(null) // job id currently being AI-applied
+  const [applying, setApplying] = useState(null)
   const [applyLog, setApplyLog] = useState([])
   const [applyResult, setApplyResult] = useState(null)
+  const [search, setSearch] = useState('')
+  const [platformFilter, setPlatformFilter] = useState('')
+  const [sortBy, setSortBy] = useState('date') // date, match, company
   const logEndRef = useRef(null)
 
   useEffect(() => { load() }, [])
@@ -20,6 +23,23 @@ export default function NeedsAttention({ onCountChange }) {
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [applyLog])
+
+  const filtered = useMemo(() => {
+    let result = jobs
+    if (search) {
+      const q = search.toLowerCase()
+      result = result.filter(j => j.job_title.toLowerCase().includes(q) || j.company.toLowerCase().includes(q))
+    }
+    if (platformFilter) {
+      result = result.filter(j => j.platform === platformFilter)
+    }
+    result = [...result].sort((a, b) => {
+      if (sortBy === 'match') return (b.match_score || 0) - (a.match_score || 0)
+      if (sortBy === 'company') return (a.company || '').localeCompare(b.company || '')
+      return (b.found_at || '').localeCompare(a.found_at || '') // date desc
+    })
+    return result
+  }, [jobs, search, platformFilter, sortBy])
 
   async function load() {
     const data = await window.api.getAttentionJobs()
@@ -61,6 +81,7 @@ export default function NeedsAttention({ onCountChange }) {
     if (result.success) {
       setJobs(prev => prev.filter(j => j.id !== job.id))
       onCountChange(prev => prev - 1)
+      showToast?.(`Applied to ${job.job_title} at ${job.company}`, 'success')
     }
   }
 
@@ -69,6 +90,8 @@ export default function NeedsAttention({ onCountChange }) {
     setApplyLog([])
     setApplyResult(null)
   }
+
+  const platforms = [...new Set(jobs.map(j => j.platform))].sort()
 
   return (
     <div>
@@ -89,13 +112,40 @@ export default function NeedsAttention({ onCountChange }) {
         </div>
       </div>
 
-      {jobs.length === 0 ? (
+      {/* Search & filter bar */}
+      {jobs.length > 0 && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 16, flexWrap: 'wrap' }}>
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search jobs or companies..."
+            style={{ width: 220, padding: '6px 10px', fontSize: 12 }}
+          />
+          {platforms.length > 1 && (
+            <select value={platformFilter} onChange={e => setPlatformFilter(e.target.value)} style={{ width: 'auto', padding: '6px 10px', fontSize: 12 }}>
+              <option value="">All Platforms</option>
+              {platforms.map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+          )}
+          <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ width: 'auto', padding: '6px 10px', fontSize: 12 }}>
+            <option value="date">Newest First</option>
+            <option value="match">Highest Match</option>
+            <option value="company">Company A–Z</option>
+          </select>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            {filtered.length} of {jobs.length} job{jobs.length !== 1 ? 's' : ''}
+          </span>
+        </div>
+      )}
+
+      {filtered.length === 0 ? (
         <div className="card" style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text-muted)' }}>
-          All clear — no jobs need attention.
+          <div style={{ fontSize: 32, marginBottom: 8, opacity: 0.3 }}>⚑</div>
+          {jobs.length === 0 ? 'All clear — no jobs need attention.' : 'No matching jobs found.'}
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {jobs.map(job => (
+          {filtered.map(job => (
             <div key={job.id} className="card" style={{ cursor: 'pointer' }} onClick={() => setSelected(job)}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div style={{ flex: 1 }}>
@@ -140,11 +190,11 @@ export default function NeedsAttention({ onCountChange }) {
 
       {/* Detail modal */}
       {selected && (
-        <div style={{
+        <div className="modal-overlay" style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
         }} onClick={() => setSelected(null)}>
-          <div className="card" style={{ width: 640, maxHeight: '80vh', overflow: 'auto' }}
+          <div className="card modal-content" style={{ width: 640, maxHeight: '80vh', overflow: 'auto' }}
             onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
               <h2 style={{ fontSize: 18 }}>{selected.job_title}</h2>
@@ -164,6 +214,15 @@ export default function NeedsAttention({ onCountChange }) {
               <a href={selected.job_url} target="_blank" rel="noreferrer"
                 style={{ color: 'var(--accent)', fontSize: 13 }}>View job posting →</a>
             </div>
+
+            {selected.match_explanation && (
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ marginBottom: 6 }}>Match Explanation</label>
+                <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '10px 14px', background: 'var(--surface2)', borderRadius: 8 }}>
+                  {selected.match_explanation}
+                </div>
+              </div>
+            )}
 
             <div style={{ marginBottom: 16 }}>
               <label style={{ marginBottom: 10 }}>AI Talking Points</label>
@@ -199,11 +258,11 @@ export default function NeedsAttention({ onCountChange }) {
 
       {/* AI Apply progress modal */}
       {applying && (
-        <div style={{
+        <div className="modal-overlay" style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200,
         }}>
-          <div className="card" style={{ width: 560, maxHeight: '70vh', display: 'flex', flexDirection: 'column' }}>
+          <div className="card modal-content" style={{ width: 560, maxHeight: '70vh', display: 'flex', flexDirection: 'column' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <h2 style={{ fontSize: 16 }}>AI Applying...</h2>
               {applyResult && (

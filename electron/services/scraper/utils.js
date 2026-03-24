@@ -102,8 +102,40 @@ async function buildResumePDF(tailoredResume, candidateName) {
       if (contactParts.length >= 7) break
     }
     if (contactParts.length) {
-      doc.fontSize(9.5).font('Helvetica').fillColor(GREY)
-        .text(contactParts.join('   |   '), ML, doc.y, { align: 'center', width: CW })
+      const URL_EMBED_RE = /\{\{(https?:\/\/[^}]+)\}\}/
+      const hasLinks = contactParts.some(p => URL_EMBED_RE.test(p))
+
+      if (hasLinks) {
+        // Parse all items and render with clickable links
+        const items = []
+        for (const part of contactParts) {
+          for (const sub of part.split(/\s*\|\s*/)) {
+            if (sub.trim()) items.push(sub.trim())
+          }
+        }
+        const segments = []
+        for (let i = 0; i < items.length; i++) {
+          const um = items[i].match(URL_EMBED_RE)
+          segments.push(um
+            ? { text: items[i].replace(URL_EMBED_RE, '').trim(), url: um[1] }
+            : { text: items[i], url: null })
+          if (i < items.length - 1) segments.push({ text: '   |   ', url: null })
+        }
+        doc.fontSize(9.5).font('Helvetica')
+        const totalW = segments.reduce((w, s) => w + doc.widthOfString(s.text), 0)
+        const sx = ML + Math.max(0, (CW - totalW) / 2)
+        for (let i = 0; i < segments.length; i++) {
+          const s = segments[i], last = i === segments.length - 1
+          doc.fillColor(s.url ? BLUE : GREY)
+          const opts = last ? {} : { continued: true }
+          if (s.url) opts.link = s.url
+          if (i === 0) doc.text(s.text, sx, doc.y, opts)
+          else doc.text(s.text, opts)
+        }
+      } else {
+        doc.fontSize(9.5).font('Helvetica').fillColor(GREY)
+          .text(contactParts.join('   |   '), ML, doc.y, { align: 'center', width: CW })
+      }
       doc.moveDown(0.3)
     }
 
@@ -119,6 +151,8 @@ async function buildResumePDF(tailoredResume, candidateName) {
     let autoBullet  = false
     let entryBullet = false   // education-style: bullet first line, indent the rest
     let entryStart  = false   // true = next non-blank line is the start of a new entry
+    let afterDateLine = false   // true = next plain line is company/location sub-line
+    let firstEntryInSection = true
 
     // Safety margin: if cursor is within 40pt of page bottom, start a new page
     // so content (bullet + text, header + rule) isn't split across pages.
@@ -142,6 +176,8 @@ async function buildResumePDF(tailoredResume, candidateName) {
         entryBullet = ENTRY_BULLET_RE.test(t)
         entryStart  = entryBullet
         if (entryBullet) autoBullet = false
+        afterDateLine = false
+        firstEntryInSection = true
         doc.moveDown(0.5)
         doc.fontSize(10.5).font('Helvetica-Bold').fillColor(NAVY)
           .text(t, ML, doc.y, { align: 'center', width: CW })
@@ -165,6 +201,16 @@ async function buildResumePDF(tailoredResume, candidateName) {
         continue
       }
 
+      // Company/location sub-line right after a role+date line
+      if (afterDateLine && !isExplicitBullet && !isSectionHeader(t)) {
+        afterDateLine = false
+        doc.fontSize(9.5).font('Helvetica-Oblique').fillColor(GREY)
+          .text(t, ML, doc.y, { width: CW, lineGap: 1 })
+        doc.moveDown(0.12)
+        continue
+      }
+      if (isExplicitBullet) afterDateLine = false
+
       // Explicit bullet OR auto-bullet (Skills, Certifications…) OR first line of education entry
       if (isExplicitBullet || autoBullet || (entryBullet && entryStart)) {
         if (entryBullet && entryStart) entryStart = false
@@ -172,7 +218,7 @@ async function buildResumePDF(tailoredResume, candidateName) {
         if (!bt.trim()) continue // skip empty bullets
         // Single text call keeps bullet + text together across page breaks
         doc.fontSize(10).font('Helvetica').fillColor(BODY)
-          .text(`•   ${bt}`, ML, doc.y, { width: CW, lineGap: 1.5 })
+          .text(`•   ${bt}`, ML + 8, doc.y, { width: CW - 8, lineGap: 1.5 })
         doc.moveDown(0.1)
         continue
       }
@@ -180,9 +226,11 @@ async function buildResumePDF(tailoredResume, candidateName) {
       // Company / role + date (right-aligned date, bold left label)
       const dateSplit = splitDateLine(t)
       if (dateSplit) {
+        if (!firstEntryInSection) doc.moveDown(0.35)
+        firstEntryInSection = false
+        afterDateLine = true
         const { left, right } = dateSplit
-        // Render as single line: "Role                    Date" using tab-like spacing
-        doc.fontSize(10.5).font('Helvetica-Bold').fillColor(BODY)
+        doc.fontSize(11).font('Helvetica-Bold').fillColor(NAVY)
           .text(left, ML, doc.y, { width: CW, continued: true })
         doc.fontSize(9.5).font('Helvetica').fillColor(LGREY)
           .text(`   ${right}`, { width: CW, align: 'right' })
