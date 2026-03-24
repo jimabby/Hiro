@@ -70,6 +70,11 @@ async function buildResumePDF(tailoredResume, candidateName) {
     return null
   }
 
+  // Detect standalone date lines like "March 2026 – Present", "September 2024 – December 2024"
+  function isDateOnlyLine(t) {
+    return t.length < 55 && /\b(19|20)\d{2}\b/.test(t) && /[-–—]|\bto\b/i.test(t) && !/^[-•*]\s/.test(t)
+  }
+
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'A4', margin: ML, autoFirstPage: true })
     const stream = fs.createWriteStream(tempPath)
@@ -238,7 +243,29 @@ async function buildResumePDF(tailoredResume, candidateName) {
         continue
       }
 
-      // Plain body line (job title, location, summary prose, etc.)
+      // Role heading: plain text line followed by a standalone date line
+      const peekNext = idx < lines.length ? lines[idx].trim() : ''
+      if (peekNext && isDateOnlyLine(peekNext) && !isDateOnlyLine(t)) {
+        if (!firstEntryInSection) doc.moveDown(0.35)
+        firstEntryInSection = false
+        doc.fontSize(11).font('Helvetica-Bold').fillColor(NAVY)
+          .text(t, ML, doc.y, { width: CW })
+        idx++
+        doc.fontSize(9.5).font('Helvetica-Oblique').fillColor(LGREY)
+          .text(peekNext, ML, doc.y, { width: CW })
+        doc.moveDown(0.15)
+        continue
+      }
+
+      // Standalone date line (not preceded by a role heading — fallback)
+      if (isDateOnlyLine(t)) {
+        doc.fontSize(9.5).font('Helvetica-Oblique').fillColor(LGREY)
+          .text(t, ML, doc.y, { width: CW })
+        doc.moveDown(0.1)
+        continue
+      }
+
+      // Plain body line (summary prose, etc.)
       doc.fontSize(10).font('Helvetica').fillColor(BODY)
         .text(t, ML, doc.y, { width: CW, lineGap: 1.5 })
     }

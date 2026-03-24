@@ -40,6 +40,21 @@ function createWindow() {
   }
 
   mainWindow.once('ready-to-show', () => mainWindow.show())
+
+  // Open external links in system browser instead of Electron
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      shell.openExternal(url)
+    }
+    return { action: 'deny' }
+  })
+  mainWindow.webContents.on('will-navigate', (e, url) => {
+    const appUrl = isDev ? 'http://localhost:5173' : 'file://'
+    if (!url.startsWith(appUrl)) {
+      e.preventDefault()
+      shell.openExternal(url)
+    }
+  })
 }
 
 app.whenReady().then(async () => {

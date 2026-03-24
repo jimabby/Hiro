@@ -203,9 +203,13 @@ export default function App() {
         </div>
       </nav>
 
-      {/* Main content */}
+      {/* Main content — all pages stay mounted so background tasks (AI improve) survive tab switches */}
       <main style={{ flex: 1, overflow: 'auto', padding: 28, transition: 'background 0.3s ease' }}>
-        {pages[page]}
+        {Object.entries(pages).map(([key, component]) => (
+          <div key={key} style={{ display: key === page ? 'block' : 'none' }}>
+            {component}
+          </div>
+        ))}
       </main>
 
       {/* Toast notification */}
