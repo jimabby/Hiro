@@ -80,6 +80,7 @@ export default function Analytics() {
   const [perDay, setPerDay] = useState([])
   const [allApps, setAllApps] = useState([])
   const [exporting, setExporting] = useState(false)
+  const [exportMsg, setExportMsg] = useState(null)
   const [timeRange, setTimeRange] = useState(7)
 
   useEffect(() => {
@@ -127,16 +128,20 @@ export default function Analytics() {
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 0 }}>Analytics</h1>
-        <button className="btn btn-ghost" style={{ fontSize: 12 }} disabled={exporting} onClick={async () => {
-          setExporting(true)
-          try {
-            const res = await window.api.exportAnalyticsPDF()
-            if (res.success) alert('PDF saved!')
-          } catch { /* ignore */ }
-          setExporting(false)
-        }}>
-          {exporting ? 'Exporting...' : 'Export PDF'}
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {exportMsg && <span style={{ fontSize: 12, color: exportMsg.type === 'success' ? 'var(--green)' : 'var(--red)' }}>{exportMsg.text}</span>}
+          <button className="btn btn-ghost" style={{ fontSize: 12 }} disabled={exporting} onClick={async () => {
+            setExporting(true); setExportMsg(null)
+            try {
+              const res = await window.api.exportAnalyticsPDF()
+              if (res.success) { setExportMsg({ type: 'success', text: '✓ PDF saved' }); setTimeout(() => setExportMsg(null), 3000) }
+              else if (res.reason !== 'cancelled') setExportMsg({ type: 'error', text: res.error || 'Export failed' })
+            } catch (err) { setExportMsg({ type: 'error', text: err.message }) }
+            setExporting(false)
+          }}>
+            {exporting ? 'Exporting...' : 'Export PDF'}
+          </button>
+        </div>
       </div>
 
       {/* Key metrics row */}

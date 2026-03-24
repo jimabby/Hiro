@@ -9,6 +9,7 @@ export default function NeedsAttention({ onCountChange, showToast }) {
   const [search, setSearch] = useState('')
   const [platformFilter, setPlatformFilter] = useState('')
   const [sortBy, setSortBy] = useState('date') // date, match, company
+  const [selectedIds, setSelectedIds] = useState(new Set())
   const logEndRef = useRef(null)
 
   useEffect(() => { load() }, [])
@@ -142,15 +143,15 @@ export default function NeedsAttention({ onCountChange, showToast }) {
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search jobs or companies..."
-            style={{ width: 220, padding: '6px 10px', fontSize: 12 }}
+            style={{ width: 180, padding: '6px 10px', fontSize: 12 }}
           />
           {platforms.length > 1 && (
-            <select value={platformFilter} onChange={e => setPlatformFilter(e.target.value)} style={{ width: 'auto', padding: '6px 10px', fontSize: 12 }}>
+            <select value={platformFilter} onChange={e => setPlatformFilter(e.target.value)} style={{ width: 180, padding: '6px 10px', fontSize: 12 }}>
               <option value="">All Platforms</option>
               {platforms.map(p => <option key={p} value={p}>{p}</option>)}
             </select>
           )}
-          <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ width: 'auto', padding: '6px 10px', fontSize: 12 }}>
+          <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ width: 180, padding: '6px 10px', fontSize: 12 }}>
             <option value="date">Newest First</option>
             <option value="match">Highest Match</option>
             <option value="company">Company A–Z</option>
@@ -158,6 +159,25 @@ export default function NeedsAttention({ onCountChange, showToast }) {
           <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
             {filtered.length} of {jobs.length} job{jobs.length !== 1 ? 's' : ''}
           </span>
+          {selectedIds.size > 0 && (
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginLeft: 8, paddingLeft: 8, borderLeft: '1px solid var(--border)' }}>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{selectedIds.size} selected</span>
+              <button className="btn btn-ghost" style={{ fontSize: 11, padding: '3px 8px' }} onClick={async () => {
+                for (const id of selectedIds) { await window.api.dismissAttentionJob(id) }
+                setJobs(prev => prev.filter(j => !selectedIds.has(j.id)))
+                onCountChange(prev => prev - selectedIds.size)
+                setSelectedIds(new Set())
+                showToast?.(`Dismissed ${selectedIds.size} jobs`, 'success')
+              }}>Dismiss Selected</button>
+              <button className="btn btn-ghost" style={{ fontSize: 11, padding: '3px 8px', color: 'var(--red)' }} onClick={async () => {
+                for (const id of selectedIds) { await window.api.deleteAttentionJob(id) }
+                setJobs(prev => prev.filter(j => !selectedIds.has(j.id)))
+                onCountChange(prev => prev - selectedIds.size)
+                setSelectedIds(new Set())
+                showToast?.(`Deleted ${selectedIds.size} jobs`, 'success')
+              }}>Delete Selected</button>
+            </div>
+          )}
         </div>
       )}
 
@@ -171,6 +191,18 @@ export default function NeedsAttention({ onCountChange, showToast }) {
           {filtered.map(job => (
             <div key={job.id} className="card" style={{ cursor: 'pointer' }} onClick={() => setSelected(job)}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, flex: 1 }}>
+                  <input type="checkbox" style={{ width: 'auto', marginTop: 4, flexShrink: 0 }}
+                    checked={selectedIds.has(job.id)}
+                    onClick={e => e.stopPropagation()}
+                    onChange={e => {
+                      setSelectedIds(prev => {
+                        const next = new Set(prev)
+                        e.target.checked ? next.add(job.id) : next.delete(job.id)
+                        return next
+                      })
+                    }}
+                  />
                 <div style={{ flex: 1 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                     <span style={{ fontWeight: 600, fontSize: 15 }}>{job.job_title}</span>
@@ -186,6 +218,7 @@ export default function NeedsAttention({ onCountChange, showToast }) {
                   <div style={{ color: 'var(--red)', fontSize: 12, marginTop: 4 }}>
                     {job.reason}
                   </div>
+                </div>
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
                   <button className="btn btn-primary" style={{ fontSize: 12, padding: '6px 12px', background: 'var(--accent)' }}

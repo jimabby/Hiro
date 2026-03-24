@@ -24,6 +24,9 @@ export default function Timeline() {
   const [expanded, setExpanded] = useState(null)
   const [dayJobs, setDayJobs] = useState([])
   const [searchQuery, setSearchQuery] = useState('')
+  const [platformFilter, setPlatformFilter] = useState('')
+  const [expandAll, setExpandAll] = useState(false)
+  const [expandedJobs, setExpandedJobs] = useState({})
 
   useEffect(() => {
     window.api.getApplicationsByDate().then(rows => {
@@ -37,21 +40,37 @@ export default function Timeline() {
   }, [])
 
   async function toggleDay(date) {
-    if (expanded === date) { setExpanded(null); return }
+    if (expandAll) {
+      // In expand-all mode, toggle individual dates
+      if (expandedJobs[date]) {
+        setExpandedJobs(prev => { const next = { ...prev }; delete next[date]; return next })
+        return
+      }
+    } else {
+      if (expanded === date) { setExpanded(null); return }
+    }
     const jobs = await window.api.getApplications({ dateFrom: date + ' 00:00:00', dateTo: date + ' 23:59:59' })
-    setDayJobs(jobs)
-    setExpanded(date)
+    if (expandAll) {
+      setExpandedJobs(prev => ({ ...prev, [date]: jobs }))
+    } else {
+      setDayJobs(jobs)
+      setExpanded(date)
+    }
   }
 
   const dates = Object.keys(byDate).sort((a, b) => b.localeCompare(a))
 
-  const filteredDates = searchQuery
-    ? dates.filter(date => {
-      const platforms = byDate[date]
+  const allPlatforms = [...new Set(Object.values(byDate).flatMap(ps => ps.map(p => p.platform)))].sort()
+
+  const filteredDates = dates.filter(date => {
+    const platforms = byDate[date]
+    if (platformFilter && !platforms.some(p => p.platform === platformFilter)) return false
+    if (searchQuery) {
       return date.includes(searchQuery.toLowerCase()) ||
         platforms.some(p => p.platform.toLowerCase().includes(searchQuery.toLowerCase()))
-    })
-    : dates
+    }
+    return true
+  })
 
   // Summary stats
   const totalDays = dates.length
@@ -70,12 +89,23 @@ export default function Timeline() {
           )}
         </div>
         {dates.length > 0 && (
-          <input
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            placeholder="Filter by date or platform..."
-            style={{ width: 220, padding: '6px 10px', fontSize: 12 }}
-          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="Filter by date..."
+              style={{ width: 180, padding: '6px 10px', fontSize: 12 }}
+            />
+            {allPlatforms.length > 1 && (
+              <select value={platformFilter} onChange={e => setPlatformFilter(e.target.value)} style={{ width: 180, padding: '6px 10px', fontSize: 12 }}>
+                <option value="">All Platforms</option>
+                {allPlatforms.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            )}
+            <button className="btn btn-ghost" style={{ fontSize: 12, whiteSpace: 'nowrap' }} onClick={() => setExpandAll(!expandAll)}>
+              {expandAll ? 'Collapse All' : 'Expand All'}
+            </button>
+          </div>
         )}
       </div>
 
@@ -95,7 +125,8 @@ export default function Timeline() {
           {filteredDates.map(date => {
             const platforms = byDate[date]
             const total = platforms.reduce((s, p) => s + p.count, 0)
-            const isOpen = expanded === date
+            const isOpen = expandAll ? !!expandedJobs[date] : expanded === date
+            const currentJobs = expandAll ? (expandedJobs[date] || []) : dayJobs
             return (
               <div key={date} style={{ position: 'relative', marginBottom: 12 }}>
                 {/* Timeline dot */}
@@ -126,7 +157,7 @@ export default function Timeline() {
                     </div>
                     <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>{total} application{total !== 1 ? 's' : ''} {isOpen ? '▲' : '▼'}</span>
                   </div>
-                  {isOpen && dayJobs.length > 0 && (
+                  {isOpen && currentJobs.length > 0 && (
                     <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }} onClick={e => e.stopPropagation()}>
                       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                         <thead>
@@ -140,7 +171,7 @@ export default function Timeline() {
                           </tr>
                         </thead>
                         <tbody>
-                          {dayJobs.map(j => (
+                          {currentJobs.map(j => (
                             <tr key={j.id}>
                               <td style={{ padding: '6px 8px', fontSize: 13, fontWeight: 500 }}>{j.job_title}</td>
                               <td style={{ padding: '6px 8px', fontSize: 13, color: 'var(--text-muted)' }}>{j.company}</td>

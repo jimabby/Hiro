@@ -355,9 +355,13 @@ export default function Dashboard({ logs, scanRunning, onScanStart, showToast })
 
   async function changeStatus(id, status, e) {
     e.stopPropagation()
+    const prev = apps.find(a => a.id === id)?.status
     await window.api.updateApplicationStatus(id, status)
     setApps(prev => prev.map(a => a.id === id ? { ...a, status } : a))
     if (selected?.id === id) setSelected(s => ({ ...s, status }))
+    if (prev && prev !== status) {
+      showToast?.(`Status changed to ${status}`, 'info')
+    }
   }
 
   async function saveComment(id, comment) {
@@ -521,9 +525,9 @@ export default function Dashboard({ logs, scanRunning, onScanStart, showToast })
               value={filter.search}
               onChange={e => setFilter(f => ({ ...f, search: e.target.value }))}
               placeholder="Search... (/)"
-              style={{ width: 150, padding: '5px 10px', fontSize: 12 }}
+              style={{ width: 180, padding: '6px 10px', fontSize: 12 }}
             />
-            <select value={filter.platform} onChange={e => setFilter(f => ({ ...f, platform: e.target.value }))} style={{ width: 'auto' }}>
+            <select value={filter.platform} onChange={e => setFilter(f => ({ ...f, platform: e.target.value }))} style={{ width: 180, padding: '6px 10px', fontSize: 12 }}>
               <option value="">All Platforms</option>
               <option value="Seek">Seek</option>
               <option value="Indeed">Indeed</option>

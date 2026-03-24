@@ -160,15 +160,18 @@ export default function Settings({ showToast }) {
   async function save() {
     setSaving(true)
     setSaved(false)
+    const clamp = (v, min, max, fallback) => { const n = parseInt(v); return isNaN(n) ? fallback : Math.min(max, Math.max(min, n)) }
     await window.api.saveConfig({
       ...form,
-      salaryMin: parseInt(form.salaryMin) || 0,
-      matchThreshold: parseInt(form.matchThreshold) || 80,
-      dailyLimitSeek: parseInt(form.dailyLimitSeek) || 10,
-      dailyLimitIndeed: parseInt(form.dailyLimitIndeed) || 10,
-      dailyLimitLinkedIn: parseInt(form.dailyLimitLinkedIn) || 10,
+      salaryMin: Math.max(0, parseInt(form.salaryMin) || 0),
+      matchThreshold: clamp(form.matchThreshold, 0, 100, 80),
+      dailyLimitSeek: clamp(form.dailyLimitSeek, 1, 100, 10),
+      dailyLimitIndeed: clamp(form.dailyLimitIndeed, 1, 100, 10),
+      dailyLimitLinkedIn: clamp(form.dailyLimitLinkedIn, 1, 100, 10),
       blacklistedCompanies: (form.blacklistedCompanies || '').split(',').map(s => s.trim()).filter(Boolean),
-      followUpDays: parseInt(form.followUpDays) || 7,
+      followUpDays: clamp(form.followUpDays, 1, 30, 7),
+      smartScheduleBatchSize: clamp(form.smartScheduleBatchSize, 1, 20, 3),
+      smartScheduleJitter: clamp(form.smartScheduleJitter, 0, 60, 15),
     })
     setSaving(false)
     setSaved(true)
