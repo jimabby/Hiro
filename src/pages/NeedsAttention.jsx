@@ -42,31 +42,47 @@ export default function NeedsAttention({ onCountChange, showToast }) {
   }, [jobs, search, platformFilter, sortBy])
 
   async function load() {
-    const data = await window.api.getAttentionJobs()
-    setJobs(data)
-    onCountChange(data.length)
+    try {
+      const data = await window.api.getAttentionJobs()
+      setJobs(data)
+      onCountChange(data.length)
+    } catch (err) {
+      showToast?.(`Failed to load attention jobs: ${err.message}`, 'error')
+    }
   }
 
   async function dismiss(id) {
-    await window.api.dismissAttentionJob(id)
-    setJobs(prev => prev.filter(j => j.id !== id))
-    onCountChange(prev => prev - 1)
-    if (selected?.id === id) setSelected(null)
+    try {
+      await window.api.dismissAttentionJob(id)
+      setJobs(prev => prev.filter(j => j.id !== id))
+      onCountChange(prev => prev - 1)
+      if (selected?.id === id) setSelected(null)
+    } catch (err) {
+      showToast?.(`Dismiss failed: ${err.message}`, 'error')
+    }
   }
 
   async function deleteJob(id) {
-    await window.api.deleteAttentionJob(id)
-    setJobs(prev => prev.filter(j => j.id !== id))
-    onCountChange(prev => prev - 1)
-    if (selected?.id === id) setSelected(null)
+    try {
+      await window.api.deleteAttentionJob(id)
+      setJobs(prev => prev.filter(j => j.id !== id))
+      onCountChange(prev => prev - 1)
+      if (selected?.id === id) setSelected(null)
+    } catch (err) {
+      showToast?.(`Delete failed: ${err.message}`, 'error')
+    }
   }
 
   async function clearAll() {
     if (!window.confirm('Delete all attention jobs? This cannot be undone.')) return
-    await window.api.clearAllAttentionJobs()
-    setJobs([])
-    onCountChange(0)
-    setSelected(null)
+    try {
+      await window.api.clearAllAttentionJobs()
+      setJobs([])
+      onCountChange(0)
+      setSelected(null)
+    } catch (err) {
+      showToast?.(`Clear failed: ${err.message}`, 'error')
+    }
   }
 
   async function aiApply(job) {
@@ -75,13 +91,20 @@ export default function NeedsAttention({ onCountChange, showToast }) {
     setApplyResult(null)
     setSelected(null)
 
-    const result = await window.api.applyAttentionJob(job.id)
-    setApplyResult(result)
+    try {
+      const result = await window.api.applyAttentionJob(job.id)
+      setApplyResult(result)
 
-    if (result.success) {
-      setJobs(prev => prev.filter(j => j.id !== job.id))
-      onCountChange(prev => prev - 1)
-      showToast?.(`Applied to ${job.job_title} at ${job.company}`, 'success')
+      if (result.success) {
+        setJobs(prev => prev.filter(j => j.id !== job.id))
+        onCountChange(prev => prev - 1)
+        showToast?.(`Applied to ${job.job_title} at ${job.company}`, 'success')
+      } else {
+        showToast?.(result.reason || 'Application failed', 'error')
+      }
+    } catch (err) {
+      setApplyResult({ success: false, reason: err.message })
+      showToast?.(`Apply error: ${err.message}`, 'error')
     }
   }
 

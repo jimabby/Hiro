@@ -160,6 +160,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart, showToast })
     setApps(prev => prev.filter(a => !selectedIds.has(a.id)))
     showToast?.(`${selectedIds.size} applications deleted`, 'success')
     setSelectedIds(new Set())
+    setCurrentPage(1)
     if (selected && selectedIds.has(selected.id)) setSelected(null)
   }
 

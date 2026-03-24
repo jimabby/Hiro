@@ -163,6 +163,19 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
       doc.moveDown(0.3)
     }
 
+    // ── Job title subtitle (e.g. "Full-Stack Software Engineer") ──────
+    // If the next non-blank line looks like a job title, render it as a subtitle
+    while (idx < lines.length && !lines[idx].trim()) idx++
+    if (idx < lines.length) {
+      const nextLine = lines[idx].trim()
+      if (!isSectionHeader(nextLine) && JOB_TITLE_RE.test(nextLine) && nextLine.length < 60) {
+        doc.fontSize(11).font('Helvetica').fillColor(BODY)
+          .text(nextLine, ML, doc.y, { align: 'center', width: CW })
+        doc.moveDown(0.2)
+        idx++
+      }
+    }
+
     // ── Full-width divider ────────────────────────────────────────────
     doc.moveTo(ML, doc.y).lineTo(ML + CW, doc.y).strokeColor(BLUE).lineWidth(1.8).stroke()
     doc.moveDown(0.55)
@@ -239,11 +252,31 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
       // Explicit bullet OR auto-bullet (Skills, Certifications…) OR first line of education entry
       if (isExplicitBullet || autoBullet || (entryBullet && entryStart)) {
         if (entryBullet && entryStart) entryStart = false
-        const bt = isExplicitBullet ? t.replace(/^[-•*]\s+/, '') : t
+        let bt = isExplicitBullet ? t.replace(/^[-•*]\s+/, '') : t
         if (!bt.trim()) continue // skip empty bullets
-        // Single text call keeps bullet + text together across page breaks
-        doc.fontSize(10).font('Helvetica').fillColor(BODY)
-          .text(`•   ${bt}`, ML + 8, doc.y, { width: CW - 8, lineGap: 1.5 })
+
+        // In auto-bullet sections (Certifications), merge year-only next line onto this line
+        if (autoBullet && idx < lines.length) {
+          const peek = lines[idx].trim().replace(/^[-•*]\s+/, '')
+          if (/^\(?\d{4}\)?$/.test(peek)) {
+            bt += ` (${peek.replace(/[()]/g, '')})`
+            idx++
+          }
+        }
+
+        // Skills: bold the category label before the colon
+        const colonIdx = bt.indexOf(':')
+        if (autoBullet && colonIdx > 0 && colonIdx < 45) {
+          const label = bt.slice(0, colonIdx)
+          const rest = bt.slice(colonIdx)
+          doc.fontSize(10).font('Helvetica-Bold').fillColor(BODY)
+            .text(`•   ${label}`, ML + 8, doc.y, { width: CW - 8, continued: true })
+          doc.font('Helvetica')
+            .text(rest, { width: CW - 8, lineGap: 1.5 })
+        } else {
+          doc.fontSize(10).font('Helvetica').fillColor(BODY)
+            .text(`•   ${bt}`, ML + 8, doc.y, { width: CW - 8, lineGap: 1.5 })
+        }
         doc.moveDown(0.1)
         continue
       }
