@@ -23,8 +23,11 @@ async function run(cfg, { log, notifyAttention }) {
   if (cfg.enableIndeed) scrapers.push({ name: 'Indeed', scraper: indeed, limit: cfg.dailyLimitIndeed })
   if (cfg.enableLinkedIn) scrapers.push({ name: 'LinkedIn', scraper: linkedin, limit: cfg.dailyLimitLinkedIn })
 
+  let batchCount = 0
+  const batchLimit = cfg.batchLimit || Infinity // smart scheduling passes a finite limit
+
   for (const { name, scraper, limit } of scrapers) {
-    if (cancelled) { log('Scan cancelled.'); return }
+    if (cancelled || batchCount >= batchLimit) { if (cancelled) log('Scan cancelled.'); return }
 
     log(`Scanning ${name}...`)
 
@@ -47,7 +50,7 @@ async function run(cfg, { log, notifyAttention }) {
     const filtered = jobs.filter(j => !blacklist.includes(j.company.toLowerCase()))
 
     for (const job of filtered) {
-      if (cancelled) { log('Scan cancelled.'); return }
+      if (cancelled || batchCount >= batchLimit) { if (cancelled) log('Scan cancelled.'); return }
 
       const currentCount = database.getTodayCountByPlatform(name)
       if (currentCount >= limit) break
@@ -172,12 +175,13 @@ async function run(cfg, { log, notifyAttention }) {
           status: 'applied',
         })
         log(`  Saved to history`)
+        batchCount++
       } else {
         job.reason = result.reason
         await addAttentionJob(job, cfg, log, notifyAttention)
       }
 
-      await randomDelay(5000, 12000)
+      await randomDelay(cfg.batchLimit ? 8000 : 5000, cfg.batchLimit ? 20000 : 12000)
     }
   }
 }

@@ -69,6 +69,13 @@ function createTables() {
       answer TEXT NOT NULL,
       updated_at TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS interview_prep (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      application_id INTEGER,
+      questions TEXT,
+      saved_at TEXT DEFAULT (datetime('now'))
+    );
   `)
   persist()
 }
@@ -319,6 +326,60 @@ function clearAllCachedAnswers() {
   return { success: true }
 }
 
+// ─── Interview Prep ──────────────────────────────────────────────
+function saveInterviewPrep(applicationId, questions) {
+  run('DELETE FROM interview_prep WHERE application_id = ?', [applicationId])
+  run('INSERT INTO interview_prep (application_id, questions) VALUES (?, ?)', [applicationId, JSON.stringify(questions)])
+  persist()
+}
+
+function getInterviewPrep(applicationId) {
+  const row = queryOne('SELECT questions FROM interview_prep WHERE application_id = ?', [applicationId])
+  if (!row) return null
+  try { return JSON.parse(row.questions) } catch { return null }
+}
+
+function deleteInterviewPrep(applicationId) {
+  run('DELETE FROM interview_prep WHERE application_id = ?', [applicationId])
+  persist()
+}
+
+// ─── Weekly Report Data ──────────────────────────────────────────
+function getWeeklyReportData() {
+  const now = new Date()
+  const dayOfWeek = now.getDay() || 7 // Mon=1 ... Sun=7
+  const mondayOffset = dayOfWeek - 1
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - mondayOffset)
+  const sunday = new Date(monday.getTime() + 6 * 86400000)
+  const dateFrom = monday.toISOString().split('T')[0] + 'T00:00:00'
+  const dateTo = sunday.toISOString().split('T')[0] + 'T23:59:59'
+
+  const apps = query('SELECT * FROM applications WHERE applied_at >= ? AND applied_at <= ?', [dateFrom, dateTo])
+  const totalApps = apps.length
+  const byPlatform = {}
+  const byStatus = {}
+  let matchSum = 0
+  for (const a of apps) {
+    byPlatform[a.platform] = (byPlatform[a.platform] || 0) + 1
+    byStatus[a.status] = (byStatus[a.status] || 0) + 1
+    matchSum += a.match_score || 0
+  }
+  const interviews = byStatus.interview || 0
+  const applied = totalApps - (byStatus.skipped || 0)
+
+  return {
+    dateFrom: monday.toISOString().split('T')[0],
+    dateTo: sunday.toISOString().split('T')[0],
+    totalApps,
+    byPlatform,
+    byStatus,
+    avgMatchScore: totalApps > 0 ? Math.round(matchSum / totalApps) : 0,
+    responseRate: applied > 0 ? Math.round((interviews / applied) * 100) : 0,
+    perDay: query('SELECT DATE(applied_at) as date, COUNT(*) as count FROM applications WHERE applied_at >= ? AND applied_at <= ? GROUP BY DATE(applied_at) ORDER BY date', [dateFrom, dateTo]),
+    topCompanies: query('SELECT company, COUNT(*) as count FROM applications WHERE applied_at >= ? AND applied_at <= ? GROUP BY company ORDER BY count DESC LIMIT 5', [dateFrom, dateTo]),
+  }
+}
+
 module.exports = {
   init,
   getApplications, getApplication, hasJobUrl, hasAppliedToCompany, insertApplication, updateApplicationStatus,
@@ -328,4 +389,6 @@ module.exports = {
   getStats, getTodayCountByPlatform,
   findDuplicateAcrossPlatforms, getApplicationsByDate, getApplicationsPerDay,
   getApplicationsForFollowUp, markFollowUpSent,
+  saveInterviewPrep, getInterviewPrep, deleteInterviewPrep,
+  getWeeklyReportData,
 }

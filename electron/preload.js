@@ -72,9 +72,24 @@ contextBridge.exposeInMainWorld('api', {
 
   // AI features
   generateInterviewQuestions: (jobDesc, resume) => ipcRenderer.invoke('ai:interviewQuestions', jobDesc, resume),
+  generateInterviewFollowUp: (question, userAnswer, jobDescription) => ipcRenderer.invoke('ai:interviewFollowUp', question, userAnswer, jobDescription),
   analyzeKeywordGap: (jobDesc, resume) => ipcRenderer.invoke('ai:keywordGap', jobDesc, resume),
   blacklistCompany: (company) => ipcRenderer.invoke('config:blacklistCompany', company),
   removeBlacklistCompany: (company) => ipcRenderer.invoke('config:removeBlacklistCompany', company),
+
+  // Interview prep persistence
+  saveInterviewPrep: (applicationId, questions) => ipcRenderer.invoke('db:saveInterviewPrep', applicationId, questions),
+  getInterviewPrep: (applicationId) => ipcRenderer.invoke('db:getInterviewPrep', applicationId),
+
+  // Analytics export
+  exportAnalyticsPDF: () => ipcRenderer.invoke('analytics:exportPDF'),
+  getWeeklyData: () => ipcRenderer.invoke('analytics:getWeeklyData'),
+
+  // Webhooks
+  testWebhook: (provider, url) => ipcRenderer.invoke('webhook:test', provider, url),
+
+  // Smart scheduling
+  getBatchSchedule: () => ipcRenderer.invoke('scheduler:getBatchSchedule'),
 
   // Screening cache management
   getCachedAnswers: () => ipcRenderer.invoke('db:getCachedAnswers'),

@@ -159,9 +159,11 @@ async function generateInterviewQuestions(jobDescription, masterResume, apiKey) 
   const client = new Anthropic({ apiKey })
   const response = await client.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 2500,
+    max_tokens: 3000,
     messages: [{ role: 'user', content: `Generate 8 likely interview questions for this job with a tailored sample answer for each, based on the candidate's actual resume experience.
-Return a JSON array: [{ "question": "...", "answer": "..." }, ...]
+Return a JSON array: [{ "question": "...", "answer": "...", "category": "..." }, ...]
+Category must be one of: "behavioral", "technical", "situational", "role-specific".
+Include at least 2 behavioral, 2 technical, and mix the rest.
 Answers should be 2-4 sentences, specific to the candidate's real experience. No markdown in answers.
 
 JOB: ${jobDescription.slice(0, 1000)}
@@ -169,6 +171,21 @@ RESUME: ${masterResume.slice(0, 1200)}` }],
   })
   try { return parseJSON(response.content[0].text) }
   catch { return [] }
+}
+
+async function generateFollowUpQuestion(question, userAnswer, jobDescription, apiKey) {
+  const client = new Anthropic({ apiKey })
+  const response = await client.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 300,
+    messages: [{ role: 'user', content: `You are an interview coach. The candidate was asked this interview question and gave the answer below. Generate ONE follow-up probe question an interviewer might ask to dig deeper.
+Return ONLY the follow-up question text, nothing else.
+
+ORIGINAL QUESTION: ${question}
+CANDIDATE'S ANSWER: ${userAnswer}
+JOB CONTEXT: ${(jobDescription || '').slice(0, 500)}` }],
+  })
+  return response.content[0].text.trim()
 }
 
 async function analyzeKeywordGap(jobDescription, masterResume, apiKey) {
@@ -224,4 +241,4 @@ ${resumeText}`,
   return response.content[0].text
 }
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, analyzeKeywordGap, generateFollowUpEmail }
+module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail }

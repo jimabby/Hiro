@@ -70,8 +70,12 @@ async function analyzeKeywordGap(provider, apiKey, jobDescription, masterResume,
   return getAdapter(provider).analyzeKeywordGap(jobDescription, masterResume, apiKey, geminiModel)
 }
 
+async function generateFollowUpQuestion(provider, apiKey, question, userAnswer, jobDescription, geminiModel) {
+  return getAdapter(provider).generateFollowUpQuestion(question, userAnswer, jobDescription, apiKey, geminiModel)
+}
+
 async function generateFollowUpEmail(provider, apiKey, jobTitle, company, masterResume, geminiModel) {
   return getAdapter(provider).generateFollowUpEmail(jobTitle, company, masterResume, apiKey, geminiModel)
 }
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, analyzeKeywordGap, generateFollowUpEmail }
+module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail }

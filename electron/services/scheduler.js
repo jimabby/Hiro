@@ -3,13 +3,17 @@ const configService = require('./config')
 const database = require('./database')
 const emailService = require('./email')
 const applicator = require('./applicator')
+const webhooks = require('./webhooks')
 
 let scanTask = null
 let reportTask = null
 let followUpTask = null
 let inboxTask = null
+let weeklyReportTask = null
+let batchTimeouts = []
 let running = false
 let win = null
+let batchSchedule = [] // today's planned batch times for UI
 
 function init(mainWindow) {
   win = mainWindow
@@ -20,9 +24,14 @@ function startTasks() {
   const cfg = configService.load()
   if (!cfg.setupComplete) return
 
-  // Scan once daily at configured time Mon–Fri
-  const [h, m] = (cfg.scheduledScanTime || '09:00').split(':').map(Number)
-  scanTask = cron.schedule(`${m} ${h} * * 1-5`, async () => { await runScan() })
+  if (cfg.enableSmartScheduling) {
+    // Smart scheduling: spread applications in batches across the day
+    setupSmartSchedule(cfg)
+  } else {
+    // Standard: scan once daily at configured time Mon–Fri
+    const [h, m] = (cfg.scheduledScanTime || '09:00').split(':').map(Number)
+    scanTask = cron.schedule(`${m} ${h} * * 1-5`, async () => { await runScan() })
+  }
 
   // Daily report at 6pm
   reportTask = cron.schedule('0 18 * * 1-5', async () => {
@@ -34,8 +43,104 @@ function startTasks() {
   }
 
   if (cfg.enableInboxCheck) {
-    // Check inbox every 2 hours on weekdays
     inboxTask = cron.schedule('0 */2 * * 1-5', async () => { await runInboxCheck() })
+  }
+
+  if (cfg.enableWeeklyReport) {
+    // Monday at 9am
+    weeklyReportTask = cron.schedule('0 9 * * 1', async () => { await runWeeklyReport() })
+  }
+}
+
+function setupSmartSchedule(cfg) {
+  const batchSize = cfg.smartScheduleBatchSize || 3
+  const jitter = cfg.smartScheduleJitter || 15
+  const [startH, startM] = (cfg.smartScheduleStartTime || '09:00').split(':').map(Number)
+  const [endH, endM] = (cfg.smartScheduleEndTime || '17:00').split(':').map(Number)
+
+  // Calculate total daily limit across all platforms
+  let totalLimit = 0
+  if (cfg.enableSeek) totalLimit += cfg.dailyLimitSeek || 10
+  if (cfg.enableIndeed) totalLimit += cfg.dailyLimitIndeed || 10
+  if (cfg.enableLinkedIn) totalLimit += cfg.dailyLimitLinkedIn || 10
+  const numBatches = Math.ceil(totalLimit / batchSize)
+
+  const startMinutes = startH * 60 + startM
+  const endMinutes = endH * 60 + endM
+  const totalMinutes = endMinutes - startMinutes
+  if (totalMinutes <= 0 || numBatches <= 0) return
+
+  const interval = Math.floor(totalMinutes / numBatches)
+
+  // Schedule a daily cron at start time to set up today's batches
+  scanTask = cron.schedule(`${startM} ${startH} * * 1-5`, () => {
+    scheduleTodayBatches(numBatches, interval, startMinutes, jitter, batchSize)
+  })
+
+  // Also schedule for today if we haven't passed start time
+  const now = new Date()
+  const nowMinutes = now.getHours() * 60 + now.getMinutes()
+  if (nowMinutes < endMinutes && now.getDay() >= 1 && now.getDay() <= 5) {
+    scheduleTodayBatches(numBatches, interval, startMinutes, jitter, batchSize)
+  }
+}
+
+function scheduleTodayBatches(numBatches, interval, startMinutes, jitter, batchSize) {
+  // Clear existing batch timeouts
+  for (const t of batchTimeouts) clearTimeout(t)
+  batchTimeouts = []
+  batchSchedule = []
+
+  const now = new Date()
+  const nowMinutes = now.getHours() * 60 + now.getMinutes()
+
+  for (let i = 0; i < numBatches; i++) {
+    const baseMinutes = startMinutes + i * interval
+    const jitterOffset = Math.floor(Math.random() * jitter * 2) - jitter
+    const scheduledMinutes = Math.max(startMinutes, baseMinutes + jitterOffset)
+
+    if (scheduledMinutes <= nowMinutes) continue // skip batches in the past
+
+    const delayMs = (scheduledMinutes - nowMinutes) * 60 * 1000
+    const h = Math.floor(scheduledMinutes / 60)
+    const m = scheduledMinutes % 60
+    const timeStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+    batchSchedule.push(timeStr)
+
+    const timeout = setTimeout(async () => {
+      await runBatch(batchSize)
+    }, delayMs)
+    batchTimeouts.push(timeout)
+  }
+
+  if (batchSchedule.length > 0) {
+    log(`Smart schedule: ${batchSchedule.length} batches planned — ${batchSchedule.join(', ')}`)
+  }
+}
+
+async function runBatch(batchSize) {
+  if (running) return
+  running = true
+  log(`Starting batch (${batchSize} apps max)...`)
+
+  try {
+    const cfg = configService.load()
+    if (!cfg.setupComplete) return
+    const { ipcMain } = require('electron')
+    const askQuestion = (question) => new Promise((resolve) => {
+      if (!win || win.isDestroyed()) return resolve('')
+      win.webContents.send('question:ask', question)
+      const timeout = setTimeout(() => resolve(''), 5 * 60 * 1000)
+      ipcMain.once('question:answer', (_, answer) => { clearTimeout(timeout); resolve(answer || '') })
+    })
+    await applicator.run({ ...cfg, askQuestion, batchLimit: batchSize }, { log, notifyAttention })
+  } catch (err) {
+    log(`Batch error: ${err.message}`)
+  } finally {
+    running = false
+    log('Batch complete.')
+    notify({ type: 'scan-complete' })
+    webhooks.send('scan-complete', { message: `Batch of ${batchSize} complete` }).catch(() => {})
   }
 }
 
@@ -44,6 +149,10 @@ function stop() {
   if (reportTask) { reportTask.stop(); reportTask = null }
   if (followUpTask) { followUpTask.stop(); followUpTask = null }
   if (inboxTask) { inboxTask.stop(); inboxTask = null }
+  if (weeklyReportTask) { weeklyReportTask.stop(); weeklyReportTask = null }
+  for (const t of batchTimeouts) clearTimeout(t)
+  batchTimeouts = []
+  batchSchedule = []
   applicator.cancel()
   running = false
 }
@@ -91,6 +200,7 @@ async function runScan() {
     running = false
     log('Scan complete.')
     notify({ type: 'scan-complete' })
+    webhooks.send('scan-complete', { message: 'Full scan complete' }).catch(() => {})
   }
 }
 
@@ -101,6 +211,16 @@ async function runDailyReport() {
     log('Daily report sent.')
   } catch (err) {
     log(`Daily report error: ${err.message}`)
+  }
+}
+
+async function runWeeklyReport() {
+  try {
+    const reportData = database.getWeeklyReportData()
+    webhooks.send('weekly-report', reportData).catch(() => {})
+    log('Weekly report sent.')
+  } catch (err) {
+    log(`Weekly report error: ${err.message}`)
   }
 }
 
@@ -140,6 +260,7 @@ async function runInboxCheck() {
       for (const item of result.updated) {
         log(`Inbox: ${item.company} replied — status updated to ${item.newStatus}`)
         notify({ type: 'inbox-reply', item })
+        webhooks.send('inbox-reply', item).catch(() => {})
       }
     } else {
       log(`Inbox checked: ${result.checked} emails scanned, no new replies.`)
@@ -153,6 +274,7 @@ async function runInboxCheck() {
 function notifyAttention(job) {
   notify({ type: 'attention', job })
   emailService.sendNewJobAlert(job).catch(() => {})
+  webhooks.send('attention', job).catch(() => {})
 }
 
 function log(msg) {
@@ -171,4 +293,8 @@ function getStatus() {
   return { running, tasksActive: !!scanTask }
 }
 
-module.exports = { init, restart, stop, cancelScan, runNow, runInboxCheck, getStatus }
+function getBatchSchedule() {
+  return batchSchedule
+}
+
+module.exports = { init, restart, stop, cancelScan, runNow, runInboxCheck, getStatus, getBatchSchedule }

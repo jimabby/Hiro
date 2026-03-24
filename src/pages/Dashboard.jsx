@@ -21,6 +21,135 @@ const STATUS_BADGE = {
 
 const PAGE_SIZE = 25
 
+const CATEGORY_COLORS = {
+  behavioral: 'var(--accent)',
+  technical: 'var(--green)',
+  situational: 'var(--yellow)',
+  'role-specific': 'var(--red)',
+}
+
+function InterviewPrepPanel({ questions, applicationId, jobDescription }) {
+  const [categoryFilter, setCategoryFilter] = useState('all')
+  const [revealedAnswers, setRevealedAnswers] = useState(new Set())
+  const [practiceMode, setPracticeMode] = useState(false)
+  const [followUps, setFollowUps] = useState({})
+  const [loadingFollowUp, setLoadingFollowUp] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  const categories = ['all', ...new Set(questions.map(q => (typeof q === 'string' ? 'general' : q.category || 'general')))]
+
+  const filtered = questions.filter(item => {
+    if (categoryFilter === 'all') return true
+    const cat = typeof item === 'string' ? 'general' : item.category || 'general'
+    return cat === categoryFilter
+  })
+
+  const toggleReveal = (i) => {
+    setRevealedAnswers(prev => {
+      const next = new Set(prev)
+      next.has(i) ? next.delete(i) : next.add(i)
+      return next
+    })
+  }
+
+  const revealAll = () => setRevealedAnswers(new Set(questions.map((_, i) => i)))
+  const hideAll = () => setRevealedAnswers(new Set())
+
+  const generateFollowUp = async (i, question, answer) => {
+    setLoadingFollowUp(i)
+    try {
+      const res = await window.api.generateInterviewFollowUp(question, answer, jobDescription)
+      if (res.success) setFollowUps(prev => ({ ...prev, [i]: res.question }))
+    } catch { /* ignore */ }
+    setLoadingFollowUp(null)
+  }
+
+  const savePrep = async () => {
+    setSaving(true)
+    await window.api.saveInterviewPrep(applicationId, questions)
+    setSaving(false)
+    setSaved(true)
+    setTimeout(() => setSaved(false), 2000)
+  }
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+        <label style={{ marginBottom: 0 }}>Interview Prep</label>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={() => { setPracticeMode(!practiceMode); practiceMode ? revealAll() : hideAll() }}>
+            {practiceMode ? 'Show Answers' : 'Practice Mode'}
+          </button>
+          <button className="btn btn-ghost" style={{ fontSize: 11 }} disabled={saving} onClick={savePrep}>
+            {saved ? '✓ Saved' : saving ? 'Saving...' : 'Save'}
+          </button>
+        </div>
+      </div>
+
+      {/* Category tabs */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 12, flexWrap: 'wrap' }}>
+        {categories.map(cat => (
+          <button key={cat} onClick={() => setCategoryFilter(cat)} style={{
+            background: categoryFilter === cat ? 'var(--accent)' : 'var(--surface2)',
+            color: categoryFilter === cat ? '#fff' : 'var(--text-muted)',
+            border: 'none', borderRadius: 12, padding: '3px 10px', fontSize: 11, cursor: 'pointer', textTransform: 'capitalize',
+          }}>
+            {cat}
+          </button>
+        ))}
+      </div>
+
+      {filtered.map((item) => {
+        const globalIdx = questions.indexOf(item)
+        const q = typeof item === 'string' ? item : item.question
+        const a = typeof item === 'string' ? null : item.answer
+        const cat = typeof item === 'string' ? 'general' : item.category || 'general'
+        const isRevealed = revealedAnswers.has(globalIdx)
+
+        return (
+          <div key={globalIdx} style={{ marginBottom: 10, borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)' }}>
+            <div style={{ padding: '8px 12px', background: 'var(--surface2)', fontSize: 13, fontWeight: 500, borderLeft: `3px solid ${CATEGORY_COLORS[cat] || 'var(--accent)'}`, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+              <span>{globalIdx + 1}. {q}</span>
+              <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 8, background: CATEGORY_COLORS[cat] || 'var(--accent)', color: '#fff', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                {cat}
+              </span>
+            </div>
+            {a && (
+              <div style={{ padding: '8px 12px' }}>
+                {practiceMode && !isRevealed ? (
+                  <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => toggleReveal(globalIdx)}>
+                    Reveal Answer
+                  </button>
+                ) : (
+                  <div>
+                    <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6, marginBottom: 6 }}>{a}</div>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      {practiceMode && <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={() => toggleReveal(globalIdx)}>Hide</button>}
+                      {!followUps[globalIdx] && (
+                        <button className="btn btn-ghost" style={{ fontSize: 11 }} disabled={loadingFollowUp === globalIdx}
+                          onClick={() => generateFollowUp(globalIdx, q, a)}>
+                          {loadingFollowUp === globalIdx ? 'Generating...' : 'Follow-up Question'}
+                        </button>
+                      )}
+                    </div>
+                    {followUps[globalIdx] && (
+                      <div style={{ marginTop: 8, padding: '8px 10px', background: 'var(--surface)', borderRadius: 6, border: '1px dashed var(--border)' }}>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Follow-up:</div>
+                        <div style={{ fontSize: 13, fontWeight: 500 }}>{followUps[globalIdx]}</div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function Dashboard({ logs, scanRunning, onScanStart, showToast }) {
   const [stats, setStats] = useState(null)
   const [apps, setApps] = useState([])
@@ -68,6 +197,13 @@ export default function Dashboard({ logs, scanRunning, onScanStart, showToast })
   useEffect(() => {
     setInterviewQuestions(null)
     setKeywordGap(null)
+    if (selected?.id) {
+      window.api.getInterviewPrep(selected.id).then(saved => {
+        if (saved?.questions) {
+          try { setInterviewQuestions(JSON.parse(saved.questions)) } catch { /* ignore */ }
+        }
+      })
+    }
   }, [selected?.id])
 
   async function viewPDF(text, title, isCoverLetter = false) {
@@ -714,25 +850,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart, showToast })
             )}
 
             {interviewQuestions && interviewQuestions.length > 0 && (
-              <div style={{ marginBottom: 16 }}>
-                <label style={{ marginBottom: 8 }}>Interview Questions & Sample Answers</label>
-                {interviewQuestions.map((item, i) => {
-                  const q = typeof item === 'string' ? item : item.question
-                  const a = typeof item === 'string' ? null : item.answer
-                  return (
-                    <div key={i} style={{ marginBottom: 10, borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)' }}>
-                      <div style={{ padding: '8px 12px', background: 'var(--surface2)', fontSize: 13, fontWeight: 500, borderLeft: '3px solid var(--accent)' }}>
-                        {i + 1}. {q}
-                      </div>
-                      {a && (
-                        <div style={{ padding: '8px 12px', fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6 }}>
-                          {a}
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
+              <InterviewPrepPanel questions={interviewQuestions} applicationId={selected.id} jobDescription={selected.job_description || ''} />
             )}
 
             {keywordGap && (

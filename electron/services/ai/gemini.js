@@ -121,7 +121,9 @@ async function generateInterviewQuestions(jobDescription, masterResume, apiKey, 
   const model = getModel(apiKey, modelName)
   const result = await model.generateContent({
     contents: [{ role: 'user', parts: [{ text: `Generate 8 likely interview questions for this job with a tailored sample answer for each, based on the candidate's actual resume experience.
-Return a JSON array: [{ "question": "...", "answer": "..." }, ...]
+Return a JSON array: [{ "question": "...", "answer": "...", "category": "..." }, ...]
+Category must be one of: "behavioral", "technical", "situational", "role-specific".
+Include at least 2 behavioral, 2 technical, and mix the rest.
 Answers should be 2-4 sentences, specific to the candidate's real experience. No markdown in answers.
 
 JOB: ${jobDescription.slice(0, 1000)}
@@ -130,6 +132,17 @@ RESUME: ${masterResume.slice(0, 1200)}` }] }],
   })
   try { return parseJSON(result.response.text()) }
   catch { return [] }
+}
+
+async function generateFollowUpQuestion(question, userAnswer, jobDescription, apiKey, modelName) {
+  const model = getModel(apiKey, modelName)
+  const result = await model.generateContent(`You are an interview coach. The candidate was asked this interview question and gave the answer below. Generate ONE follow-up probe question an interviewer might ask to dig deeper.
+Return ONLY the follow-up question text, nothing else.
+
+ORIGINAL QUESTION: ${question}
+CANDIDATE'S ANSWER: ${userAnswer}
+JOB CONTEXT: ${(jobDescription || '').slice(0, 500)}`)
+  return result.response.text().trim()
 }
 
 async function analyzeKeywordGap(jobDescription, masterResume, apiKey, modelName) {
@@ -173,4 +186,4 @@ ${resumeText}` }] }],
   return result.response.text()
 }
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, analyzeKeywordGap, generateFollowUpEmail }
+module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail }

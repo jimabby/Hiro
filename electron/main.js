@@ -545,6 +545,64 @@ ipcMain.handle('gmail:logout', () => {
   return { success: true }
 })
 
+// ─── IPC: Interview Prep ─────────────────────────────────────────
+ipcMain.handle('ai:interviewFollowUp', async (_, question, userAnswer, jobDescription) => {
+  try {
+    const cfg = configService.load()
+    const text = await aiAdapter.generateFollowUpQuestion(cfg.aiProvider, cfg.aiApiKey, question, userAnswer, jobDescription, cfg.geminiModel)
+    return { success: true, question: text }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('db:saveInterviewPrep', (_, applicationId, questions) => {
+  database.saveInterviewPrep(applicationId, questions)
+  return { success: true }
+})
+
+ipcMain.handle('db:getInterviewPrep', (_, applicationId) => {
+  return database.getInterviewPrep(applicationId)
+})
+
+// ─── IPC: Analytics Export ───────────────────────────────────────
+ipcMain.handle('analytics:exportPDF', async () => {
+  try {
+    const { buildAnalyticsReportPDF } = require('./services/scraper/utils')
+    const data = database.getWeeklyReportData()
+    const pdfBytes = buildAnalyticsReportPDF(data)
+    const { filePath } = await dialog.showSaveDialog(mainWindow, {
+      defaultPath: `hiro-analytics-${new Date().toISOString().slice(0, 10)}.pdf`,
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    })
+    if (!filePath) return { success: false, reason: 'cancelled' }
+    require('fs').writeFileSync(filePath, pdfBytes)
+    return { success: true, filePath }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('analytics:getWeeklyData', () => {
+  return database.getWeeklyReportData()
+})
+
+// ─── IPC: Webhooks ──────────────────────────────────────────────
+ipcMain.handle('webhook:test', async (_, provider, url) => {
+  try {
+    const webhooks = require('./services/webhooks')
+    const ok = await webhooks.test(provider, url)
+    return { success: ok }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+// ─── IPC: Smart Scheduling ──────────────────────────────────────
+ipcMain.handle('scheduler:getBatchSchedule', () => {
+  return scheduler.getBatchSchedule()
+})
+
 // ─── IPC: Inbox Check ────────────────────────────────────────────
 ipcMain.handle('inbox:checkNow', async () => {
   try {

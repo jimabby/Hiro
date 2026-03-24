@@ -13,6 +13,7 @@ const improveResume = (resumeText, apiKey) => openai.improveResume(resumeText, a
 const scoreMatchWithExplanation = (jobDesc, resume, apiKey) => openai.scoreMatchWithExplanation(jobDesc, resume, apiKey, DEEPSEEK_BASE_URL)
 const generateInterviewQuestions = (jobDesc, resume, apiKey) => openai.generateInterviewQuestions(jobDesc, resume, apiKey, DEEPSEEK_BASE_URL)
 const analyzeKeywordGap = (jobDesc, resume, apiKey) => openai.analyzeKeywordGap(jobDesc, resume, apiKey, DEEPSEEK_BASE_URL)
+const generateFollowUpQuestion = (q, a, jd, apiKey) => openai.generateFollowUpQuestion(q, a, jd, apiKey, DEEPSEEK_BASE_URL)
 const generateFollowUpEmail = (jobTitle, company, resume, apiKey) => openai.generateFollowUpEmail(jobTitle, company, resume, apiKey, DEEPSEEK_BASE_URL)
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, generateCoverLetter, improveResume, generateInterviewQuestions, analyzeKeywordGap, generateFollowUpEmail }
+module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, generateCoverLetter, improveResume, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail }

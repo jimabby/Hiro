@@ -208,6 +208,7 @@ export default function Settings({ showToast }) {
         const TABS = [
           { id: 'accounts', label: 'Accounts & Schedule' },
           { id: 'criteria', label: 'Job, Resume & Cover Letter' },
+          { id: 'notifications', label: 'Notifications' },
           { id: 'data', label: 'Data Management' },
           { id: 'about', label: 'About' },
         ]
@@ -431,7 +432,133 @@ export default function Settings({ showToast }) {
           </div>
         )}
       </div>
+      {/* Smart Scheduling */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <h3 style={{ marginBottom: 8, fontSize: 15 }}>Smart Scheduling</h3>
+        <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 16 }}>
+          Spread applications in natural-looking batches throughout the day instead of all at once.
+        </p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: 0 }}>
+            <input type="checkbox" style={{ width: 'auto' }} checked={!!form.enableSmartScheduling} onChange={e => set('enableSmartScheduling', e.target.checked)} />
+            Enable smart scheduling
+          </label>
+        </div>
+        {form.enableSmartScheduling && (
+          <div>
+            <div className="form-row">
+              <div className="form-group">
+                <label>Start Time</label>
+                <input type="time" value={form.smartScheduleStartTime || '09:00'} onChange={e => set('smartScheduleStartTime', e.target.value)} />
+              </div>
+              <div className="form-group">
+                <label>End Time</label>
+                <input type="time" value={form.smartScheduleEndTime || '17:00'} onChange={e => set('smartScheduleEndTime', e.target.value)} />
+              </div>
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label>Applications per batch</label>
+                <input type="number" min={1} max={20} value={form.smartScheduleBatchSize || 3} onChange={e => set('smartScheduleBatchSize', parseInt(e.target.value) || 3)} />
+              </div>
+              <div className="form-group">
+                <label>Jitter (± minutes)</label>
+                <input type="number" min={0} max={60} value={form.smartScheduleJitter || 15} onChange={e => set('smartScheduleJitter', parseInt(e.target.value) || 15)} />
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
       </div>} {/* end accounts tab */}
+
+      {settingsTab === 'notifications' && <div>
+      {/* Webhook Notifications */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <h3 style={{ marginBottom: 8, fontSize: 15 }}>Webhook Notifications</h3>
+        <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 16 }}>
+          Get notified on Discord or Slack when jobs need attention, scans complete, or inbox replies arrive.
+        </p>
+        {(form.webhooks || []).map((wh, i) => (
+          <div key={i} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 14, marginBottom: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: 0, fontSize: 13 }}>
+                  <input type="checkbox" style={{ width: 'auto' }} checked={!!wh.enabled} onChange={e => {
+                    const webhooks = [...(form.webhooks || [])]
+                    webhooks[i] = { ...webhooks[i], enabled: e.target.checked }
+                    set('webhooks', webhooks)
+                  }} />
+                  Enabled
+                </label>
+              </div>
+              <button className="btn btn-ghost" style={{ fontSize: 11, color: 'var(--red)' }} onClick={() => {
+                const webhooks = (form.webhooks || []).filter((_, j) => j !== i)
+                set('webhooks', webhooks)
+              }}>Remove</button>
+            </div>
+            <div className="form-row">
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Provider</label>
+                <select value={wh.provider || 'discord'} onChange={e => {
+                  const webhooks = [...(form.webhooks || [])]
+                  webhooks[i] = { ...webhooks[i], provider: e.target.value }
+                  set('webhooks', webhooks)
+                }}>
+                  <option value="discord">Discord</option>
+                  <option value="slack">Slack</option>
+                </select>
+              </div>
+              <div className="form-group" style={{ flex: 3 }}>
+                <label>Webhook URL</label>
+                <input value={wh.url || ''} placeholder="https://discord.com/api/webhooks/..." onChange={e => {
+                  const webhooks = [...(form.webhooks || [])]
+                  webhooks[i] = { ...webhooks[i], url: e.target.value }
+                  set('webhooks', webhooks)
+                }} />
+              </div>
+            </div>
+            <div className="form-group" style={{ marginBottom: 8 }}>
+              <label>Events</label>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                {['attention', 'scan-complete', 'inbox-reply', 'weekly-report'].map(evt => (
+                  <label key={evt} style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 12, marginBottom: 0 }}>
+                    <input type="checkbox" style={{ width: 'auto' }} checked={(wh.events || ['attention', 'scan-complete', 'inbox-reply', 'weekly-report']).includes(evt)} onChange={e => {
+                      const webhooks = [...(form.webhooks || [])]
+                      const currentEvents = webhooks[i].events || ['attention', 'scan-complete', 'inbox-reply', 'weekly-report']
+                      webhooks[i] = { ...webhooks[i], events: e.target.checked ? [...currentEvents, evt] : currentEvents.filter(x => x !== evt) }
+                      set('webhooks', webhooks)
+                    }} />
+                    {evt.replace('-', ' ')}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={async () => {
+              try {
+                const res = await window.api.testWebhook(wh.provider || 'discord', wh.url)
+                alert(res.success ? 'Test notification sent!' : 'Failed to send test notification')
+              } catch { alert('Error testing webhook') }
+            }}>Send Test</button>
+          </div>
+        ))}
+        <button className="btn btn-ghost" style={{ fontSize: 13 }} onClick={() => {
+          const webhooks = [...(form.webhooks || []), { provider: 'discord', url: '', enabled: true, events: ['attention', 'scan-complete', 'inbox-reply', 'weekly-report'] }]
+          set('webhooks', webhooks)
+        }}>+ Add Webhook</button>
+      </div>
+
+      {/* Weekly Report */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <h3 style={{ marginBottom: 8, fontSize: 15 }}>Weekly Report</h3>
+        <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 12 }}>
+          Automatically send a weekly application summary to your webhooks every Monday at 9am.
+        </p>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: 0 }}>
+          <input type="checkbox" style={{ width: 'auto' }} checked={!!form.enableWeeklyReport} onChange={e => set('enableWeeklyReport', e.target.checked)} />
+          Enable weekly report
+        </label>
+      </div>
+      </div>} {/* end notifications tab */}
 
       {settingsTab === 'criteria' && <div>
       {/* Job Criteria */}

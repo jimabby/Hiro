@@ -34,6 +34,13 @@ const DEFAULTS = {
   enableInboxCheck: false,
   lastInboxCheck: null,
   personalLinks: { portfolio: '', github: '', linkedin: '' },
+  webhooks: [],
+  enableWeeklyReport: false,
+  enableSmartScheduling: false,
+  smartScheduleStartTime: '09:00',
+  smartScheduleEndTime: '17:00',
+  smartScheduleBatchSize: 3,
+  smartScheduleJitter: 15,
 }
 
 function ensureDir() {
