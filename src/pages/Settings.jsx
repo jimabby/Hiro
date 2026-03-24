@@ -93,6 +93,62 @@ function SeekAccountCard() {
   )
 }
 
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
+}
+
+function StorageCard({ showToast }) {
+  const [info, setInfo] = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  async function loadInfo() {
+    setLoading(true)
+    const data = await window.api.getStorageInfo()
+    setInfo(data)
+    setLoading(false)
+  }
+
+  useEffect(() => { loadInfo() }, [])
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <h3 style={{ fontSize: 15, margin: 0 }}>Storage</h3>
+        <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={loadInfo} disabled={loading}>
+          {loading ? 'Loading...' : 'Refresh'}
+        </button>
+      </div>
+      {info ? (
+        <div>
+          <div style={{ fontSize: 24, fontWeight: 700, marginBottom: 12 }}>{formatBytes(info.dbSize)}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+            {[
+              { label: 'Applications', count: info.counts.applications },
+              { label: 'Attention Jobs', count: info.counts.attentionJobs },
+              { label: 'Cached Answers', count: info.counts.cachedAnswers },
+              { label: 'Interview Preps', count: info.counts.interviewPreps },
+            ].map(({ label, count }) => (
+              <div key={label} style={{ background: 'var(--surface2)', borderRadius: 8, padding: '10px 12px', textAlign: 'center' }}>
+                <div style={{ fontSize: 18, fontWeight: 700 }}>{count}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{label}</div>
+              </div>
+            ))}
+          </div>
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 10 }}>
+            Database size will decrease after clearing history, cache, or attention queue below.
+          </p>
+        </div>
+      ) : (
+        <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading...</div>
+      )}
+    </div>
+  )
+}
+
 export default function Settings({ showToast }) {
   const [form, setForm] = useState(null)
   const [saving, setSaving] = useState(false)
@@ -885,6 +941,9 @@ export default function Settings({ showToast }) {
       </div>} {/* end criteria tab */}
 
       {settingsTab === 'data' && <div>
+        {/* Storage Info */}
+        <StorageCard showToast={showToast} />
+
         {/* Screening Answer Cache */}
         <div className="card" style={{ marginBottom: 16 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
@@ -928,8 +987,19 @@ export default function Settings({ showToast }) {
                     }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
                         <div style={{ flex: 1 }}>
-                          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4, color: 'var(--text)' }}>Q: {ca.question}</div>
-                          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>A: {ca.answer}</div>
+                          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6, color: 'var(--text)' }}>Q: {ca.question}</div>
+                          <textarea
+                            defaultValue={ca.answer}
+                            onBlur={async (e) => {
+                              const newAnswer = e.target.value.trim()
+                              if (newAnswer && newAnswer !== ca.answer) {
+                                await window.api.updateCachedAnswer(ca.question, newAnswer)
+                                setCachedAnswers(prev => prev.map((c, j) => j === i ? { ...c, answer: newAnswer } : c))
+                                showToast?.('Answer updated', 'success')
+                              }
+                            }}
+                            style={{ width: '100%', fontSize: 12, minHeight: 40, padding: '6px 8px', resize: 'vertical' }}
+                          />
                         </div>
                         <button className="btn btn-ghost" style={{ fontSize: 11, color: 'var(--red)', padding: '2px 6px', flexShrink: 0 }}
                           onClick={async () => {

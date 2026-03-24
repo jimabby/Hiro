@@ -478,6 +478,13 @@ ipcMain.handle('db:deleteCachedAnswer', (_, question) => database.deleteCachedAn
 
 ipcMain.handle('db:clearAllCachedAnswers', () => database.clearAllCachedAnswers())
 
+ipcMain.handle('db:updateCachedAnswer', (_, question, answer) => {
+  database.saveCachedAnswer(question, answer)
+  return { success: true }
+})
+
+ipcMain.handle('db:getStorageInfo', () => database.getStorageInfo())
+
 // ─── IPC: Database ──────────────────────────────────────────────
 ipcMain.handle('db:getApplications', (_, filters) => database.getApplications(filters))
 ipcMain.handle('db:getApplication', (_, id) => database.getApplication(id))

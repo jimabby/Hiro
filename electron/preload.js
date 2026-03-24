@@ -94,7 +94,9 @@ contextBridge.exposeInMainWorld('api', {
   // Screening cache management
   getCachedAnswers: () => ipcRenderer.invoke('db:getCachedAnswers'),
   deleteCachedAnswer: (question) => ipcRenderer.invoke('db:deleteCachedAnswer', question),
+  updateCachedAnswer: (question, answer) => ipcRenderer.invoke('db:updateCachedAnswer', question, answer),
   clearAllCachedAnswers: () => ipcRenderer.invoke('db:clearAllCachedAnswers'),
+  getStorageInfo: () => ipcRenderer.invoke('db:getStorageInfo'),
 
   // Events from main process
   onNotification: (cb) => ipcRenderer.on('notification', (_, data) => cb(data)),

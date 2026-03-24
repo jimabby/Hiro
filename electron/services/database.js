@@ -380,6 +380,17 @@ function getWeeklyReportData() {
   }
 }
 
+function getStorageInfo() {
+  const dbSize = fs.existsSync(DB_PATH) ? fs.statSync(DB_PATH).size : 0
+  const counts = {
+    applications: queryOne('SELECT COUNT(*) as c FROM applications')?.c || 0,
+    attentionJobs: queryOne('SELECT COUNT(*) as c FROM attention_jobs WHERE dismissed = 0')?.c || 0,
+    cachedAnswers: queryOne('SELECT COUNT(*) as c FROM screening_cache')?.c || 0,
+    interviewPreps: queryOne('SELECT COUNT(*) as c FROM interview_prep')?.c || 0,
+  }
+  return { dbSize, counts }
+}
+
 module.exports = {
   init,
   getApplications, getApplication, hasJobUrl, hasAppliedToCompany, insertApplication, updateApplicationStatus,
@@ -390,5 +401,5 @@ module.exports = {
   findDuplicateAcrossPlatforms, getApplicationsByDate, getApplicationsPerDay,
   getApplicationsForFollowUp, markFollowUpSent,
   saveInterviewPrep, getInterviewPrep, deleteInterviewPrep,
-  getWeeklyReportData,
+  getWeeklyReportData, getStorageInfo,
 }
