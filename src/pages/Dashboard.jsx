@@ -753,6 +753,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart, showToast })
             <div style={{ marginBottom: 16 }}>
               <label style={{ marginBottom: 6 }}>Comment</label>
               <textarea
+                key={selected.id + '_comment'}
                 defaultValue={selected.comment || ''}
                 placeholder="Add a note about this application..."
                 onBlur={e => saveComment(selected.id, e.target.value)}
@@ -800,10 +801,6 @@ export default function Dashboard({ logs, scanRunning, onScanStart, showToast })
                     <button className="btn btn-ghost" style={{ fontSize: 11 }}
                       onClick={() => window.api.downloadResume(selected.cover_letter, `Cover Letter - ${selected.job_title} - ${selected.company}`, 'pdf', 'coverLetter')}>
                       Save PDF
-                    </button>
-                    <button className="btn btn-ghost" style={{ fontSize: 11 }}
-                      onClick={() => window.api.downloadResume(selected.cover_letter, `Cover Letter - ${selected.job_title} - ${selected.company}`, 'docx', 'coverLetter')}>
-                      Save DOCX
                     </button>
                   </div>
                 </div>

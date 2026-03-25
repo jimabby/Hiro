@@ -108,12 +108,12 @@ export default function Timeline() {
                 setExpandedJobs({})
               } else {
                 setExpandAll(true)
-                const allJobs = {}
-                for (const date of filteredDates) {
-                  const jobs = await window.api.getApplications({ dateFrom: date + ' 00:00:00', dateTo: date + ' 23:59:59' })
-                  allJobs[date] = jobs
-                }
-                setExpandedJobs(allJobs)
+                const results = await Promise.all(
+                  filteredDates.map(date =>
+                    window.api.getApplications({ dateFrom: date + ' 00:00:00', dateTo: date + ' 23:59:59' }).then(jobs => [date, jobs])
+                  )
+                )
+                setExpandedJobs(Object.fromEntries(results))
               }
             }}>
               {expandAll ? 'Collapse All' : 'Expand All'}

@@ -101,7 +101,7 @@ function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
 }
 
-function StorageCard({ showToast }) {
+function StorageCard() {
   const [info, setInfo] = useState(null)
   const [loading, setLoading] = useState(false)
 
@@ -595,8 +595,8 @@ export default function Settings({ showToast }) {
             <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={async () => {
               try {
                 const res = await window.api.testWebhook(wh.provider || 'discord', wh.url)
-                alert(res.success ? 'Test notification sent!' : 'Failed to send test notification')
-              } catch { alert('Error testing webhook') }
+                showToast?.(res.success ? 'Test notification sent!' : 'Failed to send test notification', res.success ? 'success' : 'error')
+              } catch { showToast?.('Error testing webhook', 'error') }
             }}>Send Test</button>
           </div>
         ))}
@@ -754,12 +754,7 @@ export default function Settings({ showToast }) {
                   }}>
                   {improvingId === r.id ? 'Improving...' : 'Improve with AI'}
                 </button>
-                <button className="btn btn-ghost" style={{ fontSize: 11 }}
-                  disabled={pdfLoading === r.name}
-                  onClick={() => viewPDF(r.text, r.name, r.originalPath, r.originalExt)}>
-                  {pdfLoading === r.name ? 'Loading...' : 'View PDF'}
-                </button>
-                {r.originalExt === 'docx' || r.originalExt === 'doc' ? (
+                {r.originalExt === 'docx' || r.originalExt === 'doc' ? (<>
                   <button className="btn btn-ghost" style={{ fontSize: 11 }}
                     disabled={pdfLoading === r.name + '_docx'}
                     onClick={async () => {
@@ -769,15 +764,21 @@ export default function Settings({ showToast }) {
                     }}>
                     {pdfLoading === r.name + '_docx' ? 'Opening...' : 'Preview DOCX'}
                   </button>
-                ) : null}
-                <button className="btn btn-ghost" style={{ fontSize: 11 }}
-                  onClick={() => window.api.downloadResume(r.text, r.name, 'pdf')}>
-                  Save PDF
-                </button>
-                <button className="btn btn-ghost" style={{ fontSize: 11 }}
-                  onClick={() => window.api.downloadResume(r.text, r.name, 'docx')}>
-                  Save DOCX
-                </button>
+                  <button className="btn btn-ghost" style={{ fontSize: 11 }}
+                    onClick={() => window.api.downloadResume(r.text, r.name, 'docx')}>
+                    Save DOCX
+                  </button>
+                </>) : (<>
+                  <button className="btn btn-ghost" style={{ fontSize: 11 }}
+                    disabled={pdfLoading === r.name}
+                    onClick={() => viewPDF(r.text, r.name, r.originalPath, r.originalExt)}>
+                    {pdfLoading === r.name ? 'Loading...' : 'View PDF'}
+                  </button>
+                  <button className="btn btn-ghost" style={{ fontSize: 11 }}
+                    onClick={() => window.api.downloadResume(r.text, r.name, 'pdf')}>
+                    Save PDF
+                  </button>
+                </>)}
                 <button className="btn btn-ghost" style={{ fontSize: 11, color: 'var(--red)' }} onClick={() => {
                   const resumes = (form.resumes || []).filter(x => x.id !== r.id)
                   const defaultResumeId = form.defaultResumeId === r.id ? (resumes[0]?.id || '') : form.defaultResumeId
@@ -942,7 +943,7 @@ export default function Settings({ showToast }) {
 
       {settingsTab === 'data' && <div>
         {/* Storage Info */}
-        <StorageCard showToast={showToast} />
+        <StorageCard />
 
         {/* Screening Answer Cache */}
         <div className="card" style={{ marginBottom: 16 }}>
@@ -1154,8 +1155,8 @@ export default function Settings({ showToast }) {
         <div style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200,
-        }}>
-          <div className="card" style={{ width: 680, maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
+        }} onClick={() => setImproveModal(null)} onKeyDown={e => { if (e.key === 'Escape') setImproveModal(null) }}>
+          <div className="card" style={{ width: 680, maxHeight: '85vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
               <h2 style={{ fontSize: 17 }}>AI-Improved Resume</h2>
               <button className="btn btn-ghost" onClick={() => setImproveModal(null)}>✕</button>
@@ -1173,7 +1174,8 @@ export default function Settings({ showToast }) {
               {(form.resumes || []).length < 5 && (
                 <button className="btn btn-ghost" onClick={() => {
                   const id = Date.now().toString()
-                  const resumes = [...(form.resumes || []), { id, name: `${improveModal.sourceName} (Improved)`, text: improveModal.text }]
+                  const source = (form.resumes || []).find(r => r.id === improveModal.sourceId)
+                  const resumes = [...(form.resumes || []), { id, name: `${improveModal.sourceName} (Improved)`, text: improveModal.text, originalExt: source?.originalExt || null, originalPath: source?.originalPath || null }]
                   saveResumes(resumes, form.defaultResumeId)
                   setImproveModal(null)
                 }}>
