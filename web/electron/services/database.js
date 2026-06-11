@@ -278,13 +278,13 @@ function getStats() {
 
   return {
     totalAllTime: queryOne('SELECT COUNT(*) as c FROM applications')?.c || 0,
-    totalToday: queryOne("SELECT COUNT(*) as c FROM applications WHERE applied_at >= ?", [today + 'T00:00:00'])?.c || 0,
-    totalThisWeek: queryOne("SELECT COUNT(*) as c FROM applications WHERE applied_at >= ?", [weekAgo + 'T00:00:00'])?.c || 0,
+    totalToday: queryOne("SELECT COUNT(*) as c FROM applications WHERE applied_at >= ?", [today + ' 00:00:00'])?.c || 0,
+    totalThisWeek: queryOne("SELECT COUNT(*) as c FROM applications WHERE applied_at >= ?", [weekAgo + ' 00:00:00'])?.c || 0,
     interviews,
     attentionCount: queryOne('SELECT COUNT(*) as c FROM attention_jobs WHERE dismissed = 0')?.c || 0,
     byPlatform: query("SELECT platform, COUNT(*) as count FROM applications GROUP BY platform"),
     byStatus: query("SELECT status, COUNT(*) as count FROM applications GROUP BY status"),
-    todayJobs: query("SELECT job_title, company, platform, match_score, status FROM applications WHERE applied_at >= ? ORDER BY applied_at DESC", [today + 'T00:00:00']),
+    todayJobs: query("SELECT job_title, company, platform, match_score, status FROM applications WHERE applied_at >= ? ORDER BY applied_at DESC", [today + ' 00:00:00']),
     responseRate: appliedCount > 0 ? Math.round((interviews / appliedCount) * 100) : 0,
   }
 }
@@ -293,7 +293,7 @@ function getTodayCountByPlatform(platform) {
   const today = new Date().toISOString().split('T')[0]
   return queryOne(
     "SELECT COUNT(*) as c FROM applications WHERE platform = ? AND applied_at >= ?",
-    [platform, today + 'T00:00:00']
+    [platform, today + ' 00:00:00']
   )?.c || 0
 }
 
@@ -310,7 +310,7 @@ function getApplicationsByDate() {
 
 function getApplicationsPerDay(days) {
   const from = new Date(Date.now() - (days - 1) * 86400000).toISOString().split('T')[0]
-  return query("SELECT DATE(applied_at) as date, COUNT(*) as count FROM applications WHERE applied_at >= ? GROUP BY DATE(applied_at) ORDER BY date ASC", [from + 'T00:00:00'])
+  return query("SELECT DATE(applied_at) as date, COUNT(*) as count FROM applications WHERE applied_at >= ? GROUP BY DATE(applied_at) ORDER BY date ASC", [from + ' 00:00:00'])
 }
 
 function getApplicationsForFollowUp(daysOld) {
@@ -351,8 +351,8 @@ function getWeeklyReportData() {
   const mondayOffset = dayOfWeek - 1
   const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - mondayOffset)
   const sunday = new Date(monday.getTime() + 6 * 86400000)
-  const dateFrom = monday.toISOString().split('T')[0] + 'T00:00:00'
-  const dateTo = sunday.toISOString().split('T')[0] + 'T23:59:59'
+  const dateFrom = monday.toISOString().split('T')[0] + ' 00:00:00'
+  const dateTo = sunday.toISOString().split('T')[0] + ' 23:59:59'
 
   const apps = query('SELECT * FROM applications WHERE applied_at >= ? AND applied_at <= ?', [dateFrom, dateTo])
   const totalApps = apps.length

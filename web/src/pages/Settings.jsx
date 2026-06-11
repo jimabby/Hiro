@@ -179,6 +179,8 @@ export default function Settings({ showToast }) {
   const [gmailMsg, setGmailMsg] = useState('')
   const [checkingInbox, setCheckingInbox] = useState(false)
   const [inboxResult, setInboxResult] = useState(null)
+  const [mobileInfo, setMobileInfo] = useState(null)
+  const [mobileBusy, setMobileBusy] = useState(false)
 
   useEffect(() => {
     window.api.getConfig().then(cfg => {
@@ -190,6 +192,7 @@ export default function Settings({ showToast }) {
       })
     })
     window.api.linkedinStatus().then(s => setLinkedinLoggedIn(s.loggedIn))
+    window.api.getMobileInfo?.().then(setMobileInfo)
     window.api.onLinkedInStatusUpdate(msg => setLinkedinMsg(msg))
     window.api.onGmailStatusUpdate(msg => setGmailMsg(msg))
     return () => {
@@ -616,6 +619,56 @@ export default function Settings({ showToast }) {
           <input type="checkbox" style={{ width: 'auto' }} checked={!!form.enableWeeklyReport} onChange={e => set('enableWeeklyReport', e.target.checked)} />
           Enable weekly report
         </label>
+      </div>
+
+      {/* Mobile App */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <h3 style={{ marginBottom: 8, fontSize: 15 }}>Mobile App</h3>
+        <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 12 }}>
+          Pair the Hiro mobile app to check stats and update application statuses from your phone.
+          The phone connects directly to this computer over your local network — no data leaves your machine.
+        </p>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: 12 }}>
+          <input type="checkbox" style={{ width: 'auto' }} checked={!!mobileInfo?.enabled} disabled={mobileBusy} onChange={async e => {
+            setMobileBusy(true)
+            const info = await window.api.setMobileEnabled(e.target.checked)
+            setMobileInfo(info)
+            setMobileBusy(false)
+          }} />
+          Enable mobile companion server
+        </label>
+        {mobileInfo?.enabled && (
+          <div style={{ background: 'var(--surface2)', borderRadius: 8, padding: 14, fontSize: 13 }}>
+            <div style={{ marginBottom: 8 }}>
+              <span style={{ color: 'var(--text-muted)' }}>Status: </span>
+              <span style={{ color: mobileInfo.running ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
+                {mobileInfo.running ? 'Running' : 'Stopped'}
+              </span>
+            </div>
+            <div style={{ marginBottom: 8 }}>
+              <span style={{ color: 'var(--text-muted)' }}>Server address: </span>
+              {(mobileInfo.addresses || []).length
+                ? mobileInfo.addresses.map(a => <code key={a} style={{ marginRight: 8 }}>{a}:{mobileInfo.port}</code>)
+                : <span style={{ color: 'var(--text-muted)' }}>no network connection found</span>}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ color: 'var(--text-muted)' }}>Pairing token: </span>
+              <code style={{ wordBreak: 'break-all' }}>{mobileInfo.token}</code>
+              <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={() => {
+                navigator.clipboard.writeText(mobileInfo.token)
+                showToast?.('Token copied', 'success')
+              }}>Copy</button>
+              <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={async () => {
+                const info = await window.api.regenerateMobileToken()
+                setMobileInfo(info)
+                showToast?.('New token generated — re-pair your phone', 'info')
+              }}>Regenerate</button>
+            </div>
+            <p style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 10, marginBottom: 0 }}>
+              In the mobile app, enter the server address and token above to connect.
+            </p>
+          </div>
+        )}
       </div>
       </div>} {/* end notifications tab */}
 

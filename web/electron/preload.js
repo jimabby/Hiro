@@ -104,6 +104,11 @@ contextBridge.exposeInMainWorld('api', {
   onLinkedInStatusUpdate: (cb) => ipcRenderer.on('linkedin:status-update', (_, msg) => cb(msg)),
   removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel),
 
+  // Mobile companion API
+  getMobileInfo: () => ipcRenderer.invoke('mobile:getInfo'),
+  setMobileEnabled: (enabled) => ipcRenderer.invoke('mobile:setEnabled', enabled),
+  regenerateMobileToken: () => ipcRenderer.invoke('mobile:regenerateToken'),
+
   // Gmail sign-in & inbox
   gmailStatus: () => ipcRenderer.invoke('gmail:status'),
   gmailLogin: (email) => ipcRenderer.invoke('gmail:login', email),

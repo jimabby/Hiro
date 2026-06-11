@@ -118,6 +118,22 @@ function scheduleTodayBatches(numBatches, interval, startMinutes, jitter, batchS
   }
 }
 
+// Ask the user a screening question via the renderer. On timeout the
+// listener must be removed, or it would consume the next question's answer.
+function makeAskQuestion() {
+  return (question) => new Promise((resolve) => {
+    if (!win || win.isDestroyed()) return resolve('')
+    const { ipcMain } = require('electron')
+    win.webContents.send('question:ask', question)
+    const handler = (_, answer) => { clearTimeout(timeout); resolve(answer || '') }
+    const timeout = setTimeout(() => {
+      ipcMain.removeListener('question:answer', handler)
+      resolve('')
+    }, 5 * 60 * 1000)
+    ipcMain.once('question:answer', handler)
+  })
+}
+
 async function runBatch(batchSize) {
   if (running) return
   running = true
@@ -126,14 +142,7 @@ async function runBatch(batchSize) {
   try {
     const cfg = configService.load()
     if (!cfg.setupComplete) return
-    const { ipcMain } = require('electron')
-    const askQuestion = (question) => new Promise((resolve) => {
-      if (!win || win.isDestroyed()) return resolve('')
-      win.webContents.send('question:ask', question)
-      const timeout = setTimeout(() => resolve(''), 5 * 60 * 1000)
-      ipcMain.once('question:answer', (_, answer) => { clearTimeout(timeout); resolve(answer || '') })
-    })
-    await applicator.run({ ...cfg, askQuestion, batchLimit: batchSize }, { log, notifyAttention })
+    await applicator.run({ ...cfg, askQuestion: makeAskQuestion(), batchLimit: batchSize }, { log, notifyAttention })
   } catch (err) {
     log(`Batch error: ${err.message}`)
   } finally {
@@ -186,14 +195,7 @@ async function runScan() {
       log('Setup not complete. Skipping scan.')
       return
     }
-    const { ipcMain } = require('electron')
-    const askQuestion = (question) => new Promise((resolve) => {
-      if (!win || win.isDestroyed()) return resolve('')
-      win.webContents.send('question:ask', question)
-      const timeout = setTimeout(() => resolve(''), 5 * 60 * 1000)
-      ipcMain.once('question:answer', (_, answer) => { clearTimeout(timeout); resolve(answer || '') })
-    })
-    await applicator.run({ ...cfg, askQuestion }, { log, notifyAttention })
+    await applicator.run({ ...cfg, askQuestion: makeAskQuestion() }, { log, notifyAttention })
   } catch (err) {
     log(`Scan error: ${err.message}`)
   } finally {

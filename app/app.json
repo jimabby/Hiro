@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "Hiro",
+    "slug": "hiro-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0f1117",
+    "splash": {
+      "backgroundColor": "#0f1117",
+      "resizeMode": "contain"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.hiro.mobile",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        },
+        "NSLocalNetworkUsageDescription": "Hiro connects to the Hiro desktop app on your local network to show your job application data."
+      }
+    },
+    "android": {
+      "package": "com.hiro.mobile",
+      "usesCleartextTraffic": true
+    }
+  }
+}

@@ -1,66 +1,11 @@
 {
   "name": "hiro",
   "version": "1.0.0",
-  "description": "AI-powered automated job application desktop app",
-  "main": "electron/main.js",
+  "description": "Hiro — AI-powered automated job application suite (desktop app + mobile companion)",
+  "private": true,
   "scripts": {
-    "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
-    "build": "vite build && electron-builder",
-    "preview": "vite preview"
-  },
-  "build": {
-    "appId": "com.hiro.app",
-    "productName": "Hiro",
-    "directories": {
-      "output": "dist-electron"
-    },
-    "files": [
-      "dist/**/*",
-      "electron/**/*",
-      "public/**/*",
-      "node_modules/**/*"
-    ],
-    "icon": "public/logo.png",
-    "win": {
-      "target": "nsis",
-      "icon": "public/logo.png"
-    },
-    "mac": {
-      "target": "dmg",
-      "icon": "public/logo.png"
-    },
-    "linux": {
-      "target": "AppImage",
-      "icon": "public/logo.png"
-    },
-    "extraResources": []
-  },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.30.0",
-    "@google/generative-ai": "^0.21.0",
-    "adm-zip": "^0.5.16",
-    "docx": "^9.6.1",
-    "imapflow": "^1.2.13",
-    "mammoth": "^1.11.0",
-    "node-cron": "^3.0.3",
-    "nodemailer": "^6.9.16",
-    "openai": "^4.77.0",
-    "pdf-parse": "^2.4.5",
-    "pdfkit": "^0.17.2",
-    "playwright": "^1.49.1",
-    "playwright-extra": "^4.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "sql.js": "^1.12.0"
-  },
-  "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.4",
-    "concurrently": "^9.1.2",
-    "electron": "^33.3.1",
-    "electron-builder": "^25.1.8",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-router-dom": "^7.1.1",
-    "vite": "^6.0.7",
-    "wait-on": "^8.0.1"
+    "web": "npm --prefix web run dev",
+    "web:build": "npm --prefix web run build",
+    "app": "npm --prefix app start"
   }
 }

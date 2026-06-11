@@ -10,6 +10,7 @@ const seekSession = require('./services/seekSession')
 const indeedSession = require('./services/indeedSession')
 const applicator = require('./services/applicator')
 const gmailAuth = require('./services/gmailAuth')
+const mobileApi = require('./services/mobileApi')
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
@@ -61,6 +62,7 @@ app.whenReady().then(async () => {
   await database.init()
   createWindow()
   scheduler.init(mainWindow)
+  if (configService.load().mobileApiEnabled) mobileApi.start()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -139,11 +141,16 @@ function makeAskQuestion(win) {
   return (question) => new Promise((resolve) => {
     if (!win || win.isDestroyed()) return resolve('')
     win.webContents.send('question:ask', question)
-    const timeout = setTimeout(() => resolve(''), 5 * 60 * 1000) // 5 min timeout
-    ipcMain.once('question:answer', (_, answer) => {
+    const handler = (_, answer) => {
       clearTimeout(timeout)
       resolve(answer || '')
-    })
+    }
+    // 5 min timeout — must also drop the listener, or it swallows the next question's answer
+    const timeout = setTimeout(() => {
+      ipcMain.removeListener('question:answer', handler)
+      resolve('')
+    }, 5 * 60 * 1000)
+    ipcMain.once('question:answer', handler)
   })
 }
 
@@ -596,6 +603,20 @@ ipcMain.handle('webhook:test', async (_, provider, url) => {
 // ─── IPC: Smart Scheduling ──────────────────────────────────────
 ipcMain.handle('scheduler:getBatchSchedule', () => {
   return scheduler.getBatchSchedule()
+})
+
+// ─── IPC: Mobile Companion API ───────────────────────────────────
+ipcMain.handle('mobile:getInfo', () => mobileApi.getInfo())
+
+ipcMain.handle('mobile:setEnabled', (_, enabled) => {
+  const cfg = configService.load()
+  configService.save({ ...cfg, mobileApiEnabled: !!enabled })
+  return enabled ? mobileApi.start() : mobileApi.stop()
+})
+
+ipcMain.handle('mobile:regenerateToken', () => {
+  mobileApi.regenerateToken()
+  return mobileApi.getInfo()
 })
 
 // ─── IPC: Inbox Check ────────────────────────────────────────────

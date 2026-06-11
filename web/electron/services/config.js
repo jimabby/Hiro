@@ -41,6 +41,9 @@ const DEFAULTS = {
   smartScheduleEndTime: '17:00',
   smartScheduleBatchSize: 3,
   smartScheduleJitter: 15,
+  mobileApiEnabled: false,
+  mobileApiPort: 4823,
+  mobileApiToken: '',
 }
 
 function ensureDir() {

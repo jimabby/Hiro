@@ -49,12 +49,31 @@
 
 ---
 
+### Mobile Companion
+- **Hiro Mobile** ([app/](app/)) — Expo React Native app that pairs with the desktop over your local network
+- **On-the-go dashboard** — stats, 7-day chart, status and platform breakdowns
+- **Manage applications** — search, filter, update statuses, and add notes from your phone
+- **Private by design** — the phone talks directly to the desktop app via a token-protected LAN API; no cloud involved
+
+---
+
+## Repository Layout
+
+```
+Hiro/
+├── web/   Desktop app — Electron + React + Vite (scraping, AI, scheduling, database)
+└── app/   Mobile companion — Expo React Native (pairs with the desktop over LAN)
+```
+
+---
+
 ## Tech Stack
 
 | Layer | Tech |
 |---|---|
 | Desktop shell | Electron |
 | Frontend | React + Vite |
+| Mobile | Expo (React Native) |
 | Database | sql.js (WebAssembly SQLite, no native build required) |
 | Scraping | Playwright + playwright-extra + stealth plugin (Chromium) |
 | Scheduling | node-cron |
@@ -76,7 +95,7 @@
 ```bash
 # 1. Clone the repo
 git clone <repo-url>
-cd hiro
+cd hiro/web
 
 # 2. Install dependencies
 npm install
@@ -87,6 +106,8 @@ npx playwright install chromium
 # 4. Start in development mode
 npm run dev
 ```
+
+To set up the mobile companion app, see [app/README.md](app/README.md).
 
 On first launch, the Setup Wizard will guide you through:
 1. Choosing an AI provider and entering your API key
@@ -102,10 +123,11 @@ Config is stored at `~/.hiro/config.json`.
 ## Building for Distribution
 
 ```bash
+cd web
 npm run build
 ```
 
-Output is placed in `dist-electron/`. Supports Windows (NSIS installer), macOS (DMG), and Linux (AppImage).
+Output is placed in `web/dist-electron/`. Supports Windows (NSIS installer), macOS (DMG), and Linux (AppImage).
 
 ---
 
