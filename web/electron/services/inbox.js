@@ -10,6 +10,23 @@ function classifySubject(subject) {
   return 'pending' // reply received but unclear — mark as pending for user review
 }
 
+// Words too generic to identify a company — matching on these produces
+// false positives ("First Solutions" matching every "solutions" sender).
+const GENERIC_COMPANY_WORDS = new Set([
+  'the', 'and', 'for', 'group', 'pty', 'ltd', 'inc', 'llc', 'co', 'corp',
+  'company', 'solutions', 'services', 'service', 'systems', 'system',
+  'tech', 'technology', 'technologies', 'consulting', 'consultants',
+  'global', 'digital', 'labs', 'lab', 'studio', 'studios', 'partners',
+  'recruitment', 'recruiting', 'talent', 'australia', 'australian',
+])
+
+// SQLite stores "YYYY-MM-DD HH:MM:SS" in UTC — make Date parse it as UTC
+function parseSqliteUtc(s) {
+  if (!s) return null
+  const d = new Date(s.includes('T') ? s : s.replace(' ', 'T') + 'Z')
+  return isNaN(d.getTime()) ? null : d
+}
+
 function getImapHost(address) {
   const domain = (address || '').split('@')[1]?.toLowerCase() || ''
   if (domain === 'outlook.com' || domain === 'hotmail.com' || domain === 'live.com' || domain === 'msn.com') return 'outlook.office365.com'
@@ -49,7 +66,7 @@ async function checkInbox() {
 
         // Find the oldest application date to limit how far back we search
         const oldestDate = new Date(
-          Math.min(...apps.map(a => new Date(a.applied_at).getTime()))
+          Math.min(...apps.map(a => (parseSqliteUtc(a.applied_at) || new Date()).getTime()))
         )
 
         // Job platform domains to ignore — these are notifications, not recruiter replies
@@ -76,18 +93,25 @@ async function checkInbox() {
           const companyWords = app.company.toLowerCase()
             .replace(/[^a-z0-9\s]/g, '')
             .split(/\s+/)
-            .filter(w => w.length > 2)
+            .filter(w => w.length > 2 && !GENERIC_COMPANY_WORDS.has(w))
+          if (companyWords.length === 0) continue // nothing distinctive to match on
 
           const jobWords = app.job_title.toLowerCase()
             .replace(/[^a-z0-9\s]/g, '')
             .split(/\s+/)
             .filter(w => w.length > 3)
 
+          const appliedAt = parseSqliteUtc(app.applied_at)
+
           const match = messages.find(m => {
+            // A reply can only arrive after the application was submitted
+            if (appliedAt && m.date && new Date(m.date) < appliedAt) return false
+
             const fromDomain = (m.from.split('@')[1] || '').replace(/\./g, '')
             const subjectLower = m.subject.toLowerCase()
 
-            const domainMatch = companyWords.some(w => fromDomain.includes(w))
+            // Domain matching needs a longer word — short fragments match too freely
+            const domainMatch = companyWords.some(w => w.length >= 4 && fromDomain.includes(w))
             const subjectCompanyMatch = companyWords.some(w => subjectLower.includes(w))
             const subjectJobMatch = jobWords.some(w => subjectLower.includes(w))
 

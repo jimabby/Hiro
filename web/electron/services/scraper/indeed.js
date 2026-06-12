@@ -257,7 +257,7 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
             )
           } catch {}
           const isUncertain = !aiAnswer || aiAnswer.trim().length < 3 ||
-            /i'm not sure|i don't know|unclear|unsure|cannot determine|not enough information/i.test(aiAnswer)
+            /not sure|i don't know|unclear|unsure|cannot determine|not enough information/i.test(aiAnswer)
           if (isUncertain && cfg.askQuestion) {
             const prompt = optionHint ? `${questionText} (${optionHint})` : questionText
             const userAnswer = await cfg.askQuestion(prompt).catch(() => '')

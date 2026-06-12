@@ -5,6 +5,41 @@ const os = require('os')
 const CONFIG_DIR = path.join(os.homedir(), '.hiro')
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json')
 
+// ─── Secret encryption (Electron safeStorage, OS keychain-backed) ──────────
+// Sensitive fields are stored encrypted with an "enc:v1:" prefix. Existing
+// plaintext values still load and get encrypted on the next save. If the OS
+// keychain is unavailable, values fall back to plaintext rather than locking
+// the user out.
+const SECRET_KEYS = ['aiApiKey', 'gmailAppPassword', 'supabaseRefreshToken', 'mobileApiToken']
+const ENC_PREFIX = 'enc:v1:'
+
+let safeStorage = null
+try { ({ safeStorage } = require('electron')) } catch { /* not in Electron (tests) */ }
+
+function canEncrypt() {
+  try { return !!safeStorage && safeStorage.isEncryptionAvailable() } catch { return false }
+}
+
+function encryptValue(value) {
+  if (typeof value !== 'string' || !value || value.startsWith(ENC_PREFIX)) return value
+  if (!canEncrypt()) return value
+  try { return ENC_PREFIX + safeStorage.encryptString(value).toString('base64') } catch { return value }
+}
+
+function decryptValue(value) {
+  if (typeof value !== 'string' || !value.startsWith(ENC_PREFIX)) return value
+  if (!canEncrypt()) return ''
+  try { return safeStorage.decryptString(Buffer.from(value.slice(ENC_PREFIX.length), 'base64')) } catch { return '' }
+}
+
+function mapSecrets(config, fn) {
+  const out = { ...config }
+  for (const key of SECRET_KEYS) {
+    if (key in out) out[key] = fn(out[key])
+  }
+  return out
+}
+
 const DEFAULTS = {
   aiProvider: '',
   aiApiKey: '',
@@ -64,7 +99,7 @@ function load() {
   if (!fs.existsSync(CONFIG_FILE)) return { ...DEFAULTS }
   try {
     const raw = fs.readFileSync(CONFIG_FILE, 'utf8')
-    return { ...DEFAULTS, ...JSON.parse(raw) }
+    return mapSecrets({ ...DEFAULTS, ...JSON.parse(raw) }, decryptValue)
   } catch {
     return { ...DEFAULTS }
   }
@@ -72,7 +107,7 @@ function load() {
 
 function save(config) {
   ensureDir()
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8')
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(mapSecrets(config, encryptValue), null, 2), 'utf8')
 }
 
 module.exports = { load, save, CONFIG_DIR }

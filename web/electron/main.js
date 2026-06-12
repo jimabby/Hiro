@@ -78,8 +78,20 @@ app.on('window-all-closed', () => {
 // ─── IPC: Config ────────────────────────────────────────────────
 ipcMain.handle('config:get', () => configService.load())
 
+// Keys owned by background services (scheduler, cloud sync, mobile API,
+// inbox). The renderer's form is a snapshot from page load — saving it
+// verbatim would clobber anything these services wrote since.
+const RUNTIME_CONFIG_KEYS = [
+  'pendingScans', 'lastScanAt', 'lastInboxCheck', 'lastCloudSyncAt',
+  'cloudSyncEnabled', 'supabaseEmail', 'supabaseRefreshToken',
+  'mobileApiEnabled', 'mobileApiToken',
+]
+
 ipcMain.handle('config:save', (_, config) => {
-  configService.save(config)
+  const current = configService.load()
+  const merged = { ...config }
+  for (const key of RUNTIME_CONFIG_KEYS) merged[key] = current[key]
+  configService.save(merged)
   scheduler.restart(mainWindow)
   return { success: true }
 })

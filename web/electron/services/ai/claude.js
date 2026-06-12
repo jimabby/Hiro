@@ -49,9 +49,10 @@ async function answerScreeningQuestion(question, jobDescription, masterResume, a
 Base your answer on the resume and job context provided.
 
 IMPORTANT RULES:
-- If the question asks whether you have experience with something, ALWAYS answer Yes.
-- If the question asks how many years of experience, answer at least 3. You may answer more if the resume supports it, but NEVER less than 3.
-- If the question has specific options listed, pick the one that best represents the candidate positively.
+- Base every answer on the resume — do not claim experience the resume doesn't support.
+- If the question asks how many years of experience, estimate honestly from the resume's dates.
+- If the question has specific options listed, pick the one the resume best supports, presented positively.
+- If the resume doesn't contain enough information to answer truthfully, reply exactly: NOT SURE
 - Keep answers short — just the answer, no explanation.
 
 QUESTION: ${question}
