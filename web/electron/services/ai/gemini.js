@@ -55,7 +55,7 @@ Return a JSON array of strings: ["point1", "point2", ...]
 JOB: ${jobDescription.slice(0, 800)}
 RESUME: ${masterResume.slice(0, 1000)}`)
   try {
-    return JSON.parse(result.response.text())
+    return parseJSON(result.response.text())
   } catch {
     return [result.response.text()]
   }
@@ -103,7 +103,7 @@ Score 0-100. Plain text explanation, no markdown.
 JOB: ${jobDescription.slice(0, 800)}
 RESUME: ${masterResume.slice(0, 1000)}`)
   try {
-    const parsed = JSON.parse(result.response.text())
+    const parsed = parseJSON(result.response.text())
     const score = parseInt(parsed.score, 10)
     return { score: isNaN(score) ? 50 : Math.min(100, Math.max(0, score)), explanation: parsed.explanation || '' }
   } catch {

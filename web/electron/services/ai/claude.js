@@ -80,7 +80,7 @@ RESUME: ${masterResume.slice(0, 1000)}`,
     }],
   })
   try {
-    return JSON.parse(response.content[0].text)
+    return parseJSON(response.content[0].text)
   } catch {
     return [response.content[0].text]
   }
@@ -146,7 +146,7 @@ JOB: ${jobDescription.slice(0, 800)}
 RESUME: ${masterResume.slice(0, 1000)}` }],
   })
   try {
-    const parsed = JSON.parse(response.content[0].text)
+    const parsed = parseJSON(response.content[0].text)
     const score = parseInt(parsed.score, 10)
     return { score: isNaN(score) ? 50 : Math.min(100, Math.max(0, score)), explanation: parsed.explanation || '' }
   } catch {

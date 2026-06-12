@@ -154,6 +154,7 @@ async function runBatch(batchSize) {
     notify({ type: 'scan-complete' })
     webhooks.send('scan-complete', { message: `Batch of ${batchSize} complete` }).catch(() => {})
     cloudSync.sync().catch(() => {})
+    setImmediate(() => { processQueue() })
   }
 }
 
@@ -217,7 +218,7 @@ async function processQueue() {
   if (pending.length === 0) return
 
   const req = pending[0]
-  await runScan({ keywords: req.keywords, location: req.location })
+  await runScan({ keywords: req.keywords, location: req.location, fromQueue: true })
 
   // Remove the processed request (reload in case config changed during the run).
   const after = configService.load()
@@ -254,6 +255,10 @@ async function runScan(overrides = {}) {
     notify({ type: 'scan-complete' })
     webhooks.send('scan-complete', { message: 'Full scan complete' }).catch(() => {})
     cloudSync.sync().catch(() => {})
+    // Drain scans queued (e.g. from the phone) while this scan was running.
+    // Queue-initiated runs skip this: processQueue continues itself after
+    // removing the finished request, and re-entering here would run it twice.
+    if (!overrides.fromQueue) setImmediate(() => { processQueue() })
   }
 }
 

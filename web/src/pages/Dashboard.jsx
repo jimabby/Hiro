@@ -14,6 +14,7 @@ function stripMd(t) {
 const STATUS_BADGE = {
   applied: { label: 'Applied', color: 'badge-blue' },
   interview: { label: 'Interview', color: 'badge-green' },
+  offer: { label: 'Offer', color: 'badge-green' },
   rejected: { label: 'Rejected', color: 'badge-red' },
   pending: { label: 'Pending', color: 'badge-yellow' },
   skipped: { label: 'Skipped', color: 'badge-gray' },
@@ -466,6 +467,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart, showToast })
             { value: '', label: 'All' },
             { value: 'applied', label: 'Applied' },
             { value: 'interview', label: 'Interview' },
+            { value: 'offer', label: 'Offer' },
             { value: 'pending', label: 'Pending' },
             { value: 'rejected', label: 'Rejected' },
             { value: 'skipped', label: 'Skipped' },
@@ -512,6 +514,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart, showToast })
                   <option value="" disabled>Set status...</option>
                   <option value="applied">Applied</option>
                   <option value="interview">Interview</option>
+                  <option value="offer">Offer</option>
                   <option value="rejected">Rejected</option>
                   <option value="pending">Pending</option>
                 </select>
@@ -609,6 +612,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart, showToast })
                             onChange={e => changeStatus(a.id, e.target.value, e)}>
                             <option value="applied">Applied</option>
                             <option value="interview">Interview</option>
+                            <option value="offer">Offer</option>
                             <option value="rejected">Rejected</option>
                             <option value="pending">Pending</option>
                           </select>

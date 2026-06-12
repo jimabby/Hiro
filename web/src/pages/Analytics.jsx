@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 
 const PLATFORM_COLORS = { Seek: 'var(--accent)', LinkedIn: 'var(--green)', Indeed: 'var(--yellow)' }
 const STATUS_COLORS = {
-  applied: 'var(--accent)', interview: 'var(--green)',
+  applied: 'var(--accent)', interview: 'var(--green)', offer: 'var(--green)',
   rejected: 'var(--red)', pending: 'var(--yellow)', skipped: 'var(--text-muted)',
 }
 
@@ -42,7 +42,8 @@ function PieChart({ data, colorMap }) {
   return (
     <svg width={180} height={180}>
       {data.map((d) => {
-        const slice = (d.count / total) * 2 * Math.PI
+        // Cap just under a full circle — an arc whose start and end coincide renders nothing
+        const slice = Math.min((d.count / total) * 2 * Math.PI, 2 * Math.PI - 0.001)
         const x1 = cx + r * Math.cos(angle), y1 = cy + r * Math.sin(angle)
         const x2 = cx + r * Math.cos(angle + slice), y2 = cy + r * Math.sin(angle + slice)
         const xi1 = cx + innerR * Math.cos(angle), yi1 = cy + innerR * Math.sin(angle)
@@ -107,8 +108,9 @@ export default function Analytics() {
     ? Math.round(allApps.reduce((sum, a) => sum + (a.match_score || 0), 0) / allApps.length)
     : 0
 
-  const appliedCount = allApps.filter(a => a.status !== 'skipped').length
+  const submittedCount = allApps.filter(a => a.status !== 'skipped').length
   const interviewCount = allApps.filter(a => a.status === 'interview').length
+  const offerCount = allApps.filter(a => a.status === 'offer').length
   const rejectedCount = allApps.filter(a => a.status === 'rejected').length
   const pendingCount = allApps.filter(a => a.status === 'pending' || a.status === 'applied').length
   const skippedCount = allApps.filter(a => a.status === 'skipped').length
@@ -198,9 +200,10 @@ export default function Analytics() {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <div className="card">
           <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 16 }}>Application Funnel</div>
-          <FunnelBar label="Submitted" count={appliedCount + interviewCount + rejectedCount} total={allApps.length} color="var(--accent)" />
+          <FunnelBar label="Submitted" count={submittedCount} total={allApps.length} color="var(--accent)" />
           <FunnelBar label="Awaiting Response" count={pendingCount} total={allApps.length} color="var(--yellow)" />
           <FunnelBar label="Got Interview" count={interviewCount} total={allApps.length} color="var(--green)" />
+          <FunnelBar label="Got Offer" count={offerCount} total={allApps.length} color="var(--green)" />
           <FunnelBar label="Rejected" count={rejectedCount} total={allApps.length} color="var(--red)" />
           <FunnelBar label="Skipped" count={skippedCount} total={allApps.length} color="var(--text-muted)" />
         </div>

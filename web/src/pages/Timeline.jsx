@@ -4,6 +4,7 @@ const PLATFORM_COLORS = { Seek: 'badge-blue', LinkedIn: 'badge-green', Indeed: '
 const STATUS_BADGE = {
   applied: { label: 'Applied', color: 'badge-blue' },
   interview: { label: 'Interview', color: 'badge-green' },
+  offer: { label: 'Offer', color: 'badge-green' },
   rejected: { label: 'Rejected', color: 'badge-red' },
   pending: { label: 'Pending', color: 'badge-yellow' },
   skipped: { label: 'Skipped', color: 'badge-gray' },

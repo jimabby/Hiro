@@ -176,6 +176,7 @@ function start() {
   server = http.createServer((req, res) => { handle(req, res) })
   server.on('error', (err) => {
     console.error('Mobile API server error:', err.message)
+    try { server?.close() } catch { /* already closed */ }
     server = null
   })
   server.listen(port, '0.0.0.0')

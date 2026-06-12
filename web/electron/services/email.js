@@ -75,9 +75,8 @@ async function sendDailyReport(stats) {
   if (!cfg.gmailAddress || !cfg.gmailAppPassword) return
 
   const transport = createTransport(cfg)
-  const responseRate = stats.totalAllTime > 0
-    ? ((stats.interviews / stats.totalAllTime) * 100).toFixed(1)
-    : 0
+  // Use the same response-rate the dashboard shows (interviews / non-skipped)
+  const responseRate = stats.responseRate ?? 0
 
   const todayRows = (stats.todayJobs || [])
     .map(j => `<tr><td>${j.job_title}</td><td>${j.company}</td><td>${j.platform}</td><td>${j.match_score}%</td></tr>`)

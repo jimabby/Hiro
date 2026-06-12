@@ -351,8 +351,11 @@ function getWeeklyReportData() {
   const mondayOffset = dayOfWeek - 1
   const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - mondayOffset)
   const sunday = new Date(monday.getTime() + 6 * 86400000)
-  const dateFrom = monday.toISOString().split('T')[0] + ' 00:00:00'
-  const dateTo = sunday.toISOString().split('T')[0] + ' 23:59:59'
+  // Format in local time — toISOString() converts to UTC and shifts the date
+  // back a day in UTC+ timezones, making the "week" start on Sunday.
+  const localDate = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  const dateFrom = localDate(monday) + ' 00:00:00'
+  const dateTo = localDate(sunday) + ' 23:59:59'
 
   const apps = query('SELECT * FROM applications WHERE applied_at >= ? AND applied_at <= ?', [dateFrom, dateTo])
   const totalApps = apps.length

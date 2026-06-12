@@ -595,13 +595,13 @@ ipcMain.handle('analytics:exportPDF', async () => {
   try {
     const { buildAnalyticsReportPDF } = require('./services/scraper/utils')
     const data = database.getWeeklyReportData()
-    const pdfBytes = buildAnalyticsReportPDF(data)
+    const tmpPath = await buildAnalyticsReportPDF(data)
     const { filePath } = await dialog.showSaveDialog(mainWindow, {
       defaultPath: `hiro-analytics-${new Date().toISOString().slice(0, 10)}.pdf`,
       filters: [{ name: 'PDF', extensions: ['pdf'] }],
     })
     if (!filePath) return { success: false, reason: 'cancelled' }
-    require('fs').writeFileSync(filePath, pdfBytes)
+    require('fs').copyFileSync(tmpPath, filePath)
     return { success: true, filePath }
   } catch (err) {
     return { success: false, error: err.message }

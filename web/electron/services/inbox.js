@@ -44,65 +44,67 @@ async function checkInbox() {
 
     try {
       const apps = database.getApplications({ status: 'applied' })
-      if (apps.length === 0) return { checked: 0, updated: [] }
+      // No applied applications — skip the search but still fall through to logout
+      if (apps.length > 0) {
 
-      // Find the oldest application date to limit how far back we search
-      const oldestDate = new Date(
-        Math.min(...apps.map(a => new Date(a.applied_at).getTime()))
-      )
+        // Find the oldest application date to limit how far back we search
+        const oldestDate = new Date(
+          Math.min(...apps.map(a => new Date(a.applied_at).getTime()))
+        )
 
-      // Job platform domains to ignore — these are notifications, not recruiter replies
-      const PLATFORM_DOMAINS = ['seek.com.au', 'seek.co.nz', 'indeed.com', 'linkedin.com',
-        'noreply.linkedin.com', 'indeedemail.com', 'seek.com', 'jobseek.com']
+        // Job platform domains to ignore — these are notifications, not recruiter replies
+        const PLATFORM_DOMAINS = ['seek.com.au', 'seek.co.nz', 'indeed.com', 'linkedin.com',
+          'noreply.linkedin.com', 'indeedemail.com', 'seek.com', 'jobseek.com']
 
-      // Fetch all message envelopes since the oldest application
-      const messages = []
-      for await (const msg of client.fetch({ since: oldestDate }, { envelope: true })) {
-        const from = msg.envelope.from?.[0]?.address?.toLowerCase() || ''
-        const fromDomain = from.split('@')[1] || ''
-        // Skip emails from job platforms — they're confirmations, not recruiter replies
-        if (PLATFORM_DOMAINS.some(d => fromDomain === d || fromDomain.endsWith('.' + d))) continue
-        messages.push({
-          from,
-          subject: msg.envelope.subject || '',
-          date: msg.envelope.date,
-        })
-        checked++
-      }
-
-      // Match messages to applications
-      for (const app of apps) {
-        const companyWords = app.company.toLowerCase()
-          .replace(/[^a-z0-9\s]/g, '')
-          .split(/\s+/)
-          .filter(w => w.length > 2)
-
-        const jobWords = app.job_title.toLowerCase()
-          .replace(/[^a-z0-9\s]/g, '')
-          .split(/\s+/)
-          .filter(w => w.length > 3)
-
-        const match = messages.find(m => {
-          const fromDomain = (m.from.split('@')[1] || '').replace(/\./g, '')
-          const subjectLower = m.subject.toLowerCase()
-
-          const domainMatch = companyWords.some(w => fromDomain.includes(w))
-          const subjectCompanyMatch = companyWords.some(w => subjectLower.includes(w))
-          const subjectJobMatch = jobWords.some(w => subjectLower.includes(w))
-
-          return domainMatch || (subjectCompanyMatch && subjectJobMatch)
-        })
-
-        if (match) {
-          const newStatus = classifySubject(match.subject)
-          database.updateApplicationStatus(app.id, newStatus)
-          updated.push({
-            id: app.id,
-            job_title: app.job_title,
-            company: app.company,
-            newStatus,
-            subject: match.subject,
+        // Fetch all message envelopes since the oldest application
+        const messages = []
+        for await (const msg of client.fetch({ since: oldestDate }, { envelope: true })) {
+          const from = msg.envelope.from?.[0]?.address?.toLowerCase() || ''
+          const fromDomain = from.split('@')[1] || ''
+          // Skip emails from job platforms — they're confirmations, not recruiter replies
+          if (PLATFORM_DOMAINS.some(d => fromDomain === d || fromDomain.endsWith('.' + d))) continue
+          messages.push({
+            from,
+            subject: msg.envelope.subject || '',
+            date: msg.envelope.date,
           })
+          checked++
+        }
+
+        // Match messages to applications
+        for (const app of apps) {
+          const companyWords = app.company.toLowerCase()
+            .replace(/[^a-z0-9\s]/g, '')
+            .split(/\s+/)
+            .filter(w => w.length > 2)
+
+          const jobWords = app.job_title.toLowerCase()
+            .replace(/[^a-z0-9\s]/g, '')
+            .split(/\s+/)
+            .filter(w => w.length > 3)
+
+          const match = messages.find(m => {
+            const fromDomain = (m.from.split('@')[1] || '').replace(/\./g, '')
+            const subjectLower = m.subject.toLowerCase()
+
+            const domainMatch = companyWords.some(w => fromDomain.includes(w))
+            const subjectCompanyMatch = companyWords.some(w => subjectLower.includes(w))
+            const subjectJobMatch = jobWords.some(w => subjectLower.includes(w))
+
+            return domainMatch || (subjectCompanyMatch && subjectJobMatch)
+          })
+
+          if (match) {
+            const newStatus = classifySubject(match.subject)
+            database.updateApplicationStatus(app.id, newStatus)
+            updated.push({
+              id: app.id,
+              job_title: app.job_title,
+              company: app.company,
+              newStatus,
+              subject: match.subject,
+            })
+          }
         }
       }
     } finally {
