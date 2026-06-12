@@ -5,6 +5,7 @@ import { colors, radius } from '../theme'
 export default function SettingsScreen({ client, connection, onDisconnect }) {
   const [pingResult, setPingResult] = useState(null)
   const [pinging, setPinging] = useState(false)
+  const isCloud = connection.mode === 'cloud'
 
   async function testConnection() {
     setPinging(true)
@@ -23,28 +24,36 @@ export default function SettingsScreen({ client, connection, onDisconnect }) {
     <View style={styles.root}>
       <Text style={styles.title}>Settings</Text>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Connection</Text>
-        <Row label="Server" value={`${connection.host}:${connection.port}`} />
-        <Row label="Token" value={`${connection.token.slice(0, 8)}…`} />
+      {isCloud ? (
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Cloud account</Text>
+          <Row label="Signed in" value={connection.email || '—'} />
+          <Row label="Sync" value="Applications sync from the desktop" />
+        </View>
+      ) : (
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Connection</Text>
+          <Row label="Server" value={`${connection.host}:${connection.port}`} />
+          <Row label="Token" value={`${connection.token.slice(0, 8)}…`} />
 
-        <TouchableOpacity style={styles.btnGhost} onPress={testConnection} disabled={pinging}>
-          <Text style={styles.btnGhostText}>{pinging ? 'Testing…' : 'Test Connection'}</Text>
-        </TouchableOpacity>
-        {pingResult && (
-          <Text style={{ color: pingResult.ok ? colors.green : colors.red, fontSize: 13, marginTop: 8 }}>
-            {pingResult.ok ? `✓ Connected to ${pingResult.host}` : `✗ ${pingResult.error}`}
-          </Text>
-        )}
-      </View>
+          <TouchableOpacity style={styles.btnGhost} onPress={testConnection} disabled={pinging}>
+            <Text style={styles.btnGhostText}>{pinging ? 'Testing…' : 'Test Connection'}</Text>
+          </TouchableOpacity>
+          {pingResult && (
+            <Text style={{ color: pingResult.ok ? colors.green : colors.red, fontSize: 13, marginTop: 8 }}>
+              {pingResult.ok ? `✓ Connected to ${pingResult.host}` : `✗ ${pingResult.error}`}
+            </Text>
+          )}
+        </View>
+      )}
 
       <TouchableOpacity style={styles.btnDanger} onPress={onDisconnect}>
-        <Text style={styles.btnDangerText}>Disconnect</Text>
+        <Text style={styles.btnDangerText}>{isCloud ? 'Sign out' : 'Disconnect'}</Text>
       </TouchableOpacity>
 
       <Text style={styles.footer}>
         Hiro Mobile · companion to the Hiro desktop app{'\n'}
-        All data stays on your computer.
+        {isCloud ? 'Synced privately to your Supabase project.' : 'All data stays on your computer.'}
       </Text>
     </View>
   )

@@ -44,6 +44,15 @@ const DEFAULTS = {
   mobileApiEnabled: false,
   mobileApiPort: 4823,
   mobileApiToken: '',
+  pendingScans: [],   // scan requests queued (e.g. from the mobile app) waiting to run
+  lastScanAt: null,
+  // Cloud sync (Supabase) — shared account so desktop + phone see one dataset.
+  cloudSyncEnabled: false,
+  supabaseUrl: '',
+  supabaseAnonKey: '',
+  supabaseEmail: '',
+  supabaseRefreshToken: '',
+  lastCloudSyncAt: null,
 }
 
 function ensureDir() {

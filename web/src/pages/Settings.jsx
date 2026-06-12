@@ -181,6 +181,13 @@ export default function Settings({ showToast }) {
   const [inboxResult, setInboxResult] = useState(null)
   const [mobileInfo, setMobileInfo] = useState(null)
   const [mobileBusy, setMobileBusy] = useState(false)
+  const [cloudStatus, setCloudStatus] = useState(null)
+  const [cloudUrl, setCloudUrl] = useState('')
+  const [cloudKey, setCloudKey] = useState('')
+  const [cloudEmail, setCloudEmail] = useState('')
+  const [cloudPassword, setCloudPassword] = useState('')
+  const [cloudBusy, setCloudBusy] = useState(false)
+  const [cloudMsg, setCloudMsg] = useState('')
 
   useEffect(() => {
     window.api.getConfig().then(cfg => {
@@ -193,6 +200,14 @@ export default function Settings({ showToast }) {
     })
     window.api.linkedinStatus().then(s => setLinkedinLoggedIn(s.loggedIn))
     window.api.getMobileInfo?.().then(setMobileInfo)
+    window.api.cloudStatus?.().then(s => {
+      setCloudStatus(s)
+      if (s?.email) setCloudEmail(s.email)
+    })
+    window.api.getConfig().then(cfg => {
+      setCloudUrl(cfg.supabaseUrl || '')
+      setCloudKey(cfg.supabaseAnonKey || '')
+    })
     window.api.onLinkedInStatusUpdate(msg => setLinkedinMsg(msg))
     window.api.onGmailStatusUpdate(msg => setGmailMsg(msg))
     return () => {
@@ -668,6 +683,93 @@ export default function Settings({ showToast }) {
               In the mobile app, enter the server address and token above to connect.
             </p>
           </div>
+        )}
+      </div>
+
+      {/* Cloud Sync */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <h3 style={{ marginBottom: 8, fontSize: 15 }}>Cloud Sync</h3>
+        <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 12 }}>
+          Sign in with a Supabase account to sync your applications to the cloud, so the
+          mobile app can see them from anywhere — not just your home Wi-Fi. Your local
+          database stays the source of truth; the cloud is a private mirror.{' '}
+          See <code>supabase/SETUP.md</code> for the one-time project setup.
+        </p>
+
+        {cloudStatus?.signedIn ? (
+          <div style={{ background: 'var(--surface2)', borderRadius: 8, padding: 14, fontSize: 13 }}>
+            <div style={{ marginBottom: 8 }}>
+              <span style={{ color: 'var(--text-muted)' }}>Signed in as </span>
+              <strong>{cloudStatus.email}</strong>
+            </div>
+            <div style={{ marginBottom: 10 }}>
+              <span style={{ color: 'var(--text-muted)' }}>Status: </span>
+              <span style={{ color: cloudStatus.error ? 'var(--red)' : 'var(--green)', fontWeight: 600 }}>
+                {cloudStatus.syncing ? 'Syncing…' : cloudStatus.error ? `Error: ${cloudStatus.error}` : 'Synced'}
+              </span>
+              {cloudStatus.lastSyncAt && !cloudStatus.error && (
+                <span style={{ color: 'var(--text-muted)' }}> · last {new Date(cloudStatus.lastSyncAt).toLocaleString()}</span>
+              )}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn btn-ghost" style={{ fontSize: 12 }} disabled={cloudBusy} onClick={async () => {
+                setCloudBusy(true)
+                const r = await window.api.cloudSyncNow()
+                if (r.status) setCloudStatus(r.status)
+                setCloudBusy(false)
+                showToast?.(r.success ? 'Synced' : `Sync failed: ${r.error}`, r.success ? 'success' : 'error')
+              }}>Sync now</button>
+              <button className="btn btn-ghost" style={{ fontSize: 12 }} disabled={cloudBusy} onClick={async () => {
+                setCloudBusy(true)
+                const r = await window.api.cloudSignOut()
+                setCloudStatus(r.status)
+                setCloudPassword('')
+                setCloudBusy(false)
+              }}>Sign out</button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="form-group">
+              <label>Supabase Project URL</label>
+              <input value={cloudUrl} onChange={e => setCloudUrl(e.target.value)} placeholder="https://xxxx.supabase.co" />
+            </div>
+            <div className="form-group">
+              <label>Supabase anon key</label>
+              <input value={cloudKey} onChange={e => setCloudKey(e.target.value)} placeholder="anon / public key" />
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label>Email</label>
+                <input value={cloudEmail} onChange={e => setCloudEmail(e.target.value)} placeholder="you@example.com" />
+              </div>
+              <div className="form-group">
+                <label>Password</label>
+                <input type="password" value={cloudPassword} onChange={e => setCloudPassword(e.target.value)} placeholder="password" />
+              </div>
+            </div>
+            {!!cloudMsg && <p style={{ color: 'var(--red)', fontSize: 13, marginTop: 4 }}>{cloudMsg}</p>}
+            <button className="btn" disabled={cloudBusy} onClick={async () => {
+              setCloudMsg('')
+              if (!cloudUrl.trim() || !cloudKey.trim() || !cloudEmail.trim() || !cloudPassword) {
+                setCloudMsg('Project URL, anon key, email and password are all required.')
+                return
+              }
+              setCloudBusy(true)
+              // Persist the URL + key so the sign-in can build the Supabase client.
+              const cfg = await window.api.getConfig()
+              await window.api.saveConfig({ ...cfg, supabaseUrl: cloudUrl.trim(), supabaseAnonKey: cloudKey.trim() })
+              const r = await window.api.cloudSignIn(cloudEmail.trim(), cloudPassword)
+              setCloudBusy(false)
+              if (r.success) {
+                setCloudStatus(r.status)
+                setCloudPassword('')
+                showToast?.('Signed in — syncing to the cloud', 'success')
+              } else {
+                setCloudMsg(r.error)
+              }
+            }}>{cloudBusy ? 'Signing in…' : 'Sign in & sync'}</button>
+          </>
         )}
       </div>
       </div>} {/* end notifications tab */}

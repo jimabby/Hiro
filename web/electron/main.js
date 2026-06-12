@@ -11,6 +11,7 @@ const indeedSession = require('./services/indeedSession')
 const applicator = require('./services/applicator')
 const gmailAuth = require('./services/gmailAuth')
 const mobileApi = require('./services/mobileApi')
+const cloudSync = require('./services/cloudSync')
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
@@ -63,6 +64,7 @@ app.whenReady().then(async () => {
   createWindow()
   scheduler.init(mainWindow)
   if (configService.load().mobileApiEnabled) mobileApi.start()
+  cloudSync.init().catch(() => {})
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -80,6 +82,27 @@ ipcMain.handle('config:save', (_, config) => {
   configService.save(config)
   scheduler.restart(mainWindow)
   return { success: true }
+})
+
+// ─── IPC: Cloud sync ────────────────────────────────────────────
+ipcMain.handle('cloud:status', () => cloudSync.getStatus())
+
+ipcMain.handle('cloud:signIn', async (_, email, password) => {
+  try {
+    return { success: true, status: await cloudSync.signIn(email, password) }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('cloud:signOut', async () => ({ success: true, status: await cloudSync.signOut() }))
+
+ipcMain.handle('cloud:syncNow', async () => {
+  try {
+    return { success: true, status: await cloudSync.sync() }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
 })
 
 // ─── IPC: AI test ───────────────────────────────────────────────

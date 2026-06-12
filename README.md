@@ -50,10 +50,13 @@
 ---
 
 ### Mobile Companion
-- **Hiro Mobile** ([app/](app/)) — Expo React Native app that pairs with the desktop over your local network
+- **Hiro Mobile** ([app/](app/)) — Expo React Native app, connects either over your local network **or** via the cloud
 - **On-the-go dashboard** — stats, 7-day chart, status and platform breakdowns
 - **Manage applications** — search, filter, update statuses, and add notes from your phone
-- **Private by design** — the phone talks directly to the desktop app via a token-protected LAN API; no cloud involved
+- **Trigger a scan from your phone** — queue a scan (with optional keyword override); it runs on the desktop immediately, or the moment the desktop is next turned on. Requests are saved on the phone if the desktop is offline and delivered automatically when it's reachable
+- **Two ways to connect:**
+  - **Local network (default)** — the phone talks directly to the desktop via a token-protected LAN API; no cloud involved
+  - **Cloud sync (optional)** — sign in to a Supabase account on both desktop and phone to mirror applications to the cloud, so the phone works from anywhere. Your local database stays the source of truth. See [supabase/SETUP.md](supabase/SETUP.md)
 
 ---
 
@@ -168,3 +171,5 @@ All AI features (match scoring, resume tailoring, cover letter, interview questi
 ## Data & Privacy
 
 All data (config, database, session files) is stored **locally** on your machine under `~/.hiro/`. Nothing is sent to any server except the AI API you configure and the job platforms you log into.
+
+If you opt in to **Cloud Sync**, your applications are also mirrored to **your own** Supabase project (which you create and control). Row Level Security restricts the data to your account. Cloud sync is off until you sign in.

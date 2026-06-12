@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
-import { View, Text, ScrollView, RefreshControl, StyleSheet } from 'react-native'
+import { View, Text, ScrollView, RefreshControl, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator } from 'react-native'
 import { colors, radius, statusColors } from '../theme'
+import { enqueue, flush, getPending } from '../scanQueue'
 
 export default function DashboardScreen({ client }) {
   const [stats, setStats] = useState(null)
@@ -8,16 +9,45 @@ export default function DashboardScreen({ client }) {
   const [error, setError] = useState('')
   const [refreshing, setRefreshing] = useState(false)
 
+  const [keywords, setKeywords] = useState('')
+  const [scanStatus, setScanStatus] = useState(null)
+  const [scanBusy, setScanBusy] = useState(false)
+  const [scanMsg, setScanMsg] = useState('')
+  const [pendingCount, setPendingCount] = useState(0)
+
   const load = useCallback(async () => {
     try {
       const [s, pd] = await Promise.all([client.getStats(), client.getPerDay(7)])
       setStats(s)
       setPerDay(pd)
       setError('')
+      if (client.canScan) {
+        // Desktop is reachable — deliver any scans queued while it was offline.
+        await flush(client)
+        try { setScanStatus(await client.getScanStatus()) } catch {}
+        setPendingCount((await getPending()).length)
+      }
     } catch (err) {
       setError(err.message)
     }
   }, [client])
+
+  async function onRunScan() {
+    setScanBusy(true)
+    setScanMsg('')
+    const req = { keywords: keywords.trim(), location: '', createdAt: new Date().toISOString() }
+    try {
+      const info = await client.requestScan({ keywords: req.keywords })
+      setScanStatus(info)
+      setScanMsg(info.running ? 'A scan is already running on the desktop — queued next.' : 'Scan queued — running on the desktop now.')
+    } catch {
+      await enqueue(req)
+      setPendingCount((await getPending()).length)
+      setScanMsg('Desktop offline — saved. It will run when the desktop is turned on.')
+    } finally {
+      setScanBusy(false)
+    }
+  }
 
   useEffect(() => { load() }, [load])
 
@@ -37,6 +67,33 @@ export default function DashboardScreen({ client }) {
     >
       <Text style={styles.title}>Dashboard</Text>
       {!!error && <Text style={styles.error}>{error}</Text>}
+
+      {/* Trigger a scan on the desktop (LAN connection only) */}
+      {client.canScan && (
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Run a scan</Text>
+        {scanStatus && (
+          <Text style={styles.muted}>
+            Desktop: {scanStatus.running ? 'scanning now…' : 'idle'}
+            {scanStatus.queued > 0 ? ` · ${scanStatus.queued} queued` : ''}
+            {scanStatus.lastScanAt ? ` · last ${new Date(scanStatus.lastScanAt).toLocaleString()}` : ''}
+          </Text>
+        )}
+        <TextInput
+          style={styles.input}
+          placeholder="Keywords (optional — blank uses desktop settings)"
+          placeholderTextColor={colors.textMuted}
+          value={keywords}
+          onChangeText={setKeywords}
+          autoCapitalize="none"
+        />
+        <TouchableOpacity style={[styles.scanBtn, scanBusy && { opacity: 0.6 }]} onPress={onRunScan} disabled={scanBusy}>
+          {scanBusy ? <ActivityIndicator color="#fff" /> : <Text style={styles.scanBtnText}>Run scan now</Text>}
+        </TouchableOpacity>
+        {pendingCount > 0 && <Text style={styles.pending}>{pendingCount} scan{pendingCount > 1 ? 's' : ''} waiting to send to the desktop</Text>}
+        {!!scanMsg && <Text style={styles.scanMsg}>{scanMsg}</Text>}
+      </View>
+      )}
 
       {stats && (
         <>
@@ -124,6 +181,17 @@ const styles = StyleSheet.create({
   },
   cardTitle: { fontSize: 14, fontWeight: '600', color: colors.text, marginBottom: 12 },
   muted: { color: colors.textMuted, fontSize: 13 },
+  input: {
+    backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, borderRadius: radius,
+    color: colors.text, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, marginTop: 10,
+  },
+  scanBtn: {
+    backgroundColor: colors.accent, borderRadius: radius, paddingVertical: 12,
+    alignItems: 'center', marginTop: 10,
+  },
+  scanBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  pending: { color: colors.yellow, fontSize: 12, marginTop: 10 },
+  scanMsg: { color: colors.textMuted, fontSize: 12, marginTop: 8 },
   chart: { gap: 8 },
   chartRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   chartLabel: { width: 42, fontSize: 11, color: colors.textMuted },

@@ -3,6 +3,7 @@ import { View, Text, TouchableOpacity, StyleSheet, SafeAreaView, Platform } from
 import { StatusBar } from 'expo-status-bar'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { HiroClient } from './src/api'
+import { supabase, CloudClient } from './src/supabase'
 import { colors } from './src/theme'
 import ConnectScreen from './src/screens/ConnectScreen'
 import DashboardScreen from './src/screens/DashboardScreen'
@@ -22,26 +23,48 @@ export default function App() {
   const [tab, setTab] = useState('dashboard')
 
   useEffect(() => {
-    AsyncStorage.getItem(STORAGE_KEY)
-      .then(raw => setConnection(raw ? JSON.parse(raw) : null))
-      .catch(() => setConnection(null))
+    (async () => {
+      // A live Supabase session (cloud mode) takes priority and works anywhere.
+      if (supabase) {
+        const { data } = await supabase.auth.getSession()
+        if (data?.session?.user) {
+          setConnection({ mode: 'cloud', userId: data.session.user.id, email: data.session.user.email })
+          return
+        }
+      }
+      try {
+        const raw = await AsyncStorage.getItem(STORAGE_KEY)
+        setConnection(raw ? JSON.parse(raw) : null)
+      } catch {
+        setConnection(null)
+      }
+    })()
   }, [])
 
-  const client = useMemo(
-    () => (connection ? new HiroClient(connection) : null),
-    [connection]
-  )
+  const client = useMemo(() => {
+    if (!connection) return null
+    if (connection.mode === 'cloud') return new CloudClient(connection.userId)
+    return new HiroClient(connection)
+  }, [connection])
 
   const handleConnected = useCallback(async (conn) => {
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(conn))
+    // Cloud sessions persist via Supabase; only LAN connections need storing.
+    if (conn.mode === 'cloud') {
+      await AsyncStorage.removeItem(STORAGE_KEY)
+    } else {
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(conn))
+    }
     setConnection(conn)
     setTab('dashboard')
   }, [])
 
   const handleDisconnect = useCallback(async () => {
+    if (connection?.mode === 'cloud' && supabase) {
+      await supabase.auth.signOut()
+    }
     await AsyncStorage.removeItem(STORAGE_KEY)
     setConnection(null)
-  }, [])
+  }, [connection])
 
   if (connection === undefined) {
     return <View style={styles.root} />

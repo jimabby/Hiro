@@ -109,6 +109,12 @@ contextBridge.exposeInMainWorld('api', {
   setMobileEnabled: (enabled) => ipcRenderer.invoke('mobile:setEnabled', enabled),
   regenerateMobileToken: () => ipcRenderer.invoke('mobile:regenerateToken'),
 
+  // Cloud sync (Supabase)
+  cloudStatus: () => ipcRenderer.invoke('cloud:status'),
+  cloudSignIn: (email, password) => ipcRenderer.invoke('cloud:signIn', email, password),
+  cloudSignOut: () => ipcRenderer.invoke('cloud:signOut'),
+  cloudSyncNow: () => ipcRenderer.invoke('cloud:syncNow'),
+
   // Gmail sign-in & inbox
   gmailStatus: () => ipcRenderer.invoke('gmail:status'),
   gmailLogin: (email) => ipcRenderer.invoke('gmail:login', email),

@@ -6,6 +6,7 @@ export class HiroClient {
   constructor({ host, port, token }) {
     this.baseUrl = `http://${host}:${port}`
     this.token = token
+    this.canScan = true // LAN client can reach the desktop to trigger scans
   }
 
   async request(path, options = {}) {
@@ -62,4 +63,11 @@ export class HiroClient {
 
   getAttention() { return this.request('/api/attention') }
   getPerDay(days = 7) { return this.request(`/api/perday?days=${days}`) }
+
+  // Queue a scan on the desktop. `opts` may include { keywords, location } to
+  // override the desktop's saved search for this run.
+  requestScan(opts = {}) {
+    return this.request('/api/scan', { method: 'POST', body: JSON.stringify(opts) })
+  }
+  getScanStatus() { return this.request('/api/scan/status') }
 }

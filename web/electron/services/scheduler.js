@@ -4,6 +4,7 @@ const database = require('./database')
 const emailService = require('./email')
 const applicator = require('./applicator')
 const webhooks = require('./webhooks')
+const cloudSync = require('./cloudSync')
 
 let scanTask = null
 let reportTask = null
@@ -18,6 +19,8 @@ let batchSchedule = [] // today's planned batch times for UI
 function init(mainWindow) {
   win = mainWindow
   startTasks()
+  // Drain any scans queued (e.g. from the mobile app) while the desktop was off.
+  processQueue()
 }
 
 function startTasks() {
@@ -150,6 +153,7 @@ async function runBatch(batchSize) {
     log('Batch complete.')
     notify({ type: 'scan-complete' })
     webhooks.send('scan-complete', { message: `Batch of ${batchSize} complete` }).catch(() => {})
+    cloudSync.sync().catch(() => {})
   }
 }
 
@@ -184,7 +188,46 @@ async function runNow(mainWindow) {
   await runScan()
 }
 
-async function runScan() {
+// Queue a scan request (e.g. from the mobile companion app). The request is
+// persisted to config so it survives a desktop restart, then run as soon as the
+// desktop is idle. `opts` may carry { keywords, location } to override the
+// saved search for this run, and `source` for logging.
+function requestScan(opts = {}) {
+  const cfg = configService.load()
+  const req = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    createdAt: new Date().toISOString(),
+    keywords: (opts.keywords || '').trim(),
+    location: (opts.location || '').trim(),
+    source: opts.source || 'desktop',
+  }
+  const pending = Array.isArray(cfg.pendingScans) ? cfg.pendingScans : []
+  pending.push(req)
+  configService.save({ ...cfg, pendingScans: pending })
+  log(`Scan request queued from ${req.source}${req.keywords ? ` (keywords: ${req.keywords})` : ''}`)
+  processQueue()
+  return req
+}
+
+// Run queued scan requests one at a time until the queue is empty.
+async function processQueue() {
+  if (running) return
+  const cfg = configService.load()
+  const pending = Array.isArray(cfg.pendingScans) ? cfg.pendingScans : []
+  if (pending.length === 0) return
+
+  const req = pending[0]
+  await runScan({ keywords: req.keywords, location: req.location })
+
+  // Remove the processed request (reload in case config changed during the run).
+  const after = configService.load()
+  after.pendingScans = (after.pendingScans || []).filter(r => r.id !== req.id)
+  configService.save(after)
+
+  if ((after.pendingScans || []).length > 0) processQueue()
+}
+
+async function runScan(overrides = {}) {
   if (running) return
   running = true
   log('Starting job scan...')
@@ -195,14 +238,32 @@ async function runScan() {
       log('Setup not complete. Skipping scan.')
       return
     }
-    await applicator.run({ ...cfg, askQuestion: makeAskQuestion() }, { log, notifyAttention })
+    const runCfg = { ...cfg, askQuestion: makeAskQuestion() }
+    if (overrides.keywords) runCfg.jobKeywords = overrides.keywords
+    if (overrides.location) runCfg.jobLocation = overrides.location
+    await applicator.run(runCfg, { log, notifyAttention })
   } catch (err) {
     log(`Scan error: ${err.message}`)
   } finally {
     running = false
+    try {
+      const c = configService.load()
+      configService.save({ ...c, lastScanAt: new Date().toISOString() })
+    } catch {}
     log('Scan complete.')
     notify({ type: 'scan-complete' })
     webhooks.send('scan-complete', { message: 'Full scan complete' }).catch(() => {})
+    cloudSync.sync().catch(() => {})
+  }
+}
+
+function getScanInfo() {
+  const cfg = configService.load()
+  return {
+    running,
+    queued: (cfg.pendingScans || []).length,
+    lastScanAt: cfg.lastScanAt || null,
+    batchSchedule,
   }
 }
 
@@ -299,4 +360,4 @@ function getBatchSchedule() {
   return batchSchedule
 }
 
-module.exports = { init, restart, stop, cancelScan, runNow, runInboxCheck, getStatus, getBatchSchedule }
+module.exports = { init, restart, stop, cancelScan, runNow, requestScan, processQueue, getScanInfo, runInboxCheck, getStatus, getBatchSchedule }

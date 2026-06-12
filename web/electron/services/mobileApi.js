@@ -3,6 +3,7 @@ const os = require('os')
 const crypto = require('crypto')
 const configService = require('./config')
 const database = require('./database')
+const scheduler = require('./scheduler')
 
 // LAN HTTP API for the Hiro mobile companion app (app/ in this repo).
 // All data stays on this machine — the phone connects directly over the
@@ -133,6 +134,22 @@ async function handle(req, res) {
       const body = await readBody(req)
       database.updateApplicationComment(Number(commentMatch[1]), String(body.comment || ''))
       return json(res, 200, { success: true })
+    }
+
+    // Queue a scan to run on the desktop. Runs immediately if idle, otherwise
+    // as soon as the desktop is free (or on next launch if it's restarted).
+    if (req.method === 'POST' && path === '/api/scan') {
+      const body = await readBody(req)
+      const queued = scheduler.requestScan({
+        keywords: typeof body.keywords === 'string' ? body.keywords : '',
+        location: typeof body.location === 'string' ? body.location : '',
+        source: 'mobile',
+      })
+      return json(res, 200, { queued: true, id: queued.id, ...scheduler.getScanInfo() })
+    }
+
+    if (req.method === 'GET' && path === '/api/scan/status') {
+      return json(res, 200, scheduler.getScanInfo())
     }
 
     if (req.method === 'GET' && path === '/api/attention') {
