@@ -5,6 +5,7 @@ const emailService = require('./email')
 const applicator = require('./applicator')
 const webhooks = require('./webhooks')
 const cloudSync = require('./cloudSync')
+const logger = require('./logger')
 
 let scanTask = null
 let reportTask = null
@@ -36,8 +37,9 @@ function startTasks() {
     scanTask = cron.schedule(`${m} ${h} * * 1-5`, async () => { await runScan() })
   }
 
-  // Daily report at 6pm
-  reportTask = cron.schedule('0 18 * * 1-5', async () => {
+  // Daily report at the configured time (default 6pm), Mon–Fri
+  const [rh, rm] = (cfg.dailyReportTime || '18:00').split(':').map(Number)
+  reportTask = cron.schedule(`${rm} ${rh} * * 1-5`, async () => {
     await runDailyReport()
   })
 
@@ -189,6 +191,13 @@ async function runNow(mainWindow) {
   await runScan()
 }
 
+// Test scan: scores and tailors every found job but never submits or writes to
+// the database. Useful for tuning the match threshold safely.
+async function runDryRun(mainWindow) {
+  win = mainWindow
+  await runScan({ dryRun: true })
+}
+
 // Queue a scan request (e.g. from the mobile companion app). The request is
 // persisted to config so it survives a desktop restart, then run as soon as the
 // desktop is idle. `opts` may carry { keywords, location } to override the
@@ -231,7 +240,8 @@ async function processQueue() {
 async function runScan(overrides = {}) {
   if (running) return
   running = true
-  log('Starting job scan...')
+  const dryRun = !!overrides.dryRun
+  log(dryRun ? 'Starting test scan (dry run — nothing will be submitted)...' : 'Starting job scan...')
 
   try {
     const cfg = configService.load()
@@ -242,23 +252,29 @@ async function runScan(overrides = {}) {
     const runCfg = { ...cfg, askQuestion: makeAskQuestion() }
     if (overrides.keywords) runCfg.jobKeywords = overrides.keywords
     if (overrides.location) runCfg.jobLocation = overrides.location
+    if (dryRun) runCfg.dryRun = true
     await applicator.run(runCfg, { log, notifyAttention })
   } catch (err) {
     log(`Scan error: ${err.message}`)
   } finally {
     running = false
-    try {
-      const c = configService.load()
-      configService.save({ ...c, lastScanAt: new Date().toISOString() })
-    } catch {}
-    log('Scan complete.')
+    // A dry run changes nothing — don't touch lastScanAt, sync, or the queue.
+    if (!dryRun) {
+      try {
+        const c = configService.load()
+        configService.save({ ...c, lastScanAt: new Date().toISOString() })
+      } catch {}
+    }
+    log(dryRun ? 'Test scan complete (dry run — nothing was submitted).' : 'Scan complete.')
     notify({ type: 'scan-complete' })
-    webhooks.send('scan-complete', { message: 'Full scan complete' }).catch(() => {})
-    cloudSync.sync().catch(() => {})
-    // Drain scans queued (e.g. from the phone) while this scan was running.
-    // Queue-initiated runs skip this: processQueue continues itself after
-    // removing the finished request, and re-entering here would run it twice.
-    if (!overrides.fromQueue) setImmediate(() => { processQueue() })
+    if (!dryRun) {
+      webhooks.send('scan-complete', { message: 'Full scan complete' }).catch(() => {})
+      cloudSync.sync().catch(() => {})
+      // Drain scans queued (e.g. from the phone) while this scan was running.
+      // Queue-initiated runs skip this: processQueue continues itself after
+      // removing the finished request, and re-entering here would run it twice.
+      if (!overrides.fromQueue) setImmediate(() => { processQueue() })
+    }
   }
 }
 
@@ -346,6 +362,7 @@ function notifyAttention(job) {
 }
 
 function log(msg) {
+  logger.append(msg) // persist for after-the-fact diagnosis
   if (win && !win.isDestroyed()) {
     win.webContents.send('automation:log', `[${new Date().toLocaleTimeString()}] ${msg}`)
   }
@@ -365,4 +382,4 @@ function getBatchSchedule() {
   return batchSchedule
 }
 
-module.exports = { init, restart, stop, cancelScan, runNow, requestScan, processQueue, getScanInfo, runInboxCheck, getStatus, getBatchSchedule }
+module.exports = { init, restart, stop, cancelScan, runNow, runDryRun, requestScan, processQueue, getScanInfo, runInboxCheck, getStatus, getBatchSchedule }

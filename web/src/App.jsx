@@ -33,6 +33,7 @@ export default function App() {
   const [resumeUploading, setResumeUploading] = useState(false)
   const [question, setQuestion] = useState(null)
   const [questionAnswer, setQuestionAnswer] = useState('')
+  const [scanMode, setScanMode] = useState('real') // 'real' | 'dry' — used by the resume-required flow
 
   const showToast = useCallback((msg, type = 'info') => {
     setToast({ msg, type })
@@ -45,6 +46,11 @@ export default function App() {
     window.api.getStats().then(s => {
       setAttentionCount(s.attentionCount || 0)
       setTodayCount(s.totalToday || 0)
+    })
+
+    // Seed the activity log from the persisted file so it survives a restart.
+    window.api.getRecentLogs?.().then(lines => {
+      if (Array.isArray(lines) && lines.length) setLogs(lines)
     })
 
     window.api.onNotification((data) => {
@@ -100,15 +106,22 @@ export default function App() {
     return <Setup onComplete={() => setSetupDone(true)} />
   }
 
-  async function handleScanStart() {
+  async function beginScan(mode = 'real') {
     const cfg = await window.api.getConfig()
     const hasResume = (cfg.resumes || []).length > 0 || cfg.masterResume
     if (!hasResume) {
+      setScanMode(mode)
       setResumeModal(true)
       return
     }
     setScanRunning(true)
-    window.api.startAutomation()
+    if (mode === 'dry') window.api.startDryRun()
+    else window.api.startAutomation()
+  }
+
+  function handleClearLogs() {
+    window.api.clearLogs?.()
+    setLogs([])
   }
 
   async function handleResumeUpload() {
@@ -123,11 +136,12 @@ export default function App() {
     await window.api.saveConfig({ ...cfg, resumes, defaultResumeId: cfg.defaultResumeId || id })
     setResumeModal(false)
     setScanRunning(true)
-    window.api.startAutomation()
+    if (scanMode === 'dry') window.api.startDryRun()
+    else window.api.startAutomation()
   }
 
   const pages = {
-    dashboard: <Dashboard logs={logs} scanRunning={scanRunning} onScanStart={handleScanStart} showToast={showToast} />,
+    dashboard: <Dashboard logs={logs} scanRunning={scanRunning} onScanStart={() => beginScan('real')} onDryRun={() => beginScan('dry')} onClearLogs={handleClearLogs} showToast={showToast} />,
     attention: <NeedsAttention onCountChange={setAttentionCount} showToast={showToast} />,
     timeline: <Timeline />,
     analytics: <Analytics />,

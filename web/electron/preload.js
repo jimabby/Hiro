@@ -9,8 +9,14 @@ contextBridge.exposeInMainWorld('api', {
 
   // Automation
   startAutomation: () => ipcRenderer.invoke('automation:start'),
+  startDryRun: () => ipcRenderer.invoke('automation:dryRun'),
   stopAutomation: () => ipcRenderer.invoke('automation:stop'),
   getAutomationStatus: () => ipcRenderer.invoke('automation:status'),
+
+  // Persistent activity log
+  getRecentLogs: () => ipcRenderer.invoke('logs:getRecent'),
+  clearLogs: () => ipcRenderer.invoke('logs:clear'),
+  openLogFile: () => ipcRenderer.invoke('logs:openFile'),
 
   // Applications history
   getApplications: (filters) => ipcRenderer.invoke('db:getApplications', filters),

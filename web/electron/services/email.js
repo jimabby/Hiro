@@ -65,7 +65,7 @@ async function sendNewJobAlert(job) {
   await transport.sendMail({
     from: cfg.gmailAddress,
     to: cfg.gmailAddress,
-    subject: `[AutoApply] New Job: ${job.job_title} at ${job.company}`,
+    subject: `[Hiro] New Job: ${job.job_title} at ${job.company}`,
     html,
   })
 }
@@ -83,7 +83,7 @@ async function sendDailyReport(stats) {
     .join('')
 
   const html = `
-    <h2>AutoApply Daily Report — ${new Date().toLocaleDateString()}</h2>
+    <h2>Hiro Daily Report — ${new Date().toLocaleDateString()}</h2>
     <h3>Summary</h3>
     <table>
       <tr><td><b>Applied Today</b></td><td>${stats.totalToday}</td></tr>
@@ -104,7 +104,7 @@ async function sendDailyReport(stats) {
   await transport.sendMail({
     from: cfg.gmailAddress,
     to: cfg.gmailAddress,
-    subject: `[AutoApply] Daily Report — ${stats.totalToday} applications today`,
+    subject: `[Hiro] Daily Report — ${stats.totalToday} applications today`,
     html,
   })
 }

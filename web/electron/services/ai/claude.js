@@ -242,4 +242,24 @@ ${resumeText}`,
   return response.content[0].text
 }
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail }
+// Classify a recruiter's reply into an application status. Returns one of
+// 'interview' | 'rejected' | 'offer' | 'pending'.
+async function classifyReply(subject, body, company, apiKey) {
+  const client = new Anthropic({ apiKey })
+  const response = await client.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 10,
+    messages: [{ role: 'user', content: `Classify this reply to a job application at "${company}" into exactly one label:
+- interview: invites/schedules an interview, phone screen, or call
+- offer: extends a job offer
+- rejected: declines the candidate / position filled / unsuccessful
+- pending: a reply was received but the outcome is unclear (acknowledgements, requests for info)
+Reply with ONLY the single lowercase label.
+
+SUBJECT: ${(subject || '').slice(0, 200)}
+BODY: ${(body || '').slice(0, 1500)}` }],
+  })
+  return (response.content[0].text || '').trim().toLowerCase()
+}
+
+module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply }

@@ -102,7 +102,6 @@ export class CloudClient {
     const weekAgo = today - 6 * 86400000
     const counted = apps.filter(a => a.status !== 'skipped')
     const interviews = apps.filter(a => a.status === 'interview').length
-    const responded = apps.filter(a => ['interview', 'offer', 'rejected'].includes(a.status)).length
 
     const byStatus = {}
     const byPlatform = {}
@@ -117,7 +116,8 @@ export class CloudClient {
       totalThisWeek: apps.filter(a => appliedTime(a) >= weekAgo).length,
       totalAllTime: apps.length,
       interviews,
-      responseRate: counted.length ? Math.round((responded / counted.length) * 100) : 0,
+      // Match the desktop's definition (interviews ÷ non-skipped) so both agree.
+      responseRate: counted.length ? Math.round((interviews / counted.length) * 100) : 0,
       attentionCount: 0,
       byStatus: Object.entries(byStatus).map(([status, count]) => ({ status, count })),
       byPlatform: Object.entries(byPlatform).map(([platform, count]) => ({ platform, count })),

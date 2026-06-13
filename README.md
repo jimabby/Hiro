@@ -20,7 +20,8 @@
 ### Scheduling
 - **Configurable scan time** — set a daily scan time (Mon–Fri) in Settings
 - **Auto follow-up emails** — after a configurable number of days, AI drafts and sends a follow-up for unanswered applications
-- **Daily email report** — summary of applications sent to your Gmail at 6pm
+- **Daily email report** — summary of applications sent to your Gmail at a configurable time
+- **Inbox reply detection** — periodically scans your inbox for recruiter replies and updates each application's status (Interview / Offer / Rejected / Pending), using AI to read the email body when an AI provider is configured
 
 ### Dashboard
 - **Stats** — applications today, this week, all time, interviews, and response rate
@@ -29,6 +30,8 @@
 - **Export CSV** — download all applications (respects active filters)
 - **Inline comments** — add notes to any application directly in the table
 - **Filterable table** — filter by status and platform
+- **Test Scan (dry run)** — scores and tailors every found job but never submits or saves anything, so you can tune the match threshold safely
+- **Persistent activity log** — scan and apply activity is written to a log file (`~/.hiro/logs/hiro.log`) that survives restarts; view recent entries, open the full file, or clear it from the dashboard
 
 ### Job Detail Panel
 - **Match explanation** — one-sentence AI summary of why the job scored the way it did

@@ -24,6 +24,7 @@ async function run(cfg, { log, notifyAttention }) {
   if (cfg.enableLinkedIn) scrapers.push({ name: 'LinkedIn', scraper: linkedin, limit: cfg.dailyLimitLinkedIn })
 
   let batchCount = 0
+  let dryWouldApply = 0
   const batchLimit = cfg.batchLimit || Infinity // smart scheduling passes a finite limit
 
   for (const { name, scraper, limit } of scrapers) {
@@ -31,8 +32,9 @@ async function run(cfg, { log, notifyAttention }) {
 
     log(`Scanning ${name}...`)
 
+    // Dry run ignores daily limits so every found job gets scored for tuning.
     const todayCount = database.getTodayCountByPlatform(name)
-    if (todayCount >= limit) {
+    if (!cfg.dryRun && todayCount >= limit) {
       log(`${name}: daily limit reached (${todayCount}/${limit}). Skipping.`)
       continue
     }
@@ -53,7 +55,7 @@ async function run(cfg, { log, notifyAttention }) {
       if (cancelled || batchCount >= batchLimit) { if (cancelled) log('Scan cancelled.'); return }
 
       const currentCount = database.getTodayCountByPlatform(name)
-      if (currentCount >= limit) break
+      if (!cfg.dryRun && currentCount >= limit) break
 
       // Skip already-seen jobs (applied or skipped)
       if (database.hasJobUrl(job.job_url)) continue
@@ -99,6 +101,24 @@ async function run(cfg, { log, notifyAttention }) {
 
       job.match_score = matchScore
       job.match_explanation = matchExplanation
+
+      // Dry run: report the score and whether it would apply, optionally verify
+      // tailoring, then move on without submitting or writing to the database.
+      if (cfg.dryRun) {
+        const pass = matchScore >= cfg.matchThreshold
+        log(`  DRY RUN — ${pass ? 'WOULD APPLY' : 'would skip'}: score ${matchScore}% (threshold ${cfg.matchThreshold}%)`)
+        if (pass) {
+          dryWouldApply++
+          try {
+            await aiAdapter.tailorResume(cfg.aiProvider, cfg.aiApiKey, jobDescription, cfg.masterResume, cfg.geminiModel)
+            log('    resume tailored OK (not submitted)')
+          } catch (err) {
+            log(`    tailoring error: ${err.message}`)
+          }
+        }
+        await randomDelay(800, 2000)
+        continue
+      }
 
       // Below threshold — save as skipped so user can still view it
       if (matchScore < cfg.matchThreshold) {
@@ -183,6 +203,10 @@ async function run(cfg, { log, notifyAttention }) {
 
       await randomDelay(cfg.batchLimit ? 8000 : 5000, cfg.batchLimit ? 20000 : 12000)
     }
+  }
+
+  if (cfg.dryRun) {
+    log(`Dry run summary: ${dryWouldApply} job${dryWouldApply === 1 ? '' : 's'} would have been applied to at the ${cfg.matchThreshold}% threshold.`)
   }
 }
 

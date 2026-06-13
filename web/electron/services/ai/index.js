@@ -85,4 +85,8 @@ async function generateFollowUpEmail(provider, apiKey, jobTitle, company, master
   return getAdapter(provider).generateFollowUpEmail(jobTitle, company, masterResume, apiKey, modelFor(provider, geminiModel))
 }
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail }
+async function classifyReply(provider, apiKey, subject, body, company, geminiModel) {
+  return getAdapter(provider).classifyReply(subject, body, company, apiKey, modelFor(provider, geminiModel))
+}
+
+module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply }

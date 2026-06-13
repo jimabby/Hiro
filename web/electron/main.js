@@ -12,6 +12,7 @@ const applicator = require('./services/applicator')
 const gmailAuth = require('./services/gmailAuth')
 const mobileApi = require('./services/mobileApi')
 const cloudSync = require('./services/cloudSync')
+const logger = require('./services/logger')
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
@@ -148,7 +149,25 @@ ipcMain.handle('automation:stop', () => {
   return { success: true }
 })
 
+// Test scan — scores/tailors every found job but never submits or saves.
+ipcMain.handle('automation:dryRun', () => {
+  scheduler.runDryRun(mainWindow)
+  return { success: true }
+})
+
 ipcMain.handle('automation:status', () => scheduler.getStatus())
+
+// ─── IPC: Activity log (persistent) ─────────────────────────────
+ipcMain.handle('logs:getRecent', () => logger.tail(500))
+ipcMain.handle('logs:clear', () => logger.clear())
+ipcMain.handle('logs:openFile', async () => {
+  try {
+    await shell.openPath(logger.getPath())
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
 
 // ─── IPC: LinkedIn ──────────────────────────────────────────────
 ipcMain.handle('linkedin:status', () => ({ loggedIn: linkedinSession.hasCookies() }))
@@ -534,6 +553,7 @@ ipcMain.handle('application:applySkipped', async (_, jobId) => {
   try {
     const cfg = { ...configService.load(), askQuestion: makeAskQuestion(mainWindow) }
     const result = await applicator.applySkippedJob(jobId, cfg, (msg) => {
+      logger.append(`[skipped-apply] ${msg}`)
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('skipped:apply-log', msg)
       }
@@ -548,6 +568,7 @@ ipcMain.handle('attention:apply', async (_, jobId) => {
   try {
     const cfg = { ...configService.load(), askQuestion: makeAskQuestion(mainWindow) }
     const result = await applicator.applyAttentionJob(jobId, cfg, (msg) => {
+      logger.append(`[attention-apply] ${msg}`)
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('attention:log', msg)
       }

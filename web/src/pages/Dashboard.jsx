@@ -151,7 +151,7 @@ function InterviewPrepPanel({ questions, applicationId, jobDescription }) {
   )
 }
 
-export default function Dashboard({ logs, scanRunning, onScanStart, showToast }) {
+export default function Dashboard({ logs, scanRunning, onScanStart, onDryRun, onClearLogs, showToast }) {
   const [stats, setStats] = useState(null)
   const [apps, setApps] = useState([])
   const [selected, setSelected] = useState(null)
@@ -402,6 +402,10 @@ export default function Dashboard({ logs, scanRunning, onScanStart, showToast })
               Stop Scan
             </button>
           )}
+          <button className="btn btn-ghost" onClick={onDryRun} disabled={scanRunning}
+            title="Score and tailor every found job without submitting — useful for tuning the match threshold">
+            Test Scan
+          </button>
           <button className="btn btn-primary" onClick={onScanStart} disabled={scanRunning}>
             {scanRunning ? 'Scanning...' : 'Run Scan Now'}
           </button>
@@ -450,8 +454,13 @@ export default function Dashboard({ logs, scanRunning, onScanStart, showToast })
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{logs.length} entries</span>
               <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }}
-                onClick={() => { /* logs are managed by parent — we just signal no interest */ setLogCollapsed(true) }}>
-                Hide
+                onClick={() => window.api.openLogFile?.()}
+                title="Open the full persistent log file (survives restarts)">
+                Open file
+              </button>
+              <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px', color: 'var(--red)' }}
+                onClick={() => { if (window.confirm('Clear the activity log? This deletes the saved log file too.')) onClearLogs?.() }}>
+                Clear
               </button>
             </div>
           </div>

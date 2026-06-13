@@ -495,6 +495,10 @@ export default function Settings({ showToast }) {
             <label>Daily Scan Time (Mon–Fri)</label>
             <input type="time" value={form.scheduledScanTime || '09:00'} onChange={e => set('scheduledScanTime', e.target.value)} />
           </div>
+          <div className="form-group">
+            <label>Daily Report Time (Mon–Fri)</label>
+            <input type="time" value={form.dailyReportTime || '18:00'} onChange={e => set('dailyReportTime', e.target.value)} />
+          </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: 0 }}>

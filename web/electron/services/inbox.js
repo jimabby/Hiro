@@ -1,6 +1,33 @@
 const { ImapFlow } = require('imapflow')
 const configService = require('./config')
 const database = require('./database')
+const aiAdapter = require('./ai/index')
+
+const REPLY_STATUSES = ['interview', 'rejected', 'offer', 'pending']
+
+// Download a matched message's text body and reduce it to a plain snippet the
+// AI classifier can read. Best-effort — returns '' if the body can't be fetched.
+async function fetchBodySnippet(client, uid) {
+  try {
+    const msg = await client.fetchOne(uid, { bodyParts: ['1', '1.1', 'text'] }, { uid: true })
+    if (!msg || !msg.bodyParts) return ''
+    let raw = ''
+    for (const key of ['1', '1.1', 'text']) {
+      const part = msg.bodyParts.get(key)
+      if (part) { raw = part.toString('utf8'); break }
+    }
+    return raw
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 1500)
+  } catch {
+    return ''
+  }
+}
 
 // Keyword-based reply classifier (no AI needed — fast and reliable)
 function classifySubject(subject) {
@@ -84,6 +111,7 @@ async function checkInbox() {
             from,
             subject: msg.envelope.subject || '',
             date: msg.envelope.date,
+            uid: msg.uid,
           })
           checked++
         }
@@ -119,7 +147,22 @@ async function checkInbox() {
           })
 
           if (match) {
-            const newStatus = classifySubject(match.subject)
+            // Keyword guess on the subject is the fast baseline. When AI is
+            // configured, read the email body to refine it (and catch 'offer',
+            // which the keyword classifier can't detect). Any failure keeps the
+            // baseline, so a flaky AI call never breaks the inbox check.
+            let newStatus = classifySubject(match.subject)
+            if (cfg.aiProvider && cfg.aiApiKey) {
+              try {
+                const body = await fetchBodySnippet(client, match.uid)
+                const aiStatus = (await aiAdapter.classifyReply(
+                  cfg.aiProvider, cfg.aiApiKey, match.subject, body, app.company, cfg.geminiModel
+                )) || ''
+                // Tolerate stray punctuation / wrapper text around the label.
+                const matched = REPLY_STATUSES.find(s => aiStatus.includes(s))
+                if (matched) newStatus = matched
+              } catch { /* keep keyword result */ }
+            }
             database.updateApplicationStatus(app.id, newStatus)
             updated.push({
               id: app.id,

@@ -371,8 +371,10 @@ function getWeeklyReportData() {
   const applied = totalApps - (byStatus.skipped || 0)
 
   return {
-    dateFrom: monday.toISOString().split('T')[0],
-    dateTo: sunday.toISOString().split('T')[0],
+    // Label the range in local time too — toISOString() is UTC and would shift
+    // the displayed dates back a day in UTC+ timezones (same bug the query avoids).
+    dateFrom: localDate(monday),
+    dateTo: localDate(sunday),
     totalApps,
     byPlatform,
     byStatus,

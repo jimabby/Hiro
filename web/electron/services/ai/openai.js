@@ -254,4 +254,26 @@ ${resumeText}`,
   return response.choices[0].message.content
 }
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail }
+// Classify a recruiter's reply into an application status. Returns one of
+// 'interview' | 'rejected' | 'offer' | 'pending' (pending = reply received but
+// outcome unclear). Used by the inbox checker to refine the keyword guess.
+async function classifyReply(subject, body, company, apiKey, baseURL) {
+  const client = getClient(apiKey, baseURL)
+  const model = baseURL ? 'deepseek-chat' : 'gpt-4o-mini'
+  const response = await client.chat.completions.create({
+    model,
+    max_tokens: 10,
+    messages: [{ role: 'user', content: `Classify this reply to a job application at "${company}" into exactly one label:
+- interview: invites/schedules an interview, phone screen, or call
+- offer: extends a job offer
+- rejected: declines the candidate / position filled / unsuccessful
+- pending: a reply was received but the outcome is unclear (acknowledgements, requests for info)
+Reply with ONLY the single lowercase label.
+
+SUBJECT: ${(subject || '').slice(0, 200)}
+BODY: ${(body || '').slice(0, 1500)}` }],
+  })
+  return (response.choices[0].message.content || '').trim().toLowerCase()
+}
+
+module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply }

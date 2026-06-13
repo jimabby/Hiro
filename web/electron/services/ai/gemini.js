@@ -187,4 +187,20 @@ ${resumeText}` }] }],
   return result.response.text()
 }
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail }
+// Classify a recruiter's reply into an application status. Returns one of
+// 'interview' | 'rejected' | 'offer' | 'pending'.
+async function classifyReply(subject, body, company, apiKey, modelName) {
+  const model = getModel(apiKey, modelName)
+  const result = await model.generateContent(`Classify this reply to a job application at "${company}" into exactly one label:
+- interview: invites/schedules an interview, phone screen, or call
+- offer: extends a job offer
+- rejected: declines the candidate / position filled / unsuccessful
+- pending: a reply was received but the outcome is unclear (acknowledgements, requests for info)
+Reply with ONLY the single lowercase label.
+
+SUBJECT: ${(subject || '').slice(0, 200)}
+BODY: ${(body || '').slice(0, 1500)}`)
+  return (result.response.text() || '').trim().toLowerCase()
+}
+
+module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply }

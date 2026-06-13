@@ -64,6 +64,7 @@ const DEFAULTS = {
   coverLetterTone: 'professional',
   coverLetterTemplate: '',
   scheduledScanTime: '09:00',
+  dailyReportTime: '18:00',
   followUpDays: 7,
   enableFollowUp: false,
   enableInboxCheck: false,
