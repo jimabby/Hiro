@@ -25,6 +25,49 @@ async function humanType(_page, element, text) {
   }
 }
 
+// Each generated file gets its own temp directory so concurrent builders (an
+// apply flow plus a preview/download IPC) can't overwrite each other's output
+// before it's read — with a shared fixed path, a portal could receive another
+// job's resume. The human-readable file NAME is preserved because portals
+// show it to the recruiter.
+function uniqueTempPath(fileName) {
+  const os = require('os')
+  const fs = require('fs')
+  const path = require('path')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hiro-'))
+  return path.join(dir, fileName)
+}
+
+// After clicking a final submit button, look for signs the submission was NOT
+// accepted (visible validation error, CAPTCHA) — previously a mere click was
+// recorded as "applied" and the job skipped forever even if nothing went
+// through. Deliberately conservative: only fails on clear blockers, so a page
+// that simply navigated away still counts as submitted.
+async function verifySubmission(pageOrFrame) {
+  try {
+    const state = await pageOrFrame.evaluate(() => {
+      const text = (document.body?.innerText || '').toLowerCase()
+      const success = /application (sent|submitted|complete)|successfully applied|thanks for applying|application received|you('|’)ve applied|your application (was|has been) (sent|submitted)/.test(text)
+      const captcha = !!document.querySelector('iframe[src*="captcha"], iframe[src*="recaptcha"], iframe[title*="challenge"], #challenge-form, .g-recaptcha, [data-sitekey]')
+        || /verify you are human|unusual traffic|complete the security check/.test(text)
+      let error = false
+      const errorSel = '[role="alert"], [aria-live="assertive"], .error-message, [class*="errorMessage"], [id*="errorMessage"]'
+      for (const el of document.querySelectorAll(errorSel)) {
+        const style = window.getComputedStyle(el)
+        if (style.display !== 'none' && style.visibility !== 'hidden' && el.innerText.trim()) { error = true; break }
+      }
+      return { success, captcha, error }
+    })
+    if (state.captcha) return { ok: false, reason: 'A CAPTCHA / verification challenge appeared after submitting' }
+    if (state.error && !state.success) return { ok: false, reason: 'The form showed a validation error after submitting' }
+    return { ok: true }
+  } catch {
+    // Page/frame navigated away or closed — the submission almost certainly
+    // went through (post-submit pages commonly redirect).
+    return { ok: true }
+  }
+}
+
 function stripMarkdown(text) {
   return (text || '')
     .replace(/```[\s\S]*?```/g, '')            // code fences
@@ -49,7 +92,7 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
   const PDFDocument = require('pdfkit')
 
   const safeName = (candidateName || 'Resume').replace(/[^a-zA-Z0-9 _-]/g, '').trim()
-  const tempPath = path.join(os.tmpdir(), `Resume - ${safeName}.pdf`)
+  const tempPath = uniqueTempPath(`Resume - ${safeName}.pdf`)
   const text = stripMarkdown(tailoredResume || '')
     // Clean font-encoding artifacts from old DOCX imports
     .replace(/•(?=[A-Za-z0-9])/g, '')
@@ -353,7 +396,7 @@ async function buildCoverLetterPDF(text) {
   const path = require('path')
   const fs = require('fs')
   const PDFDocument = require('pdfkit')
-  const tempPath = path.join(os.tmpdir(), 'cover-letter.pdf')
+  const tempPath = uniqueTempPath('cover-letter.pdf')
 
   // Split on blank lines so paragraph spacing is controlled, not inflated by paragraphGap
   const paragraphs = (text || '').trim().split(/\n{2,}/).map(p => p.trim()).filter(Boolean)
@@ -506,7 +549,7 @@ async function buildResumeDocx(text) {
 
   const doc = new Document({ sections: [{ children: paragraphs }] })
   const buffer = await Packer.toBuffer(doc)
-  const tempPath = path.join(os.tmpdir(), `Resume-converted-${Date.now()}.docx`)
+  const tempPath = uniqueTempPath('Resume-converted.docx')
   require('fs').writeFileSync(tempPath, buffer)
   return tempPath
 }
@@ -564,7 +607,7 @@ async function tailorDocx(originalPath, tailoredText, candidateName) {
   }
 
   const safeName = (candidateName || 'Resume').replace(/[^a-zA-Z0-9 _-]/g, '').trim() || 'Resume'
-  const tempPath = path.join(os.tmpdir(), `Resume - ${safeName}.docx`)
+  const tempPath = uniqueTempPath(`Resume - ${safeName}.docx`)
   zip.updateFile('word/document.xml', Buffer.from(xml, 'utf8'))
 
   // Update DOCX title metadata so portals (Seek/Indeed) show the candidate name
@@ -610,7 +653,7 @@ async function buildAnalyticsReportPDF(data) {
   const fs = require('fs')
   const PDFDocument = require('pdfkit')
 
-  const tempPath = path.join(os.tmpdir(), `Hiro-Weekly-Report-${data.dateFrom}.pdf`)
+  const tempPath = uniqueTempPath(`Hiro-Weekly-Report-${data.dateFrom}.pdf`)
   const NAVY = '#1E3A5F', BLUE = '#2563EB', BODY = '#111827', GREY = '#6B7280'
   const ML = 54, MR = 54, CW = 595 - ML - MR
 
@@ -700,4 +743,4 @@ async function buildAnalyticsReportPDF(data) {
   })
 }
 
-module.exports = { randomUserAgent, randomDelay, humanType, stripMarkdown, buildResumePDF, buildResumeDocx, buildCoverLetterPDF, buildAnalyticsReportPDF, tailorDocx, buildResumeFile }
+module.exports = { randomUserAgent, randomDelay, humanType, stripMarkdown, verifySubmission, buildResumePDF, buildResumeDocx, buildCoverLetterPDF, buildAnalyticsReportPDF, tailorDocx, buildResumeFile }

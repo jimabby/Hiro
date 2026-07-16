@@ -17,14 +17,13 @@ function getToken() {
   const cfg = configService.load()
   if (cfg.mobileApiToken) return cfg.mobileApiToken
   const token = crypto.randomBytes(16).toString('hex')
-  configService.save({ ...cfg, mobileApiToken: token })
+  configService.update({ mobileApiToken: token })
   return token
 }
 
 function regenerateToken() {
-  const cfg = configService.load()
   const token = crypto.randomBytes(16).toString('hex')
-  configService.save({ ...cfg, mobileApiToken: token })
+  configService.update({ mobileApiToken: token })
   return token
 }
 
@@ -39,14 +38,13 @@ function getLanAddresses() {
   return addresses
 }
 
+// No CORS headers on purpose: the only client is the native mobile app, which
+// isn't subject to CORS. Omitting them means a malicious web page on the same
+// LAN can't read responses or send JSON POSTs from a browser — defense in
+// depth on top of the bearer token.
 function json(res, status, body) {
   const data = JSON.stringify(body)
-  res.writeHead(status, {
-    'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Authorization, Content-Type',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  })
+  res.writeHead(status, { 'Content-Type': 'application/json' })
   res.end(data)
 }
 
@@ -167,20 +165,28 @@ async function handle(req, res) {
   }
 }
 
+// Resolves once the server is actually listening (or failed), so callers and
+// the Settings UI don't see running:true for a port that was already taken.
 function start() {
   if (server) return getInfo()
   const cfg = configService.load()
   const port = cfg.mobileApiPort || 4823
   getToken() // ensure a token exists before the first client connects
 
-  server = http.createServer((req, res) => { handle(req, res) })
-  server.on('error', (err) => {
-    console.error('Mobile API server error:', err.message)
-    try { server?.close() } catch { /* already closed */ }
-    server = null
+  const srv = http.createServer((req, res) => { handle(req, res) })
+  server = srv
+  return new Promise((resolve) => {
+    let settled = false
+    srv.on('error', (err) => {
+      console.error('Mobile API server error:', err.message)
+      try { srv.close() } catch { /* already closed */ }
+      if (server === srv) server = null
+      if (!settled) { settled = true; resolve({ ...getInfo(), error: err.message }) }
+    })
+    srv.listen(port, '0.0.0.0', () => {
+      if (!settled) { settled = true; resolve(getInfo()) }
+    })
   })
-  server.listen(port, '0.0.0.0')
-  return getInfo()
 }
 
 function stop() {

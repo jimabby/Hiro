@@ -29,7 +29,7 @@ export default function NeedsAttention({ onCountChange, showToast }) {
     let result = jobs
     if (search) {
       const q = search.toLowerCase()
-      result = result.filter(j => j.job_title.toLowerCase().includes(q) || j.company.toLowerCase().includes(q))
+      result = result.filter(j => (j.job_title || '').toLowerCase().includes(q) || (j.company || '').toLowerCase().includes(q))
     }
     if (platformFilter) {
       result = result.filter(j => j.platform === platformFilter)
@@ -283,9 +283,9 @@ export default function NeedsAttention({ onCountChange, showToast }) {
             <div style={{ marginBottom: 16 }}>
               <label style={{ marginBottom: 10 }}>AI Talking Points</label>
               {(() => {
-                const points = Array.isArray(selected.talking_points)
-                  ? selected.talking_points
-                  : JSON.parse(selected.talking_points || '[]')
+                let points = []
+                if (Array.isArray(selected.talking_points)) points = selected.talking_points
+                else { try { points = JSON.parse(selected.talking_points || '[]') } catch { /* corrupt row — degrade to none */ } }
                 return points.map((p, i) => (
                   <div key={i} style={{
                     padding: '10px 14px', background: 'var(--surface2)',

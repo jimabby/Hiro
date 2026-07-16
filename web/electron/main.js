@@ -62,6 +62,10 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   await database.init()
+  // Rotating daily backup: once on launch, then re-checked periodically so
+  // long-running sessions still get one backup per day.
+  database.maybeBackup()
+  setInterval(() => database.maybeBackup(), 6 * 60 * 60 * 1000)
   createWindow()
   scheduler.init(mainWindow)
   if (configService.load().mobileApiEnabled) mobileApi.start()
@@ -139,7 +143,17 @@ ipcMain.handle('email:test', async (_, email, password) => {
 })
 
 // ─── IPC: Automation ────────────────────────────────────────────
+// Report un-startable states up front so the renderer can reset its spinner
+// (a fire-and-forget start that silently no-ops leaves "Scanning…" stuck).
+function scanStartBlocker() {
+  if (scheduler.getStatus().running || applicator.isBusy()) return 'A scan or apply is already running.'
+  if (!configService.load().setupComplete) return 'Complete setup before running a scan.'
+  return null
+}
+
 ipcMain.handle('automation:start', () => {
+  const blocked = scanStartBlocker()
+  if (blocked) return { success: false, error: blocked }
   scheduler.runNow(mainWindow)
   return { success: true }
 })
@@ -151,6 +165,8 @@ ipcMain.handle('automation:stop', () => {
 
 // Test scan — scores/tailors every found job but never submits or saves.
 ipcMain.handle('automation:dryRun', () => {
+  const blocked = scanStartBlocker()
+  if (blocked) return { success: false, error: blocked }
   scheduler.runDryRun(mainWindow)
   return { success: true }
 })
@@ -191,22 +207,9 @@ ipcMain.handle('linkedin:logout', () => {
 })
 
 // ─── Screening question helper ───────────────────────────────────
-function makeAskQuestion(win) {
-  return (question) => new Promise((resolve) => {
-    if (!win || win.isDestroyed()) return resolve('')
-    win.webContents.send('question:ask', question)
-    const handler = (_, answer) => {
-      clearTimeout(timeout)
-      resolve(answer || '')
-    }
-    // 5 min timeout — must also drop the listener, or it swallows the next question's answer
-    const timeout = setTimeout(() => {
-      ipcMain.removeListener('question:answer', handler)
-      resolve('')
-    }, 5 * 60 * 1000)
-    ipcMain.once('question:answer', handler)
-  })
-}
+// Shared with the scheduler; routes answers by question id so two concurrent
+// apply flows can never consume each other's answers.
+const { makeAskQuestion } = require('./services/askQuestion')
 
 // ─── IPC: Screening answer from user ────────────────────────────
 // (Renderer sends this via ipcRenderer.send — not invoke)
@@ -342,7 +345,7 @@ ipcMain.handle('resume:importFile', async () => {
             else if ((lt.includes('github') || lt.includes('git')) && !pl.github) { pl.github = url; changed = true }
             else if (lt.includes('linkedin') && !pl.linkedin) { pl.linkedin = url; changed = true }
           }
-          if (changed) configService.save({ ...cfg, personalLinks: pl })
+          if (changed) configService.update({ personalLinks: pl })
         } catch { /* non-critical */ }
       }
     }
@@ -505,18 +508,19 @@ ipcMain.handle('ai:keywordGap', async (_, jobDescription, resumeText) => {
 })
 
 ipcMain.handle('config:blacklistCompany', async (_, company) => {
-  const cfg = configService.load()
-  const list = Array.isArray(cfg.blacklistedCompanies) ? cfg.blacklistedCompanies : []
-  if (!list.map(c => c.toLowerCase()).includes(company.toLowerCase())) {
-    configService.save({ ...cfg, blacklistedCompanies: [...list, company] })
-  }
+  configService.update(cfg => {
+    const list = Array.isArray(cfg.blacklistedCompanies) ? cfg.blacklistedCompanies : []
+    if (list.map(c => c.toLowerCase()).includes(company.toLowerCase())) return cfg
+    return { ...cfg, blacklistedCompanies: [...list, company] }
+  })
   return { success: true }
 })
 
 ipcMain.handle('config:removeBlacklistCompany', async (_, company) => {
-  const cfg = configService.load()
-  const list = Array.isArray(cfg.blacklistedCompanies) ? cfg.blacklistedCompanies : []
-  configService.save({ ...cfg, blacklistedCompanies: list.filter(c => c.toLowerCase() !== company.toLowerCase()) })
+  configService.update(cfg => {
+    const list = Array.isArray(cfg.blacklistedCompanies) ? cfg.blacklistedCompanies : []
+    return { ...cfg, blacklistedCompanies: list.filter(c => c.toLowerCase() !== company.toLowerCase()) }
+  })
   return { success: true }
 })
 
@@ -533,6 +537,16 @@ ipcMain.handle('db:updateCachedAnswer', (_, question, answer) => {
 })
 
 ipcMain.handle('db:getStorageInfo', () => database.getStorageInfo())
+
+// ─── IPC: Status history & backups ───────────────────────────────
+ipcMain.handle('db:getStatusHistory', (_, applicationId) => database.getStatusHistory(applicationId))
+ipcMain.handle('db:backupNow', () => {
+  try { return database.backupNow() } catch (err) { return { success: false, error: err.message } }
+})
+ipcMain.handle('db:listBackups', () => database.listBackups())
+ipcMain.handle('db:restoreBackup', (_, name) => {
+  try { return database.restoreBackup(name) } catch (err) { return { success: false, error: err.message } }
+})
 
 // ─── IPC: Database ──────────────────────────────────────────────
 ipcMain.handle('db:getApplications', (_, filters) => database.getApplications(filters))
@@ -665,8 +679,7 @@ ipcMain.handle('scheduler:getBatchSchedule', () => {
 ipcMain.handle('mobile:getInfo', () => mobileApi.getInfo())
 
 ipcMain.handle('mobile:setEnabled', (_, enabled) => {
-  const cfg = configService.load()
-  configService.save({ ...cfg, mobileApiEnabled: !!enabled })
+  configService.update({ mobileApiEnabled: !!enabled })
   return enabled ? mobileApi.start() : mobileApi.stop()
 })
 
@@ -679,10 +692,8 @@ ipcMain.handle('mobile:regenerateToken', () => {
 ipcMain.handle('inbox:checkNow', async () => {
   try {
     const inbox = require('./services/inbox')
-    const configService = require('./services/config')
     const result = await inbox.checkInbox()
-    const cfg = configService.load()
-    configService.save({ ...cfg, lastInboxCheck: new Date().toISOString() })
+    configService.update({ lastInboxCheck: new Date().toISOString() })
     return { success: true, checked: result.checked, updated: result.updated }
   } catch (err) {
     return { success: false, error: err.message }

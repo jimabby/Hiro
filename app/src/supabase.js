@@ -29,13 +29,22 @@ function startOfDay(d) {
   return x
 }
 
+// Columns the list/stats screens actually need. Selecting * pulled every
+// cover letter, tailored resume, and job description over cellular on each
+// refresh (the LAN API slims list responses the same way).
+const SLIM_COLUMNS = 'id, local_id, job_title, company, platform, salary, match_score, match_explanation, status, applied_at, updated_at, comment'
+
 // Reads/writes the shared `applications` table. Exposes the same methods the
 // screens already call on HiroClient (getStats, getApplications, getApplication,
 // updateStatus, updateComment, getPerDay) so screens need no changes.
 export class CloudClient {
   constructor(userId) {
     this.userId = userId
-    this.canScan = false // scans run on the desktop; the cloud can't trigger them
+    // Scans still run on the desktop, but they CAN be requested through the
+    // cloud: we insert into scan_requests and the desktop picks it up on its
+    // next sync cycle (~2 minutes).
+    this.canScan = true
+    this._cache = null // short-lived shared fetch: stats + chart + list reuse one download
   }
 
   // Screens key off `id`; the cloud row's stable per-user key is `local_id`.
@@ -43,17 +52,35 @@ export class CloudClient {
     return { ...row, id: row.local_id ?? row.id }
   }
 
-  async getApplications({ status, platform, search } = {}) {
-    let q = supabase
+  async _fetchAll() {
+    const { data, error } = await supabase
       .from('applications')
-      .select('*')
+      .select(SLIM_COLUMNS)
       .eq('user_id', this.userId)
       .order('applied_at', { ascending: false })
-    if (status) q = q.eq('status', status)
-    if (platform) q = q.eq('platform', platform)
-    const { data, error } = await q
     if (error) throw new Error(error.message)
-    let rows = (data || []).map(r => this._map(r))
+    return (data || []).map(r => this._map(r))
+  }
+
+  // Dashboard loads stats and the 7-day chart together; each derived from the
+  // full list. Share one in-flight/recent fetch instead of downloading the
+  // table two or three times per screen.
+  _all() {
+    const now = Date.now()
+    if (!this._cache || now - this._cache.at > 5000) {
+      const promise = this._fetchAll().catch(err => {
+        if (this._cache?.promise === promise) this._cache = null
+        throw err
+      })
+      this._cache = { at: now, promise }
+    }
+    return this._cache.promise
+  }
+
+  async getApplications({ status, platform, search } = {}) {
+    let rows = await this._all()
+    if (status) rows = rows.filter(a => a.status === status)
+    if (platform) rows = rows.filter(a => a.platform === platform)
     if (search) {
       const s = search.toLowerCase()
       rows = rows.filter(a =>
@@ -81,6 +108,7 @@ export class CloudClient {
       .eq('user_id', this.userId)
       .eq('local_id', id)
     if (error) throw new Error(error.message)
+    this._cache = null // next read must see the edit
     return { success: true }
   }
 
@@ -91,12 +119,13 @@ export class CloudClient {
       .eq('user_id', this.userId)
       .eq('local_id', id)
     if (error) throw new Error(error.message)
+    this._cache = null
     return { success: true }
   }
 
   // Stats and per-day are derived client-side from the application list.
   async getStats() {
-    const apps = await this.getApplications()
+    const apps = await this._all()
     const now = new Date()
     const today = startOfDay(now).getTime()
     const weekAgo = today - 6 * 86400000
@@ -118,20 +147,24 @@ export class CloudClient {
       interviews,
       // Match the desktop's definition (interviews ÷ non-skipped) so both agree.
       responseRate: counted.length ? Math.round((interviews / counted.length) * 100) : 0,
-      attentionCount: 0,
+      // Attention jobs never sync to the cloud — report "unknown" (null) so
+      // the UI hides the tile instead of showing a misleading 0.
+      attentionCount: null,
       byStatus: Object.entries(byStatus).map(([status, count]) => ({ status, count })),
       byPlatform: Object.entries(byPlatform).map(([platform, count]) => ({ platform, count })),
     }
   }
 
   async getPerDay(days = 7) {
-    const apps = await this.getApplications()
+    const apps = await this._all()
     const out = []
     const today = startOfDay(new Date())
     for (let i = days - 1; i >= 0; i--) {
       const d = new Date(today.getTime() - i * 86400000)
       const next = new Date(d.getTime() + 86400000)
-      const date = d.toISOString().slice(0, 10)
+      // Label with the LOCAL date — toISOString() is UTC and shifts the label
+      // to the previous day in UTC+ timezones.
+      const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
       const count = apps.filter(a => {
         const t = new Date(a.applied_at || a.updated_at || 0).getTime()
         return t >= d.getTime() && t < next.getTime()
@@ -141,7 +174,25 @@ export class CloudClient {
     return out
   }
 
-  // Scan triggering requires the desktop; over the cloud it's not available.
+  // Attention jobs never sync to the cloud.
+  async getAttention() { return [] }
+
+  // No live desktop status over the cloud.
   async getScanStatus() { return null }
-  async requestScan() { throw new Error('Scans run on the desktop — connect over LAN to trigger one.') }
+
+  // Queue a scan through the cloud: the desktop drains scan_requests during
+  // its periodic sync. `cloud: true` tells the UI to phrase the confirmation
+  // accordingly (no live desktop status available here).
+  async requestScan({ keywords = '', location = '' } = {}) {
+    const { error } = await supabase
+      .from('scan_requests')
+      .insert({ user_id: this.userId, keywords, location })
+    if (error) {
+      if (/scan_requests/.test(error.message)) {
+        throw new Error('Cloud scan requests need the scan_requests table — re-run supabase/schema.sql in your project.')
+      }
+      throw new Error(error.message)
+    }
+    return { cloud: true }
+  }
 }

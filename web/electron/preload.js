@@ -65,9 +65,10 @@ contextBridge.exposeInMainWorld('api', {
   getCoverLetterPDFBase64: (text) => ipcRenderer.invoke('coverLetter:getPDFBase64', text),
   openResumeDocx: (text, originalPath) => ipcRenderer.invoke('resume:openDocx', text, originalPath),
 
-  // Screening question prompts (mid-apply)
-  onQuestionAsk: (cb) => ipcRenderer.on('question:ask', (_, question) => cb(question)),
-  sendQuestionAnswer: (answer) => ipcRenderer.send('question:answer', answer),
+  // Screening question prompts (mid-apply). Payload is { id, question }; the
+  // answer must echo the id back so it reaches the apply flow that asked.
+  onQuestionAsk: (cb) => ipcRenderer.on('question:ask', (_, payload) => cb(payload)),
+  sendQuestionAnswer: (payload) => ipcRenderer.send('question:answer', payload),
 
   // Export CSV
   exportCSV: (filters) => ipcRenderer.invoke('db:exportCSV', filters),
@@ -103,6 +104,12 @@ contextBridge.exposeInMainWorld('api', {
   updateCachedAnswer: (question, answer) => ipcRenderer.invoke('db:updateCachedAnswer', question, answer),
   clearAllCachedAnswers: () => ipcRenderer.invoke('db:clearAllCachedAnswers'),
   getStorageInfo: () => ipcRenderer.invoke('db:getStorageInfo'),
+
+  // Status history & backups
+  getStatusHistory: (applicationId) => ipcRenderer.invoke('db:getStatusHistory', applicationId),
+  backupNow: () => ipcRenderer.invoke('db:backupNow'),
+  listBackups: () => ipcRenderer.invoke('db:listBackups'),
+  restoreBackup: (name) => ipcRenderer.invoke('db:restoreBackup', name),
 
   // Events from main process
   onNotification: (cb) => ipcRenderer.on('notification', (_, data) => cb(data)),

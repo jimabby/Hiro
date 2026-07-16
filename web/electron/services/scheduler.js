@@ -123,21 +123,7 @@ function scheduleTodayBatches(numBatches, interval, startMinutes, jitter, batchS
   }
 }
 
-// Ask the user a screening question via the renderer. On timeout the
-// listener must be removed, or it would consume the next question's answer.
-function makeAskQuestion() {
-  return (question) => new Promise((resolve) => {
-    if (!win || win.isDestroyed()) return resolve('')
-    const { ipcMain } = require('electron')
-    win.webContents.send('question:ask', question)
-    const handler = (_, answer) => { clearTimeout(timeout); resolve(answer || '') }
-    const timeout = setTimeout(() => {
-      ipcMain.removeListener('question:answer', handler)
-      resolve('')
-    }, 5 * 60 * 1000)
-    ipcMain.once('question:answer', handler)
-  })
-}
+const { makeAskQuestion } = require('./askQuestion')
 
 async function runBatch(batchSize) {
   if (running) return
@@ -147,7 +133,7 @@ async function runBatch(batchSize) {
   try {
     const cfg = configService.load()
     if (!cfg.setupComplete) return
-    await applicator.run({ ...cfg, askQuestion: makeAskQuestion(), batchLimit: batchSize }, { log, notifyAttention })
+    await applicator.run({ ...cfg, askQuestion: makeAskQuestion(win), batchLimit: batchSize }, { log, notifyAttention })
   } catch (err) {
     log(`Batch error: ${err.message}`)
   } finally {
@@ -184,6 +170,8 @@ function restart(mainWindow) {
   win = mainWindow
   stop()
   startTasks()
+  // Settings may have just completed setup — drain any scans queued before it.
+  processQueue()
 }
 
 async function runNow(mainWindow) {
@@ -203,7 +191,6 @@ async function runDryRun(mainWindow) {
 // desktop is idle. `opts` may carry { keywords, location } to override the
 // saved search for this run, and `source` for logging.
 function requestScan(opts = {}) {
-  const cfg = configService.load()
   const req = {
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
     createdAt: new Date().toISOString(),
@@ -211,9 +198,7 @@ function requestScan(opts = {}) {
     location: (opts.location || '').trim(),
     source: opts.source || 'desktop',
   }
-  const pending = Array.isArray(cfg.pendingScans) ? cfg.pendingScans : []
-  pending.push(req)
-  configService.save({ ...cfg, pendingScans: pending })
+  configService.update(c => ({ ...c, pendingScans: [...(Array.isArray(c.pendingScans) ? c.pendingScans : []), req] }))
   log(`Scan request queued from ${req.source}${req.keywords ? ` (keywords: ${req.keywords})` : ''}`)
   processQueue()
   return req
@@ -227,29 +212,33 @@ async function processQueue() {
   if (pending.length === 0) return
 
   const req = pending[0]
-  await runScan({ keywords: req.keywords, location: req.location, fromQueue: true })
+  const result = await runScan({ keywords: req.keywords, location: req.location, fromQueue: true })
 
-  // Remove the processed request (reload in case config changed during the run).
-  const after = configService.load()
-  after.pendingScans = (after.pendingScans || []).filter(r => r.id !== req.id)
-  configService.save(after)
+  // Only pop the request if the scan actually ran. If the desktop was busy or
+  // setup isn't complete yet, the request stays queued and is retried after
+  // the current scan finishes / setup completes (previously it was discarded).
+  if (!result?.ran) return
 
-  if ((after.pendingScans || []).length > 0) processQueue()
+  const after = configService.update(c => ({
+    ...c,
+    pendingScans: (c.pendingScans || []).filter(r => r.id !== req.id),
+  }))
+  if ((after.pendingScans || []).length > 0) await processQueue()
 }
 
 async function runScan(overrides = {}) {
-  if (running) return
+  if (running) return { ran: false, reason: 'busy' }
+  const cfg = configService.load()
+  if (!cfg.setupComplete) {
+    log('Setup not complete. Skipping scan.')
+    return { ran: false, reason: 'setup' }
+  }
   running = true
   const dryRun = !!overrides.dryRun
   log(dryRun ? 'Starting test scan (dry run — nothing will be submitted)...' : 'Starting job scan...')
 
   try {
-    const cfg = configService.load()
-    if (!cfg.setupComplete) {
-      log('Setup not complete. Skipping scan.')
-      return
-    }
-    const runCfg = { ...cfg, askQuestion: makeAskQuestion() }
+    const runCfg = { ...cfg, askQuestion: makeAskQuestion(win) }
     if (overrides.keywords) runCfg.jobKeywords = overrides.keywords
     if (overrides.location) runCfg.jobLocation = overrides.location
     if (dryRun) runCfg.dryRun = true
@@ -261,13 +250,16 @@ async function runScan(overrides = {}) {
     // A dry run changes nothing — don't touch lastScanAt, sync, or the queue.
     if (!dryRun) {
       try {
-        const c = configService.load()
-        configService.save({ ...c, lastScanAt: new Date().toISOString() })
+        configService.update({ lastScanAt: new Date().toISOString() })
       } catch {}
     }
     log(dryRun ? 'Test scan complete (dry run — nothing was submitted).' : 'Scan complete.')
     notify({ type: 'scan-complete' })
     if (!dryRun) {
+      try {
+        const s = database.getStats()
+        nativeNotify('Scan complete', `${s.totalToday} application${s.totalToday === 1 ? '' : 's'} today · ${s.attentionCount} need${s.attentionCount === 1 ? 's' : ''} attention`)
+      } catch { /* stats are decorative here */ }
       webhooks.send('scan-complete', { message: 'Full scan complete' }).catch(() => {})
       cloudSync.sync().catch(() => {})
       // Drain scans queued (e.g. from the phone) while this scan was running.
@@ -276,6 +268,7 @@ async function runScan(overrides = {}) {
       if (!overrides.fromQueue) setImmediate(() => { processQueue() })
     }
   }
+  return { ran: true }
 }
 
 function getScanInfo() {
@@ -339,11 +332,12 @@ async function runInboxCheck() {
     const inbox = require('./inbox')
     log('Checking inbox for replies...')
     const result = await inbox.checkInbox()
-    configService.save({ ...cfg, lastInboxCheck: new Date().toISOString() })
+    configService.update({ lastInboxCheck: new Date().toISOString() })
     if (result.updated.length > 0) {
       for (const item of result.updated) {
         log(`Inbox: ${item.company} replied — status updated to ${item.newStatus}`)
         notify({ type: 'inbox-reply', item })
+        nativeNotify('Recruiter reply', `${item.company} replied — status updated to ${item.newStatus}`)
         webhooks.send('inbox-reply', item).catch(() => {})
       }
     } else {
@@ -357,8 +351,23 @@ async function runInboxCheck() {
 
 function notifyAttention(job) {
   notify({ type: 'attention', job })
+  nativeNotify('Job needs attention', `${job.job_title} at ${job.company} (${job.match_score ?? '—'}% match)`)
   emailService.sendNewJobAlert(job).catch(() => {})
   webhooks.send('attention', job).catch(() => {})
+}
+
+// OS-level notification for events that matter while Hiro runs in the
+// background. Skipped when the window is focused (the in-app toast already
+// covers that) or when disabled in Settings.
+function nativeNotify(title, body) {
+  try {
+    const cfg = configService.load()
+    if (cfg.enableDesktopNotifications === false) return
+    if (win && !win.isDestroyed() && win.isFocused()) return
+    const { Notification } = require('electron')
+    if (!Notification.isSupported()) return
+    new Notification({ title, body }).show()
+  } catch { /* notifications are best-effort */ }
 }
 
 function log(msg) {

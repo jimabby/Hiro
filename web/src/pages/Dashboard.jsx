@@ -40,11 +40,15 @@ function InterviewPrepPanel({ questions, applicationId, jobDescription }) {
 
   const categories = ['all', ...new Set(questions.map(q => (typeof q === 'string' ? 'general' : q.category || 'general')))]
 
-  const filtered = questions.filter(item => {
-    if (categoryFilter === 'all') return true
-    const cat = typeof item === 'string' ? 'general' : item.category || 'general'
-    return cat === categoryFilter
-  })
+  // Carry the original index along — keying reveal/follow-up state by
+  // indexOf(item) broke when two questions were identical strings.
+  const filtered = questions
+    .map((item, globalIdx) => ({ item, globalIdx }))
+    .filter(({ item }) => {
+      if (categoryFilter === 'all') return true
+      const cat = typeof item === 'string' ? 'general' : item.category || 'general'
+      return cat === categoryFilter
+    })
 
   const toggleReveal = (i) => {
     setRevealedAnswers(prev => {
@@ -101,8 +105,7 @@ function InterviewPrepPanel({ questions, applicationId, jobDescription }) {
         ))}
       </div>
 
-      {filtered.map((item) => {
-        const globalIdx = questions.indexOf(item)
+      {filtered.map(({ item, globalIdx }) => {
         const q = typeof item === 'string' ? item : item.question
         const a = typeof item === 'string' ? null : item.answer
         const cat = typeof item === 'string' ? 'general' : item.category || 'general'
@@ -151,7 +154,7 @@ function InterviewPrepPanel({ questions, applicationId, jobDescription }) {
   )
 }
 
-export default function Dashboard({ logs, scanRunning, onScanStart, onDryRun, onClearLogs, showToast }) {
+export default function Dashboard({ active = true, logs, scanRunning, onScanStart, onDryRun, onClearLogs, showToast }) {
   const [stats, setStats] = useState(null)
   const [apps, setApps] = useState([])
   const [selected, setSelected] = useState(null)
@@ -163,6 +166,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart, onDryRun, on
   const [interviewQuestions, setInterviewQuestions] = useState(null)
   const [loadingQuestions, setLoadingQuestions] = useState(false)
   const [keywordGap, setKeywordGap] = useState(null)
+  const [statusHistory, setStatusHistory] = useState([])
   const [loadingGap, setLoadingGap] = useState(false)
   const [pdfModal, setPdfModal] = useState(null)
   const [pdfLoading, setPdfLoading] = useState(false)
@@ -198,22 +202,30 @@ export default function Dashboard({ logs, scanRunning, onScanStart, onDryRun, on
   useEffect(() => {
     setInterviewQuestions(null)
     setKeywordGap(null)
+    setStatusHistory([])
     if (selected?.id) {
       window.api.getInterviewPrep(selected.id).then(saved => {
         if (saved?.questions) {
           try { setInterviewQuestions(JSON.parse(saved.questions)) } catch { /* ignore */ }
         }
       })
+      window.api.getStatusHistory?.(selected.id).then(h => setStatusHistory(h || [])).catch(() => {})
     }
   }, [selected?.id])
 
   async function viewPDF(text, title, isCoverLetter = false) {
     setPdfLoading(true)
-    const res = isCoverLetter
-      ? await window.api.getCoverLetterPDFBase64(text)
-      : await window.api.getResumePDFBase64(text)
-    setPdfLoading(false)
-    if (res.success) setPdfModal({ base64: res.base64, title })
+    try {
+      const res = isCoverLetter
+        ? await window.api.getCoverLetterPDFBase64(text)
+        : await window.api.getResumePDFBase64(text)
+      if (res.success) setPdfModal({ base64: res.base64, title })
+      else showToast?.(res.error || 'Could not build the PDF', 'error')
+    } catch (err) {
+      showToast?.(`Could not build the PDF: ${err.message}`, 'error')
+    } finally {
+      setPdfLoading(false)
+    }
   }
 
   // Sort + filter logic
@@ -223,7 +235,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart, onDryRun, on
       if (filter.platform && a.platform !== filter.platform) return false
       if (filter.search) {
         const q = filter.search.toLowerCase()
-        if (!a.job_title.toLowerCase().includes(q) && !a.company.toLowerCase().includes(q)) return false
+        if (!(a.job_title || '').toLowerCase().includes(q) && !(a.company || '').toLowerCase().includes(q)) return false
       }
       return true
     })
@@ -263,13 +275,19 @@ export default function Dashboard({ logs, scanRunning, onScanStart, onDryRun, on
     return sort.dir === 'asc' ? ' ▲' : ' ▼'
   }
 
-  // Bulk selection
+  // Bulk selection. Selection persists across pages, so both the header
+  // checkbox state and the toggle must look at THIS page's rows only —
+  // comparing raw set size to page length showed "all selected" on pages
+  // where nothing was selected.
+  const allPagedSelected = paged.length > 0 && paged.every(a => selectedIds.has(a.id))
+
   function toggleSelectAll() {
-    if (selectedIds.size === paged.length) {
-      setSelectedIds(new Set())
-    } else {
-      setSelectedIds(new Set(paged.map(a => a.id)))
-    }
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (allPagedSelected) paged.forEach(a => next.delete(a.id))
+      else paged.forEach(a => next.add(a.id))
+      return next
+    })
   }
 
   function toggleSelect(id) {
@@ -302,6 +320,9 @@ export default function Dashboard({ logs, scanRunning, onScanStart, onDryRun, on
   }
 
   useEffect(() => {
+    // The Dashboard stays mounted (hidden) on other pages — without the
+    // `active` gate its shortcuts kept swallowing "/" and arrows everywhere.
+    if (!active) return
     function handler(e) {
       if (e.key === 'Escape') {
         if (pdfModal) { setPdfModal(null); return }
@@ -326,7 +347,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart, onDryRun, on
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [selected, paged, pdfModal])
+  }, [active, selected, paged, pdfModal])
 
   async function loadData() {
     const [s, a] = await Promise.all([
@@ -346,7 +367,14 @@ export default function Dashboard({ logs, scanRunning, onScanStart, onDryRun, on
     setSkippedApplying(true)
     setSkippedApplyLog([`Starting AI apply for ${job.job_title} at ${job.company}...`])
     setSkippedApplyResult(null)
-    const result = await window.api.applySkippedJob(job.id)
+    // Always set a result — the modal's only Close button is gated on it, so
+    // an unhandled rejection here trapped the user in the modal forever.
+    let result
+    try {
+      result = await window.api.applySkippedJob(job.id)
+    } catch (err) {
+      result = { success: false, reason: err.message }
+    }
     setSkippedApplyResult(result)
     if (result.success) {
       setApps(prev => prev.map(a => a.id === job.id ? { ...a, status: 'applied' } : a))
@@ -359,7 +387,10 @@ export default function Dashboard({ logs, scanRunning, onScanStart, onDryRun, on
     const prev = apps.find(a => a.id === id)?.status
     await window.api.updateApplicationStatus(id, status)
     setApps(prev => prev.map(a => a.id === id ? { ...a, status } : a))
-    if (selected?.id === id) setSelected(s => ({ ...s, status }))
+    if (selected?.id === id) {
+      setSelected(s => ({ ...s, status }))
+      window.api.getStatusHistory?.(id).then(h => setStatusHistory(h || [])).catch(() => {})
+    }
     if (prev && prev !== status) {
       showToast?.(`Status changed to ${status}`, 'info')
     }
@@ -427,7 +458,14 @@ export default function Dashboard({ logs, scanRunning, onScanStart, onDryRun, on
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16, marginBottom: 24 }}>
           {[
             { label: 'Today', value: stats.totalToday },
-            { label: 'This Week', value: stats.totalThisWeek },
+            {
+              label: 'This Week',
+              value: stats.totalThisWeek,
+              ...(stats.totalLastWeek != null && (stats.totalLastWeek > 0 || stats.totalThisWeek > 0) ? {
+                sub: `${stats.totalThisWeek >= stats.totalLastWeek ? '▲' : '▼'} ${Math.abs(stats.totalThisWeek - stats.totalLastWeek)} vs last week`,
+                subColor: stats.totalThisWeek >= stats.totalLastWeek ? 'var(--green)' : 'var(--red)',
+              } : {}),
+            },
             { label: 'All Time', value: stats.totalAllTime },
             { label: 'Interviews', value: stats.interviews },
             { label: 'Response Rate', value: stats.responseRate != null ? `${stats.responseRate}%` : '—' },
@@ -435,6 +473,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart, onDryRun, on
             <div key={s.label} className="card stat-card">
               <div className="stat-value">{s.value}</div>
               <div className="stat-label">{s.label}</div>
+              {s.sub && <div style={{ fontSize: 11, color: s.subColor || 'var(--text-muted)', marginTop: 2 }}>{s.sub}</div>}
             </div>
           ))}
         </div>
@@ -566,8 +605,9 @@ export default function Dashboard({ logs, scanRunning, onScanStart, onDryRun, on
                   <tr>
                     <th style={{ width: 32, padding: '10px 8px' }}>
                       <input type="checkbox"
-                        checked={paged.length > 0 && selectedIds.size === paged.length}
+                        checked={allPagedSelected}
                         onChange={toggleSelectAll}
+                        aria-label="Select all rows on this page"
                         style={{ width: 'auto' }}
                       />
                     </th>
@@ -588,6 +628,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart, onDryRun, on
                         <input type="checkbox"
                           checked={selectedIds.has(a.id)}
                           onChange={() => toggleSelect(a.id)}
+                          aria-label={`Select ${a.job_title} at ${a.company}`}
                           style={{ width: 'auto' }}
                         />
                       </td>
@@ -632,6 +673,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart, onDryRun, on
                       </td>
                       <td onClick={e => e.stopPropagation()}>
                         <button className="btn btn-ghost" style={{ fontSize: 11, color: 'var(--red)', padding: '2px 6px' }}
+                          aria-label={`Delete ${a.job_title} at ${a.company}`} title="Delete"
                           onClick={e => deleteApp(a.id, e)}>✕</button>
                       </td>
                     </tr>
@@ -708,7 +750,7 @@ export default function Dashboard({ logs, scanRunning, onScanStart, onDryRun, on
                     setApps(prev => prev.filter(a => a.id !== selected.id))
                     setSelected(null)
                   }}>Delete</button>
-                <button className="btn btn-ghost" onClick={() => setSelected(null)}>✕</button>
+                <button className="btn btn-ghost" aria-label="Close details" onClick={() => setSelected(null)}>✕</button>
               </div>
             </div>
 
@@ -791,6 +833,29 @@ export default function Dashboard({ logs, scanRunning, onScanStart, onDryRun, on
                 style={{ fontSize: 13 }}
               />
             </div>
+
+            {statusHistory.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ marginBottom: 8 }}>Status History</label>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+                  {statusHistory.map((h, i) => (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 0' }}>
+                      <span style={{
+                        width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+                        background: i === statusHistory.length - 1 ? 'var(--accent)' : 'var(--border)',
+                      }} />
+                      <span className={`badge ${STATUS_BADGE[h.status]?.color || 'badge-gray'}`} style={{ minWidth: 70, textAlign: 'center' }}>
+                        {STATUS_BADGE[h.status]?.label || h.status}
+                      </span>
+                      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                        {/* changed_at is stored in UTC — render in local time */}
+                        {new Date(h.changed_at.replace(' ', 'T') + 'Z').toLocaleString()}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {selected.job_description && (
               <div style={{ marginBottom: 16 }}>

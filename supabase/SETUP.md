@@ -46,3 +46,10 @@ EXPO_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 
 > The anon key is safe to ship in the client — Row Level Security is what
 > protects the data, and the schema above restricts every row to its owner.
+
+## Upgrading from an earlier schema
+
+`schema.sql` is idempotent — if you set your project up before the
+`scan_requests` table existed (it powers **triggering scans from your phone
+over the cloud**), just re-run the whole file in the SQL Editor. Existing data
+is untouched; the new table and its policies are added alongside.

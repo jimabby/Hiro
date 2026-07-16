@@ -5,6 +5,16 @@ function getEmailDomain(address) {
   return (address || '').split('@')[1]?.toLowerCase() || ''
 }
 
+// Job titles/companies/salaries come from scraped postings and AI output —
+// escape them so a malicious posting can't inject markup into report emails.
+function esc(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
 function createTransport(cfg) {
   const domain = getEmailDomain(cfg.gmailAddress)
   if (domain === 'outlook.com' || domain === 'hotmail.com' || domain === 'live.com' || domain === 'msn.com') {
@@ -44,22 +54,23 @@ async function sendNewJobAlert(job) {
   if (!cfg.gmailAddress || !cfg.gmailAppPassword) return
 
   const transport = createTransport(cfg)
-  const talkingPoints = Array.isArray(job.talking_points)
-    ? job.talking_points
-    : JSON.parse(job.talking_points || '[]')
+  let talkingPoints = []
+  if (Array.isArray(job.talking_points)) talkingPoints = job.talking_points
+  else { try { talkingPoints = JSON.parse(job.talking_points || '[]') } catch { /* legacy/corrupt row */ } }
 
+  const safeUrl = /^https?:\/\//i.test(job.job_url || '') ? esc(job.job_url) : ''
   const html = `
     <h2>New Job Found — Needs Manual Application</h2>
     <table>
-      <tr><td><b>Role</b></td><td>${job.job_title}</td></tr>
-      <tr><td><b>Company</b></td><td>${job.company}</td></tr>
-      <tr><td><b>Platform</b></td><td>${job.platform}</td></tr>
-      <tr><td><b>Salary</b></td><td>${job.salary || 'Not listed'}</td></tr>
-      <tr><td><b>Match</b></td><td>${job.match_score}%</td></tr>
+      <tr><td><b>Role</b></td><td>${esc(job.job_title)}</td></tr>
+      <tr><td><b>Company</b></td><td>${esc(job.company)}</td></tr>
+      <tr><td><b>Platform</b></td><td>${esc(job.platform)}</td></tr>
+      <tr><td><b>Salary</b></td><td>${esc(job.salary || 'Not listed')}</td></tr>
+      <tr><td><b>Match</b></td><td>${esc(job.match_score)}%</td></tr>
     </table>
-    <p><a href="${job.job_url}">View Job Posting →</a></p>
+    ${safeUrl ? `<p><a href="${safeUrl}">View Job Posting →</a></p>` : ''}
     <h3>AI Talking Points</h3>
-    <ul>${talkingPoints.map(p => `<li>${p}</li>`).join('')}</ul>
+    <ul>${talkingPoints.map(p => `<li>${esc(p)}</li>`).join('')}</ul>
   `
 
   await transport.sendMail({
@@ -79,7 +90,7 @@ async function sendDailyReport(stats) {
   const responseRate = stats.responseRate ?? 0
 
   const todayRows = (stats.todayJobs || [])
-    .map(j => `<tr><td>${j.job_title}</td><td>${j.company}</td><td>${j.platform}</td><td>${j.match_score}%</td></tr>`)
+    .map(j => `<tr><td>${esc(j.job_title)}</td><td>${esc(j.company)}</td><td>${esc(j.platform)}</td><td>${esc(j.match_score)}%</td></tr>`)
     .join('')
 
   const html = `

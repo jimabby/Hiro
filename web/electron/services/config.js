@@ -72,6 +72,7 @@ const DEFAULTS = {
   personalLinks: { portfolio: '', github: '', linkedin: '' },
   webhooks: [],
   enableWeeklyReport: false,
+  enableDesktopNotifications: true,
   enableSmartScheduling: false,
   smartScheduleStartTime: '09:00',
   smartScheduleEndTime: '17:00',
@@ -111,4 +112,16 @@ function save(config) {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(mapSecrets(config, encryptValue), null, 2), 'utf8')
 }
 
-module.exports = { load, save, CONFIG_DIR }
+// Atomic read-modify-write. Background services (scheduler, cloud sync, mobile
+// API) must use this instead of load()+save(): load and save are synchronous,
+// so a whole update() is un-interleavable on the event loop, whereas a caller
+// that holds a loaded copy across an `await` and then saves it will clobber
+// any fields written by another service in the meantime.
+function update(patch) {
+  const cfg = load()
+  const next = typeof patch === 'function' ? patch(cfg) : { ...cfg, ...patch }
+  save(next)
+  return next
+}
+
+module.exports = { load, save, update, CONFIG_DIR }

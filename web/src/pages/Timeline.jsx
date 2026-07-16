@@ -50,7 +50,14 @@ export default function Timeline() {
     } else {
       if (expanded === date) { setExpanded(null); return }
     }
-    const jobs = await window.api.getApplications({ dateFrom: date + ' 00:00:00', dateTo: date + ' 23:59:59' })
+    // `date` is a LOCAL calendar day, but applied_at is stored in UTC — convert
+    // the local-midnight boundaries to UTC before querying.
+    const start = new Date(date + 'T00:00:00')
+    const fmt = d => d.toISOString().slice(0, 19).replace('T', ' ')
+    const jobs = await window.api.getApplications({
+      dateFrom: fmt(start),
+      dateTo: fmt(new Date(start.getTime() + 86400000 - 1000)),
+    })
     if (expandAll) {
       setExpandedJobs(prev => ({ ...prev, [date]: jobs }))
     } else {
@@ -67,8 +74,12 @@ export default function Timeline() {
     const platforms = byDate[date]
     if (platformFilter && !platforms.some(p => p.platform === platformFilter)) return false
     if (searchQuery) {
-      return date.includes(searchQuery.toLowerCase()) ||
-        platforms.some(p => p.platform.toLowerCase().includes(searchQuery.toLowerCase()))
+      // Match what the user actually SEES ("Today", "Wed, 16 July 2026"), not
+      // just the raw ISO key — typing "july" previously found nothing.
+      const q = searchQuery.toLowerCase()
+      return date.includes(q) ||
+        relativeDate(date).toLowerCase().includes(q) ||
+        platforms.some(p => p.platform.toLowerCase().includes(q))
     }
     return true
   })

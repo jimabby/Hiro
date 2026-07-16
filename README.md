@@ -32,6 +32,9 @@
 - **Filterable table** — filter by status and platform
 - **Test Scan (dry run)** — scores and tailors every found job but never submits or saves anything, so you can tune the match threshold safely
 - **Persistent activity log** — scan and apply activity is written to a log file (`~/.hiro/logs/hiro.log`) that survives restarts; view recent entries, open the full file, or clear it from the dashboard
+- **Status history** — every status change is recorded and shown as a timeline in the job detail panel, so you can see how long each company took to respond
+- **Desktop notifications** — OS notifications for scan completion, jobs needing attention, and recruiter replies while Hiro runs in the background (toggle in Settings)
+- **Automatic backups** — the database is backed up daily (last 7 kept) to `~/.hiro/backups`, with one-click restore in Settings → Data
 
 ### Job Detail Panel
 - **Match explanation** — one-sentence AI summary of why the job scored the way it did
@@ -41,7 +44,7 @@
 - **Full tailored resume and screening Q&A** — download resume as DOCX
 
 ### Analytics & Timeline
-- **Analytics page** — SVG bar chart of applications over the last 7 days, platform donut chart, by-status breakdown, response rate
+- **Analytics page** — SVG bar chart of applications over the last 7 days, platform donut chart, by-status breakdown, response rate, and a match-score histogram with your apply threshold marked (for tuning it alongside Test Scan)
 - **Timeline page** — collapsible day-by-day history of all applications grouped by platform
 
 ### Settings
@@ -56,7 +59,7 @@
 - **Hiro Mobile** ([app/](app/)) — Expo React Native app, connects either over your local network **or** via the cloud
 - **On-the-go dashboard** — stats, 7-day chart, status and platform breakdowns
 - **Manage applications** — search, filter, update statuses, and add notes from your phone
-- **Trigger a scan from your phone** — queue a scan (with optional keyword override); it runs on the desktop immediately, or the moment the desktop is next turned on. Requests are saved on the phone if the desktop is offline and delivered automatically when it's reachable
+- **Trigger a scan from your phone** — queue a scan (with optional keyword override); over LAN it runs on the desktop immediately (or the moment the desktop is next turned on), and over the cloud the desktop picks it up on its next sync cycle (~2 minutes) — so you can kick off a scan from anywhere. Requests are saved on the phone if neither is reachable and delivered automatically later
 - **Two ways to connect:**
   - **Local network (default)** — the phone talks directly to the desktop via a token-protected LAN API; no cloud involved
   - **Cloud sync (optional)** — sign in to a Supabase account on both desktop and phone to mirror applications to the cloud, so the phone works from anywhere. Your local database stays the source of truth. See [supabase/SETUP.md](supabase/SETUP.md)

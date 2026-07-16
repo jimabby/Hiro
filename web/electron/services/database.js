@@ -45,7 +45,9 @@ function createTables() {
       screening_qa TEXT,
       status TEXT DEFAULT 'applied',
       applied_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
+      updated_at TEXT DEFAULT (datetime('now')),
+      cloud_dirty INTEGER DEFAULT 1,
+      cloud_updated_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS attention_jobs (
@@ -76,6 +78,13 @@ function createTables() {
       questions TEXT,
       saved_at TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS status_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      application_id INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      changed_at TEXT DEFAULT (datetime('now'))
+    );
   `)
   persist()
 }
@@ -87,12 +96,19 @@ function migrate() {
   try { db.run('ALTER TABLE applications ADD COLUMN match_explanation TEXT DEFAULT ""') } catch {}
   try { db.run('ALTER TABLE applications ADD COLUMN follow_up_sent INTEGER DEFAULT 0') } catch {}
   try { db.run('ALTER TABLE applications ADD COLUMN recruiter_email TEXT DEFAULT ""') } catch {}
+  // Cloud sync tracking: cloud_dirty marks rows with local changes not yet
+  // pushed (defaults 1 so existing rows push once); cloud_updated_at remembers
+  // the remote updated_at we last saw, so pulls detect phone edits by equality
+  // instead of comparing two devices' clocks.
+  try { db.run('ALTER TABLE applications ADD COLUMN cloud_dirty INTEGER DEFAULT 1') } catch {}
+  try { db.run('ALTER TABLE applications ADD COLUMN cloud_updated_at TEXT') } catch {}
 
   // Indexes for frequent queries
   try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_applied_at ON applications(applied_at DESC)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_status ON applications(status)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_platform ON applications(platform)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_attention_dismissed ON attention_jobs(dismissed)') } catch {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_history_app ON status_history(application_id)') } catch {}
 }
 
 // Convert sql.js result to array of objects
@@ -130,7 +146,12 @@ function getApplications(filters = {}) {
   if (filters.status) { conditions.push('status = ?'); params.push(filters.status) }
   if (filters.platform) { conditions.push('platform = ?'); params.push(filters.platform) }
   if (filters.dateFrom) { conditions.push('applied_at >= ?'); params.push(filters.dateFrom) }
-  if (filters.dateTo) { conditions.push('applied_at <= ?'); params.push(filters.dateTo) }
+  if (filters.dateTo) {
+    // applied_at is 'YYYY-MM-DD HH:MM:SS'; a date-only upper bound would
+    // lexicographically exclude every row on that final day.
+    const to = /^\d{4}-\d{2}-\d{2}$/.test(filters.dateTo) ? filters.dateTo + ' 23:59:59' : filters.dateTo
+    conditions.push('applied_at <= ?'); params.push(to)
+  }
 
   if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ')
   sql += ' ORDER BY applied_at DESC'
@@ -154,7 +175,7 @@ function hasAppliedToCompany(company) {
 }
 
 function insertApplication(data) {
-  run(`
+  db.run(`
     INSERT INTO applications
       (job_title, company, platform, salary, job_url, job_description, match_score, match_explanation, tailored_resume, cover_letter, screening_qa, status)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -166,38 +187,92 @@ function insertApplication(data) {
     JSON.stringify(data.screening_qa || []),
     data.status || 'applied',
   ])
+  // Read the new row id BEFORE persist(): db.export() resets last_insert_rowid.
+  const newId = queryOne('SELECT last_insert_rowid() as id')?.id
+  if (newId) db.run('INSERT INTO status_history (application_id, status) VALUES (?, ?)', [newId, data.status || 'applied'])
+  persist()
+}
+
+// Append to the per-application status timeline (only on real changes).
+function recordStatusChange(id, status) {
+  run('INSERT INTO status_history (application_id, status) VALUES (?, ?)', [id, status])
+}
+
+function getStatusHistory(applicationId) {
+  return query('SELECT status, changed_at FROM status_history WHERE application_id = ? ORDER BY changed_at ASC, id ASC', [applicationId])
 }
 
 function updateApplicationStatus(id, status) {
-  run("UPDATE applications SET status = ?, updated_at = datetime('now') WHERE id = ?", [status, id])
+  const current = queryOne('SELECT status FROM applications WHERE id = ?', [id])
+  run("UPDATE applications SET status = ?, updated_at = datetime('now'), cloud_dirty = 1 WHERE id = ?", [status, id])
+  if (current && current.status !== status) recordStatusChange(id, status)
   return { success: true }
 }
 
 function updateApplicationAfterApply(id, tailoredResume, coverLetter) {
+  const current = queryOne('SELECT status FROM applications WHERE id = ?', [id])
   run(
-    "UPDATE applications SET status = 'applied', tailored_resume = ?, cover_letter = ?, updated_at = datetime('now') WHERE id = ?",
+    "UPDATE applications SET status = 'applied', tailored_resume = ?, cover_letter = ?, updated_at = datetime('now'), cloud_dirty = 1 WHERE id = ?",
     [tailoredResume, coverLetter, id]
   )
+  if (current && current.status !== 'applied') recordStatusChange(id, 'applied')
 }
 
 function updateApplicationComment(id, comment) {
-  run("UPDATE applications SET comment = ?, updated_at = datetime('now') WHERE id = ?", [comment, id])
+  run("UPDATE applications SET comment = ?, updated_at = datetime('now'), cloud_dirty = 1 WHERE id = ?", [comment, id])
   return { success: true }
 }
 
 function updateRecruiterEmail(id, email) {
-  run("UPDATE applications SET recruiter_email = ?, updated_at = datetime('now') WHERE id = ?", [email, id])
+  run("UPDATE applications SET recruiter_email = ?, updated_at = datetime('now'), cloud_dirty = 1 WHERE id = ?", [email, id])
   return { success: true }
 }
 
 function deleteApplication(id) {
   run('DELETE FROM applications WHERE id = ?', [id])
+  run('DELETE FROM status_history WHERE application_id = ?', [id])
   return { success: true }
 }
 
 function clearAllApplications() {
   run('DELETE FROM applications')
+  run('DELETE FROM status_history')
   return { success: true }
+}
+
+// ─── Cloud Sync Bookkeeping ──────────────────────────────────────
+
+// Rows with local changes the cloud hasn't seen (new rows start dirty).
+function getDirtyApplications() {
+  return query('SELECT * FROM applications WHERE cloud_dirty = 1 OR cloud_updated_at IS NULL')
+}
+
+function getAllApplicationIds() {
+  return query('SELECT id FROM applications').map(r => r.id)
+}
+
+// Clear the dirty flag after a successful push — but only if the row wasn't
+// edited again while the push was in flight (guarded by updated_at).
+function markCloudSynced(id, cloudUpdatedAt, localUpdatedAt) {
+  run('UPDATE applications SET cloud_dirty = 0, cloud_updated_at = ? WHERE id = ? AND updated_at = ?',
+    [cloudUpdatedAt, id, localUpdatedAt])
+}
+
+// Record the remote version we saw without touching local data.
+function markCloudSeen(id, cloudUpdatedAt) {
+  run('UPDATE applications SET cloud_updated_at = ? WHERE id = ?', [cloudUpdatedAt, id])
+}
+
+// Apply a phone-side edit locally WITHOUT marking the row dirty, so the next
+// push doesn't echo it straight back with a new timestamp.
+function applyCloudEdit(id, { status, comment }, cloudUpdatedAt) {
+  const sets = ["updated_at = datetime('now')", 'cloud_updated_at = ?']
+  const params = [cloudUpdatedAt]
+  if (status != null) { sets.push('status = ?'); params.push(status) }
+  if (comment != null) { sets.push('comment = ?'); params.push(comment) }
+  params.push(id)
+  run(`UPDATE applications SET ${sets.join(', ')} WHERE id = ?`, params)
+  if (status != null) recordStatusChange(id, status) // phone edits show in the timeline too
 }
 
 // ─── Attention Jobs ──────────────────────────────────────────────
@@ -269,31 +344,36 @@ function deleteCachedAnswer(question) {
 
 // ─── Stats ───────────────────────────────────────────────────────
 
-function getStats() {
-  const today = new Date().toISOString().split('T')[0]
-  const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0]
+// applied_at is stored in UTC (datetime('now')); these boundaries convert the
+// user's LOCAL start-of-day back to UTC so "today"/"this week" match the
+// calendar the user actually lives in (previously UTC dates were used, which
+// misbucketed mornings in UTC+ timezones).
+const TODAY_START = "datetime('now','localtime','start of day','utc')"
+const WEEK_START = "datetime('now','localtime','start of day','-6 days','utc')"
+const LAST_WEEK_START = "datetime('now','localtime','start of day','-13 days','utc')"
 
+function getStats() {
   const interviews = queryOne("SELECT COUNT(*) as c FROM applications WHERE status = 'interview'")?.c || 0
   const appliedCount = queryOne("SELECT COUNT(*) as c FROM applications WHERE status != 'skipped'")?.c || 0
 
   return {
     totalAllTime: queryOne('SELECT COUNT(*) as c FROM applications')?.c || 0,
-    totalToday: queryOne("SELECT COUNT(*) as c FROM applications WHERE applied_at >= ?", [today + ' 00:00:00'])?.c || 0,
-    totalThisWeek: queryOne("SELECT COUNT(*) as c FROM applications WHERE applied_at >= ?", [weekAgo + ' 00:00:00'])?.c || 0,
+    totalToday: queryOne(`SELECT COUNT(*) as c FROM applications WHERE applied_at >= ${TODAY_START}`)?.c || 0,
+    totalThisWeek: queryOne(`SELECT COUNT(*) as c FROM applications WHERE applied_at >= ${WEEK_START}`)?.c || 0,
+    totalLastWeek: queryOne(`SELECT COUNT(*) as c FROM applications WHERE applied_at >= ${LAST_WEEK_START} AND applied_at < ${WEEK_START}`)?.c || 0,
     interviews,
     attentionCount: queryOne('SELECT COUNT(*) as c FROM attention_jobs WHERE dismissed = 0')?.c || 0,
     byPlatform: query("SELECT platform, COUNT(*) as count FROM applications GROUP BY platform"),
     byStatus: query("SELECT status, COUNT(*) as count FROM applications GROUP BY status"),
-    todayJobs: query("SELECT job_title, company, platform, match_score, status FROM applications WHERE applied_at >= ? ORDER BY applied_at DESC", [today + ' 00:00:00']),
+    todayJobs: query(`SELECT job_title, company, platform, match_score, status FROM applications WHERE applied_at >= ${TODAY_START} ORDER BY applied_at DESC`),
     responseRate: appliedCount > 0 ? Math.round((interviews / appliedCount) * 100) : 0,
   }
 }
 
 function getTodayCountByPlatform(platform) {
-  const today = new Date().toISOString().split('T')[0]
   return queryOne(
-    "SELECT COUNT(*) as c FROM applications WHERE platform = ? AND applied_at >= ?",
-    [platform, today + ' 00:00:00']
+    `SELECT COUNT(*) as c FROM applications WHERE platform = ? AND applied_at >= ${TODAY_START}`,
+    [platform]
   )?.c || 0
 }
 
@@ -305,12 +385,28 @@ function findDuplicateAcrossPlatforms(jobTitle, company, currentPlatform) {
 }
 
 function getApplicationsByDate() {
-  return query("SELECT DATE(applied_at) as date, platform, COUNT(*) as count FROM applications GROUP BY DATE(applied_at), platform ORDER BY date DESC")
+  return query("SELECT DATE(applied_at,'localtime') as date, platform, COUNT(*) as count FROM applications GROUP BY DATE(applied_at,'localtime'), platform ORDER BY date DESC")
 }
 
 function getApplicationsPerDay(days) {
-  const from = new Date(Date.now() - (days - 1) * 86400000).toISOString().split('T')[0]
-  return query("SELECT DATE(applied_at) as date, COUNT(*) as count FROM applications WHERE applied_at >= ? GROUP BY DATE(applied_at) ORDER BY date ASC", [from + ' 00:00:00'])
+  const rows = query(
+    `SELECT DATE(applied_at,'localtime') as date, COUNT(*) as count FROM applications
+     WHERE applied_at >= datetime('now','localtime','start of day','-' || ? || ' days','utc')
+     GROUP BY DATE(applied_at,'localtime') ORDER BY date ASC`,
+    [days - 1]
+  )
+  // Pad missing days with zeros so charts always get a continuous series
+  // (and match the mobile cloud client, which already pads).
+  const byDate = {}
+  for (const r of rows) byDate[r.date] = r.count
+  const out = []
+  const now = new Date()
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i)
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    out.push({ date: key, count: byDate[key] || 0 })
+  }
+  return out
 }
 
 function getApplicationsForFollowUp(daysOld) {
@@ -351,13 +447,14 @@ function getWeeklyReportData() {
   const mondayOffset = dayOfWeek - 1
   const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - mondayOffset)
   const sunday = new Date(monday.getTime() + 6 * 86400000)
-  // Format in local time — toISOString() converts to UTC and shifts the date
-  // back a day in UTC+ timezones, making the "week" start on Sunday.
   const localDate = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-  const dateFrom = localDate(monday) + ' 00:00:00'
-  const dateTo = localDate(sunday) + ' 23:59:59'
+  // applied_at is stored in UTC, so the query bounds are the LOCAL Monday
+  // midnight converted to UTC (display labels below stay local).
+  const utcStr = (d) => d.toISOString().slice(0, 19).replace('T', ' ')
+  const dateFrom = utcStr(monday)
+  const dateTo = utcStr(new Date(monday.getTime() + 7 * 86400000))
 
-  const apps = query('SELECT * FROM applications WHERE applied_at >= ? AND applied_at <= ?', [dateFrom, dateTo])
+  const apps = query('SELECT * FROM applications WHERE applied_at >= ? AND applied_at < ?', [dateFrom, dateTo])
   const totalApps = apps.length
   const byPlatform = {}
   const byStatus = {}
@@ -371,8 +468,8 @@ function getWeeklyReportData() {
   const applied = totalApps - (byStatus.skipped || 0)
 
   return {
-    // Label the range in local time too — toISOString() is UTC and would shift
-    // the displayed dates back a day in UTC+ timezones (same bug the query avoids).
+    // Labels stay in local time — toISOString() is UTC and would shift the
+    // displayed dates back a day in UTC+ timezones.
     dateFrom: localDate(monday),
     dateTo: localDate(sunday),
     totalApps,
@@ -380,9 +477,75 @@ function getWeeklyReportData() {
     byStatus,
     avgMatchScore: totalApps > 0 ? Math.round(matchSum / totalApps) : 0,
     responseRate: applied > 0 ? Math.round((interviews / applied) * 100) : 0,
-    perDay: query('SELECT DATE(applied_at) as date, COUNT(*) as count FROM applications WHERE applied_at >= ? AND applied_at <= ? GROUP BY DATE(applied_at) ORDER BY date', [dateFrom, dateTo]),
-    topCompanies: query('SELECT company, COUNT(*) as count FROM applications WHERE applied_at >= ? AND applied_at <= ? GROUP BY company ORDER BY count DESC LIMIT 5', [dateFrom, dateTo]),
+    perDay: query("SELECT DATE(applied_at,'localtime') as date, COUNT(*) as count FROM applications WHERE applied_at >= ? AND applied_at < ? GROUP BY DATE(applied_at,'localtime') ORDER BY date", [dateFrom, dateTo]),
+    topCompanies: query('SELECT company, COUNT(*) as count FROM applications WHERE applied_at >= ? AND applied_at < ? GROUP BY company ORDER BY count DESC LIMIT 5', [dateFrom, dateTo]),
   }
+}
+
+// ─── Backups ─────────────────────────────────────────────────────
+// Rotating daily backups of the SQLite file in ~/.hiro/backups (keep 7).
+
+const BACKUP_DIR = path.join(CONFIG_DIR, 'backups')
+const BACKUP_KEEP = 7
+
+function backupStamp(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function backupNow() {
+  if (!db) return { success: false, error: 'Database not initialised yet' }
+  if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true })
+  persist() // flush in-memory state to disk first
+  const file = path.join(BACKUP_DIR, `autoapply-${backupStamp()}.db`)
+  fs.copyFileSync(DB_PATH, file)
+  pruneBackups()
+  return { success: true, name: path.basename(file) }
+}
+
+function pruneBackups() {
+  try {
+    const files = fs.readdirSync(BACKUP_DIR).filter(f => /^autoapply-\d{4}-\d{2}-\d{2}\.db$/.test(f)).sort()
+    while (files.length > BACKUP_KEEP) fs.unlinkSync(path.join(BACKUP_DIR, files.shift()))
+  } catch { /* pruning is best-effort */ }
+}
+
+// At most one backup per local day — called on launch and on a periodic timer.
+function maybeBackup() {
+  try {
+    if (fs.existsSync(path.join(BACKUP_DIR, `autoapply-${backupStamp()}.db`))) return { success: true, skipped: true }
+    return backupNow()
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+}
+
+function listBackups() {
+  try {
+    if (!fs.existsSync(BACKUP_DIR)) return []
+    return fs.readdirSync(BACKUP_DIR)
+      .filter(f => /^autoapply-[\w.-]+\.db$/.test(f))
+      .sort().reverse()
+      .map(name => {
+        const st = fs.statSync(path.join(BACKUP_DIR, name))
+        return { name, size: st.size, mtime: st.mtime.toISOString() }
+      })
+  } catch {
+    return []
+  }
+}
+
+function restoreBackup(name) {
+  // Only accept plain filenames that exist inside the backups directory.
+  if (!/^autoapply-[\w.-]+\.db$/.test(name)) return { success: false, error: 'Invalid backup name' }
+  const file = path.join(BACKUP_DIR, name)
+  if (!fs.existsSync(file)) return { success: false, error: 'Backup not found' }
+  // Keep an escape hatch: snapshot the current database before replacing it.
+  try { fs.copyFileSync(DB_PATH, path.join(BACKUP_DIR, 'autoapply-pre-restore.db')) } catch {}
+  db = new SQL.Database(fs.readFileSync(file))
+  createTables()
+  migrate()
+  persist()
+  return { success: true }
 }
 
 function getStorageInfo() {
@@ -400,6 +563,7 @@ module.exports = {
   init,
   getApplications, getApplication, hasJobUrl, hasAppliedToCompany, insertApplication, updateApplicationStatus,
   updateApplicationAfterApply, updateApplicationComment, updateRecruiterEmail, deleteApplication, clearAllApplications,
+  getDirtyApplications, getAllApplicationIds, markCloudSynced, markCloudSeen, applyCloudEdit,
   getAttentionJobs, getAttentionJob, insertAttentionJob, dismissAttentionJob, deleteAttentionJob, clearAllAttentionJobs,
   getCachedAnswer, saveCachedAnswer, getAllCachedAnswers, deleteCachedAnswer, clearAllCachedAnswers,
   getStats, getTodayCountByPlatform,
@@ -407,4 +571,6 @@ module.exports = {
   getApplicationsForFollowUp, markFollowUpSent,
   saveInterviewPrep, getInterviewPrep, deleteInterviewPrep,
   getWeeklyReportData, getStorageInfo,
+  getStatusHistory,
+  backupNow, maybeBackup, listBackups, restoreBackup,
 }

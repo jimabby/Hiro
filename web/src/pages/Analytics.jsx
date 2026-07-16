@@ -13,7 +13,7 @@ function BarChart({ data }) {
   const barW = Math.max(Math.floor(400 / data.length) - 6, 12)
 
   return (
-    <svg width="100%" height={chartH + 40} viewBox={`0 0 ${data.length * (barW + 6)} ${chartH + 40}`} preserveAspectRatio="xMidYEnd meet">
+    <svg width="100%" height={chartH + 40} viewBox={`0 0 ${data.length * (barW + 6)} ${chartH + 40}`} preserveAspectRatio="xMidYMax meet">
       {data.map((d, i) => {
         const h = Math.max((d.count / max) * chartH, 2)
         const x = i * (barW + 6)
@@ -61,6 +61,45 @@ function PieChart({ data, colorMap }) {
   )
 }
 
+// Distribution of AI match scores across every scanned job, with the
+// apply-threshold marked — shows at a glance whether the threshold is letting
+// through too much or starving the auto-apply.
+function ScoreHistogram({ apps, threshold }) {
+  const scored = apps.filter(a => a.match_score != null)
+  if (scored.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No scored jobs yet — run a scan (or a Test Scan) first.</div>
+
+  const buckets = Array.from({ length: 10 }, (_, i) => ({ lo: i * 10, hi: i === 9 ? 100 : i * 10 + 9, count: 0 }))
+  for (const a of scored) {
+    const s = Math.max(0, Math.min(100, a.match_score))
+    buckets[Math.min(9, Math.floor(s / 10))].count++
+  }
+  const max = Math.max(...buckets.map(b => b.count), 1)
+  const chartH = 120, barW = 34, gap = 8
+  const width = 10 * (barW + gap) - gap
+  const thrX = Math.min((threshold / 100) * width, width)
+
+  return (
+    <svg width="100%" height={chartH + 36} viewBox={`0 0 ${width} ${chartH + 36}`} preserveAspectRatio="xMidYMax meet">
+      {buckets.map((b, i) => {
+        const h = b.count === 0 ? 2 : Math.max((b.count / max) * chartH, 3)
+        const x = i * (barW + gap)
+        const y = chartH - h
+        const applies = b.hi >= threshold // bucket (partially) clears the threshold
+        return (
+          <g key={b.lo}>
+            <rect x={x} y={y} width={barW} height={h} rx={3}
+              fill={applies ? 'var(--green)' : 'var(--text-muted)'} opacity={applies ? 0.85 : 0.35} />
+            {b.count > 0 && <text x={x + barW / 2} y={y - 5} textAnchor="middle" fontSize={10} fill="var(--text-muted)" fontWeight="600">{b.count}</text>}
+            <text x={x + barW / 2} y={chartH + 14} textAnchor="middle" fontSize={9} fill="var(--text-muted)">{b.lo}–{b.hi}</text>
+          </g>
+        )
+      })}
+      <line x1={thrX} y1={-2} x2={thrX} y2={chartH} stroke="var(--red)" strokeWidth={1.5} strokeDasharray="4 3" />
+      <text x={Math.min(thrX + 4, width - 70)} y={10} fontSize={9} fill="var(--red)" fontWeight="600">threshold {threshold}%</text>
+    </svg>
+  )
+}
+
 function FunnelBar({ label, count, total, color }) {
   const pct = total > 0 ? (count / total) * 100 : 0
   return (
@@ -83,6 +122,7 @@ export default function Analytics() {
   const [exporting, setExporting] = useState(false)
   const [exportMsg, setExportMsg] = useState(null)
   const [timeRange, setTimeRange] = useState(7)
+  const [matchThreshold, setMatchThreshold] = useState(80)
 
   useEffect(() => {
     Promise.all([
@@ -95,6 +135,10 @@ export default function Analytics() {
       setAllApps(a)
     })
   }, [timeRange])
+
+  useEffect(() => {
+    window.api.getConfig().then(c => setMatchThreshold(c.matchThreshold ?? 80))
+  }, [])
 
   if (!stats) return <div style={{ color: 'var(--text-muted)' }}>Loading...</div>
 
@@ -194,6 +238,17 @@ export default function Analytics() {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Match score distribution vs apply threshold */}
+      <div className="card" style={{ marginBottom: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <span style={{ fontWeight: 600, fontSize: 14 }}>Match Score Distribution</span>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            green buckets clear your {matchThreshold}% threshold — tune it in Settings, test with Test Scan
+          </span>
+        </div>
+        <ScoreHistogram apps={allApps} threshold={matchThreshold} />
       </div>
 
       {/* Funnel + Status breakdown */}

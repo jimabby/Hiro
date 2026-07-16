@@ -101,6 +101,62 @@ function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
 }
 
+function BackupsCard({ showToast }) {
+  const [backups, setBackups] = useState([])
+  const [busy, setBusy] = useState(false)
+
+  async function load() {
+    try { setBackups(await window.api.listBackups() || []) } catch { setBackups([]) }
+  }
+  useEffect(() => { load() }, [])
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <div>
+          <h3 style={{ fontSize: 15, margin: 0 }}>Backups</h3>
+          <p style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 4 }}>
+            The database is backed up automatically once a day (last 7 kept) in ~/.hiro/backups.
+          </p>
+        </div>
+        <button className="btn btn-ghost" style={{ fontSize: 12 }} disabled={busy} onClick={async () => {
+          setBusy(true)
+          try {
+            const res = await window.api.backupNow()
+            if (res.success) { showToast?.('Backup created', 'success'); await load() }
+            else showToast?.(res.error || 'Backup failed', 'error')
+          } finally { setBusy(false) }
+        }}>{busy ? 'Working…' : 'Back Up Now'}</button>
+      </div>
+      {backups.length === 0 && <p style={{ color: 'var(--text-muted)', fontSize: 12 }}>No backups yet — one is created automatically each day the app runs.</p>}
+      {backups.map(b => (
+        <div key={b.name} style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+          padding: '8px 12px', background: 'var(--surface2)', borderRadius: 8, marginBottom: 6,
+        }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 500 }}>{b.name}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{new Date(b.mtime).toLocaleString()} · {formatBytes(b.size)}</div>
+          </div>
+          <button className="btn btn-ghost" style={{ fontSize: 12 }} disabled={busy} onClick={async () => {
+            if (!window.confirm(`Restore ${b.name}? Your current data will be replaced (a pre-restore snapshot is kept in the backups folder).`)) return
+            setBusy(true)
+            try {
+              const res = await window.api.restoreBackup(b.name)
+              if (res.success) {
+                showToast?.('Backup restored — reloading', 'success')
+                setTimeout(() => window.location.reload(), 800)
+              } else {
+                showToast?.(res.error || 'Restore failed', 'error')
+              }
+            } finally { setBusy(false) }
+          }}>Restore</button>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function StorageCard() {
   const [info, setInfo] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -220,9 +276,12 @@ export default function Settings({ showToast }) {
 
   async function viewPDF(text, title, originalPath, originalExt) {
     setPdfLoading(title)
-    const res = await window.api.getResumePDFBase64(text, originalPath || null, originalExt || null)
-    setPdfLoading(false)
-    if (res.success) setPdfModal({ base64: res.base64, title })
+    try {
+      const res = await window.api.getResumePDFBase64(text, originalPath || null, originalExt || null)
+      if (res.success) setPdfModal({ base64: res.base64, title })
+    } finally {
+      setPdfLoading(false)
+    }
   }
 
   async function saveResumes(resumes, defaultResumeId) {
@@ -628,6 +687,19 @@ export default function Settings({ showToast }) {
         }}>+ Add Webhook</button>
       </div>
 
+      {/* Desktop Notifications */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <h3 style={{ marginBottom: 8, fontSize: 15 }}>Desktop Notifications</h3>
+        <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 12 }}>
+          Show a system notification when a scan finishes, a job needs attention, or a recruiter replies —
+          only while Hiro is in the background.
+        </p>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: 0 }}>
+          <input type="checkbox" style={{ width: 'auto' }} checked={form.enableDesktopNotifications !== false} onChange={e => set('enableDesktopNotifications', e.target.checked)} />
+          Enable desktop notifications
+        </label>
+      </div>
+
       {/* Weekly Report */}
       <div className="card" style={{ marginBottom: 16 }}>
         <h3 style={{ marginBottom: 8, fontSize: 15 }}>Weekly Report</h3>
@@ -763,6 +835,9 @@ export default function Settings({ showToast }) {
               // Persist the URL + key so the sign-in can build the Supabase client.
               const cfg = await window.api.getConfig()
               await window.api.saveConfig({ ...cfg, supabaseUrl: cloudUrl.trim(), supabaseAnonKey: cloudKey.trim() })
+              // Keep the main form in sync — its snapshot still holds the old
+              // values and a later "Save Changes" would clobber these.
+              setForm(f => ({ ...f, supabaseUrl: cloudUrl.trim(), supabaseAnonKey: cloudKey.trim() }))
               const r = await window.api.cloudSignIn(cloudEmail.trim(), cloudPassword)
               setCloudBusy(false)
               if (r.success) {
@@ -961,7 +1036,7 @@ export default function Settings({ showToast }) {
             </div>
             <div className="form-group" style={{ marginBottom: 10 }}>
               {newResumeOriginalPath ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: 'var(--bg-secondary)', borderRadius: 6, border: '1px solid var(--border)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: 'var(--surface2)', borderRadius: 6, border: '1px solid var(--border)' }}>
                   <span style={{ fontSize: 20 }}>{newResumeOriginalExt === 'pdf' ? '📄' : '📝'}</span>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 13, fontWeight: 600 }}>{newResumeName || 'Resume'}.{newResumeOriginalExt}</div>
@@ -1103,6 +1178,9 @@ export default function Settings({ showToast }) {
       {settingsTab === 'data' && <div>
         {/* Storage Info */}
         <StorageCard />
+
+        {/* Rotating database backups */}
+        <BackupsCard showToast={showToast} />
 
         {/* Screening Answer Cache */}
         <div className="card" style={{ marginBottom: 16 }}>

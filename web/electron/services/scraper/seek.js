@@ -1,5 +1,5 @@
 const { chromium } = require('playwright')
-const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown } = require('./utils')
+const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown, verifySubmission } = require('./utils')
 
 // Node.js substitute for the browser-only CSS.escape()
 function cssEscape(str) {
@@ -446,7 +446,9 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
         await submitBtn.scrollIntoViewIfNeeded().catch(() => {})
         await randomDelay(1000, 2000)
         await submitBtn.evaluate(el => el.click())
-        await randomDelay(2000, 4000)
+        await randomDelay(3000, 5000)
+        const check = await verifySubmission(page)
+        if (!check.ok) return { success: false, reason: check.reason }
         return { success: true }
       }
 

@@ -74,7 +74,9 @@ export default function App() {
     })
 
     window.api.onQuestionAsk((q) => {
-      setQuestion(q)
+      // Payload is { id, question } (id routes the answer back to the right
+      // apply flow); tolerate a plain string from an older main process.
+      setQuestion(typeof q === 'string' ? { id: null, question: q } : q)
       setQuestionAnswer('')
     })
 
@@ -84,6 +86,19 @@ export default function App() {
       window.api.removeAllListeners('question:ask')
     }
   }, [showToast])
+
+  // Safety net: while the UI thinks a scan is running, poll the main process
+  // and clear the spinner if it disagrees (e.g. a missed scan-complete event).
+  useEffect(() => {
+    if (!scanRunning) return
+    const t = setInterval(async () => {
+      try {
+        const status = await window.api.getAutomationStatus()
+        if (status && !status.running) setScanRunning(false)
+      } catch { /* main busy — try again next tick */ }
+    }, 5000)
+    return () => clearInterval(t)
+  }, [scanRunning])
 
   // Global keyboard shortcuts for nav
   useEffect(() => {
@@ -106,6 +121,21 @@ export default function App() {
     return <Setup onComplete={() => setSetupDone(true)} />
   }
 
+  async function startScanIpc(mode) {
+    // If the scan can't start (already running, setup incomplete, IPC error),
+    // reset the spinner — otherwise "Scanning…" would be stuck until restart.
+    try {
+      const res = mode === 'dry' ? await window.api.startDryRun() : await window.api.startAutomation()
+      if (res && res.success === false) {
+        setScanRunning(false)
+        showToast(res.error || 'Could not start scan', 'error')
+      }
+    } catch (err) {
+      setScanRunning(false)
+      showToast(`Could not start scan: ${err.message}`, 'error')
+    }
+  }
+
   async function beginScan(mode = 'real') {
     const cfg = await window.api.getConfig()
     const hasResume = (cfg.resumes || []).length > 0 || cfg.masterResume
@@ -115,8 +145,7 @@ export default function App() {
       return
     }
     setScanRunning(true)
-    if (mode === 'dry') window.api.startDryRun()
-    else window.api.startAutomation()
+    startScanIpc(mode)
   }
 
   function handleClearLogs() {
@@ -136,12 +165,11 @@ export default function App() {
     await window.api.saveConfig({ ...cfg, resumes, defaultResumeId: cfg.defaultResumeId || id })
     setResumeModal(false)
     setScanRunning(true)
-    if (scanMode === 'dry') window.api.startDryRun()
-    else window.api.startAutomation()
+    startScanIpc(scanMode)
   }
 
   const pages = {
-    dashboard: <Dashboard logs={logs} scanRunning={scanRunning} onScanStart={() => beginScan('real')} onDryRun={() => beginScan('dry')} onClearLogs={handleClearLogs} showToast={showToast} />,
+    dashboard: <Dashboard active={page === 'dashboard'} logs={logs} scanRunning={scanRunning} onScanStart={() => beginScan('real')} onDryRun={() => beginScan('dry')} onClearLogs={handleClearLogs} showToast={showToast} />,
     attention: <NeedsAttention onCountChange={setAttentionCount} showToast={showToast} />,
     timeline: <Timeline />,
     analytics: <Analytics />,
@@ -205,6 +233,7 @@ export default function App() {
           </div>
           <button
             onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+            aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
             style={{
               background: 'transparent', border: '1px solid var(--border)',
               color: 'var(--text-muted)', borderRadius: 8, padding: '6px 10px',
@@ -272,7 +301,7 @@ export default function App() {
               padding: '10px 14px', background: 'var(--surface2)', borderRadius: 8,
               marginBottom: 14, fontSize: 14, borderLeft: '3px solid var(--accent)',
             }}>
-              {question}
+              {question.question}
             </div>
             <textarea
               autoFocus
@@ -280,7 +309,7 @@ export default function App() {
               onChange={e => setQuestionAnswer(e.target.value)}
               onKeyDown={e => {
                 if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                  window.api.sendQuestionAnswer(questionAnswer)
+                  window.api.sendQuestionAnswer({ id: question.id, answer: questionAnswer })
                   setQuestion(null)
                 }
               }}
@@ -294,11 +323,11 @@ export default function App() {
             />
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button className="btn btn-ghost" onClick={() => {
-                window.api.sendQuestionAnswer('')
+                window.api.sendQuestionAnswer({ id: question.id, answer: '' })
                 setQuestion(null)
               }}>Skip</button>
               <button className="btn btn-primary" onClick={() => {
-                window.api.sendQuestionAnswer(questionAnswer)
+                window.api.sendQuestionAnswer({ id: question.id, answer: questionAnswer })
                 setQuestion(null)
               }}>Submit Answer</button>
             </div>

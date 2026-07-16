@@ -17,11 +17,16 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
   const load = useCallback(async () => {
     try {
       const data = await client.getApplication(id)
+      if (!data) {
+        // Cloud path returns null when the row hasn't synced yet (LAN throws 404).
+        setError("This application hasn't synced yet — pull to refresh in a moment.")
+        return
+      }
       setApp(data)
       setComment(data.comment || '')
       setError('')
     } catch (err) {
-      setError(err.message)
+      setError(/404/.test(err.message) ? 'Application not found on the desktop.' : err.message)
     }
   }, [client, id])
 

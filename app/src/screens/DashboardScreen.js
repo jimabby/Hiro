@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
-import { View, Text, ScrollView, RefreshControl, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator } from 'react-native'
+import { View, Text, ScrollView, RefreshControl, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, Linking } from 'react-native'
 import { colors, radius, statusColors } from '../theme'
 import { enqueue, flush, getPending } from '../scanQueue'
 
 export default function DashboardScreen({ client }) {
   const [stats, setStats] = useState(null)
   const [perDay, setPerDay] = useState([])
+  const [attention, setAttention] = useState([])
   const [error, setError] = useState('')
   const [refreshing, setRefreshing] = useState(false)
 
@@ -24,7 +25,9 @@ export default function DashboardScreen({ client }) {
       if (client.canScan) {
         // Desktop is reachable — deliver any scans queued while it was offline.
         await flush(client)
-        try { setScanStatus(await client.getScanStatus()) } catch {}
+        // Clear on failure rather than keep displaying stale running/queued info.
+        try { setScanStatus(await client.getScanStatus()) } catch { setScanStatus(null) }
+        try { setAttention(await client.getAttention()) } catch { setAttention([]) }
         setPendingCount((await getPending()).length)
       }
     } catch (err) {
@@ -38,8 +41,13 @@ export default function DashboardScreen({ client }) {
     const req = { keywords: keywords.trim(), location: '', createdAt: new Date().toISOString() }
     try {
       const info = await client.requestScan({ keywords: req.keywords })
-      setScanStatus(info)
-      setScanMsg(info.running ? 'A scan is already running on the desktop — queued next.' : 'Scan queued — running on the desktop now.')
+      if (info.cloud) {
+        // Queued via Supabase — the desktop drains requests on its next sync.
+        setScanMsg('Scan queued via the cloud — the desktop will pick it up within a couple of minutes.')
+      } else {
+        setScanStatus(info)
+        setScanMsg(info.running ? 'A scan is already running on the desktop — queued next.' : 'Scan queued — running on the desktop now.')
+      }
     } catch {
       await enqueue(req)
       setPendingCount((await getPending()).length)
@@ -107,7 +115,11 @@ export default function DashboardScreen({ client }) {
           </View>
           <View style={styles.statRow}>
             <StatCard label="Response Rate" value={`${stats.responseRate}%`} />
-            <StatCard label="Needs Attention" value={stats.attentionCount} accent={stats.attentionCount > 0 ? colors.yellow : undefined} />
+            {/* Attention jobs don't sync to the cloud (attentionCount: null) —
+                hide the tile there instead of showing a misleading 0. */}
+            {stats.attentionCount != null && (
+              <StatCard label="Needs Attention" value={stats.attentionCount} accent={stats.attentionCount > 0 ? colors.yellow : undefined} />
+            )}
           </View>
 
           {/* Last 7 days bar chart */}
@@ -126,6 +138,32 @@ export default function DashboardScreen({ client }) {
               ))}
             </View>
           </View>
+
+          {/* Jobs flagged for manual application (LAN only — these don't sync) */}
+          {client.canScan && attention.length > 0 && (
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Needs attention ({attention.length})</Text>
+              {attention.slice(0, 5).map(job => (
+                <TouchableOpacity
+                  key={job.id}
+                  style={styles.attentionRow}
+                  disabled={!job.job_url}
+                  onPress={() => job.job_url && Linking.openURL(job.job_url)}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.attentionTitle} numberOfLines={1}>{job.job_title}</Text>
+                    <Text style={styles.muted} numberOfLines={1}>
+                      {job.company}{job.reason ? ` · ${job.reason}` : ''}
+                    </Text>
+                  </View>
+                  {job.match_score != null && <Text style={styles.attentionScore}>{job.match_score}%</Text>}
+                </TouchableOpacity>
+              ))}
+              {attention.length > 5 && (
+                <Text style={[styles.muted, { marginTop: 6 }]}>+{attention.length - 5} more on the desktop</Text>
+              )}
+            </View>
+          )}
 
           {/* By status */}
           <View style={styles.card}>
@@ -199,6 +237,12 @@ const styles = StyleSheet.create({
   chartBar: { height: '100%', backgroundColor: colors.accent, borderRadius: 7 },
   chartValue: { width: 24, fontSize: 11, color: colors.text, textAlign: 'right' },
   row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6, gap: 8 },
+  attentionRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border,
+  },
+  attentionTitle: { color: colors.text, fontSize: 13, fontWeight: '600' },
+  attentionScore: { color: colors.yellow, fontSize: 13, fontWeight: '700' },
   dot: { width: 8, height: 8, borderRadius: 4 },
   rowLabel: { flex: 1, color: colors.text, fontSize: 13, textTransform: 'capitalize' },
   rowValue: { color: colors.textMuted, fontSize: 13, fontWeight: '600' },

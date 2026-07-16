@@ -14,6 +14,7 @@ try {
 }
 
 let client = null
+let clientKey = null
 let user = null
 let syncing = false
 let timer = null
@@ -23,10 +24,15 @@ function getClient() {
   if (!createClient) return null
   const cfg = configService.load()
   if (!cfg.supabaseUrl || !cfg.supabaseAnonKey) return null
-  if (!client) {
+  // Rebuild the client if the URL/key changed in Settings — otherwise a
+  // corrected key would keep using the stale client until app restart.
+  const key = cfg.supabaseUrl + '\n' + cfg.supabaseAnonKey
+  if (!client || clientKey !== key) {
     client = createClient(cfg.supabaseUrl, cfg.supabaseAnonKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     })
+    clientKey = key
+    user = null // any previous session belongs to the old project/key
   }
   return client
 }
@@ -59,9 +65,7 @@ async function signIn(email, password) {
   if (error) throw new Error(error.message)
   user = data.user
   lastError = null
-  const cfg = configService.load()
-  configService.save({
-    ...cfg,
+  configService.update({
     cloudSyncEnabled: true,
     supabaseEmail: email,
     supabaseRefreshToken: data.session?.refresh_token || '',
@@ -81,7 +85,7 @@ async function restoreSession() {
   user = data.user
   lastError = null
   if (data.session.refresh_token && data.session.refresh_token !== cfg.supabaseRefreshToken) {
-    configService.save({ ...cfg, supabaseRefreshToken: data.session.refresh_token })
+    configService.update({ supabaseRefreshToken: data.session.refresh_token })
   }
   return true
 }
@@ -90,8 +94,7 @@ async function signOut() {
   try { await getClient()?.auth.signOut() } catch {}
   user = null
   stopAuto()
-  const cfg = configService.load()
-  configService.save({ ...cfg, cloudSyncEnabled: false, supabaseRefreshToken: '' })
+  configService.update({ cloudSyncEnabled: false, supabaseRefreshToken: '' })
   return getStatus()
 }
 
@@ -118,20 +121,30 @@ function localToCloud(a) {
   }
 }
 
-// Push every local application up, keyed by (user_id, local_id).
-async function pushAll(c) {
-  const apps = database.getApplications()
-  if (apps.length === 0) return
-  const rows = apps.map(localToCloud)
-  // Upsert in chunks to stay well under request size limits.
-  for (let i = 0; i < rows.length; i += 200) {
-    const chunk = rows.slice(i, i + 200)
-    const { error } = await c.from('applications').upsert(chunk, { onConflict: 'user_id,local_id' })
+// Push rows with local changes the cloud hasn't seen, keyed by (user_id, local_id).
+// Pushing only dirty rows (instead of everything) means a phone edit that lands
+// mid-sync can no longer be blanket-overwritten by an unrelated push.
+async function pushDirty(c) {
+  const apps = database.getDirtyApplications()
+  for (let i = 0; i < apps.length; i += 200) {
+    const chunk = apps.slice(i, i + 200)
+    const { error } = await c.from('applications').upsert(chunk.map(localToCloud), { onConflict: 'user_id,local_id' })
     if (error) throw new Error(error.message)
+    for (const a of chunk) {
+      // Remember exactly which version we pushed; skipped if the row was
+      // edited again while the upsert was in flight (stays dirty).
+      database.markCloudSynced(a.id, toISO(a.updated_at), a.updated_at)
+    }
   }
 }
 
-// Pull status/comment edits made on the phone back into the local DB.
+// Pull status/comment edits made on the phone back into the local DB, and
+// remove cloud rows whose local application was deleted on the desktop.
+//
+// A phone edit is detected by VERSION EQUALITY — "does the remote updated_at
+// differ from the one we last pushed/saw (cloud_updated_at)?" — never by
+// comparing the phone's clock against the desktop's, which silently dropped
+// edits whenever the two clocks disagreed.
 async function pullChanges(c) {
   const { data, error } = await c
     .from('applications')
@@ -139,35 +152,89 @@ async function pullChanges(c) {
     .eq('user_id', user.id)
   if (error) throw new Error(error.message)
 
+  const localIds = new Set(database.getAllApplicationIds())
+  const orphans = []
+
   for (const remote of data || []) {
     if (remote.local_id == null) continue
+    if (!localIds.has(remote.local_id)) { orphans.push(remote.local_id); continue }
     const local = database.getApplication(remote.local_id)
-    if (!local) continue
+
     const remoteTime = remote.updated_at ? new Date(remote.updated_at).getTime() : 0
-    const localTime = local.updated_at ? new Date(toISO(local.updated_at)).getTime() : 0
-    if (remoteTime <= localTime) continue
-    if (remote.status && remote.status !== local.status) {
-      database.updateApplicationStatus(remote.local_id, remote.status)
+    const lastSeen = local.cloud_updated_at ? new Date(local.cloud_updated_at).getTime() : null
+    if (lastSeen != null && remoteTime === lastSeen) continue // remote unchanged since last sync
+    // Both sides changed since the last sync: the desktop wins (it owns far
+    // more fields) and pushDirty will overwrite the remote copy.
+    if (local.cloud_dirty) continue
+
+    const changes = {}
+    if (remote.status && remote.status !== local.status) changes.status = remote.status
+    if (remote.comment != null && remote.comment !== local.comment) changes.comment = remote.comment
+    if (Object.keys(changes).length > 0) {
+      database.applyCloudEdit(remote.local_id, changes, remote.updated_at)
+    } else {
+      database.markCloudSeen(remote.local_id, remote.updated_at)
     }
-    if (remote.comment != null && remote.comment !== local.comment) {
-      database.updateApplicationComment(remote.local_id, remote.comment)
-    }
+  }
+
+  // The desktop is the only writer that creates rows, so a cloud row without a
+  // local counterpart means the application was deleted locally — mirror that.
+  for (let i = 0; i < orphans.length; i += 200) {
+    const { error: delErr } = await c
+      .from('applications')
+      .delete()
+      .eq('user_id', user.id)
+      .in('local_id', orphans.slice(i, i + 200))
+    if (delErr) throw new Error(delErr.message)
+  }
+}
+
+// Pick up scan requests the phone queued via the cloud (scan_requests table):
+// delete-then-queue, with .select() confirming which rows THIS desktop claimed,
+// so a request is never queued twice even if two syncs overlap.
+async function pollScanRequests(c) {
+  const { data, error } = await c
+    .from('scan_requests')
+    .select('id, keywords, location')
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: true })
+  if (error) {
+    // The table is optional (added later than applications) — if it doesn't
+    // exist in this project yet, skip quietly rather than failing the sync.
+    if (/scan_requests/.test(error.message)) return
+    throw new Error(error.message)
+  }
+  if (!data || data.length === 0) return
+
+  const { data: claimed, error: delErr } = await c
+    .from('scan_requests')
+    .delete()
+    .eq('user_id', user.id)
+    .in('id', data.map(r => r.id))
+    .select('id, keywords, location')
+  if (delErr) throw new Error(delErr.message)
+
+  // Lazy require: scheduler requires cloudSync at module load, so a top-level
+  // require here would be circular.
+  const scheduler = require('./scheduler')
+  for (const req of claimed || []) {
+    scheduler.requestScan({ keywords: req.keywords || '', location: req.location || '', source: 'cloud' })
   }
 }
 
 async function sync() {
   if (syncing) return getStatus()
-  const c = getClient()
-  if (!c) return getStatus()
-  if (!user && !(await restoreSession())) return getStatus()
-
-  syncing = true
+  syncing = true // set BEFORE any await, or two callers can both enter
   try {
+    const c = getClient()
+    if (!c) return getStatus()
+    if (!user && !(await restoreSession())) return getStatus()
+
     await pullChanges(c) // apply phone edits first so we don't clobber them
-    await pushAll(c)
+    await pushDirty(c)
+    await pollScanRequests(c)
     lastError = null
-    const cfg = configService.load()
-    configService.save({ ...cfg, lastCloudSyncAt: new Date().toISOString() })
+    configService.update({ lastCloudSyncAt: new Date().toISOString() })
   } catch (err) {
     lastError = err.message
   } finally {

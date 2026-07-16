@@ -7,11 +7,30 @@ const { randomDelay, stripMarkdown } = require('./scraper/utils')
 
 let cancelled = false
 
+// Only one apply flow (scheduled scan, batch, or manual apply) may run at a
+// time: they share the screening-question prompt and browser resources, and a
+// manual apply mid-scan would interleave with the scan's own submissions.
+let busy = false
+
+function isBusy() {
+  return busy
+}
+
 function cancel() {
   cancelled = true
 }
 
-async function run(cfg, { log, notifyAttention }) {
+async function run(cfg, callbacks) {
+  if (busy) throw new Error('Another scan or apply is already in progress')
+  busy = true
+  try {
+    return await doRun(cfg, callbacks)
+  } finally {
+    busy = false
+  }
+}
+
+async function doRun(cfg, { log, notifyAttention }) {
   cancelled = false
 
   const activeResumeObj = (cfg.resumes || []).find(r => r.id === cfg.defaultResumeId)
@@ -276,6 +295,16 @@ function resolveActiveResume(cfg) {
 }
 
 async function applyAttentionJob(jobId, cfg, log) {
+  if (busy) return { success: false, reason: 'A scan or another apply is currently running — wait for it to finish and try again.' }
+  busy = true
+  try {
+    return await doApplyAttentionJob(jobId, cfg, log)
+  } finally {
+    busy = false
+  }
+}
+
+async function doApplyAttentionJob(jobId, cfg, log) {
   const job = database.getAttentionJob(jobId)
   if (!job) return { success: false, reason: 'Job not found' }
 
@@ -310,6 +339,16 @@ async function applyAttentionJob(jobId, cfg, log) {
 }
 
 async function applySkippedJob(jobId, cfg, log) {
+  if (busy) return { success: false, reason: 'A scan or another apply is currently running — wait for it to finish and try again.' }
+  busy = true
+  try {
+    return await doApplySkippedJob(jobId, cfg, log)
+  } finally {
+    busy = false
+  }
+}
+
+async function doApplySkippedJob(jobId, cfg, log) {
   const job = database.getApplication(jobId)
   if (!job) return { success: false, reason: 'Job not found' }
 
@@ -325,4 +364,4 @@ async function applySkippedJob(jobId, cfg, log) {
   return result
 }
 
-module.exports = { run, cancel, applyAttentionJob, applySkippedJob }
+module.exports = { run, cancel, isBusy, applyAttentionJob, applySkippedJob }

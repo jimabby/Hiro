@@ -1,7 +1,7 @@
 const { chromium } = require('playwright-extra')
 const StealthPlugin = require('puppeteer-extra-plugin-stealth')
 chromium.use(StealthPlugin())
-const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown } = require('./utils')
+const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown, verifySubmission } = require('./utils')
 const indeedSession = require('../indeedSession')
 const aiAdapter = require('../ai/index')
 const database = require('../database')
@@ -396,7 +396,9 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
         await submitBtn.scrollIntoViewIfNeeded().catch(() => {})
         await randomDelay(1000, 2000)
         await submitBtn.evaluate(el => el.click())
-        await randomDelay(2000, 4000)
+        await randomDelay(3000, 5000)
+        const check = await verifySubmission(workFrame)
+        if (!check.ok) return { success: false, reason: check.reason }
         return { success: true }
       }
 

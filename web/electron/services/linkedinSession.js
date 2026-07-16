@@ -54,55 +54,59 @@ async function loginWithBrowser(onStatus) {
     args: ['--window-size=1024,700', '--disable-blink-features=AutomationControlled'],
   })
 
-  const context = await browser.newContext({
-    viewport: { width: 1024, height: 700 },
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-  })
-
-  const page = await context.newPage()
-  await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded' })
-
-  onStatus('Please log into LinkedIn in the browser window. The window will close automatically when done.')
-
-  // Wait until user reaches a logged-in page
-  let loggedIn = false
-  const timeout = Date.now() + 5 * 60 * 1000
-
-  while (Date.now() < timeout) {
-    await new Promise(r => setTimeout(r, 2000))
-    try {
-      const url = page.url()
-      if (
-        url.includes('linkedin.com/feed') ||
-        url.includes('linkedin.com/in/') ||
-        url.includes('linkedin.com/mynetwork') ||
-        url.includes('linkedin.com/jobs')
-      ) {
-        loggedIn = true
-        break
-      }
-    } catch {}
-  }
-
-  if (!loggedIn) {
-    await browser.close()
-    return { success: false, error: 'Login timed out (5 minutes). Please try again.' }
-  }
-
-  // Let session cookies fully settle
-  await new Promise(r => setTimeout(r, 2000))
-
+  // Everything below runs inside try/finally: if newContext/goto throws (or
+  // any other path exits early), the headed Chrome must still be closed —
+  // otherwise every failed login leaks a browser process.
   try {
-    if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
-    await context.storageState({ path: STORAGE_PATH })
-    onStatus('LinkedIn login successful. Session saved.')
-  } catch (err) {
-    await browser.close()
-    return { success: false, error: `Failed to save session: ${err.message}` }
-  }
+    const context = await browser.newContext({
+      viewport: { width: 1024, height: 700 },
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    })
 
-  await browser.close()
-  return { success: true }
+    const page = await context.newPage()
+    await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded' })
+
+    onStatus('Please log into LinkedIn in the browser window. The window will close automatically when done.')
+
+    // Wait until user reaches a logged-in page
+    let loggedIn = false
+    const timeout = Date.now() + 5 * 60 * 1000
+
+    while (Date.now() < timeout) {
+      await new Promise(r => setTimeout(r, 2000))
+      try {
+        const url = page.url()
+        if (
+          url.includes('linkedin.com/feed') ||
+          url.includes('linkedin.com/in/') ||
+          url.includes('linkedin.com/mynetwork') ||
+          url.includes('linkedin.com/jobs')
+        ) {
+          loggedIn = true
+          break
+        }
+      } catch {}
+    }
+
+    if (!loggedIn) {
+      return { success: false, error: 'Login timed out (5 minutes). Please try again.' }
+    }
+
+    // Let session cookies fully settle
+    await new Promise(r => setTimeout(r, 2000))
+
+    try {
+      if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
+      await context.storageState({ path: STORAGE_PATH })
+      onStatus('LinkedIn login successful. Session saved.')
+    } catch (err) {
+      return { success: false, error: `Failed to save session: ${err.message}` }
+    }
+
+    return { success: true }
+  } finally {
+    await browser.close().catch(() => {})
+  }
 }
 
 module.exports = { hasCookies, hasSession, loadCookies, getStoragePath, clearCookies, loginWithBrowser }
