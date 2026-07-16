@@ -129,6 +129,7 @@ async function runBatch(batchSize) {
   if (running) return
   running = true
   log(`Starting batch (${batchSize} apps max)...`)
+  cloudSync.updateScanStatus(true).catch(() => {})
 
   try {
     const cfg = configService.load()
@@ -138,6 +139,7 @@ async function runBatch(batchSize) {
     log(`Batch error: ${err.message}`)
   } finally {
     running = false
+    cloudSync.updateScanStatus(false).catch(() => {})
     log('Batch complete.')
     notify({ type: 'scan-complete' })
     webhooks.send('scan-complete', { message: `Batch of ${batchSize} complete` }).catch(() => {})
@@ -160,10 +162,12 @@ function stop() {
 }
 
 function cancelScan() {
+  if (!running) return // nothing to cancel (e.g. the phone raced a finished scan)
   applicator.cancel()
   running = false
   log('Scan cancelled by user.')
   notify({ type: 'scan-complete' })
+  cloudSync.updateScanStatus(false).catch(() => {})
 }
 
 function restart(mainWindow) {
@@ -236,6 +240,7 @@ async function runScan(overrides = {}) {
   running = true
   const dryRun = !!overrides.dryRun
   log(dryRun ? 'Starting test scan (dry run — nothing will be submitted)...' : 'Starting job scan...')
+  cloudSync.updateScanStatus(true).catch(() => {})
 
   try {
     const runCfg = { ...cfg, askQuestion: makeAskQuestion(win) }
@@ -247,6 +252,7 @@ async function runScan(overrides = {}) {
     log(`Scan error: ${err.message}`)
   } finally {
     running = false
+    cloudSync.updateScanStatus(false).catch(() => {})
     // A dry run changes nothing — don't touch lastScanAt, sync, or the queue.
     if (!dryRun) {
       try {

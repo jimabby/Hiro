@@ -60,6 +60,8 @@
 - **On-the-go dashboard** — stats, 7-day chart, status and platform breakdowns
 - **Manage applications** — search, filter, update statuses, and add notes from your phone
 - **Trigger a scan from your phone** — queue a scan (with optional keyword override); over LAN it runs on the desktop immediately (or the moment the desktop is next turned on), and over the cloud the desktop picks it up on its next sync cycle (~2 minutes) — so you can kick off a scan from anywhere. Requests are saved on the phone if neither is reachable and delivered automatically later
+- **Watch scans live** — while the desktop scans, the phone shows a live "scanning now…" indicator (works over the cloud too) and, over Wi-Fi, a real-time feed of the desktop's activity log with a remote **Cancel scan** button
+- **App Store-ready** — in-app account deletion, privacy policy, EAS build config (see [app/README.md](app/README.md))
 - **Two ways to connect:**
   - **Local network (default)** — the phone talks directly to the desktop via a token-protected LAN API; no cloud involved
   - **Cloud sync (optional)** — sign in to a Supabase account on both desktop and phone to mirror applications to the cloud, so the phone works from anywhere. Your local database stays the source of truth. See [supabase/SETUP.md](supabase/SETUP.md)

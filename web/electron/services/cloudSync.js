@@ -222,6 +222,22 @@ async function pollScanRequests(c) {
   }
 }
 
+// Mirror the desktop's scan-running state to the cloud (scan_status table) so
+// the phone can show "scanning now…" from anywhere, not just over the LAN.
+// Best-effort: a failure here must never affect the scan itself, and the table
+// is optional (added later than applications) — skip quietly if it's missing.
+async function updateScanStatus(running) {
+  try {
+    const c = getClient()
+    if (!c) return
+    if (!user && !(await restoreSession())) return
+    await c.from('scan_status').upsert(
+      { user_id: user.id, running, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id' }
+    )
+  } catch { /* best-effort */ }
+}
+
 async function sync() {
   if (syncing) return getStatus()
   syncing = true // set BEFORE any await, or two callers can both enter
@@ -262,4 +278,4 @@ async function init() {
   }
 }
 
-module.exports = { init, signIn, signOut, sync, getStatus }
+module.exports = { init, signIn, signOut, sync, getStatus, updateScanStatus }

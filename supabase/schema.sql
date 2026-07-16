@@ -62,3 +62,35 @@ create policy "own scan requests" on public.scan_requests
 
 create index if not exists idx_scan_requests_user
   on public.scan_requests (user_id, created_at);
+
+-- Live scan indicator. The desktop upserts its row when a scan starts/finishes
+-- so the phone can show "scanning now…" from anywhere (one row per user).
+create table if not exists public.scan_status (
+  user_id       uuid primary key references auth.users (id) on delete cascade,
+  running       boolean not null default false,
+  updated_at    timestamptz default now()
+);
+
+alter table public.scan_status enable row level security;
+
+drop policy if exists "own scan status" on public.scan_status;
+create policy "own scan status" on public.scan_status
+  for all
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+-- In-app account deletion (required by Apple App Store guideline 5.1.1(v)).
+-- Runs as the function owner (security definer) so a signed-in user can delete
+-- their OWN auth record; the on-delete-cascade foreign keys above then remove
+-- all of their applications, scan requests, and scan status automatically.
+create or replace function public.delete_account()
+returns void
+language sql
+security definer
+set search_path = ''
+as $$
+  delete from auth.users where id = auth.uid();
+$$;
+
+revoke execute on function public.delete_account() from public, anon;
+grant execute on function public.delete_account() to authenticated;

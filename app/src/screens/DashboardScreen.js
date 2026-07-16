@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { View, Text, ScrollView, RefreshControl, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, Linking } from 'react-native'
+import { View, Text, ScrollView, RefreshControl, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, Linking, Platform } from 'react-native'
 import { colors, radius, statusColors } from '../theme'
 import { enqueue, flush, getPending } from '../scanQueue'
 
@@ -15,6 +15,8 @@ export default function DashboardScreen({ client }) {
   const [scanBusy, setScanBusy] = useState(false)
   const [scanMsg, setScanMsg] = useState('')
   const [pendingCount, setPendingCount] = useState(0)
+  const [liveLog, setLiveLog] = useState([])
+  const [cancelBusy, setCancelBusy] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -44,6 +46,8 @@ export default function DashboardScreen({ client }) {
       if (info.cloud) {
         // Queued via Supabase — the desktop drains requests on its next sync.
         setScanMsg('Scan queued via the cloud — the desktop will pick it up within a couple of minutes.')
+        // Refresh the status so the queued count shows and live polling starts.
+        try { setScanStatus(await client.getScanStatus()) } catch { /* status is decorative */ }
       } else {
         setScanStatus(info)
         setScanMsg(info.running ? 'A scan is already running on the desktop — queued next.' : 'Scan queued — running on the desktop now.')
@@ -58,6 +62,50 @@ export default function DashboardScreen({ client }) {
   }
 
   useEffect(() => { load() }, [load])
+
+  // Live scan progress: while the desktop is scanning (or scans are queued),
+  // poll the status — and over LAN also the activity log, so the user can
+  // watch the scan work ("Found 14 jobs on Seek… applying…") in real time.
+  // Cloud mode polls status only, at a gentler rate (each tick is a Supabase
+  // read); LAN talks straight to the desktop so 4s is cheap.
+  const scanActive = !!(scanStatus?.running || scanStatus?.queued > 0)
+  useEffect(() => {
+    if (!scanActive) return
+    let cancelled = false
+    let finishing = false
+    const tick = async () => {
+      try {
+        const [status, logs] = await Promise.all([
+          client.getScanStatus(),
+          client.getLogs ? client.getLogs(40) : Promise.resolve(null),
+        ])
+        if (cancelled) return
+        if (logs?.lines) setLiveLog(logs.lines)
+        setScanStatus(status)
+        // Scan finished — refresh stats/chart once so new applications show up.
+        if (status && !status.running && !(status.queued > 0) && !finishing) {
+          finishing = true
+          load()
+        }
+      } catch { /* desktop went away mid-scan; pull-to-refresh recovers */ }
+    }
+    const id = setInterval(tick, client.getLogs ? 4000 : 10000)
+    tick()
+    return () => { cancelled = true; clearInterval(id) }
+  }, [scanActive, client, load])
+
+  async function onCancelScan() {
+    setCancelBusy(true)
+    try {
+      const info = await client.cancelScan()
+      setScanStatus(info)
+      setScanMsg('Scan cancelled.')
+    } catch (err) {
+      setScanMsg(err.message)
+    } finally {
+      setCancelBusy(false)
+    }
+  }
 
   async function onRefresh() {
     setRefreshing(true)
@@ -98,8 +146,25 @@ export default function DashboardScreen({ client }) {
         <TouchableOpacity style={[styles.scanBtn, scanBusy && { opacity: 0.6 }]} onPress={onRunScan} disabled={scanBusy}>
           {scanBusy ? <ActivityIndicator color="#fff" /> : <Text style={styles.scanBtnText}>Run scan now</Text>}
         </TouchableOpacity>
+        {scanStatus?.running && !!client.cancelScan && (
+          <TouchableOpacity style={[styles.cancelBtn, cancelBusy && { opacity: 0.6 }]} onPress={onCancelScan} disabled={cancelBusy}>
+            <Text style={styles.cancelBtnText}>{cancelBusy ? 'Cancelling…' : 'Cancel scan'}</Text>
+          </TouchableOpacity>
+        )}
         {pendingCount > 0 && <Text style={styles.pending}>{pendingCount} scan{pendingCount > 1 ? 's' : ''} waiting to send to the desktop</Text>}
         {!!scanMsg && <Text style={styles.scanMsg}>{scanMsg}</Text>}
+
+        {/* Live activity feed while a scan runs (LAN only — the log stays on
+            the desktop; cloud mode shows the status line above instead) */}
+        {scanActive && !!client.getLogs && liveLog.length > 0 && (
+          <View style={styles.liveLog}>
+            {liveLog.slice(-8).map((line, i) => (
+              <Text key={i} style={styles.liveLogLine} numberOfLines={2}>
+                {line.replace(/^\[\d{4}-\d{2}-\d{2} (\d{2}:\d{2}):\d{2}\]/, '[$1]')}
+              </Text>
+            ))}
+          </View>
+        )}
       </View>
       )}
 
@@ -228,6 +293,19 @@ const styles = StyleSheet.create({
     alignItems: 'center', marginTop: 10,
   },
   scanBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  cancelBtn: {
+    borderWidth: 1, borderColor: colors.red, borderRadius: radius,
+    paddingVertical: 10, alignItems: 'center', marginTop: 8,
+  },
+  cancelBtnText: { color: colors.red, fontSize: 13, fontWeight: '600' },
+  liveLog: {
+    backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border,
+    borderRadius: radius, padding: 10, marginTop: 10, gap: 3,
+  },
+  liveLogLine: {
+    color: colors.textMuted, fontSize: 11, lineHeight: 15,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
   pending: { color: colors.yellow, fontSize: 12, marginTop: 10 },
   scanMsg: { color: colors.textMuted, fontSize: 12, marginTop: 8 },
   chart: { gap: 8 },

@@ -13,7 +13,8 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.hiro.mobile",
+      "bundleIdentifier": "com.cessleigh.hiro",
+      "buildNumber": "1",
       "infoPlist": {
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true
@@ -22,8 +23,12 @@
       }
     },
     "android": {
-      "package": "com.hiro.mobile",
+      "package": "com.cessleigh.hiro",
+      "versionCode": 1,
       "usesCleartextTraffic": true
-    }
+    },
+    "plugins": [
+      "expo-asset"
+    ]
   }
 }

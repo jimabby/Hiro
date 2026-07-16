@@ -4,6 +4,7 @@ const crypto = require('crypto')
 const configService = require('./config')
 const database = require('./database')
 const scheduler = require('./scheduler')
+const logger = require('./logger')
 
 // LAN HTTP API for the Hiro mobile companion app (app/ in this repo).
 // All data stays on this machine — the phone connects directly over the
@@ -148,6 +149,18 @@ async function handle(req, res) {
 
     if (req.method === 'GET' && path === '/api/scan/status') {
       return json(res, 200, scheduler.getScanInfo())
+    }
+
+    if (req.method === 'POST' && path === '/api/scan/cancel') {
+      scheduler.cancelScan()
+      return json(res, 200, { cancelled: true, ...scheduler.getScanInfo() })
+    }
+
+    // Recent activity-log lines (oldest → newest), so the phone can show a
+    // live feed of what the desktop is doing while a scan runs.
+    if (req.method === 'GET' && path === '/api/logs') {
+      const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 40))
+      return json(res, 200, { lines: logger.tail(limit) })
     }
 
     if (req.method === 'GET' && path === '/api/attention') {

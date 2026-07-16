@@ -23,6 +23,23 @@ export const supabase = isConfigured
     })
   : null
 
+// Permanently delete the signed-in user's cloud account. The delete_account
+// Postgres function (supabase/schema.sql) removes the auth user, and cascading
+// foreign keys wipe their applications, scan requests, and scan status with it.
+// Required for App Store guideline 5.1.1(v) — apps with account creation must
+// offer account deletion in-app. Desktop-local data is untouched.
+export async function deleteAccount() {
+  const { error } = await supabase.rpc('delete_account')
+  if (error) {
+    if (/delete_account/i.test(error.message)) {
+      throw new Error('Account deletion needs the delete_account function — re-run supabase/schema.sql in your project.')
+    }
+    throw new Error(error.message)
+  }
+  // The auth user is gone; drop the now-invalid local session too.
+  try { await supabase.auth.signOut() } catch { /* session already invalid */ }
+}
+
 function startOfDay(d) {
   const x = new Date(d)
   x.setHours(0, 0, 0, 0)
@@ -177,8 +194,31 @@ export class CloudClient {
   // Attention jobs never sync to the cloud.
   async getAttention() { return [] }
 
-  // No live desktop status over the cloud.
-  async getScanStatus() { return null }
+  // Live desktop status over the cloud: the desktop upserts its row in
+  // scan_status when a scan starts/finishes, and queued scan_requests are the
+  // ones it hasn't picked up yet. Both tables are optional (older projects) —
+  // return null so the UI simply hides the status line.
+  async getScanStatus() {
+    const { data, error } = await supabase
+      .from('scan_status')
+      .select('running, updated_at')
+      .eq('user_id', this.userId)
+      .maybeSingle()
+    if (error) return null
+    let queued = 0
+    try {
+      const { count } = await supabase
+        .from('scan_requests')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', this.userId)
+      queued = count || 0
+    } catch { /* older schema without scan_requests */ }
+    // If the desktop crashed mid-scan it never wrote running=false; treat a
+    // "running" flag older than 2 hours as stale rather than showing it forever.
+    const age = data?.updated_at ? Date.now() - new Date(data.updated_at).getTime() : Infinity
+    const running = !!data?.running && age < 2 * 60 * 60 * 1000
+    return { running, queued, lastScanAt: null, cloud: true }
+  }
 
   // Queue a scan through the cloud: the desktop drains scan_requests during
   // its periodic sync. `cloud: true` tells the UI to phrase the confirmation

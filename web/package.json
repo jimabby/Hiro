@@ -2,6 +2,7 @@
   "name": "hiro",
   "version": "1.0.0",
   "description": "AI-powered automated job application desktop app",
+  "author": "Jim <wksunshine@gmail.com>",
   "main": "electron/main.js",
   "scripts": {
     "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",

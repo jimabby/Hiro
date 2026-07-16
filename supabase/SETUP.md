@@ -49,7 +49,10 @@ EXPO_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 
 ## Upgrading from an earlier schema
 
-`schema.sql` is idempotent — if you set your project up before the
-`scan_requests` table existed (it powers **triggering scans from your phone
-over the cloud**), just re-run the whole file in the SQL Editor. Existing data
-is untouched; the new table and its policies are added alongside.
+`schema.sql` is idempotent — just re-run the whole file in the SQL Editor
+whenever it gains something new. Existing data is untouched; new objects are
+added alongside. Re-running is needed if your project predates:
+
+- `scan_requests` — triggering scans from your phone over the cloud
+- `scan_status` — the phone's live "scanning now…" indicator away from home
+- `delete_account()` — in-app account deletion (required for App Store release)

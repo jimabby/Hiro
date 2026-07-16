@@ -70,4 +70,9 @@ export class HiroClient {
     return this.request('/api/scan', { method: 'POST', body: JSON.stringify(opts) })
   }
   getScanStatus() { return this.request('/api/scan/status') }
+  cancelScan() { return this.request('/api/scan/cancel', { method: 'POST' }) }
+
+  // Recent desktop activity-log lines (oldest → newest) — powers the live
+  // scan feed on the Dashboard. LAN only; CloudClient has no equivalent.
+  getLogs(limit = 40) { return this.request(`/api/logs?limit=${limit}`) }
 }

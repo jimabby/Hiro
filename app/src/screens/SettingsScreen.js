@@ -1,11 +1,46 @@
 import { useState } from 'react'
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native'
+import { View, Text, TouchableOpacity, StyleSheet, Alert, Linking } from 'react-native'
 import { colors, radius } from '../theme'
+import { deleteAccount } from '../supabase'
+
+const LEGAL_BASE = 'https://jimabby.github.io/card-assets/legal/hiro'
+export const PRIVACY_POLICY_URL = `${LEGAL_BASE}/privacy-policy.html`
+export const SUPPORT_URL = `${LEGAL_BASE}/support.html`
 
 export default function SettingsScreen({ client, connection, onDisconnect }) {
   const [pingResult, setPingResult] = useState(null)
   const [pinging, setPinging] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
   const isCloud = connection.mode === 'cloud'
+
+  // In-app account deletion — required by App Store guideline 5.1.1(v) for any
+  // app with account sign-in. Deletes the cloud account and every synced row;
+  // the desktop's local database is untouched.
+  function confirmDeleteAccount() {
+    Alert.alert(
+      'Delete account?',
+      'This permanently deletes your cloud account and all applications synced to it. ' +
+      'Data stored locally on your desktop is not affected.\n\nThis cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete account', style: 'destructive', onPress: doDeleteAccount },
+      ]
+    )
+  }
+
+  async function doDeleteAccount() {
+    setDeleting(true)
+    setDeleteError('')
+    try {
+      await deleteAccount()
+      onDisconnect()
+    } catch (err) {
+      setDeleteError(err.message)
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   async function testConnection() {
     setPinging(true)
@@ -51,6 +86,29 @@ export default function SettingsScreen({ client, connection, onDisconnect }) {
         <Text style={styles.btnDangerText}>{isCloud ? 'Sign out' : 'Disconnect'}</Text>
       </TouchableOpacity>
 
+      {isCloud && (
+        <>
+          <TouchableOpacity style={styles.btnDeleteAccount} onPress={confirmDeleteAccount} disabled={deleting}>
+            <Text style={styles.btnDeleteAccountText}>{deleting ? 'Deleting…' : 'Delete account'}</Text>
+          </TouchableOpacity>
+          {!!deleteError && <Text style={styles.deleteError}>{deleteError}</Text>}
+          <Text style={styles.deleteHint}>
+            Permanently deletes your cloud account and all synced applications.
+            Data on your desktop is not affected.
+          </Text>
+        </>
+      )}
+
+      <View style={styles.legalLinks}>
+        <TouchableOpacity onPress={() => Linking.openURL(PRIVACY_POLICY_URL)}>
+          <Text style={styles.legalLinkText}>Privacy Policy</Text>
+        </TouchableOpacity>
+        <Text style={styles.legalDivider}>·</Text>
+        <TouchableOpacity onPress={() => Linking.openURL(SUPPORT_URL)}>
+          <Text style={styles.legalLinkText}>Support</Text>
+        </TouchableOpacity>
+      </View>
+
       <Text style={styles.footer}>
         Hiro Mobile · companion to the Hiro desktop app{'\n'}
         {isCloud ? 'Synced privately to your Supabase project.' : 'All data stays on your computer.'}
@@ -89,5 +147,18 @@ const styles = StyleSheet.create({
     paddingVertical: 12, alignItems: 'center',
   },
   btnDangerText: { color: '#fff', fontSize: 14, fontWeight: '600' },
-  footer: { color: colors.textMuted, fontSize: 12, textAlign: 'center', marginTop: 'auto', lineHeight: 18, paddingBottom: 8 },
+  btnDeleteAccount: {
+    borderWidth: 1, borderColor: colors.red, borderRadius: radius,
+    paddingVertical: 11, alignItems: 'center', marginTop: 12,
+  },
+  btnDeleteAccountText: { color: colors.red, fontSize: 13, fontWeight: '600' },
+  deleteError: { color: colors.red, fontSize: 12, marginTop: 8, textAlign: 'center' },
+  deleteHint: { color: colors.textMuted, fontSize: 11, textAlign: 'center', marginTop: 8, lineHeight: 16 },
+  legalLinks: {
+    flexDirection: 'row', justifyContent: 'center', alignItems: 'center',
+    gap: 10, marginTop: 'auto', paddingVertical: 8,
+  },
+  legalLinkText: { color: colors.accent, fontSize: 13, fontWeight: '500' },
+  legalDivider: { color: colors.textMuted, fontSize: 13 },
+  footer: { color: colors.textMuted, fontSize: 12, textAlign: 'center', lineHeight: 18, paddingBottom: 8 },
 })
