@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import HiroLogo from '../components/HiroLogo'
 
 function IndeedAccountCard() {
@@ -205,7 +205,7 @@ function StorageCard() {
   )
 }
 
-export default function Settings({ showToast }) {
+export default function Settings({ showToast, active }) {
   const [form, setForm] = useState(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -245,15 +245,27 @@ export default function Settings({ showToast }) {
   const [cloudBusy, setCloudBusy] = useState(false)
   const [cloudMsg, setCloudMsg] = useState('')
 
+  // Every page stays mounted for the app's lifetime, so this form is a snapshot
+  // that would otherwise go stale: blacklisting a company from the Dashboard,
+  // or importing a resume that auto-fills personalLinks, writes config behind
+  // our back — and saving the stale form silently reverted it. Refetch whenever
+  // Settings becomes visible again.
   useEffect(() => {
+    if (active === false) return
     window.api.getConfig().then(cfg => {
-      setForm({
+      setForm(f => ({
         ...cfg,
         blacklistedCompanies: Array.isArray(cfg.blacklistedCompanies)
           ? cfg.blacklistedCompanies.join(', ')
           : cfg.blacklistedCompanies || '',
-      })
+        // Preserve fields the user is mid-edit so a tab switch doesn't discard
+        // unsaved typing; only unedited values are refreshed from disk.
+        ...(dirtyRef.current ? f : {}),
+      }))
     })
+  }, [active])
+
+  useEffect(() => {
     window.api.linkedinStatus().then(s => setLinkedinLoggedIn(s.loggedIn))
     window.api.getMobileInfo?.().then(setMobileInfo)
     window.api.cloudStatus?.().then(s => {
@@ -272,7 +284,14 @@ export default function Settings({ showToast }) {
     }
   }, [])
 
-  const set = (key, val) => setForm(f => ({ ...f, [key]: val }))
+  // Tracks whether the form has edits the user hasn't saved yet, so refetching
+  // on tab-focus never throws away typing in progress.
+  const dirtyRef = useRef(false)
+
+  const set = (key, val) => {
+    dirtyRef.current = true
+    setForm(f => ({ ...f, [key]: val }))
+  }
 
   async function viewPDF(text, title, originalPath, originalExt) {
     setPdfLoading(title)
@@ -306,6 +325,7 @@ export default function Settings({ showToast }) {
       smartScheduleBatchSize: clamp(form.smartScheduleBatchSize, 1, 20, 3),
       smartScheduleJitter: clamp(form.smartScheduleJitter, 0, 60, 15),
     })
+    dirtyRef.current = false // saved state now matches disk — safe to refetch
     setSaving(false)
     setSaved(true)
     setTimeout(() => setSaved(false), 3000)

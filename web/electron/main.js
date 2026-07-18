@@ -173,6 +173,40 @@ ipcMain.handle('automation:dryRun', () => {
 
 ipcMain.handle('automation:status', () => scheduler.getStatus())
 
+// Full scan state — including how the last scan ended, so a failed scan is
+// distinguishable from one that simply found nothing.
+ipcMain.handle('automation:scanInfo', () => scheduler.getScanInfo())
+
+// Score distribution from the most recent test scan, plus a recommended
+// threshold derived from it.
+ipcMain.handle('automation:thresholdAdvice', () => {
+  const dry = scheduler.getLastDryRun()
+  if (!dry?.scores?.length) return { available: false }
+  const scores = dry.scores.map(s => s.score).sort((a, b) => a - b)
+  const at = (t) => scores.filter(s => s >= t).length
+  // Recommend the highest threshold that still clears a useful number of jobs:
+  // aim for roughly the top third of what the scan actually found, so the bar
+  // stays selective without starving the daily limit.
+  const target = Math.max(1, Math.ceil(scores.length / 3))
+  let recommended = 0
+  for (let t = 95; t >= 40; t -= 5) {
+    if (at(t) >= target) { recommended = t; break }
+  }
+  return {
+    available: true,
+    at: dry.at,
+    total: scores.length,
+    currentThreshold: dry.threshold,
+    wouldApply: dry.wouldApply,
+    recommended: recommended || dry.threshold,
+    median: scores[Math.floor(scores.length / 2)],
+    max: scores[scores.length - 1],
+    // What each candidate threshold would have yielded on this scan.
+    curve: [50, 60, 70, 75, 80, 85, 90].map(t => ({ threshold: t, count: at(t) })),
+    scores: dry.scores,
+  }
+})
+
 // ─── IPC: Activity log (persistent) ─────────────────────────────
 ipcMain.handle('logs:getRecent', () => logger.tail(500))
 ipcMain.handle('logs:clear', () => logger.clear())
@@ -575,23 +609,47 @@ ipcMain.handle('application:applySkipped', async (_, jobId) => {
     return result
   } catch (err) {
     return { success: false, reason: err.message }
+  } finally {
+    scheduler.processQueue().catch(() => {})
   }
 })
 
 ipcMain.handle('attention:apply', async (_, jobId) => {
   try {
     const cfg = { ...configService.load(), askQuestion: makeAskQuestion(mainWindow) }
-    const result = await applicator.applyAttentionJob(jobId, cfg, (msg) => {
-      logger.append(`[attention-apply] ${msg}`)
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('attention:log', msg)
-      }
-    })
+    const result = await applicator.applyAttentionJob(jobId, cfg, attentionLog)
     return result
   } catch (err) {
     return { success: false, reason: err.message }
+  } finally {
+    // A manual apply blocks queued scans (it holds the applicator's busy flag).
+    // Drain the queue now that it's free, or a scan the phone requested
+    // mid-apply would sit until the next scheduled run.
+    scheduler.processQueue().catch(() => {})
   }
 })
+
+// Retry several Needs Attention jobs in one pass.
+ipcMain.handle('attention:applyMany', async (_, jobIds) => {
+  if (!Array.isArray(jobIds) || jobIds.length === 0) {
+    return { success: false, reason: 'No jobs selected' }
+  }
+  try {
+    const cfg = { ...configService.load(), askQuestion: makeAskQuestion(mainWindow) }
+    return await applicator.applyAttentionJobs(jobIds, cfg, attentionLog)
+  } catch (err) {
+    return { success: false, reason: err.message }
+  } finally {
+    scheduler.processQueue().catch(() => {})
+  }
+})
+
+function attentionLog(msg) {
+  logger.append(`[attention-apply] ${msg}`)
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('attention:log', msg)
+  }
+}
 
 // ─── IPC: Gmail Auth ─────────────────────────────────────────────
 ipcMain.handle('gmail:status', () => ({

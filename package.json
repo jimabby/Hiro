@@ -6,6 +6,7 @@
   "scripts": {
     "web": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build",
-    "app": "npm --prefix app start"
+    "app": "npm --prefix app start",
+    "test": "npm --prefix web run test"
   }
 }

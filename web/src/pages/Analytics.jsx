@@ -123,6 +123,8 @@ export default function Analytics() {
   const [exportMsg, setExportMsg] = useState(null)
   const [timeRange, setTimeRange] = useState(7)
   const [matchThreshold, setMatchThreshold] = useState(80)
+  const [advice, setAdvice] = useState(null)
+  const [applyingAdvice, setApplyingAdvice] = useState(false)
 
   useEffect(() => {
     Promise.all([
@@ -138,7 +140,21 @@ export default function Analytics() {
 
   useEffect(() => {
     window.api.getConfig().then(c => setMatchThreshold(c.matchThreshold ?? 80))
+    // Recommendation derived from the last Test Scan, if one has run this session.
+    window.api.getThresholdAdvice?.().then(a => setAdvice(a?.available ? a : null)).catch(() => {})
   }, [])
+
+  async function applyRecommended() {
+    if (!advice) return
+    setApplyingAdvice(true)
+    try {
+      const cfg = await window.api.getConfig()
+      await window.api.saveConfig({ ...cfg, matchThreshold: advice.recommended })
+      setMatchThreshold(advice.recommended)
+    } finally {
+      setApplyingAdvice(false)
+    }
+  }
 
   if (!stats) return <div style={{ color: 'var(--text-muted)' }}>Loading...</div>
 
@@ -249,6 +265,49 @@ export default function Analytics() {
           </span>
         </div>
         <ScoreHistogram apps={allApps} threshold={matchThreshold} />
+
+        {/* Threshold recommendation from the last Test Scan. The histogram above
+            is drawn from saved applications, which are already filtered by the
+            current threshold — a dry run is the only unbiased sample of what
+            the scrapers actually find. */}
+        {advice && (
+          <div style={{
+            marginTop: 16, padding: '14px 16px', borderRadius: 8,
+            background: 'var(--surface2)', borderLeft: '3px solid var(--accent)',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>
+                  Threshold suggestion — from your last Test Scan
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  Scored {advice.total} job{advice.total === 1 ? '' : 's'} (median {advice.median}%, best {advice.max}%).
+                  At your current {advice.currentThreshold}% threshold, {advice.wouldApply} would have been applied to.
+                </div>
+              </div>
+              {advice.recommended !== matchThreshold && (
+                <button className="btn btn-primary" style={{ fontSize: 12, padding: '6px 12px', flexShrink: 0 }}
+                  onClick={applyRecommended} disabled={applyingAdvice}>
+                  {applyingAdvice ? 'Saving...' : `Use ${advice.recommended}%`}
+                </button>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
+              {advice.curve.map(c => (
+                <div key={c.threshold} style={{
+                  fontSize: 11, padding: '4px 8px', borderRadius: 6,
+                  background: c.threshold === advice.recommended ? 'var(--accent)' : 'var(--surface)',
+                  color: c.threshold === advice.recommended ? '#fff' : 'var(--text-muted)',
+                  border: c.threshold === matchThreshold ? '1px solid var(--text-muted)' : '1px solid transparent',
+                  fontWeight: c.threshold === advice.recommended ? 600 : 400,
+                }}>
+                  {c.threshold}% → {c.count} job{c.count === 1 ? '' : 's'}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Funnel + Status breakdown */}

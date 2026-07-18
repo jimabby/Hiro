@@ -130,10 +130,17 @@ export default function DashboardScreen({ client }) {
         <Text style={styles.cardTitle}>Run a scan</Text>
         {scanStatus && (
           <Text style={styles.muted}>
-            Desktop: {scanStatus.running ? 'scanning now…' : 'idle'}
+            Desktop: {scanStatus.running
+              ? 'scanning now…'
+              : scanStatus.busy ? 'busy (applying)' : 'idle'}
             {scanStatus.queued > 0 ? ` · ${scanStatus.queued} queued` : ''}
             {scanStatus.lastScanAt ? ` · last ${new Date(scanStatus.lastScanAt).toLocaleString()}` : ''}
           </Text>
+        )}
+        {/* A failed scan used to be indistinguishable from one that found
+            nothing — the desktop now reports how the last scan actually ended. */}
+        {!!scanStatus?.lastScanError && !scanStatus.running && (
+          <Text style={styles.scanError}>Last scan failed: {scanStatus.lastScanError}</Text>
         )}
         <TextInput
           style={styles.input}
@@ -308,6 +315,7 @@ const styles = StyleSheet.create({
   },
   pending: { color: colors.yellow, fontSize: 12, marginTop: 10 },
   scanMsg: { color: colors.textMuted, fontSize: 12, marginTop: 8 },
+  scanError: { color: colors.red, fontSize: 12, marginTop: 6 },
   chart: { gap: 8 },
   chartRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   chartLabel: { width: 42, fontSize: 11, color: colors.textMuted },

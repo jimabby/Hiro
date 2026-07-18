@@ -44,10 +44,16 @@ async function doRun(cfg, { log, notifyAttention }) {
 
   let batchCount = 0
   let dryWouldApply = 0
+  // Every score a dry run produced, so the caller can recommend a threshold
+  // from the real distribution rather than guesswork.
+  const dryScores = []
   const batchLimit = cfg.batchLimit || Infinity // smart scheduling passes a finite limit
+  const summary = () => (cfg.dryRun
+    ? { dryRun: true, scores: dryScores, wouldApply: dryWouldApply, threshold: cfg.matchThreshold }
+    : { dryRun: false, applied: batchCount })
 
   for (const { name, scraper, limit } of scrapers) {
-    if (cancelled || batchCount >= batchLimit) { if (cancelled) log('Scan cancelled.'); return }
+    if (cancelled || batchCount >= batchLimit) { if (cancelled) log('Scan cancelled.'); return summary() }
 
     log(`Scanning ${name}...`)
 
@@ -71,7 +77,7 @@ async function doRun(cfg, { log, notifyAttention }) {
     const filtered = jobs.filter(j => !blacklist.includes(j.company.toLowerCase()))
 
     for (const job of filtered) {
-      if (cancelled || batchCount >= batchLimit) { if (cancelled) log('Scan cancelled.'); return }
+      if (cancelled || batchCount >= batchLimit) { if (cancelled) log('Scan cancelled.'); return summary() }
 
       const currentCount = database.getTodayCountByPlatform(name)
       if (!cfg.dryRun && currentCount >= limit) break
@@ -104,7 +110,7 @@ async function doRun(cfg, { log, notifyAttention }) {
 
       job.job_description = jobDescription
 
-      if (cancelled) { log('Scan cancelled.'); return }
+      if (cancelled) { log('Scan cancelled.'); return summary() }
 
       // Score match
       let matchScore = 50
@@ -125,6 +131,7 @@ async function doRun(cfg, { log, notifyAttention }) {
       // tailoring, then move on without submitting or writing to the database.
       if (cfg.dryRun) {
         const pass = matchScore >= cfg.matchThreshold
+        dryScores.push({ score: matchScore, job_title: job.job_title, company: job.company, platform: name })
         log(`  DRY RUN — ${pass ? 'WOULD APPLY' : 'would skip'}: score ${matchScore}% (threshold ${cfg.matchThreshold}%)`)
         if (pass) {
           dryWouldApply++
@@ -166,7 +173,7 @@ async function doRun(cfg, { log, notifyAttention }) {
         continue
       }
 
-      if (cancelled) { log('Scan cancelled.'); return }
+      if (cancelled) { log('Scan cancelled.'); return summary() }
 
       // Tailor resume
       let tailoredResume = cfg.masterResume
@@ -186,7 +193,7 @@ async function doRun(cfg, { log, notifyAttention }) {
         log(`  Cover letter error: ${err.message}`)
       }
 
-      if (cancelled) { log('Scan cancelled.'); return }
+      if (cancelled) { log('Scan cancelled.'); return summary() }
 
       // Apply
       await randomDelay(3000, 8000)
@@ -227,6 +234,7 @@ async function doRun(cfg, { log, notifyAttention }) {
   if (cfg.dryRun) {
     log(`Dry run summary: ${dryWouldApply} job${dryWouldApply === 1 ? '' : 's'} would have been applied to at the ${cfg.matchThreshold}% threshold.`)
   }
+  return summary()
 }
 
 async function addAttentionJob(job, cfg, log, notifyAttention) {
@@ -364,4 +372,39 @@ async function doApplySkippedJob(jobId, cfg, log) {
   return result
 }
 
-module.exports = { run, cancel, isBusy, applyAttentionJob, applySkippedJob }
+// Retry several Needs Attention jobs in one pass. Holds `busy` for the whole
+// run rather than per job, so a scheduled scan can't slip in between them and
+// interleave submissions. Honours cancel() between jobs.
+async function applyAttentionJobs(jobIds, cfg, log) {
+  if (busy) return { success: false, reason: 'A scan or another apply is currently running — wait for it to finish and try again.' }
+  busy = true
+  cancelled = false
+  const results = []
+  try {
+    for (let i = 0; i < jobIds.length; i++) {
+      if (cancelled) {
+        log(`Bulk retry cancelled — ${results.length} of ${jobIds.length} processed.`)
+        break
+      }
+      log(`— Retry ${i + 1} of ${jobIds.length} —`)
+      let result
+      try {
+        result = await doApplyAttentionJob(jobIds[i], cfg, log)
+      } catch (err) {
+        result = { success: false, reason: err.message }
+        log(`Retry error: ${err.message}`)
+      }
+      results.push({ id: jobIds[i], ...result })
+      // Space submissions out the same way a scan does — a burst of rapid
+      // applies is exactly the pattern these sites flag.
+      if (i < jobIds.length - 1 && !cancelled) await randomDelay(5000, 12000)
+    }
+  } finally {
+    busy = false
+  }
+  const succeeded = results.filter(r => r.success).length
+  log(`Bulk retry finished: ${succeeded} of ${results.length} applied.`)
+  return { success: true, succeeded, failed: results.length - succeeded, results }
+}
+
+module.exports = { run, cancel, isBusy, applyAttentionJob, applyAttentionJobs, applySkippedJob }

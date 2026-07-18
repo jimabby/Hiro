@@ -16,6 +16,13 @@ let batchTimeouts = []
 let running = false
 let win = null
 let batchSchedule = [] // today's planned batch times for UI
+// Outcome of the most recent real scan, so the dashboard and the phone can tell
+// a failed scan from one that simply found nothing. Without this, runScan's
+// catch swallowed the error and lastScanAt was stamped either way.
+let lastScanOutcome = null // { at, ok, error, source }
+// Score distribution from the most recent test scan, kept in memory so the
+// Analytics page can recommend a match threshold from real scored jobs.
+let lastDryRun = null // { at, scores[], wouldApply, threshold }
 
 function init(mainWindow) {
   win = mainWindow
@@ -24,24 +31,50 @@ function init(mainWindow) {
   processQueue()
 }
 
+// Parse a stored "HH:MM" setting, falling back to the default when it's missing
+// or malformed. A bad value (e.g. "9") would otherwise build a cron expression
+// like "undefined 9 * * 1-5"; cron.schedule throws on that, and because
+// startTasks is called from restart() the throw propagated into the
+// config:save IPC handler — leaving EVERY scheduled task (report, follow-up,
+// inbox) stopped until the next relaunch.
+function parseTime(value, fallback) {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(String(value ?? '').trim())
+  if (match) {
+    const h = Number(match[1])
+    const m = Number(match[2])
+    if (h >= 0 && h <= 23 && m >= 0 && m <= 59) return [h, m]
+  }
+  if (value) log(`Invalid time "${value}" in settings — falling back to ${fallback}.`)
+  return fallback.split(':').map(Number)
+}
+
 function startTasks() {
   const cfg = configService.load()
   if (!cfg.setupComplete) return
 
-  if (cfg.enableSmartScheduling) {
-    // Smart scheduling: spread applications in batches across the day
-    setupSmartSchedule(cfg)
-  } else {
-    // Standard: scan once daily at configured time Mon–Fri
-    const [h, m] = (cfg.scheduledScanTime || '09:00').split(':').map(Number)
-    scanTask = cron.schedule(`${m} ${h} * * 1-5`, async () => { await runScan() })
+  // One bad task must not prevent the others from being scheduled.
+  try {
+    if (cfg.enableSmartScheduling) {
+      // Smart scheduling: spread applications in batches across the day
+      setupSmartSchedule(cfg)
+    } else {
+      // Standard: scan once daily at configured time Mon–Fri
+      const [h, m] = parseTime(cfg.scheduledScanTime, '09:00')
+      scanTask = cron.schedule(`${m} ${h} * * 1-5`, async () => { await runScan() })
+    }
+  } catch (err) {
+    log(`Could not schedule the daily scan: ${err.message}`)
   }
 
   // Daily report at the configured time (default 6pm), Mon–Fri
-  const [rh, rm] = (cfg.dailyReportTime || '18:00').split(':').map(Number)
-  reportTask = cron.schedule(`${rm} ${rh} * * 1-5`, async () => {
-    await runDailyReport()
-  })
+  try {
+    const [rh, rm] = parseTime(cfg.dailyReportTime, '18:00')
+    reportTask = cron.schedule(`${rm} ${rh} * * 1-5`, async () => {
+      await runDailyReport()
+    })
+  } catch (err) {
+    log(`Could not schedule the daily report: ${err.message}`)
+  }
 
   if (cfg.enableFollowUp && cfg.followUpDays > 0) {
     followUpTask = cron.schedule('0 10 * * 1-5', async () => { await runFollowUp() })
@@ -60,8 +93,8 @@ function startTasks() {
 function setupSmartSchedule(cfg) {
   const batchSize = cfg.smartScheduleBatchSize || 3
   const jitter = cfg.smartScheduleJitter || 15
-  const [startH, startM] = (cfg.smartScheduleStartTime || '09:00').split(':').map(Number)
-  const [endH, endM] = (cfg.smartScheduleEndTime || '17:00').split(':').map(Number)
+  const [startH, startM] = parseTime(cfg.smartScheduleStartTime, '09:00')
+  const [endH, endM] = parseTime(cfg.smartScheduleEndTime, '17:00')
 
   // Calculate total daily limit across all platforms
   let totalLimit = 0
@@ -126,23 +159,43 @@ function scheduleTodayBatches(numBatches, interval, startMinutes, jitter, batchS
 const { makeAskQuestion } = require('./askQuestion')
 
 async function runBatch(batchSize) {
-  if (running) return
+  // Same busy window as runScan — a manual apply holds applicator's flag
+  // without setting `running`.
+  if (running || applicator.isBusy()) return
+  // Checked BEFORE the try: inside it, the early return still fell through to
+  // the finally, which fired the scan-complete webhook, a desktop notification
+  // and a cloud sync for a batch that never ran.
+  const cfg = configService.load()
+  if (!cfg.setupComplete) {
+    log('Setup not complete. Skipping batch.')
+    return
+  }
+
   running = true
+  let batchError = null
   log(`Starting batch (${batchSize} apps max)...`)
   cloudSync.updateScanStatus(true).catch(() => {})
 
   try {
-    const cfg = configService.load()
-    if (!cfg.setupComplete) return
     await applicator.run({ ...cfg, askQuestion: makeAskQuestion(win), batchLimit: batchSize }, { log, notifyAttention })
   } catch (err) {
+    batchError = err.message
     log(`Batch error: ${err.message}`)
   } finally {
     running = false
+    lastScanOutcome = {
+      at: new Date().toISOString(),
+      ok: !batchError,
+      error: batchError,
+      source: 'batch',
+    }
     cloudSync.updateScanStatus(false).catch(() => {})
-    log('Batch complete.')
-    notify({ type: 'scan-complete' })
-    webhooks.send('scan-complete', { message: `Batch of ${batchSize} complete` }).catch(() => {})
+    log(batchError ? `Batch failed: ${batchError}` : 'Batch complete.')
+    notify({ type: 'scan-complete', error: batchError })
+    webhooks.send('scan-complete', {
+      message: batchError ? `Batch failed: ${batchError}` : `Batch of ${batchSize} complete`,
+      ok: !batchError,
+    }).catch(() => {})
     cloudSync.sync().catch(() => {})
     setImmediate(() => { processQueue() })
   }
@@ -165,6 +218,7 @@ function cancelScan() {
   if (!running) return // nothing to cancel (e.g. the phone raced a finished scan)
   applicator.cancel()
   running = false
+  lastScanOutcome = { at: new Date().toISOString(), ok: false, error: 'Cancelled by user', source: 'cancel' }
   log('Scan cancelled by user.')
   notify({ type: 'scan-complete' })
   cloudSync.updateScanStatus(false).catch(() => {})
@@ -210,7 +264,9 @@ function requestScan(opts = {}) {
 
 // Run queued scan requests one at a time until the queue is empty.
 async function processQueue() {
-  if (running) return
+  // Bail early while a manual apply holds the applicator — runScan would
+  // refuse anyway, and the request stays queued for when it's free.
+  if (running || applicator.isBusy()) return
   const cfg = configService.load()
   const pending = Array.isArray(cfg.pendingScans) ? cfg.pendingScans : []
   if (pending.length === 0) return
@@ -231,7 +287,13 @@ async function processQueue() {
 }
 
 async function runScan(overrides = {}) {
-  if (running) return { ran: false, reason: 'busy' }
+  // `running` alone is not enough: a manual apply from Needs Attention holds
+  // applicator's own busy flag without ever setting `running`, and cancelScan
+  // clears `running` while the applicator is still unwinding mid-submission.
+  // In both windows applicator.run() would throw "already in progress" — and
+  // because that throw was reported as a completed scan, processQueue popped
+  // and discarded the phone's queued request.
+  if (running || applicator.isBusy()) return { ran: false, reason: 'busy' }
   const cfg = configService.load()
   if (!cfg.setupComplete) {
     log('Setup not complete. Skipping scan.')
@@ -239,6 +301,7 @@ async function runScan(overrides = {}) {
   }
   running = true
   const dryRun = !!overrides.dryRun
+  let scanError = null
   log(dryRun ? 'Starting test scan (dry run — nothing will be submitted)...' : 'Starting job scan...')
   cloudSync.updateScanStatus(true).catch(() => {})
 
@@ -247,8 +310,10 @@ async function runScan(overrides = {}) {
     if (overrides.keywords) runCfg.jobKeywords = overrides.keywords
     if (overrides.location) runCfg.jobLocation = overrides.location
     if (dryRun) runCfg.dryRun = true
-    await applicator.run(runCfg, { log, notifyAttention })
+    const result = await applicator.run(runCfg, { log, notifyAttention })
+    if (dryRun && result) lastDryRun = { at: new Date().toISOString(), ...result }
   } catch (err) {
+    scanError = err.message
     log(`Scan error: ${err.message}`)
   } finally {
     running = false
@@ -258,15 +323,29 @@ async function runScan(overrides = {}) {
       try {
         configService.update({ lastScanAt: new Date().toISOString() })
       } catch {}
+      // Record how the scan actually ended, so a failure is distinguishable
+      // from a scan that simply found nothing (previously both looked alike).
+      lastScanOutcome = {
+        at: new Date().toISOString(),
+        ok: !scanError,
+        error: scanError,
+        source: overrides.fromQueue ? 'queue' : (overrides.source || 'desktop'),
+      }
     }
     log(dryRun ? 'Test scan complete (dry run — nothing was submitted).' : 'Scan complete.')
-    notify({ type: 'scan-complete' })
+    notify({ type: 'scan-complete', error: scanError })
     if (!dryRun) {
       try {
         const s = database.getStats()
-        nativeNotify('Scan complete', `${s.totalToday} application${s.totalToday === 1 ? '' : 's'} today · ${s.attentionCount} need${s.attentionCount === 1 ? 's' : ''} attention`)
+        nativeNotify(
+          scanError ? 'Scan failed' : 'Scan complete',
+          scanError || `${s.totalToday} application${s.totalToday === 1 ? '' : 's'} today · ${s.attentionCount} need${s.attentionCount === 1 ? 's' : ''} attention`
+        )
       } catch { /* stats are decorative here */ }
-      webhooks.send('scan-complete', { message: 'Full scan complete' }).catch(() => {})
+      webhooks.send('scan-complete', {
+        message: scanError ? `Scan failed: ${scanError}` : 'Full scan complete',
+        ok: !scanError,
+      }).catch(() => {})
       cloudSync.sync().catch(() => {})
       // Drain scans queued (e.g. from the phone) while this scan was running.
       // Queue-initiated runs skip this: processQueue continues itself after
@@ -274,17 +353,29 @@ async function runScan(overrides = {}) {
       if (!overrides.fromQueue) setImmediate(() => { processQueue() })
     }
   }
-  return { ran: true }
+  // `ran` means the scan flow executed, error or not — a failed scan must not
+  // be retried forever by the queue. The error travels alongside it.
+  return { ran: true, ok: !scanError, error: scanError }
 }
 
 function getScanInfo() {
   const cfg = configService.load()
   return {
     running,
+    // A manual apply blocks scans just as a running scan does; the phone needs
+    // to know that so a queued request isn't reported as inexplicably stalled.
+    busy: running || applicator.isBusy(),
     queued: (cfg.pendingScans || []).length,
     lastScanAt: cfg.lastScanAt || null,
+    lastScanOk: lastScanOutcome ? lastScanOutcome.ok : null,
+    lastScanError: lastScanOutcome?.error || null,
     batchSchedule,
   }
+}
+
+// Summary of the most recent test scan, used to recommend a match threshold.
+function getLastDryRun() {
+  return lastDryRun
 }
 
 async function runDailyReport() {
@@ -397,4 +488,4 @@ function getBatchSchedule() {
   return batchSchedule
 }
 
-module.exports = { init, restart, stop, cancelScan, runNow, runDryRun, requestScan, processQueue, getScanInfo, runInboxCheck, getStatus, getBatchSchedule }
+module.exports = { init, restart, stop, cancelScan, runNow, runDryRun, requestScan, processQueue, getScanInfo, getLastDryRun, runInboxCheck, getStatus, getBatchSchedule }

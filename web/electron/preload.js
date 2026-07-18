@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('api', {
   startDryRun: () => ipcRenderer.invoke('automation:dryRun'),
   stopAutomation: () => ipcRenderer.invoke('automation:stop'),
   getAutomationStatus: () => ipcRenderer.invoke('automation:status'),
+  getScanInfo: () => ipcRenderer.invoke('automation:scanInfo'),
+  getThresholdAdvice: () => ipcRenderer.invoke('automation:thresholdAdvice'),
 
   // Persistent activity log
   getRecentLogs: () => ipcRenderer.invoke('logs:getRecent'),
@@ -33,6 +35,7 @@ contextBridge.exposeInMainWorld('api', {
   deleteAttentionJob: (id) => ipcRenderer.invoke('db:deleteAttentionJob', id),
   clearAllAttentionJobs: () => ipcRenderer.invoke('db:clearAllAttentionJobs'),
   applyAttentionJob: (id) => ipcRenderer.invoke('attention:apply', id),
+  applyAttentionJobs: (ids) => ipcRenderer.invoke('attention:applyMany', ids),
   onAttentionLog: (cb) => ipcRenderer.on('attention:log', (_, msg) => cb(msg)),
   applySkippedJob: (id) => ipcRenderer.invoke('application:applySkipped', id),
   onSkippedApplyLog: (cb) => ipcRenderer.on('skipped:apply-log', (_, msg) => cb(msg)),

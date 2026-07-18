@@ -109,6 +109,47 @@ export default function NeedsAttention({ onCountChange, showToast }) {
     }
   }
 
+  // Retry every selected job in one pass. The main process holds the applicator
+  // busy for the whole run, so a scheduled scan can't interleave submissions.
+  async function aiApplySelected() {
+    const ids = [...selectedIds]
+    if (ids.length === 0) return
+    if (!window.confirm(`Retry AI Apply on ${ids.length} job${ids.length === 1 ? '' : 's'}? Each is submitted for real.`)) return
+
+    setApplying('bulk')
+    setApplyLog([`Retrying ${ids.length} job${ids.length === 1 ? '' : 's'}...`])
+    setApplyResult(null)
+    setSelected(null)
+
+    try {
+      const result = await window.api.applyAttentionJobs(ids)
+      if (!result.success) {
+        setApplyResult({ success: false, reason: result.reason })
+        showToast?.(result.reason || 'Bulk retry failed', 'error')
+        return
+      }
+      // Only the jobs that actually applied leave the list; the rest keep their
+      // (possibly updated) failure reason so they can be retried again.
+      const appliedIds = new Set(result.results.filter(r => r.success).map(r => r.id))
+      setJobs(prev => prev.filter(j => !appliedIds.has(j.id)))
+      onCountChange(prev => prev - appliedIds.size)
+      setSelectedIds(new Set())
+      setApplyResult({
+        success: result.succeeded > 0,
+        bulk: true,
+        reason: `${result.succeeded} applied, ${result.failed} still need attention.`,
+      })
+      showToast?.(
+        `${result.succeeded} of ${ids.length} applied`,
+        result.succeeded > 0 ? 'success' : 'error'
+      )
+      load() // refresh reasons on the ones that failed again
+    } catch (err) {
+      setApplyResult({ success: false, reason: err.message })
+      showToast?.(`Bulk retry error: ${err.message}`, 'error')
+    }
+  }
+
   function closeApplyModal() {
     setApplying(null)
     setApplyLog([])
@@ -162,6 +203,10 @@ export default function NeedsAttention({ onCountChange, showToast }) {
           {selectedIds.size > 0 && (
             <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginLeft: 8, paddingLeft: 8, borderLeft: '1px solid var(--border)' }}>
               <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{selectedIds.size} selected</span>
+              <button className="btn btn-primary" style={{ fontSize: 11, padding: '3px 8px', background: 'var(--accent)' }}
+                onClick={aiApplySelected} disabled={applying !== null}>
+                Retry Selected
+              </button>
               <button className="btn btn-ghost" style={{ fontSize: 11, padding: '3px 8px' }} onClick={async () => {
                 for (const id of selectedIds) { await window.api.dismissAttentionJob(id) }
                 setJobs(prev => prev.filter(j => !selectedIds.has(j.id)))
@@ -320,7 +365,7 @@ export default function NeedsAttention({ onCountChange, showToast }) {
         }}>
           <div className="card modal-content" style={{ width: 560, maxHeight: '70vh', display: 'flex', flexDirection: 'column' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <h2 style={{ fontSize: 16 }}>AI Applying...</h2>
+              <h2 style={{ fontSize: 16 }}>{applying === 'bulk' ? 'Retrying selected jobs...' : 'AI Applying...'}</h2>
               {applyResult && (
                 <button className="btn btn-ghost" onClick={closeApplyModal}>Close</button>
               )}
@@ -344,7 +389,9 @@ export default function NeedsAttention({ onCountChange, showToast }) {
                 color: applyResult.success ? 'var(--green)' : 'var(--red)',
                 fontSize: 13, fontWeight: 600,
               }}>
-                {applyResult.success ? 'Application submitted successfully!' : `Failed: ${applyResult.reason}`}
+                {applyResult.bulk
+                  ? applyResult.reason
+                  : applyResult.success ? 'Application submitted successfully!' : `Failed: ${applyResult.reason}`}
               </div>
             )}
 

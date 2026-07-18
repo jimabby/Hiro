@@ -14,19 +14,74 @@ let server = null
 
 const VALID_STATUSES = ['applied', 'interview', 'rejected', 'offer', 'skipped']
 
+// The token is read on every single request. Reading it from disk each time
+// also meant an OS-keychain decrypt per request, so cache it in memory and
+// invalidate explicitly whenever it changes.
+let cachedToken = null
+
 function getToken() {
+  if (cachedToken) return cachedToken
   const cfg = configService.load()
-  if (cfg.mobileApiToken) return cfg.mobileApiToken
+  if (cfg.mobileApiToken) {
+    cachedToken = cfg.mobileApiToken
+    return cachedToken
+  }
   const token = crypto.randomBytes(16).toString('hex')
   configService.update({ mobileApiToken: token })
+  cachedToken = token
   return token
 }
 
 function regenerateToken() {
   const token = crypto.randomBytes(16).toString('hex')
   configService.update({ mobileApiToken: token })
+  cachedToken = token
+  // The phone has probably been failing against the stale token and may be
+  // locked out at the exact moment the user re-pairs it — clear the slate.
+  failures.clear()
   return token
 }
+
+// ─── Auth throttling ──────────────────────────────────────────────
+// The token is 128 bits, so brute force isn't a realistic threat — but an
+// unthrottled endpoint on a shared LAN (café, co-working, hotel Wi-Fi) will
+// happily service unlimited guesses and fill the log doing it. Lock a peer out
+// for a spell after repeated failures.
+const MAX_FAILURES = 10
+const LOCKOUT_MS = 5 * 60 * 1000
+const failures = new Map() // ip -> { count, until }
+
+function authCheck(ip, token) {
+  const now = Date.now()
+  const entry = failures.get(ip)
+  if (entry?.until > now) return { ok: false, retryAfter: Math.ceil((entry.until - now) / 1000) }
+
+  if (timingSafeEqualStr(token, getToken())) {
+    failures.delete(ip)
+    return { ok: true }
+  }
+
+  // `until: 0` means "counting failures, not locked out" — only a lockout that
+  // has actually expired resets the tally, otherwise the count never grows.
+  let count = entry?.count || 0
+  if (entry?.until && entry.until <= now) count = 0
+  count += 1
+  if (count >= MAX_FAILURES) {
+    failures.set(ip, { count: 0, until: now + LOCKOUT_MS })
+    logger.append(`Mobile API: ${ip} locked out for ${LOCKOUT_MS / 60000} min after ${MAX_FAILURES} failed auth attempts`)
+    return { ok: false, retryAfter: Math.ceil(LOCKOUT_MS / 1000) }
+  }
+  failures.set(ip, { count, until: 0 })
+  return { ok: false }
+}
+
+// Keep the failure map from growing unboundedly on a hostile network.
+setInterval(() => {
+  const now = Date.now()
+  for (const [ip, e] of failures) {
+    if (e.until <= now && e.count === 0) failures.delete(ip)
+  }
+}, 10 * 60 * 1000).unref?.()
 
 function getLanAddresses() {
   const addresses = []
@@ -84,7 +139,13 @@ async function handle(req, res) {
 
   const auth = req.headers.authorization || ''
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : ''
-  if (!timingSafeEqualStr(token, getToken())) {
+  const ip = req.socket.remoteAddress || 'unknown'
+  const check = authCheck(ip, token)
+  if (!check.ok) {
+    if (check.retryAfter) {
+      res.setHeader('Retry-After', String(check.retryAfter))
+      return json(res, 429, { error: 'Too many failed attempts — try again later.' })
+    }
     return json(res, 401, { error: 'Unauthorized' })
   }
 

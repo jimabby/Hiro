@@ -174,6 +174,10 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
   const [skippedApplyLog, setSkippedApplyLog] = useState([])
   const [skippedApplyResult, setSkippedApplyResult] = useState(null)
   const [logCollapsed, setLogCollapsed] = useState(false)
+  const [scanInfo, setScanInfo] = useState(null)
+  // Which failure the user dismissed, keyed by its timestamp — a plain boolean
+  // would be undone by the next refetch, and a later failure must reappear.
+  const [dismissedScanAt, setDismissedScanAt] = useState(null)
   const skippedLogEndRef = useRef(null)
   const logRef = useRef(null)
   const searchRef = useRef(null)
@@ -185,6 +189,13 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
     if (prevScanRunning.current && !scanRunning) loadData()
     prevScanRunning.current = scanRunning
   }, [scanRunning])
+
+  // Refresh the scan outcome on mount, whenever a scan ends, and each time the
+  // Dashboard is revisited (pages stay mounted, so there's no remount to rely on).
+  useEffect(() => {
+    if (!active && scanInfo) return
+    window.api.getScanInfo?.().then(setScanInfo).catch(() => {})
+  }, [active, scanRunning])
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
@@ -442,6 +453,28 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
           </button>
         </div>
       </div>
+
+      {/* Last-scan outcome. A toast is easy to miss and disappears — a failed
+          overnight scan should still be visible the next morning. */}
+      {scanInfo?.lastScanError && !scanRunning && scanInfo.lastScanAt !== dismissedScanAt && (
+        <div className="card" style={{
+          marginBottom: 16, padding: '12px 16px', display: 'flex',
+          alignItems: 'center', justifyContent: 'space-between', gap: 12,
+          borderLeft: '3px solid var(--red)',
+        }}>
+          <div style={{ fontSize: 13 }}>
+            <span style={{ color: 'var(--red)', fontWeight: 600 }}>Last scan failed</span>
+            <span style={{ color: 'var(--text-muted)' }}>
+              {scanInfo.lastScanAt ? ` · ${new Date(scanInfo.lastScanAt).toLocaleString()}` : ''}
+              {' — '}{scanInfo.lastScanError}
+            </span>
+          </div>
+          <button className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 10px', flexShrink: 0 }}
+            onClick={() => setDismissedScanAt(scanInfo.lastScanAt)}>
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Stats */}
       {!stats && (

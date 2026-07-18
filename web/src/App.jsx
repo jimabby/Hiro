@@ -64,7 +64,10 @@ export default function App() {
           setAttentionCount(s.attentionCount || 0)
           setTodayCount(s.totalToday || 0)
         })
-        showToast('Scan complete', 'success')
+        // A scan that died partway used to report "Scan complete" like any
+        // other — the error now rides along on the event.
+        if (data.error) showToast(`Scan failed: ${data.error}`, 'error')
+        else showToast('Scan complete', 'success')
       }
     })
 
@@ -173,7 +176,7 @@ export default function App() {
     attention: <NeedsAttention onCountChange={setAttentionCount} showToast={showToast} />,
     timeline: <Timeline />,
     analytics: <Analytics />,
-    settings: <Settings showToast={showToast} />,
+    settings: <Settings active={page === 'settings'} showToast={showToast} />,
   }
 
   return (
