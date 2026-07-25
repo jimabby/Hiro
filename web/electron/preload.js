@@ -108,6 +108,23 @@ contextBridge.exposeInMainWorld('api', {
   clearAllCachedAnswers: () => ipcRenderer.invoke('db:clearAllCachedAnswers'),
   getStorageInfo: () => ipcRenderer.invoke('db:getStorageInfo'),
 
+  // Interview schedule
+  getUpcomingInterviews: (limit) => ipcRenderer.invoke('db:getUpcomingInterviews', limit),
+  getInterviewEvents: (applicationId) => ipcRenderer.invoke('db:getInterviewEvents', applicationId),
+  addInterviewEvent: (payload) => ipcRenderer.invoke('db:addInterviewEvent', payload),
+  deleteInterviewEvent: (id) => ipcRenderer.invoke('db:deleteInterviewEvent', id),
+
+  // Application closing date
+  updateClosingDate: (id, closingDate) => ipcRenderer.invoke('db:updateClosingDate', id, closingDate),
+
+  // Score-band conversion analytics
+  getScoreBandConversion: () => ipcRenderer.invoke('analytics:scoreBandConversion'),
+
+  // Settings export / import (encrypted bundle)
+  exportConfig: (passphrase, includeSecrets) => ipcRenderer.invoke('config:export', passphrase, includeSecrets),
+  inspectConfigImport: (passphrase) => ipcRenderer.invoke('config:inspectImport', passphrase),
+  applyConfigImport: () => ipcRenderer.invoke('config:applyImport'),
+
   // Status history & backups
   getStatusHistory: (applicationId) => ipcRenderer.invoke('db:getStatusHistory', applicationId),
   backupNow: () => ipcRenderer.invoke('db:backupNow'),

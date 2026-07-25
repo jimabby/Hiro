@@ -157,6 +157,128 @@ function BackupsCard({ showToast }) {
   )
 }
 
+// Encrypted export/import of settings — resumes, criteria, blacklists, rules.
+// The database backups above cover applications; this covers everything else,
+// which otherwise had to be re-entered by hand on a new machine.
+function SettingsTransferCard({ showToast, onImported }) {
+  const [mode, setMode] = useState(null) // 'export' | 'import'
+  const [passphrase, setPassphrase] = useState('')
+  const [includeSecrets, setIncludeSecrets] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [staged, setStaged] = useState(null)
+
+  function reset() {
+    setMode(null); setPassphrase(''); setIncludeSecrets(false); setStaged(null)
+  }
+
+  async function doExport() {
+    setBusy(true)
+    try {
+      const res = await window.api.exportConfig(passphrase, includeSecrets)
+      if (res.canceled) return
+      if (res.success) { showToast?.('Settings exported', 'success'); reset() }
+      else showToast?.(res.error || 'Export failed', 'error')
+    } finally { setBusy(false) }
+  }
+
+  async function doInspect() {
+    setBusy(true)
+    try {
+      const res = await window.api.inspectConfigImport(passphrase)
+      if (res.canceled) return
+      if (res.success) setStaged(res)
+      else showToast?.(res.error || 'Import failed', 'error')
+    } finally { setBusy(false) }
+  }
+
+  async function doApply() {
+    setBusy(true)
+    try {
+      const res = await window.api.applyConfigImport()
+      if (res.success) {
+        showToast?.('Settings imported', 'success')
+        reset()
+        onImported?.()
+      } else showToast?.(res.error || 'Import failed', 'error')
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12, gap: 12 }}>
+        <div>
+          <h3 style={{ fontSize: 15, margin: 0 }}>Settings Transfer</h3>
+          <p style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 4 }}>
+            Export your resumes, job criteria, blacklist, routing rules, and templates to an
+            encrypted file — then restore them on another machine. Applications live in the
+            database backups above, not here.
+          </p>
+        </div>
+        {!mode && (
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => setMode('export')}>Export</button>
+            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => setMode('import')}>Import</button>
+          </div>
+        )}
+      </div>
+
+      {mode && !staged && (
+        <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
+          <div className="form-group" style={{ marginBottom: 10 }}>
+            <label style={{ fontSize: 12 }}>Passphrase</label>
+            <input type="password" value={passphrase} autoFocus
+              onChange={e => setPassphrase(e.target.value)}
+              placeholder={mode === 'export' ? 'At least 8 characters' : 'Passphrase used at export'} />
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              {mode === 'export'
+                ? 'The file is encrypted with this passphrase. There is no recovery if you lose it.'
+                : 'Enter the passphrase this file was exported with.'}
+            </div>
+          </div>
+
+          {mode === 'export' && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', marginBottom: 10 }}>
+              <input type="checkbox" style={{ width: 'auto' }}
+                checked={includeSecrets} onChange={e => setIncludeSecrets(e.target.checked)} />
+              Include API key and email app password
+            </label>
+          )}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={reset} disabled={busy}>Cancel</button>
+            <button className="btn btn-primary" style={{ fontSize: 12 }}
+              disabled={busy || passphrase.length < 8}
+              onClick={mode === 'export' ? doExport : doInspect}>
+              {busy ? 'Working…' : mode === 'export' ? 'Choose File & Export' : 'Choose File'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {staged && (
+        <div style={{ border: '1px solid var(--accent)', borderRadius: 8, padding: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Ready to import</div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>
+            Exported {staged.createdAt ? new Date(staged.createdAt).toLocaleString() : 'at an unknown time'} ·
+            {' '}{staged.summary.keys} settings · {staged.summary.resumes} resume{staged.summary.resumes === 1 ? '' : 's'} ·
+            {' '}{staged.summary.resumeRules} routing rule{staged.summary.resumeRules === 1 ? '' : 's'} ·
+            {' '}{staged.summary.blacklistedCompanies} blacklisted
+            {staged.includesSecrets ? ' · includes credentials' : ' · no credentials'}
+            <br />
+            This replaces your current settings. Applications and history are untouched.
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={reset} disabled={busy}>Cancel</button>
+            <button className="btn btn-primary" style={{ fontSize: 12 }} onClick={doApply} disabled={busy}>
+              {busy ? 'Importing…' : 'Replace My Settings'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function StorageCard() {
   const [info, setInfo] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -181,12 +303,13 @@ function StorageCard() {
       {info ? (
         <div>
           <div style={{ fontSize: 24, fontWeight: 700, marginBottom: 12 }}>{formatBytes(info.dbSize)}</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 }}>
             {[
               { label: 'Applications', count: info.counts.applications },
               { label: 'Attention Jobs', count: info.counts.attentionJobs },
               { label: 'Cached Answers', count: info.counts.cachedAnswers },
               { label: 'Interview Preps', count: info.counts.interviewPreps },
+              { label: 'Interviews', count: info.counts.interviewEvents ?? 0 },
             ].map(({ label, count }) => (
               <div key={label} style={{ background: 'var(--surface2)', borderRadius: 8, padding: '10px 12px', textAlign: 'center' }}>
                 <div style={{ fontSize: 18, fontWeight: 700 }}>{count}</div>
@@ -322,8 +445,13 @@ export default function Settings({ showToast, active }) {
       dailyLimitLinkedIn: clamp(form.dailyLimitLinkedIn, 1, 100, 10),
       blacklistedCompanies: (form.blacklistedCompanies || '').split(',').map(s => s.trim()).filter(Boolean),
       followUpDays: clamp(form.followUpDays, 1, 30, 7),
+      companyCooldownDays: clamp(form.companyCooldownDays, 0, 365, 30),
       smartScheduleBatchSize: clamp(form.smartScheduleBatchSize, 1, 20, 3),
       smartScheduleJitter: clamp(form.smartScheduleJitter, 0, 60, 15),
+      // Drop rules whose resume was deleted, or the applicator would silently
+      // fall through to the default for a rule the user thinks is active.
+      resumeRules: (form.resumeRules || []).filter(r =>
+        r?.keywords?.trim() && (form.resumes || []).some(x => x.id === r.resumeId)),
     })
     dirtyRef.current = false // saved state now matches disk — safe to refetch
     setSaving(false)
@@ -897,6 +1025,17 @@ export default function Settings({ showToast, active }) {
             onChange={e => set('matchThreshold', e.target.value)}
             style={{ padding: 0, border: 'none', background: 'transparent' }} />
         </div>
+        <div className="form-group">
+          <label>Company Cooldown (days)</label>
+          <input type="number" min={0} max={365}
+            value={form.companyCooldownDays ?? 30}
+            onChange={e => set('companyCooldownDays', e.target.value)} />
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+            After applying to a company, wait this many days before applying to another
+            role there. Set to 0 to allow multiple roles at the same company right away.
+            Duplicate listings and cross-platform repeats are always skipped regardless.
+          </div>
+        </div>
         <div style={{ marginBottom: 16 }}>
           <label style={{ marginBottom: 8 }}>Platforms</label>
           <div style={{ display: 'flex', gap: 16 }}>
@@ -1115,6 +1254,69 @@ export default function Settings({ showToast, active }) {
         )}
       </div>
 
+      {/* Resume routing rules — pick a different base resume per job type */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+          <h3 style={{ fontSize: 15, margin: 0 }}>Resume Routing</h3>
+          <button className="btn btn-ghost" style={{ fontSize: 12 }}
+            disabled={(form.resumes || []).length < 2}
+            onClick={() => set('resumeRules', [
+              ...(form.resumeRules || []),
+              { id: Date.now().toString(), keywords: '', resumeId: form.resumes?.[0]?.id || '' },
+            ])}>
+            + Add Rule
+          </button>
+        </div>
+        <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 14 }}>
+          Route jobs to a different base resume by keyword. The first rule whose keywords
+          appear in the job title or description wins; anything unmatched uses your default
+          resume. Rules are checked top to bottom.
+        </p>
+
+        {(form.resumes || []).length < 2 && (
+          <p style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+            Add a second resume above to start routing.
+          </p>
+        )}
+
+        {(form.resumeRules || []).length === 0 && (form.resumes || []).length >= 2 && (
+          <p style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+            No rules yet — every job uses your default resume.
+          </p>
+        )}
+
+        {(form.resumeRules || []).map((rule, i) => (
+          <div key={rule.id} style={{
+            display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 8,
+            border: '1px solid var(--border)', borderRadius: 8, padding: 10,
+          }}>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', paddingTop: 9, width: 16, flexShrink: 0 }}>{i + 1}</span>
+            <div style={{ flex: 1 }}>
+              <input
+                value={rule.keywords}
+                placeholder="data, analytics, sql"
+                onChange={e => set('resumeRules', (form.resumeRules || []).map(r =>
+                  r.id === rule.id ? { ...r, keywords: e.target.value } : r))}
+              />
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                Comma-separated. Matches anywhere in the title or description.
+              </div>
+            </div>
+            <select
+              value={rule.resumeId}
+              style={{ width: 190, flexShrink: 0 }}
+              onChange={e => set('resumeRules', (form.resumeRules || []).map(r =>
+                r.id === rule.id ? { ...r, resumeId: e.target.value } : r))}>
+              {(form.resumes || []).map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+            </select>
+            <button className="btn btn-ghost" style={{ fontSize: 11, flexShrink: 0 }}
+              onClick={() => set('resumeRules', (form.resumeRules || []).filter(r => r.id !== rule.id))}>
+              Remove
+            </button>
+          </div>
+        ))}
+      </div>
+
       {/* Personal Links */}
       <div className="card" style={{ marginBottom: 16 }}>
         <h3 style={{ marginBottom: 4, fontSize: 15 }}>Personal Links</h3>
@@ -1201,6 +1403,9 @@ export default function Settings({ showToast, active }) {
 
         {/* Rotating database backups */}
         <BackupsCard showToast={showToast} />
+
+        {/* Encrypted settings export / import */}
+        <SettingsTransferCard showToast={showToast} onImported={() => window.location.reload()} />
 
         {/* Screening Answer Cache */}
         <div className="card" style={{ marginBottom: 16 }}>

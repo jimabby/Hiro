@@ -100,6 +100,64 @@ function ScoreHistogram({ apps, threshold }) {
   )
 }
 
+// How often each match-score band actually converted to an interview or offer.
+// The histogram above shows how many jobs landed in each band; this shows
+// whether that band was worth applying to — which is what the threshold should
+// really be tuned against. Bands with too few applications to mean anything are
+// greyed out rather than shown as a confident 0% or 100%.
+const MIN_SAMPLE = 3
+
+function ConversionChart({ bands, threshold }) {
+  const withData = (bands || []).filter(b => b.applied > 0)
+  if (withData.length === 0) {
+    return (
+      <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>
+        No submitted applications yet — conversion appears once replies start coming in.
+      </div>
+    )
+  }
+
+  const chartH = 120, barW = 34, gap = 8
+  const width = 10 * (barW + gap) - gap
+  const thrX = Math.min((threshold / 100) * width, width)
+  const maxRate = Math.max(...withData.map(b => b.conversionRate || 0), 1)
+
+  return (
+    <svg width="100%" height={chartH + 36} viewBox={`0 0 ${width} ${chartH + 36}`} preserveAspectRatio="xMidYMax meet">
+      {bands.map((b, i) => {
+        const x = i * (barW + gap)
+        const reliable = b.applied >= MIN_SAMPLE
+        const rate = b.conversionRate ?? 0
+        const h = b.applied === 0 ? 2 : Math.max((rate / maxRate) * chartH, 3)
+        const y = chartH - h
+        return (
+          <g key={b.lo}>
+            <title>
+              {`${b.lo}–${b.hi}%: ${b.converted}/${b.applied} converted`}
+              {reliable ? '' : ' (too few to be meaningful)'}
+            </title>
+            <rect x={x} y={y} width={barW} height={h} rx={3}
+              fill={reliable ? 'var(--green)' : 'var(--text-muted)'}
+              opacity={b.applied === 0 ? 0.2 : reliable ? 0.85 : 0.35} />
+            {b.applied > 0 && (
+              <text x={x + barW / 2} y={y - 5} textAnchor="middle" fontSize={10}
+                fill="var(--text-muted)" fontWeight="600">{rate}%</text>
+            )}
+            <text x={x + barW / 2} y={chartH + 14} textAnchor="middle" fontSize={9} fill="var(--text-muted)">{b.lo}–{b.hi}</text>
+            {b.applied > 0 && (
+              <text x={x + barW / 2} y={chartH + 25} textAnchor="middle" fontSize={8} fill="var(--text-muted)" opacity={0.7}>
+                n={b.applied}
+              </text>
+            )}
+          </g>
+        )
+      })}
+      <line x1={thrX} y1={-2} x2={thrX} y2={chartH} stroke="var(--red)" strokeWidth={1.5} strokeDasharray="4 3" />
+      <text x={Math.min(thrX + 4, width - 70)} y={10} fontSize={9} fill="var(--red)" fontWeight="600">threshold {threshold}%</text>
+    </svg>
+  )
+}
+
 function FunnelBar({ label, count, total, color }) {
   const pct = total > 0 ? (count / total) * 100 : 0
   return (
@@ -125,6 +183,7 @@ export default function Analytics() {
   const [matchThreshold, setMatchThreshold] = useState(80)
   const [advice, setAdvice] = useState(null)
   const [applyingAdvice, setApplyingAdvice] = useState(false)
+  const [bands, setBands] = useState([])
 
   useEffect(() => {
     Promise.all([
@@ -137,6 +196,10 @@ export default function Analytics() {
       setAllApps(a)
     })
   }, [timeRange])
+
+  useEffect(() => {
+    window.api.getScoreBandConversion?.().then(b => setBands(b || [])).catch(() => {})
+  }, [])
 
   useEffect(() => {
     window.api.getConfig().then(c => setMatchThreshold(c.matchThreshold ?? 80))
@@ -308,6 +371,24 @@ export default function Analytics() {
             </div>
           </div>
         )}
+      </div>
+
+      {/* Which score bands actually convert */}
+      <div className="card" style={{ marginBottom: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <span style={{ fontWeight: 600, fontSize: 14 }}>Interview Rate by Match Score</span>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            share of submitted applications in each band that reached interview or offer
+          </span>
+        </div>
+        <ConversionChart bands={bands} threshold={matchThreshold} />
+        <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 10, marginBottom: 0 }}>
+          The distribution above tells you where your threshold sits; this tells you whether it
+          is in the right place. If bands below your threshold convert just as well, the
+          threshold is costing you applications — if the bands just above it convert poorly,
+          raise it. Greyed bars have fewer than {MIN_SAMPLE} applications and aren't
+          meaningful yet.
+        </p>
       </div>
 
       {/* Funnel + Status breakdown */}

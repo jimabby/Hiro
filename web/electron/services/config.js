@@ -52,7 +52,15 @@ const DEFAULTS = {
   masterResume: '',
   resumes: [],
   defaultResumeId: '',
+  // Keyword → resume routing. Each rule is { id, keywords, resumeId }; the
+  // first rule whose comma-separated keywords appear in the job title or
+  // description picks that resume, otherwise defaultResumeId is used.
+  resumeRules: [],
   matchThreshold: 80,
+  // Days before the same company is eligible again after a successful apply.
+  // 0 disables the cooldown entirely (per-listing and cross-platform duplicate
+  // checks still apply).
+  companyCooldownDays: 30,
   dailyLimitSeek: 10,
   dailyLimitIndeed: 10,
   dailyLimitLinkedIn: 10,

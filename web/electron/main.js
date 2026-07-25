@@ -13,6 +13,7 @@ const gmailAuth = require('./services/gmailAuth')
 const mobileApi = require('./services/mobileApi')
 const cloudSync = require('./services/cloudSync')
 const logger = require('./services/logger')
+const configTransfer = require('./services/configTransfer')
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
@@ -62,6 +63,9 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   await database.init()
+  // Sweep rows orphaned by older versions, which deleted an application
+  // without its interview prep / status history.
+  database.pruneOrphanedRows()
   // Rotating daily backup: once on launch, then re-checked periodically so
   // long-running sessions still get one backup per day.
   database.maybeBackup()
@@ -571,6 +575,84 @@ ipcMain.handle('db:updateCachedAnswer', (_, question, answer) => {
 })
 
 ipcMain.handle('db:getStorageInfo', () => database.getStorageInfo())
+
+// ─── IPC: Interview schedule ─────────────────────────────────────
+ipcMain.handle('db:getUpcomingInterviews', (_, limit) => database.getUpcomingInterviews(limit || 25))
+ipcMain.handle('db:getInterviewEvents', (_, applicationId) => database.getInterviewEvents(applicationId))
+ipcMain.handle('db:addInterviewEvent', (_, payload) => {
+  try {
+    if (!payload?.applicationId || !payload?.scheduledAt) {
+      return { success: false, error: 'An application and a date are required.' }
+    }
+    return database.addInterviewEvent({ ...payload, source: 'manual' })
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+ipcMain.handle('db:deleteInterviewEvent', (_, id) => {
+  try { return database.deleteInterviewEvent(id) } catch (err) { return { success: false, error: err.message } }
+})
+
+// ─── IPC: Closing date ───────────────────────────────────────────
+ipcMain.handle('db:updateClosingDate', (_, id, closingDate) => {
+  try { return database.updateClosingDate(id, closingDate) } catch (err) { return { success: false, error: err.message } }
+})
+
+// ─── IPC: Score-band conversion ──────────────────────────────────
+ipcMain.handle('analytics:scoreBandConversion', () => database.getScoreBandConversion())
+
+// ─── IPC: Config export / import ─────────────────────────────────
+ipcMain.handle('config:export', async (_, passphrase, includeSecrets) => {
+  try {
+    const bundle = configTransfer.exportBundle(passphrase, { includeSecrets: !!includeSecrets })
+    const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+      title: 'Export Hiro Settings',
+      defaultPath: `hiro-settings-${new Date().toISOString().slice(0, 10)}.hirocfg`,
+      filters: [{ name: 'Hiro Config Backup', extensions: ['hirocfg'] }],
+    })
+    if (canceled || !filePath) return { canceled: true }
+    require('fs').writeFileSync(filePath, bundle, 'utf8')
+    return { success: true, filePath }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+// Held between inspect and confirm so the passphrase is only entered once and
+// the decrypted payload never round-trips through the renderer.
+let pendingConfigImport = null
+
+// Decrypt and describe a bundle without applying it, so the renderer can show
+// the user what they're about to overwrite.
+ipcMain.handle('config:inspectImport', async (_, passphrase) => {
+  try {
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+      title: 'Import Hiro Settings',
+      filters: [{ name: 'Hiro Config Backup', extensions: ['hirocfg', 'json'] }],
+      properties: ['openFile'],
+    })
+    if (canceled || !filePaths.length) return { canceled: true }
+    const raw = require('fs').readFileSync(filePaths[0], 'utf8')
+    const info = configTransfer.inspectBundle(raw, passphrase)
+    pendingConfigImport = info.payload
+    return { success: true, createdAt: info.createdAt, includesSecrets: info.includesSecrets, summary: info.summary }
+  } catch (err) {
+    pendingConfigImport = null
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('config:applyImport', () => {
+  if (!pendingConfigImport) return { success: false, error: 'Nothing staged — choose a file first.' }
+  try {
+    const result = configTransfer.applyBundle(pendingConfigImport)
+    pendingConfigImport = null
+    scheduler.restart(mainWindow)
+    return result
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
 
 // ─── IPC: Status history & backups ───────────────────────────────
 ipcMain.handle('db:getStatusHistory', (_, applicationId) => database.getStatusHistory(applicationId))

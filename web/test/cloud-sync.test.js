@@ -12,6 +12,10 @@ let rows = []
 const byId = (id) => rows.find(r => r.id === id)
 
 const db = {
+  // Real batch() suppresses intermediate full-database writes and flushes once
+  // at the end. Behaviour is identical from the caller's side, so the fake just
+  // runs the body.
+  batch: (fn) => fn(),
   getApplication: (id) => byId(id) || null,
   getAllApplicationIds: () => rows.map(r => r.id),
   getDirtyApplications: () => rows.filter(r => r.cloud_dirty === 1 || r.cloud_updated_at == null),

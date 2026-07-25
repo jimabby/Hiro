@@ -24,10 +24,26 @@ async function init() {
   persist()
 }
 
+// Every write persists the WHOLE database file (sql.js has no incremental
+// write), so a loop of single-row updates costs one full serialization per row.
+// batch() suppresses those intermediate writes and flushes once at the end;
+// callers that touch many rows (cloud sync, cascading deletes) must use it.
+let persistDepth = 0
+
 function persist() {
-  if (!db) return
+  if (!db || persistDepth > 0) return
   const data = db.export()
   fs.writeFileSync(DB_PATH, Buffer.from(data))
+}
+
+function batch(fn) {
+  persistDepth++
+  try {
+    return fn()
+  } finally {
+    persistDepth--
+    persist()
+  }
 }
 
 function createTables() {
@@ -85,6 +101,16 @@ function createTables() {
       status TEXT NOT NULL,
       changed_at TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS interview_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      application_id INTEGER NOT NULL,
+      scheduled_at TEXT NOT NULL,
+      has_time INTEGER DEFAULT 1,
+      source TEXT DEFAULT 'manual',
+      note TEXT DEFAULT '',
+      created_at TEXT DEFAULT (datetime('now'))
+    );
   `)
   persist()
 }
@@ -102,13 +128,20 @@ function migrate() {
   // instead of comparing two devices' clocks.
   try { db.run('ALTER TABLE applications ADD COLUMN cloud_dirty INTEGER DEFAULT 1') } catch {}
   try { db.run('ALTER TABLE applications ADD COLUMN cloud_updated_at TEXT') } catch {}
+  // Application deadline parsed out of the job ad, so Needs Attention can sort
+  // by what actually expires soonest instead of by when it was found.
+  try { db.run('ALTER TABLE applications ADD COLUMN closing_date TEXT') } catch {}
+  try { db.run('ALTER TABLE attention_jobs ADD COLUMN closing_date TEXT') } catch {}
 
   // Indexes for frequent queries
   try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_applied_at ON applications(applied_at DESC)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_status ON applications(status)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_platform ON applications(platform)') } catch {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_company ON applications(company)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_attention_dismissed ON attention_jobs(dismissed)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_history_app ON status_history(application_id)') } catch {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_interview_app ON interview_events(application_id)') } catch {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_interview_at ON interview_events(scheduled_at)') } catch {}
 }
 
 // Convert sql.js result to array of objects
@@ -166,19 +199,30 @@ function hasJobUrl(jobUrl) {
   return !!queryOne('SELECT 1 FROM applications WHERE job_url = ? LIMIT 1', [jobUrl])
 }
 
-function hasAppliedToCompany(company) {
-  const result = queryOne(
-    "SELECT COUNT(*) as c FROM applications WHERE LOWER(company) = LOWER(?) AND status != 'skipped'",
-    [company]
+// Has this company been applied to *recently*? Previously this matched any
+// non-skipped row ever, so a single application permanently blacklisted the
+// employer — every later role there was silently skipped. The window is
+// configurable (companyCooldownDays; 0 disables) and defaults to 30 days,
+// which keeps the anti-spam intent without burning a company forever.
+// Per-listing and cross-platform duplicates are caught separately by
+// hasJobUrl() and findDuplicateAcrossPlatforms().
+function findRecentApplicationToCompany(company, cooldownDays) {
+  const days = Number(cooldownDays)
+  if (!Number.isFinite(days) || days <= 0) return null
+  return queryOne(
+    `SELECT job_title, applied_at FROM applications
+     WHERE LOWER(company) = LOWER(?) AND status != 'skipped'
+       AND applied_at >= datetime('now', '-' || ? || ' days')
+     ORDER BY applied_at DESC LIMIT 1`,
+    [company, days]
   )
-  return (result?.c || 0) > 0
 }
 
 function insertApplication(data) {
   db.run(`
     INSERT INTO applications
-      (job_title, company, platform, salary, job_url, job_description, match_score, match_explanation, tailored_resume, cover_letter, screening_qa, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (job_title, company, platform, salary, job_url, job_description, match_score, match_explanation, tailored_resume, cover_letter, screening_qa, status, closing_date)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     data.job_title, data.company, data.platform, data.salary || '',
     data.job_url, data.job_description, data.match_score,
@@ -186,6 +230,7 @@ function insertApplication(data) {
     data.tailored_resume, data.cover_letter || '',
     JSON.stringify(data.screening_qa || []),
     data.status || 'applied',
+    data.closing_date || null,
   ])
   // Read the new row id BEFORE persist(): db.export() resets last_insert_rowid.
   const newId = queryOne('SELECT last_insert_rowid() as id')?.id
@@ -228,16 +273,44 @@ function updateRecruiterEmail(id, email) {
   return { success: true }
 }
 
+// Deleting an application must take its dependent rows with it. interview_prep
+// in particular was never cleaned up — the rows accumulated forever, inflated
+// the count in Settings → Data, and had no way to be removed.
 function deleteApplication(id) {
-  run('DELETE FROM applications WHERE id = ?', [id])
-  run('DELETE FROM status_history WHERE application_id = ?', [id])
+  batch(() => {
+    run('DELETE FROM applications WHERE id = ?', [id])
+    run('DELETE FROM status_history WHERE application_id = ?', [id])
+    run('DELETE FROM interview_prep WHERE application_id = ?', [id])
+    run('DELETE FROM interview_events WHERE application_id = ?', [id])
+  })
   return { success: true }
 }
 
 function clearAllApplications() {
-  run('DELETE FROM applications')
-  run('DELETE FROM status_history')
+  batch(() => {
+    run('DELETE FROM applications')
+    run('DELETE FROM status_history')
+    run('DELETE FROM interview_prep')
+    run('DELETE FROM interview_events')
+  })
   return { success: true }
+}
+
+// One-off sweep for rows orphaned by earlier versions, which deleted the
+// application without its dependents. Runs on launch; cheap and idempotent.
+function pruneOrphanedRows() {
+  try {
+    return batch(() => {
+      const before = queryOne('SELECT COUNT(*) as c FROM interview_prep')?.c || 0
+      run('DELETE FROM interview_prep WHERE application_id NOT IN (SELECT id FROM applications)')
+      run('DELETE FROM status_history WHERE application_id NOT IN (SELECT id FROM applications)')
+      run('DELETE FROM interview_events WHERE application_id NOT IN (SELECT id FROM applications)')
+      const after = queryOne('SELECT COUNT(*) as c FROM interview_prep')?.c || 0
+      return { removedInterviewPreps: before - after }
+    })
+  } catch {
+    return { removedInterviewPreps: 0 }
+  }
 }
 
 // ─── Cloud Sync Bookkeeping ──────────────────────────────────────
@@ -277,8 +350,17 @@ function applyCloudEdit(id, { status, comment }, cloudUpdatedAt) {
 
 // ─── Attention Jobs ──────────────────────────────────────────────
 
+// Jobs with a known closing date come first, soonest deadline at the top —
+// that's the decision the user is actually making on this page. Anything with
+// no parsed deadline falls back to most-recently-found.
 function getAttentionJobs() {
-  return query('SELECT * FROM attention_jobs WHERE dismissed = 0 ORDER BY found_at DESC')
+  return query(`
+    SELECT * FROM attention_jobs WHERE dismissed = 0
+    ORDER BY
+      CASE WHEN closing_date IS NULL OR closing_date = '' THEN 1 ELSE 0 END,
+      closing_date ASC,
+      found_at DESC
+  `)
 }
 
 function getAttentionJob(id) {
@@ -288,12 +370,13 @@ function getAttentionJob(id) {
 function insertAttentionJob(data) {
   run(`
     INSERT INTO attention_jobs
-      (job_title, company, platform, salary, job_url, job_description, match_score, talking_points, reason)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (job_title, company, platform, salary, job_url, job_description, match_score, talking_points, reason, closing_date)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     data.job_title, data.company, data.platform, data.salary || '',
     data.job_url, data.job_description, data.match_score,
     JSON.stringify(data.talking_points || []), data.reason || '',
+    data.closing_date || null,
   ])
 }
 
@@ -440,6 +523,105 @@ function deleteInterviewPrep(applicationId) {
   persist()
 }
 
+// ─── Interview Schedule ──────────────────────────────────────────
+// Interviews detected in recruiter replies (or entered by hand), so the user
+// doesn't have to go dig the email back out after Hiro flags the reply.
+
+function addInterviewEvent({ applicationId, scheduledAt, hasTime = true, source = 'manual', note = '' }) {
+  run(
+    'INSERT INTO interview_events (application_id, scheduled_at, has_time, source, note) VALUES (?, ?, ?, ?, ?)',
+    [applicationId, scheduledAt, hasTime ? 1 : 0, source, note || '']
+  )
+  return { success: true }
+}
+
+// Only one auto-detected event per application: a recruiter thread produces
+// several matching emails, and each inbox pass would otherwise add a duplicate.
+// A manually entered time always wins and is never overwritten.
+function upsertDetectedInterview({ applicationId, scheduledAt, hasTime = true, note = '' }) {
+  const manual = queryOne(
+    "SELECT id FROM interview_events WHERE application_id = ? AND source = 'manual' LIMIT 1",
+    [applicationId]
+  )
+  if (manual) return { success: true, skipped: 'manual-entry-exists' }
+
+  const existing = queryOne(
+    "SELECT id, scheduled_at FROM interview_events WHERE application_id = ? AND source = 'inbox' LIMIT 1",
+    [applicationId]
+  )
+  if (existing) {
+    if (existing.scheduled_at === scheduledAt) return { success: true, skipped: 'unchanged' }
+    run('UPDATE interview_events SET scheduled_at = ?, has_time = ?, note = ? WHERE id = ?',
+      [scheduledAt, hasTime ? 1 : 0, note || '', existing.id])
+    return { success: true, updated: true }
+  }
+  return addInterviewEvent({ applicationId, scheduledAt, hasTime, source: 'inbox', note })
+}
+
+function getInterviewEvents(applicationId) {
+  return query('SELECT * FROM interview_events WHERE application_id = ? ORDER BY scheduled_at ASC', [applicationId])
+}
+
+// Upcoming interviews across all applications, joined to the job they belong
+// to. Includes anything from the start of today so an interview later today
+// doesn't vanish from the list at midnight-plus-one-second.
+function getUpcomingInterviews(limit = 25) {
+  return query(`
+    SELECT e.id, e.application_id, e.scheduled_at, e.has_time, e.source, e.note,
+           a.job_title, a.company, a.platform, a.status
+    FROM interview_events e
+    JOIN applications a ON a.id = e.application_id
+    WHERE e.scheduled_at >= date('now','localtime')
+    ORDER BY e.scheduled_at ASC
+    LIMIT ?
+  `, [limit])
+}
+
+function deleteInterviewEvent(id) {
+  run('DELETE FROM interview_events WHERE id = ?', [id])
+  return { success: true }
+}
+
+// ─── Closing dates ───────────────────────────────────────────────
+
+function updateClosingDate(id, closingDate) {
+  run("UPDATE applications SET closing_date = ?, updated_at = datetime('now'), cloud_dirty = 1 WHERE id = ?",
+    [closingDate || null, id])
+  return { success: true }
+}
+
+// ─── Score-band conversion ───────────────────────────────────────
+// Which match-score bands actually convert to interviews. The histogram on the
+// Analytics page shows how many jobs landed in each band; this shows whether
+// that band was worth applying to, which is what the threshold should really
+// be tuned against. Skipped rows are excluded — they were never submitted, so
+// they can't have converted.
+function getScoreBandConversion() {
+  const rows = query(`
+    SELECT match_score, status FROM applications
+    WHERE status != 'skipped' AND match_score IS NOT NULL
+  `)
+  const bands = Array.from({ length: 10 }, (_, i) => ({
+    lo: i * 10, hi: i === 9 ? 100 : i * 10 + 9,
+    applied: 0, interviews: 0, offers: 0, rejected: 0,
+  }))
+  for (const r of rows) {
+    const score = Math.max(0, Math.min(100, r.match_score))
+    const b = bands[Math.min(9, Math.floor(score / 10))]
+    b.applied++
+    if (r.status === 'interview') b.interviews++
+    else if (r.status === 'offer') b.offers++
+    else if (r.status === 'rejected') b.rejected++
+  }
+  // An offer implies the interview stage was reached, so it counts as a
+  // conversion — otherwise the best outcomes would depress the rate.
+  for (const b of bands) {
+    b.converted = b.interviews + b.offers
+    b.conversionRate = b.applied > 0 ? Math.round((b.converted / b.applied) * 100) : null
+  }
+  return bands
+}
+
 // ─── Weekly Report Data ──────────────────────────────────────────
 function getWeeklyReportData() {
   const now = new Date()
@@ -506,7 +688,25 @@ function pruneBackups() {
   try {
     const files = fs.readdirSync(BACKUP_DIR).filter(f => /^autoapply-\d{4}-\d{2}-\d{2}\.db$/.test(f)).sort()
     while (files.length > BACKUP_KEEP) fs.unlinkSync(path.join(BACKUP_DIR, files.shift()))
+    prunePreRestoreSnapshots()
   } catch { /* pruning is best-effort */ }
+}
+
+// Pre-restore snapshots are stamped per restore and kept alongside the daily
+// rotation. They used to be a single fixed filename, so each restore silently
+// destroyed the previous escape hatch, and the date-only prune regex never
+// removed them. Keep the most recent few and drop the rest.
+const PRE_RESTORE_KEEP = 3
+const PRE_RESTORE_RE = /^autoapply-pre-restore-[\dT-]+\.db$/
+
+function prunePreRestoreSnapshots() {
+  try {
+    const files = fs.readdirSync(BACKUP_DIR).filter(f => PRE_RESTORE_RE.test(f)).sort()
+    while (files.length > PRE_RESTORE_KEEP) fs.unlinkSync(path.join(BACKUP_DIR, files.shift()))
+    // Remove the legacy fixed-name snapshot left by older versions.
+    const legacy = path.join(BACKUP_DIR, 'autoapply-pre-restore.db')
+    if (fs.existsSync(legacy) && files.length > 0) fs.unlinkSync(legacy)
+  } catch { /* best-effort */ }
 }
 
 // At most one backup per local day — called on launch and on a periodic timer.
@@ -540,12 +740,19 @@ function restoreBackup(name) {
   const file = path.join(BACKUP_DIR, name)
   if (!fs.existsSync(file)) return { success: false, error: 'Backup not found' }
   // Keep an escape hatch: snapshot the current database before replacing it.
-  try { fs.copyFileSync(DB_PATH, path.join(BACKUP_DIR, 'autoapply-pre-restore.db')) } catch {}
+  // Timestamped, so restoring twice doesn't destroy the first snapshot.
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  let snapshot = null
+  try {
+    snapshot = `autoapply-pre-restore-${stamp}.db`
+    fs.copyFileSync(DB_PATH, path.join(BACKUP_DIR, snapshot))
+  } catch { snapshot = null }
   db = new SQL.Database(fs.readFileSync(file))
   createTables()
   migrate()
   persist()
-  return { success: true }
+  prunePreRestoreSnapshots()
+  return { success: true, snapshot }
 }
 
 function getStorageInfo() {
@@ -555,13 +762,14 @@ function getStorageInfo() {
     attentionJobs: queryOne('SELECT COUNT(*) as c FROM attention_jobs WHERE dismissed = 0')?.c || 0,
     cachedAnswers: queryOne('SELECT COUNT(*) as c FROM screening_cache')?.c || 0,
     interviewPreps: queryOne('SELECT COUNT(*) as c FROM interview_prep')?.c || 0,
+    interviewEvents: queryOne('SELECT COUNT(*) as c FROM interview_events')?.c || 0,
   }
   return { dbSize, counts }
 }
 
 module.exports = {
-  init,
-  getApplications, getApplication, hasJobUrl, hasAppliedToCompany, insertApplication, updateApplicationStatus,
+  init, batch, pruneOrphanedRows,
+  getApplications, getApplication, hasJobUrl, findRecentApplicationToCompany, insertApplication, updateApplicationStatus,
   updateApplicationAfterApply, updateApplicationComment, updateRecruiterEmail, deleteApplication, clearAllApplications,
   getDirtyApplications, getAllApplicationIds, markCloudSynced, markCloudSeen, applyCloudEdit,
   getAttentionJobs, getAttentionJob, insertAttentionJob, dismissAttentionJob, deleteAttentionJob, clearAllAttentionJobs,
@@ -570,6 +778,8 @@ module.exports = {
   findDuplicateAcrossPlatforms, getApplicationsByDate, getApplicationsPerDay,
   getApplicationsForFollowUp, markFollowUpSent,
   saveInterviewPrep, getInterviewPrep, deleteInterviewPrep,
+  addInterviewEvent, upsertDetectedInterview, getInterviewEvents, getUpcomingInterviews, deleteInterviewEvent,
+  updateClosingDate, getScoreBandConversion,
   getWeeklyReportData, getStorageInfo,
   getStatusHistory,
   backupNow, maybeBackup, listBackups, restoreBackup,

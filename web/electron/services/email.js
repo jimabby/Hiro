@@ -120,13 +120,16 @@ async function sendDailyReport(stats) {
   })
 }
 
+// Callers must supply a job with a recruiter_email — the scheduler skips jobs
+// without one before it gets here. Refuse rather than silently mailing the
+// user their own follow-up, which reads like a delivery but reaches nobody.
 async function sendFollowUpEmail(job, emailText, cfg) {
   if (!cfg.gmailAddress || !cfg.gmailAppPassword) return
+  if (!job.recruiter_email) throw new Error('No recruiter email on file for this application')
   const transport = createTransport(cfg)
-  const to = job.recruiter_email || cfg.gmailAddress
   await transport.sendMail({
     from: cfg.gmailAddress,
-    to,
+    to: job.recruiter_email,
     subject: `Follow-up: ${job.job_title} at ${job.company}`,
     text: emailText,
   })

@@ -4,6 +4,39 @@ const linkedin = require('./scraper/linkedin')
 const aiAdapter = require('./ai/index')
 const database = require('./database')
 const { randomDelay, stripMarkdown } = require('./scraper/utils')
+const { parseClosingDate } = require('./dateParser')
+
+// Pick the resume to use for a given job. A rule matches when any of its
+// comma-separated keywords appears in the job title or description; the first
+// matching rule wins, so ordering in Settings is the precedence. Falls back to
+// the configured default resume, then the master resume.
+function selectResume(cfg, job) {
+  const resumes = Array.isArray(cfg.resumes) ? cfg.resumes : []
+  const rules = Array.isArray(cfg.resumeRules) ? cfg.resumeRules : []
+  const haystack = `${job?.job_title || ''}\n${job?.job_description || ''}`.toLowerCase()
+
+  for (const rule of rules) {
+    if (!rule?.resumeId || !rule?.keywords) continue
+    const keywords = String(rule.keywords).split(',').map(k => k.trim().toLowerCase()).filter(Boolean)
+    if (keywords.length === 0) continue
+    if (!keywords.some(k => haystack.includes(k))) continue
+    const match = resumes.find(r => r.id === rule.resumeId)
+    if (match) return { resume: match, ruleKeywords: keywords.join(', ') }
+  }
+  return { resume: resumes.find(r => r.id === cfg.defaultResumeId) || null, ruleKeywords: null }
+}
+
+// Merge the chosen resume into the config the scrapers read.
+function withResume(cfg, job, log) {
+  const { resume, ruleKeywords } = selectResume(cfg, job)
+  if (ruleKeywords && log) log(`  Resume rule matched (${ruleKeywords}) → "${resume.name || resume.id}"`)
+  return {
+    ...cfg,
+    masterResume: resume?.text || cfg.masterResume || '',
+    activeResumeOriginalPath: resume?.originalPath,
+    activeResumeOriginalExt: resume?.originalExt,
+  }
+}
 
 let cancelled = false
 
@@ -33,9 +66,9 @@ async function run(cfg, callbacks) {
 async function doRun(cfg, { log, notifyAttention }) {
   cancelled = false
 
-  const activeResumeObj = (cfg.resumes || []).find(r => r.id === cfg.defaultResumeId)
-  const activeResume = activeResumeObj?.text || cfg.masterResume || ''
-  cfg = { ...cfg, masterResume: activeResume, activeResumeOriginalPath: activeResumeObj?.originalPath, activeResumeOriginalExt: activeResumeObj?.originalExt }
+  // Baseline resume — per-job routing rules may override this later, once the
+  // job description is available to match against.
+  cfg = withResume(cfg, null)
 
   const scrapers = []
   if (cfg.enableSeek) scrapers.push({ name: 'Seek', scraper: seek, limit: cfg.dailyLimitSeek })
@@ -85,9 +118,12 @@ async function doRun(cfg, { log, notifyAttention }) {
       // Skip already-seen jobs (applied or skipped)
       if (database.hasJobUrl(job.job_url)) continue
 
-      // Skip companies we've already successfully applied to
-      if (database.hasAppliedToCompany(job.company)) {
-        log(`  Skipping ${job.company} — already applied`)
+      // Skip companies applied to inside the cooldown window. This is a
+      // rate-limit on spamming one employer, not a permanent ban — see
+      // findRecentApplicationToCompany.
+      const recent = database.findRecentApplicationToCompany(job.company, cfg.companyCooldownDays)
+      if (recent) {
+        log(`  Skipping ${job.company} — applied to "${recent.job_title}" within the last ${cfg.companyCooldownDays} days`)
         continue
       }
 
@@ -109,6 +145,14 @@ async function doRun(cfg, { log, notifyAttention }) {
       }
 
       job.job_description = jobDescription
+      // Application deadline, if the ad states one. Best-effort: null just
+      // means "unknown", and the user can set it by hand later.
+      job.closing_date = parseClosingDate(jobDescription)
+      if (job.closing_date) log(`  Closes ${job.closing_date}`)
+
+      // Now that the description is known, routing rules can pick a resume
+      // tailored to this specific job.
+      const jobCfg = withResume(cfg, job, log)
 
       if (cancelled) { log('Scan cancelled.'); return summary() }
 
@@ -116,7 +160,7 @@ async function doRun(cfg, { log, notifyAttention }) {
       let matchScore = 50
       let matchExplanation = ''
       try {
-        const matchResult = await aiAdapter.scoreMatchWithExplanation(cfg.aiProvider, cfg.aiApiKey, jobDescription || job.job_title, cfg.masterResume, cfg.geminiModel)
+        const matchResult = await aiAdapter.scoreMatchWithExplanation(jobCfg.aiProvider, jobCfg.aiApiKey, jobDescription || job.job_title, jobCfg.masterResume, jobCfg.geminiModel)
         matchScore = matchResult.score
         matchExplanation = matchResult.explanation
         log(`  Match score: ${matchScore}%`)
@@ -136,7 +180,7 @@ async function doRun(cfg, { log, notifyAttention }) {
         if (pass) {
           dryWouldApply++
           try {
-            await aiAdapter.tailorResume(cfg.aiProvider, cfg.aiApiKey, jobDescription, cfg.masterResume, cfg.geminiModel)
+            await aiAdapter.tailorResume(jobCfg.aiProvider, jobCfg.aiApiKey, jobDescription, jobCfg.masterResume, jobCfg.geminiModel)
             log('    resume tailored OK (not submitted)')
           } catch (err) {
             log(`    tailoring error: ${err.message}`)
@@ -160,11 +204,12 @@ async function doRun(cfg, { log, notifyAttention }) {
           tailored_resume: '',
           screening_qa: [],
           status: 'skipped',
+          closing_date: job.closing_date,
         })
 
         // Also add to Needs Attention if score is close to threshold
         if (matchScore >= cfg.matchThreshold - 20) {
-          await addAttentionJob(job, cfg, log, notifyAttention)
+          await addAttentionJob(job, jobCfg, log, notifyAttention)
         } else {
           log(`  Saved as skipped (score: ${matchScore}%)`)
         }
@@ -176,9 +221,9 @@ async function doRun(cfg, { log, notifyAttention }) {
       if (cancelled) { log('Scan cancelled.'); return summary() }
 
       // Tailor resume
-      let tailoredResume = cfg.masterResume
+      let tailoredResume = jobCfg.masterResume
       try {
-        tailoredResume = stripMarkdown(await aiAdapter.tailorResume(cfg.aiProvider, cfg.aiApiKey, jobDescription, cfg.masterResume, cfg.geminiModel))
+        tailoredResume = stripMarkdown(await aiAdapter.tailorResume(jobCfg.aiProvider, jobCfg.aiApiKey, jobDescription, jobCfg.masterResume, jobCfg.geminiModel))
         log(`  Resume tailored`)
       } catch (err) {
         log(`  Resume tailoring error: ${err.message}`)
@@ -187,7 +232,7 @@ async function doRun(cfg, { log, notifyAttention }) {
       // Generate cover letter
       let coverLetter = ''
       try {
-        coverLetter = stripMarkdown(await aiAdapter.generateCoverLetter(cfg.aiProvider, cfg.aiApiKey, jobDescription, cfg.masterResume, cfg.geminiModel, cfg.coverLetterTone, cfg.coverLetterTemplate))
+        coverLetter = stripMarkdown(await aiAdapter.generateCoverLetter(jobCfg.aiProvider, jobCfg.aiApiKey, jobDescription, jobCfg.masterResume, jobCfg.geminiModel, jobCfg.coverLetterTone, jobCfg.coverLetterTemplate))
         log(`  Cover letter generated`)
       } catch (err) {
         log(`  Cover letter error: ${err.message}`)
@@ -199,7 +244,7 @@ async function doRun(cfg, { log, notifyAttention }) {
       await randomDelay(3000, 8000)
       let result
       try {
-        result = await scraper.apply(job.job_url, tailoredResume, coverLetter, { ...cfg, jobDescription })
+        result = await scraper.apply(job.job_url, tailoredResume, coverLetter, { ...jobCfg, jobDescription })
         log(`  Apply result: ${result.success ? 'SUCCESS' : 'FAILED — ' + result.reason}`)
       } catch (err) {
         result = { success: false, reason: err.message }
@@ -219,12 +264,13 @@ async function doRun(cfg, { log, notifyAttention }) {
           cover_letter: coverLetter,
           screening_qa: [],
           status: 'applied',
+          closing_date: job.closing_date,
         })
         log(`  Saved to history`)
         batchCount++
       } else {
         job.reason = result.reason
-        await addAttentionJob(job, cfg, log, notifyAttention)
+        await addAttentionJob(job, jobCfg, log, notifyAttention)
       }
 
       await randomDelay(cfg.batchLimit ? 8000 : 5000, cfg.batchLimit ? 20000 : 12000)
@@ -252,6 +298,7 @@ async function addAttentionJob(job, cfg, log, notifyAttention) {
     ...job,
     talking_points: talkingPoints,
     reason: job.reason || 'Requires manual application',
+    closing_date: job.closing_date || null,
   }
 
   database.insertAttentionJob(attentionJob)
@@ -296,10 +343,10 @@ async function tailorAndApply(job, cfg, log) {
   return { ...result, tailoredResume, coverLetter }
 }
 
-function resolveActiveResume(cfg) {
-  const activeResumeObj = (cfg.resumes || []).find(r => r.id === cfg.defaultResumeId)
-  const activeResume = activeResumeObj?.text || cfg.masterResume || ''
-  return { ...cfg, masterResume: activeResume, activeResumeOriginalPath: activeResumeObj?.originalPath, activeResumeOriginalExt: activeResumeObj?.originalExt }
+// Manual applies get the same keyword routing as scanned ones — the job is
+// already known here, so rules can match against its title and description.
+function resolveActiveResume(cfg, job, log) {
+  return withResume(cfg, job, log)
 }
 
 async function applyAttentionJob(jobId, cfg, log) {
@@ -316,10 +363,14 @@ async function doApplyAttentionJob(jobId, cfg, log) {
   const job = database.getAttentionJob(jobId)
   if (!job) return { success: false, reason: 'Job not found' }
 
-  cfg = resolveActiveResume(cfg)
+  cfg = resolveActiveResume(cfg, job, log)
 
-  if (database.hasAppliedToCompany(job.company)) {
-    return { success: false, reason: `Already applied to ${job.company} — skipping to avoid duplicate` }
+  const recent = database.findRecentApplicationToCompany(job.company, cfg.companyCooldownDays)
+  if (recent) {
+    return {
+      success: false,
+      reason: `Applied to "${recent.job_title}" at ${job.company} within the last ${cfg.companyCooldownDays} days — skipping to avoid duplicate. Lower the company cooldown in Settings to override.`,
+    }
   }
 
   const result = await tailorAndApply(job, cfg, log)
@@ -338,6 +389,7 @@ async function doApplyAttentionJob(jobId, cfg, log) {
       cover_letter: result.coverLetter,
       screening_qa: [],
       status: 'applied',
+      closing_date: job.closing_date || null,
     })
     database.dismissAttentionJob(jobId)
     log('Saved to history and removed from Needs Attention')
@@ -360,7 +412,7 @@ async function doApplySkippedJob(jobId, cfg, log) {
   const job = database.getApplication(jobId)
   if (!job) return { success: false, reason: 'Job not found' }
 
-  cfg = resolveActiveResume(cfg)
+  cfg = resolveActiveResume(cfg, job, log)
 
   const result = await tailorAndApply(job, cfg, log)
 
@@ -407,4 +459,7 @@ async function applyAttentionJobs(jobIds, cfg, log) {
   return { success: true, succeeded, failed: results.length - succeeded, results }
 }
 
-module.exports = { run, cancel, isBusy, applyAttentionJob, applyAttentionJobs, applySkippedJob }
+module.exports = {
+  run, cancel, isBusy, applyAttentionJob, applyAttentionJobs, applySkippedJob,
+  selectResume, // exported for tests
+}

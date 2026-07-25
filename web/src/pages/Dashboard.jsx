@@ -175,6 +175,9 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
   const [skippedApplyResult, setSkippedApplyResult] = useState(null)
   const [logCollapsed, setLogCollapsed] = useState(false)
   const [scanInfo, setScanInfo] = useState(null)
+  const [interviews, setInterviews] = useState([])
+  const [appInterviews, setAppInterviews] = useState([])
+  const [newInterviewAt, setNewInterviewAt] = useState('')
   // Which failure the user dismissed, keyed by its timestamp — a plain boolean
   // would be undone by the next refetch, and a later failure must reappear.
   const [dismissedScanAt, setDismissedScanAt] = useState(null)
@@ -214,6 +217,8 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
     setInterviewQuestions(null)
     setKeywordGap(null)
     setStatusHistory([])
+    setAppInterviews([])
+    setNewInterviewAt('')
     if (selected?.id) {
       window.api.getInterviewPrep(selected.id).then(saved => {
         if (saved?.questions) {
@@ -221,6 +226,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
         }
       })
       window.api.getStatusHistory?.(selected.id).then(h => setStatusHistory(h || [])).catch(() => {})
+      window.api.getInterviewEvents?.(selected.id).then(e => setAppInterviews(e || [])).catch(() => {})
     }
   }, [selected?.id])
 
@@ -361,12 +367,14 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
   }, [active, selected, paged, pdfModal])
 
   async function loadData() {
-    const [s, a] = await Promise.all([
+    const [s, a, iv] = await Promise.all([
       window.api.getStats(),
       window.api.getApplications({}),
+      window.api.getUpcomingInterviews?.(10).catch(() => []) ?? [],
     ])
     setStats(s)
     setApps(a)
+    setInterviews(iv || [])
   }
 
   async function stopScan() {
@@ -509,6 +517,61 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
               {s.sub && <div style={{ fontSize: 11, color: s.subColor || 'var(--text-muted)', marginTop: 2 }}>{s.sub}</div>}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Upcoming interviews — detected from recruiter replies, or added by hand */}
+      {interviews.length > 0 && (
+        <div className="card" style={{ marginBottom: 24, borderLeft: '3px solid var(--green)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <span style={{ fontWeight: 600, fontSize: 14 }}>Upcoming Interviews</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              detected from recruiter replies — click a row to open the application
+            </span>
+          </div>
+          {interviews.map(iv => {
+            const when = new Date(iv.scheduled_at.replace(' ', 'T'))
+            const days = Math.round((when - new Date()) / 86400000)
+            const rel = days <= 0 ? 'today' : days === 1 ? 'tomorrow' : `in ${days} days`
+            return (
+              <div key={iv.id} style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+                padding: '10px 12px', background: 'var(--surface2)', borderRadius: 8, marginBottom: 6,
+                cursor: 'pointer',
+              }}
+                onClick={() => {
+                  const app = apps.find(a => a.id === iv.application_id)
+                  if (app) setSelected(app)
+                }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {iv.job_title} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>· {iv.company}</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                    {when.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}
+                    {iv.has_time ? ` at ${when.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ' (time not detected)'}
+                    {iv.source === 'inbox' && ' · auto-detected'}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                  <span style={{
+                    fontSize: 11, fontWeight: 600, padding: '3px 8px', borderRadius: 6,
+                    background: days <= 1 ? 'var(--green)' : 'var(--surface)',
+                    color: days <= 1 ? '#fff' : 'var(--text-muted)',
+                  }}>{rel}</span>
+                  <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }}
+                    onClick={async (e) => {
+                      e.stopPropagation()
+                      await window.api.deleteInterviewEvent(iv.id)
+                      setInterviews(prev => prev.filter(x => x.id !== iv.id))
+                    }}
+                    title="Remove from this list (the application is unchanged)">
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            )
+          })}
         </div>
       )}
 
@@ -775,6 +838,11 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                 {selected.match_explanation && (
                   <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{selected.match_explanation}</div>
                 )}
+                {selected.closing_date && (
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+                    Applications close {new Date(`${selected.closing_date}T12:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}
+                  </div>
+                )}
               </div>
               <div style={{ display: 'flex', gap: 6 }}>
                 <button className="btn btn-ghost" style={{ fontSize: 12, color: 'var(--red)' }}
@@ -865,6 +933,60 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                 onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }}
                 style={{ fontSize: 13 }}
               />
+            </div>
+
+            {/* Interview time — auto-detected from the recruiter's reply where
+                possible, always correctable here. */}
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ marginBottom: 8 }}>Interview</label>
+              {appInterviews.length > 0 ? appInterviews.map(iv => (
+                <div key={iv.id} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+                  padding: '8px 10px', background: 'var(--surface2)', borderRadius: 8, marginBottom: 6,
+                }}>
+                  <div style={{ fontSize: 13 }}>
+                    {new Date(iv.scheduled_at.replace(' ', 'T')).toLocaleString(undefined,
+                      iv.has_time
+                        ? { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }
+                        : { weekday: 'short', day: 'numeric', month: 'short' })}
+                    <span style={{ color: 'var(--text-muted)', fontSize: 11, marginLeft: 8 }}>
+                      {iv.source === 'inbox' ? 'auto-detected' : 'added by you'}
+                    </span>
+                  </div>
+                  <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }}
+                    onClick={async () => {
+                      await window.api.deleteInterviewEvent(iv.id)
+                      setAppInterviews(prev => prev.filter(x => x.id !== iv.id))
+                      loadData()
+                    }}>Remove</button>
+                </div>
+              )) : (
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>
+                  No interview scheduled. One is added automatically when a recruiter reply
+                  proposes a time.
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input type="datetime-local" value={newInterviewAt}
+                  onChange={e => setNewInterviewAt(e.target.value)} style={{ flex: 1, fontSize: 12 }} />
+                <button className="btn btn-ghost" style={{ fontSize: 12, flexShrink: 0 }}
+                  disabled={!newInterviewAt}
+                  onClick={async () => {
+                    // datetime-local gives "YYYY-MM-DDTHH:MM" in local time —
+                    // the same wall-clock the DB column stores.
+                    const scheduledAt = `${newInterviewAt.replace('T', ' ')}:00`
+                    const res = await window.api.addInterviewEvent({
+                      applicationId: selected.id, scheduledAt, hasTime: true,
+                    })
+                    if (res?.success) {
+                      setNewInterviewAt('')
+                      setAppInterviews(await window.api.getInterviewEvents(selected.id))
+                      loadData()
+                    } else {
+                      showToast?.(res?.error || 'Could not save interview', 'error')
+                    }
+                  }}>Add</button>
+              </div>
             </div>
 
             {statusHistory.length > 0 && (

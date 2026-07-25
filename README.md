@@ -13,7 +13,10 @@
 - **Cover letter generation** — AI writes a tailored cover letter with configurable tone (Professional / Casual / Confident) and optional custom template
 - **Screening Q&A** — AI answers common application questions; answers are cached and reused
 - **Auto-apply** — submits Seek Quick Apply, LinkedIn Easy Apply, and Indeed applications automatically
+- **Resume routing** — keyword rules pick a different base resume per job type (e.g. send "data, analytics, sql" roles to your data resume); anything unmatched uses your default
 - **Cross-platform duplicate detection** — skips jobs already applied to via another platform
+- **Company cooldown** — after applying to a company, other roles there are skipped for a configurable window (default 30 days, 0 to disable) rather than being blocked permanently
+- **Closing-date detection** — parses the application deadline out of the job ad so you can act on what expires first
 - **Tech stack auto-selection** — automatically checks Seek skill/tech checkboxes matching your resume
 - **Salary expectation** — fills salary fields from your configured minimum
 
@@ -21,7 +24,8 @@
 - **Configurable scan time** — set a daily scan time (Mon–Fri) in Settings
 - **Auto follow-up emails** — after a configurable number of days, AI drafts and sends a follow-up for unanswered applications
 - **Daily email report** — summary of applications sent to your Gmail at a configurable time
-- **Inbox reply detection** — periodically scans your inbox for recruiter replies and updates each application's status (Interview / Offer / Rejected / Pending), using AI to read the email body when an AI provider is configured
+- **Inbox reply detection** — periodically scans your inbox for recruiter replies and updates each application's status (Interview / Offer / Rejected / Pending), using AI to read the email body when an AI provider is configured. Scans resume from the last check rather than re-reading the whole mailbox each time
+- **Interview scheduling** — when a reply proposes a time, the date is extracted and added to an Upcoming Interviews panel on the dashboard, so you don't have to go find the email again. Always correctable, and times can be entered by hand
 
 ### Dashboard
 - **Stats** — applications today, this week, all time, interviews, and response rate
@@ -34,7 +38,8 @@
 - **Persistent activity log** — scan and apply activity is written to a log file (`~/.hiro/logs/hiro.log`) that survives restarts; view recent entries, open the full file, or clear it from the dashboard
 - **Status history** — every status change is recorded and shown as a timeline in the job detail panel, so you can see how long each company took to respond
 - **Desktop notifications** — OS notifications for scan completion, jobs needing attention, and recruiter replies while Hiro runs in the background (toggle in Settings)
-- **Automatic backups** — the database is backed up daily (last 7 kept) to `~/.hiro/backups`, with one-click restore in Settings → Data
+- **Automatic backups** — the database is backed up daily (last 7 kept) to `~/.hiro/backups`, with one-click restore in Settings → Data. Each restore keeps a timestamped pre-restore snapshot (last 3)
+- **Settings transfer** — export resumes, job criteria, blacklist, routing rules, and templates to a passphrase-encrypted file and restore them on another machine (Settings → Data). Credentials are excluded unless you opt in; runtime state never travels
 
 ### Job Detail Panel
 - **Match explanation** — one-sentence AI summary of why the job scored the way it did
@@ -45,6 +50,7 @@
 
 ### Analytics & Timeline
 - **Analytics page** — SVG bar chart of applications over the last 7 days, platform donut chart, by-status breakdown, response rate, and a match-score histogram with your apply threshold marked (for tuning it alongside Test Scan)
+- **Interview rate by match score** — what share of each score band actually reached interview or offer. The histogram shows where your threshold sits; this shows whether it belongs there. Bands with too few applications to be meaningful are greyed out rather than shown as a confident 0% or 100%
 - **Timeline page** — collapsible day-by-day history of all applications grouped by platform
 
 ### Settings
@@ -52,6 +58,8 @@
 - **Cover letter template** — optional structural base for AI to fill in
 - **Daily scan time picker** — choose exactly when the automated scan runs
 - **Auto follow-up** — toggle on/off with configurable day threshold
+- **Company cooldown** — how long to wait before applying to another role at the same company
+- **Resume routing rules** — keyword → resume mapping, checked top to bottom
 
 ---
 

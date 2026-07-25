@@ -130,11 +130,16 @@ async function pushDirty(c) {
     const chunk = apps.slice(i, i + 200)
     const { error } = await c.from('applications').upsert(chunk.map(localToCloud), { onConflict: 'user_id,local_id' })
     if (error) throw new Error(error.message)
-    for (const a of chunk) {
-      // Remember exactly which version we pushed; skipped if the row was
-      // edited again while the upsert was in flight (stays dirty).
-      database.markCloudSynced(a.id, toISO(a.updated_at), a.updated_at)
-    }
+    // One database flush for the whole chunk. Each markCloudSynced is a write,
+    // and sql.js serializes the entire database on every write — per-row
+    // flushing meant up to 200 full-database writes per chunk.
+    database.batch(() => {
+      for (const a of chunk) {
+        // Remember exactly which version we pushed; skipped if the row was
+        // edited again while the upsert was in flight (stays dirty).
+        database.markCloudSynced(a.id, toISO(a.updated_at), a.updated_at)
+      }
+    })
   }
 }
 
@@ -155,27 +160,31 @@ async function pullChanges(c) {
   const localIds = new Set(database.getAllApplicationIds())
   const orphans = []
 
-  for (const remote of data || []) {
-    if (remote.local_id == null) continue
-    if (!localIds.has(remote.local_id)) { orphans.push(remote.local_id); continue }
-    const local = database.getApplication(remote.local_id)
+  // Same reason as pushDirty: markCloudSeen/applyCloudEdit fire once per remote
+  // row, and each one would otherwise serialize the whole database.
+  database.batch(() => {
+    for (const remote of data || []) {
+      if (remote.local_id == null) continue
+      if (!localIds.has(remote.local_id)) { orphans.push(remote.local_id); continue }
+      const local = database.getApplication(remote.local_id)
 
-    const remoteTime = remote.updated_at ? new Date(remote.updated_at).getTime() : 0
-    const lastSeen = local.cloud_updated_at ? new Date(local.cloud_updated_at).getTime() : null
-    if (lastSeen != null && remoteTime === lastSeen) continue // remote unchanged since last sync
-    // Both sides changed since the last sync: the desktop wins (it owns far
-    // more fields) and pushDirty will overwrite the remote copy.
-    if (local.cloud_dirty) continue
+      const remoteTime = remote.updated_at ? new Date(remote.updated_at).getTime() : 0
+      const lastSeen = local.cloud_updated_at ? new Date(local.cloud_updated_at).getTime() : null
+      if (lastSeen != null && remoteTime === lastSeen) continue // remote unchanged since last sync
+      // Both sides changed since the last sync: the desktop wins (it owns far
+      // more fields) and pushDirty will overwrite the remote copy.
+      if (local.cloud_dirty) continue
 
-    const changes = {}
-    if (remote.status && remote.status !== local.status) changes.status = remote.status
-    if (remote.comment != null && remote.comment !== local.comment) changes.comment = remote.comment
-    if (Object.keys(changes).length > 0) {
-      database.applyCloudEdit(remote.local_id, changes, remote.updated_at)
-    } else {
-      database.markCloudSeen(remote.local_id, remote.updated_at)
+      const changes = {}
+      if (remote.status && remote.status !== local.status) changes.status = remote.status
+      if (remote.comment != null && remote.comment !== local.comment) changes.comment = remote.comment
+      if (Object.keys(changes).length > 0) {
+        database.applyCloudEdit(remote.local_id, changes, remote.updated_at)
+      } else {
+        database.markCloudSeen(remote.local_id, remote.updated_at)
+      }
     }
-  }
+  })
 
   // The desktop is the only writer that creates rows, so a cloud row without a
   // local counterpart means the application was deleted locally — mirror that.

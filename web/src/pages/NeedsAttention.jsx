@@ -1,5 +1,23 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 
+// Application deadline parsed from the job ad. Colour tracks urgency, since
+// the whole point of surfacing it here is to answer "which of these do I have
+// to deal with first".
+function ClosingBadge({ date }) {
+  if (!date) return null
+  const parsed = new Date(`${date}T12:00:00`)
+  if (isNaN(parsed.getTime())) return null
+  const days = Math.round((parsed - new Date()) / 86400000)
+  const label = days < 0 ? 'closed' : days === 0 ? 'closes today' : days === 1 ? 'closes tomorrow' : `closes in ${days}d`
+  const color = days < 0 ? 'var(--text-muted)' : days <= 2 ? 'var(--red)' : days <= 7 ? 'var(--yellow)' : 'var(--text-muted)'
+  return (
+    <span title={`Applications close ${date}`} style={{
+      fontSize: 11, fontWeight: 600, color, border: `1px solid ${color}`,
+      borderRadius: 6, padding: '1px 6px', opacity: days < 0 ? 0.6 : 1,
+    }}>{label}</span>
+  )
+}
+
 export default function NeedsAttention({ onCountChange, showToast }) {
   const [jobs, setJobs] = useState([])
   const [selected, setSelected] = useState(null)
@@ -37,6 +55,14 @@ export default function NeedsAttention({ onCountChange, showToast }) {
     result = [...result].sort((a, b) => {
       if (sortBy === 'match') return (b.match_score || 0) - (a.match_score || 0)
       if (sortBy === 'company') return (a.company || '').localeCompare(b.company || '')
+      if (sortBy === 'closing') {
+        // Soonest deadline first; anything without a parsed date sinks to the
+        // bottom rather than sorting as "very urgent".
+        const av = a.closing_date || '￿'
+        const bv = b.closing_date || '￿'
+        if (av !== bv) return av.localeCompare(bv)
+        return (b.found_at || '').localeCompare(a.found_at || '')
+      }
       return (b.found_at || '').localeCompare(a.found_at || '') // date desc
     })
     return result
@@ -194,6 +220,7 @@ export default function NeedsAttention({ onCountChange, showToast }) {
           )}
           <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ width: 180, padding: '6px 10px', fontSize: 12 }}>
             <option value="date">Newest First</option>
+            <option value="closing">Closing Soonest</option>
             <option value="match">Highest Match</option>
             <option value="company">Company A–Z</option>
           </select>
@@ -256,6 +283,7 @@ export default function NeedsAttention({ onCountChange, showToast }) {
                       color: job.match_score >= 85 ? 'var(--green)' : 'var(--yellow)',
                       fontWeight: 600, fontSize: 13,
                     }}>{job.match_score}%</span>
+                    {job.closing_date && <ClosingBadge date={job.closing_date} />}
                   </div>
                   <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>
                     {job.company} {job.salary ? `· ${job.salary}` : ''}

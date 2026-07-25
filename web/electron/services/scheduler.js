@@ -432,9 +432,10 @@ async function runInboxCheck() {
     configService.update({ lastInboxCheck: new Date().toISOString() })
     if (result.updated.length > 0) {
       for (const item of result.updated) {
-        log(`Inbox: ${item.company} replied — status updated to ${item.newStatus}`)
+        const when = item.interviewAt ? ` — interview detected for ${item.interviewAt}` : ''
+        log(`Inbox: ${item.company} replied — status updated to ${item.newStatus}${when}`)
         notify({ type: 'inbox-reply', item })
-        nativeNotify('Recruiter reply', `${item.company} replied — status updated to ${item.newStatus}`)
+        nativeNotify('Recruiter reply', `${item.company} replied — status updated to ${item.newStatus}${when}`)
         webhooks.send('inbox-reply', item).catch(() => {})
       }
     } else {

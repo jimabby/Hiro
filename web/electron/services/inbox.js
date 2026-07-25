@@ -2,8 +2,14 @@ const { ImapFlow } = require('imapflow')
 const configService = require('./config')
 const database = require('./database')
 const aiAdapter = require('./ai/index')
+const { parseInterviewTime } = require('./dateParser')
 
 const REPLY_STATUSES = ['interview', 'rejected', 'offer', 'pending']
+
+// How far back to re-scan on an incremental pass. The window starts at the
+// last successful check minus this overlap, so a reply that arrived while a
+// check was mid-flight (or with a slightly skewed server clock) isn't missed.
+const OVERLAP_MS = 6 * 60 * 60 * 1000
 
 // Download a matched message's text body and reduce it to a plain snippet the
 // AI classifier can read. Best-effort — returns '' if the body can't be fetched.
@@ -91,10 +97,18 @@ async function checkInbox() {
       // No applied applications — skip the search but still fall through to logout
       if (apps.length > 0) {
 
-        // Find the oldest application date to limit how far back we search
-        const oldestDate = new Date(
+        // Search window. On the first run there's nothing to go on, so fall
+        // back to the oldest application. After that, resume from the last
+        // successful check (minus an overlap) — otherwise every pass re-fetched
+        // every message received since the oldest application, which grows
+        // without bound and re-downloads months of envelopes every 2 hours.
+        const oldestApplied = new Date(
           Math.min(...apps.map(a => (parseSqliteUtc(a.applied_at) || new Date()).getTime()))
         )
+        const lastCheck = cfg.lastInboxCheck ? new Date(cfg.lastInboxCheck) : null
+        const since = (lastCheck && !isNaN(lastCheck.getTime()))
+          ? new Date(Math.max(oldestApplied.getTime(), lastCheck.getTime() - OVERLAP_MS))
+          : oldestApplied
 
         // Job platform domains to ignore — these are notifications, not recruiter replies
         const PLATFORM_DOMAINS = ['seek.com.au', 'seek.co.nz', 'indeed.com', 'linkedin.com',
@@ -102,7 +116,7 @@ async function checkInbox() {
 
         // Fetch all message envelopes since the oldest application
         const messages = []
-        for await (const msg of client.fetch({ since: oldestDate }, { envelope: true })) {
+        for await (const msg of client.fetch({ since }, { envelope: true })) {
           const from = msg.envelope.from?.[0]?.address?.toLowerCase() || ''
           const fromDomain = from.split('@')[1] || ''
           // Skip emails from job platforms — they're confirmations, not recruiter replies
@@ -152,9 +166,15 @@ async function checkInbox() {
             // which the keyword classifier can't detect). Any failure keeps the
             // baseline, so a flaky AI call never breaks the inbox check.
             let newStatus = classifySubject(match.subject)
+            // The body is also what the interview-time parser reads, so fetch
+            // it whenever the subject already looks like an interview, even
+            // when no AI provider is configured.
+            let body = ''
+            const needsBody = !!(cfg.aiProvider && cfg.aiApiKey) || newStatus === 'interview'
+            if (needsBody) body = await fetchBodySnippet(client, match.uid)
+
             if (cfg.aiProvider && cfg.aiApiKey) {
               try {
-                const body = await fetchBodySnippet(client, match.uid)
                 const aiStatus = (await aiAdapter.classifyReply(
                   cfg.aiProvider, cfg.aiApiKey, match.subject, body, app.company, cfg.geminiModel
                 )) || ''
@@ -164,12 +184,34 @@ async function checkInbox() {
               } catch { /* keep keyword result */ }
             }
             database.updateApplicationStatus(app.id, newStatus)
+
+            // An interview reply usually proposes a time. Pull it out so the
+            // user gets it on the dashboard instead of having to find the
+            // email again. Best-effort and always editable in the UI.
+            let interviewAt = null
+            if (newStatus === 'interview') {
+              if (!body) body = await fetchBodySnippet(client, match.uid)
+              const parsed = parseInterviewTime(match.subject, body)
+              if (parsed) {
+                try {
+                  database.upsertDetectedInterview({
+                    applicationId: app.id,
+                    scheduledAt: parsed.at,
+                    hasTime: parsed.hasTime,
+                    note: match.subject,
+                  })
+                  interviewAt = parsed.at
+                } catch { /* scheduling is a bonus — never fail the inbox check */ }
+              }
+            }
+
             updated.push({
               id: app.id,
               job_title: app.job_title,
               company: app.company,
               newStatus,
               subject: match.subject,
+              interviewAt,
             })
           }
         }
