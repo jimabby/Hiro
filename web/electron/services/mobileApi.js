@@ -12,7 +12,10 @@ const logger = require('./logger')
 
 let server = null
 
-const VALID_STATUSES = ['applied', 'interview', 'rejected', 'offer', 'skipped']
+// Must cover every status the desktop can write, or the phone can see a status
+// it isn't allowed to set back. 'pending' comes from the inbox classifier and
+// 'no_response' from the stale sweep; both were missing here.
+const VALID_STATUSES = ['applied', 'interview', 'rejected', 'offer', 'pending', 'no_response', 'skipped']
 
 // The token is read on every single request. Reading it from disk each time
 // also meant an OS-keychain decrypt per request, so cache it in memory and
@@ -226,6 +229,15 @@ async function handle(req, res) {
 
     if (req.method === 'GET' && path === '/api/attention') {
       return json(res, 200, database.getAttentionJobs())
+    }
+
+    if (req.method === 'GET' && path === '/api/interviews') {
+      const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 25))
+      return json(res, 200, database.getUpcomingInterviews(limit))
+    }
+
+    if (req.method === 'GET' && path === '/api/salary') {
+      return json(res, 200, database.getSalaryStats())
     }
 
     if (req.method === 'GET' && path === '/api/perday') {

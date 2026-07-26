@@ -93,8 +93,12 @@ async function checkInbox() {
     const lock = await client.getMailboxLock('INBOX')
 
     try {
-      const apps = database.getApplications({ status: 'applied' })
-      // No applied applications — skip the search but still fall through to logout
+      // Every application still waiting on an outcome — not just 'applied'.
+      // 'pending' (a reply we couldn't classify) and 'no_response' (we stopped
+      // waiting) stay in scope, so a follow-up email that finally schedules an
+      // interview is picked up instead of being invisible forever.
+      const apps = database.getApplicationsAwaitingReply()
+      // Nothing open — skip the search but still fall through to logout
       if (apps.length > 0) {
 
         // Search window. On the first run there's nothing to go on, so fall
@@ -145,7 +149,7 @@ async function checkInbox() {
 
           const appliedAt = parseSqliteUtc(app.applied_at)
 
-          const match = messages.find(m => {
+          const matches = messages.filter(m => {
             // A reply can only arrive after the application was submitted
             if (appliedAt && m.date && new Date(m.date) < appliedAt) return false
 
@@ -160,7 +164,23 @@ async function checkInbox() {
             return domainMatch || (subjectCompanyMatch && subjectJobMatch)
           })
 
+          // The NEWEST matching email wins. A recruiter thread produces several,
+          // and the latest one carries the current state of the conversation —
+          // taking the first match instead meant a follow-up email that upgraded
+          // "we'll be in touch" to an actual interview time was never read.
+          const match = matches.sort((a, b) => {
+            const ta = a.date ? new Date(a.date).getTime() : 0
+            const tb = b.date ? new Date(b.date).getTime() : 0
+            return tb - ta || b.uid - a.uid
+          })[0]
+
           if (match) {
+            // Already classified this exact email on an earlier pass. Now that
+            // non-terminal statuses stay in scope, without this check every
+            // pass would re-download the body and re-run the AI classifier on
+            // the same message for the same (unchanged) result.
+            if (app.last_reply_uid != null && match.uid === app.last_reply_uid) continue
+
             // Keyword guess on the subject is the fast baseline. When AI is
             // configured, read the email body to refine it (and catch 'offer',
             // which the keyword classifier can't detect). Any failure keeps the
@@ -184,6 +204,7 @@ async function checkInbox() {
               } catch { /* keep keyword result */ }
             }
             database.updateApplicationStatus(app.id, newStatus)
+            database.setLastReplyUid(app.id, match.uid)
 
             // An interview reply usually proposes a time. Pull it out so the
             // user gets it on the dashboard instead of having to find the
@@ -205,14 +226,21 @@ async function checkInbox() {
               }
             }
 
-            updated.push({
-              id: app.id,
-              job_title: app.job_title,
-              company: app.company,
-              newStatus,
-              subject: match.subject,
-              interviewAt,
-            })
+            // Only report a genuine change. A new email that classifies to the
+            // status the row already had is real work done, but announcing
+            // "status updated to pending" when it was already pending is noise
+            // the user can't act on.
+            if (newStatus !== app.status || interviewAt) {
+              updated.push({
+                id: app.id,
+                job_title: app.job_title,
+                company: app.company,
+                previousStatus: app.status,
+                newStatus,
+                subject: match.subject,
+                interviewAt,
+              })
+            }
           }
         }
       }

@@ -1,5 +1,11 @@
 const OpenAI = require('openai')
 
+// Named so a model change is one edit rather than a dozen. DeepSeek reuses this
+// adapter via a baseURL override and has a single model name.
+const FAST_MODEL = 'gpt-4o-mini'
+const SMART_MODEL = 'gpt-4o'
+const DEEPSEEK_MODEL = 'deepseek-chat'
+
 function parseJSON(text) {
   const cleaned = text.replace(/```(?:json)?\s*/gi, '').replace(/```\s*/g, '').trim()
   return JSON.parse(cleaned)
@@ -12,7 +18,7 @@ function getClient(apiKey, baseURL) {
 async function testConnection(apiKey, baseURL) {
   const client = getClient(apiKey, baseURL)
   await client.chat.completions.create({
-    model: baseURL ? 'deepseek-chat' : 'gpt-4o-mini',
+    model: baseURL ? DEEPSEEK_MODEL : FAST_MODEL,
     max_tokens: 10,
     messages: [{ role: 'user', content: 'hi' }],
   })
@@ -20,7 +26,7 @@ async function testConnection(apiKey, baseURL) {
 
 async function tailorResume(jobDescription, masterResume, apiKey, baseURL) {
   const client = getClient(apiKey, baseURL)
-  const model = baseURL ? 'deepseek-chat' : 'gpt-4o'
+  const model = baseURL ? DEEPSEEK_MODEL : SMART_MODEL
   const response = await client.chat.completions.create({
     model,
     max_tokens: 2000,
@@ -43,7 +49,7 @@ ${masterResume}`,
 
 async function answerScreeningQuestion(question, jobDescription, masterResume, apiKey, baseURL) {
   const client = getClient(apiKey, baseURL)
-  const model = baseURL ? 'deepseek-chat' : 'gpt-4o-mini'
+  const model = baseURL ? DEEPSEEK_MODEL : FAST_MODEL
   const response = await client.chat.completions.create({
     model,
     max_tokens: 500,
@@ -71,7 +77,7 @@ Return ONLY the answer, no commentary.`,
 
 async function generateTalkingPoints(jobDescription, masterResume, apiKey, baseURL) {
   const client = getClient(apiKey, baseURL)
-  const model = baseURL ? 'deepseek-chat' : 'gpt-4o-mini'
+  const model = baseURL ? DEEPSEEK_MODEL : FAST_MODEL
   const response = await client.chat.completions.create({
     model,
     max_tokens: 600,
@@ -93,7 +99,7 @@ RESUME: ${masterResume.slice(0, 1000)}`,
 
 async function scoreMatch(jobDescription, masterResume, apiKey, baseURL) {
   const client = getClient(apiKey, baseURL)
-  const model = baseURL ? 'deepseek-chat' : 'gpt-4o-mini'
+  const model = baseURL ? DEEPSEEK_MODEL : FAST_MODEL
   const response = await client.chat.completions.create({
     model,
     max_tokens: 50,
@@ -112,7 +118,7 @@ RESUME: ${masterResume.slice(0, 1000)}`,
 
 async function generateCoverLetter(jobDescription, masterResume, apiKey, baseURL, tone, template) {
   const client = getClient(apiKey, baseURL)
-  const model = baseURL ? 'deepseek-chat' : 'gpt-4o'
+  const model = baseURL ? DEEPSEEK_MODEL : SMART_MODEL
   const toneInstruction = tone === 'casual' ? 'Write in a warm, approachable, conversational tone.' : tone === 'confident' ? 'Write with assertive, direct confidence — lead with impact.' : ''
   const templateInstruction = template ? `Use the following as the structural base, filling in job-specific details:\n\n${template}\n\n` : ''
   const response = await client.chat.completions.create({
@@ -142,7 +148,7 @@ ${masterResume}`,
 
 async function scoreMatchWithExplanation(jobDescription, masterResume, apiKey, baseURL) {
   const client = getClient(apiKey, baseURL)
-  const model = baseURL ? 'deepseek-chat' : 'gpt-4o-mini'
+  const model = baseURL ? DEEPSEEK_MODEL : FAST_MODEL
   const response = await client.chat.completions.create({
     model,
     max_tokens: 200,
@@ -165,7 +171,7 @@ RESUME: ${masterResume.slice(0, 1000)}` }],
 
 async function generateInterviewQuestions(jobDescription, masterResume, apiKey, baseURL) {
   const client = getClient(apiKey, baseURL)
-  const model = baseURL ? 'deepseek-chat' : 'gpt-4o'
+  const model = baseURL ? DEEPSEEK_MODEL : SMART_MODEL
   const response = await client.chat.completions.create({
     model,
     max_tokens: 3000,
@@ -184,7 +190,7 @@ RESUME: ${masterResume.slice(0, 1200)}` }],
 
 async function generateFollowUpQuestion(question, userAnswer, jobDescription, apiKey, baseURL) {
   const client = getClient(apiKey, baseURL)
-  const model = baseURL ? 'deepseek-chat' : 'gpt-4o-mini'
+  const model = baseURL ? DEEPSEEK_MODEL : FAST_MODEL
   const response = await client.chat.completions.create({
     model,
     max_tokens: 300,
@@ -200,7 +206,7 @@ JOB CONTEXT: ${(jobDescription || '').slice(0, 500)}` }],
 
 async function analyzeKeywordGap(jobDescription, masterResume, apiKey, baseURL) {
   const client = getClient(apiKey, baseURL)
-  const model = baseURL ? 'deepseek-chat' : 'gpt-4o-mini'
+  const model = baseURL ? DEEPSEEK_MODEL : FAST_MODEL
   const response = await client.chat.completions.create({
     model,
     max_tokens: 600,
@@ -217,7 +223,7 @@ RESUME: ${masterResume.slice(0, 800)}` }],
 
 async function generateFollowUpEmail(jobTitle, company, masterResume, apiKey, baseURL) {
   const client = getClient(apiKey, baseURL)
-  const model = baseURL ? 'deepseek-chat' : 'gpt-4o'
+  const model = baseURL ? DEEPSEEK_MODEL : SMART_MODEL
   const response = await client.chat.completions.create({
     model,
     max_tokens: 400,
@@ -234,7 +240,7 @@ ${masterResume.slice(0, 800)}` }],
 
 async function improveResume(resumeText, apiKey, baseURL) {
   const client = getClient(apiKey, baseURL)
-  const model = baseURL ? 'deepseek-chat' : 'gpt-4o'
+  const model = baseURL ? DEEPSEEK_MODEL : SMART_MODEL
   const response = await client.chat.completions.create({
     model,
     max_tokens: 2000,
@@ -259,7 +265,7 @@ ${resumeText}`,
 // outcome unclear). Used by the inbox checker to refine the keyword guess.
 async function classifyReply(subject, body, company, apiKey, baseURL) {
   const client = getClient(apiKey, baseURL)
-  const model = baseURL ? 'deepseek-chat' : 'gpt-4o-mini'
+  const model = baseURL ? DEEPSEEK_MODEL : FAST_MODEL
   const response = await client.chat.completions.create({
     model,
     max_tokens: 10,

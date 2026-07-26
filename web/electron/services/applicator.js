@@ -80,10 +80,14 @@ async function doRun(cfg, { log, notifyAttention }) {
   // Every score a dry run produced, so the caller can recommend a threshold
   // from the real distribution rather than guesswork.
   const dryScores = []
+  // Platforms that refused to serve results this run (CAPTCHA, rate limit,
+  // expired login). Reported in the summary so the caller can tell "blocked"
+  // apart from "nothing found".
+  const blocked = []
   const batchLimit = cfg.batchLimit || Infinity // smart scheduling passes a finite limit
   const summary = () => (cfg.dryRun
-    ? { dryRun: true, scores: dryScores, wouldApply: dryWouldApply, threshold: cfg.matchThreshold }
-    : { dryRun: false, applied: batchCount })
+    ? { dryRun: true, scores: dryScores, wouldApply: dryWouldApply, threshold: cfg.matchThreshold, blocked }
+    : { dryRun: false, applied: batchCount, blocked })
 
   for (const { name, scraper, limit } of scrapers) {
     if (cancelled || batchCount >= batchLimit) { if (cancelled) log('Scan cancelled.'); return summary() }
@@ -100,9 +104,22 @@ async function doRun(cfg, { log, notifyAttention }) {
     let jobs
     try {
       jobs = await scraper.scrape(cfg)
-      log(`${name}: found ${jobs.length} jobs`)
+      log(`${name}: found ${jobs.length} jobs across ${cfg.scrapePages || 1} page(s)`)
+      // A successful scrape that finds nothing is worth saying out loud — it's
+      // the signal that the search is too narrow or has been exhausted.
+      if (jobs.length === 0) {
+        log(`${name}: no listings matched. Widen the keywords or location if this persists.`)
+      }
     } catch (err) {
-      log(`${name}: scrape error — ${err.message}`)
+      if (err.blocked) {
+        // Distinct from an empty result set, and distinct from a selector
+        // change: the site actively refused us. Surface it so the user knows to
+        // back off or re-authenticate rather than assuming there are no jobs.
+        blocked.push({ platform: name, kind: err.kind, message: err.message })
+        log(`${name}: BLOCKED — ${err.message}`)
+      } else {
+        log(`${name}: scrape error — ${err.message}`)
+      }
       continue
     }
 
@@ -262,7 +279,8 @@ async function doRun(cfg, { log, notifyAttention }) {
           match_explanation: matchExplanation,
           tailored_resume: tailoredResume,
           cover_letter: coverLetter,
-          screening_qa: [],
+          // What the scraper actually answered on the application form.
+          screening_qa: result.screeningQa || [],
           status: 'applied',
           closing_date: job.closing_date,
         })
@@ -279,6 +297,9 @@ async function doRun(cfg, { log, notifyAttention }) {
 
   if (cfg.dryRun) {
     log(`Dry run summary: ${dryWouldApply} job${dryWouldApply === 1 ? '' : 's'} would have been applied to at the ${cfg.matchThreshold}% threshold.`)
+  }
+  if (blocked.length > 0) {
+    log(`Blocked on ${blocked.length} platform(s): ${blocked.map(b => b.platform).join(', ')}. Results from those are missing, not empty.`)
   }
   return summary()
 }
@@ -387,7 +408,7 @@ async function doApplyAttentionJob(jobId, cfg, log) {
       match_explanation: job.match_explanation || '',
       tailored_resume: result.tailoredResume,
       cover_letter: result.coverLetter,
-      screening_qa: [],
+      screening_qa: result.screeningQa || [],
       status: 'applied',
       closing_date: job.closing_date || null,
     })
@@ -417,7 +438,7 @@ async function doApplySkippedJob(jobId, cfg, log) {
   const result = await tailorAndApply(job, cfg, log)
 
   if (result.success) {
-    database.updateApplicationAfterApply(jobId, result.tailoredResume, result.coverLetter)
+    database.updateApplicationAfterApply(jobId, result.tailoredResume, result.coverLetter, result.screeningQa)
     log('Status updated to Applied')
   }
 

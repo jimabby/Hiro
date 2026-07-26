@@ -67,6 +67,12 @@ export default function App() {
         // A scan that died partway used to report "Scan complete" like any
         // other — the error now rides along on the event.
         if (data.error) showToast(`Scan failed: ${data.error}`, 'error')
+        // A platform that refused to serve results isn't a failure, but it
+        // isn't a clean run either — say so rather than reporting success over
+        // results that are missing. The dashboard banner has the detail.
+        else if (data.blocked?.length) {
+          showToast(`Scan complete — blocked on ${data.blocked.map(b => b.platform).join(', ')}`, 'error')
+        }
         else showToast('Scan complete', 'success')
       }
     })

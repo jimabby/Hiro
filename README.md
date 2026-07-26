@@ -7,7 +7,8 @@
 ## Features
 
 ### Automation
-- **Multi-platform scraping** — Seek, Indeed, LinkedIn (with stealth session login)
+- **Multi-platform scraping** — Seek, Indeed, LinkedIn (with stealth session login), walking a configurable number of result pages per scan (default 3) so repeat scans keep finding new listings instead of re-reading the same first page
+- **Block detection** — a CAPTCHA, rate-limit page, or expired login is reported as *blocked* rather than as "found 0 jobs", so a silently throttled scan is visible instead of looking like an empty market
 - **AI match scoring** — rates each job against your resume (0–100%) with a one-sentence explanation of the score
 - **Resume tailoring** — AI rewrites your resume to match each job description (without changing facts)
 - **Cover letter generation** — AI writes a tailored cover letter with configurable tone (Professional / Casual / Confident) and optional custom template
@@ -16,7 +17,9 @@
 - **Resume routing** — keyword rules pick a different base resume per job type (e.g. send "data, analytics, sql" roles to your data resume); anything unmatched uses your default
 - **Cross-platform duplicate detection** — skips jobs already applied to via another platform
 - **Company cooldown** — after applying to a company, other roles there are skipped for a configurable window (default 30 days, 0 to disable) rather than being blocked permanently
-- **Closing-date detection** — parses the application deadline out of the job ad so you can act on what expires first
+- **Closing-date detection** — parses the application deadline out of the job ad so you can act on what expires first, and it's editable in the job detail panel when the ad didn't state one (or stated it oddly)
+- **Screening Q&A recorded** — the answers submitted on your behalf are saved against the application, labelled by whether the AI wrote them, you did, or they were reused from the cache
+- **Salary normalisation** — the advertised salary is parsed into an annual range, so an hourly rate and a package are comparable, and pay becomes filterable and sortable
 - **Tech stack auto-selection** — automatically checks Seek skill/tech checkboxes matching your resume
 - **Salary expectation** — fills salary fields from your configured minimum
 
@@ -24,14 +27,17 @@
 - **Configurable scan time** — set a daily scan time (Mon–Fri) in Settings
 - **Auto follow-up emails** — after a configurable number of days, AI drafts and sends a follow-up for unanswered applications
 - **Daily email report** — summary of applications sent to your Gmail at a configurable time
-- **Inbox reply detection** — periodically scans your inbox for recruiter replies and updates each application's status (Interview / Offer / Rejected / Pending), using AI to read the email body when an AI provider is configured. Scans resume from the last check rather than re-reading the whole mailbox each time
+- **Inbox reply detection** — scans your inbox for recruiter replies on a configurable cadence (every 2 hours, every day of the week by default) and updates each application's status (Interview / Offer / Rejected / Pending), using AI to read the email body when an AI provider is configured. Scans resume from the last check rather than re-reading the whole mailbox each time, and applications marked Pending or No Response stay in scope — a later email that finally schedules an interview is still picked up. The newest matching email wins, and each one is only classified once
+- **Stale application sweep** — after a configurable number of days with no reply (default 45), an application moves to **No Response** so it stops dragging down your response rate. Nothing is deleted, and the inbox keeps watching it in case a late reply arrives
 - **Interview scheduling** — when a reply proposes a time, the date is extracted and added to an Upcoming Interviews panel on the dashboard, so you don't have to go find the email again. Always correctable, and times can be entered by hand
+- **Calendar export** — export upcoming interviews (all of them, or one) as a standard `.ics` file that Calendar, Outlook, and Google all import. Auto-detected times are marked tentative so an unverified parse doesn't look like a confirmed commitment
 
 ### Dashboard
-- **Stats** — applications today, this week, all time, interviews, and response rate
+- **Stats** — applications today, this week, all time, interviews, response rate (any reply at all) and interview rate (reached interview or offer)
+- **Salary filter and sort** — filter the table by annual pay range and sort on it, using the normalised figures rather than the raw text
 - **Search** — live search by job title or company (`/` to focus)
 - **Keyboard navigation** — `↑`/`↓` to move between rows, `Escape` to close detail panel
-- **Export CSV** — download all applications (respects active filters)
+- **Export CSV** — download all applications (respects active filters), including the normalised salary range and closing date, with spreadsheet formula injection neutralised
 - **Inline comments** — add notes to any application directly in the table
 - **Filterable table** — filter by status and platform
 - **Test Scan (dry run)** — scores and tailors every found job but never submits or saves anything, so you can tune the match threshold safely
@@ -49,7 +55,7 @@
 - **Full tailored resume and screening Q&A** — download resume as DOCX
 
 ### Analytics & Timeline
-- **Analytics page** — SVG bar chart of applications over the last 7 days, platform donut chart, by-status breakdown, response rate, and a match-score histogram with your apply threshold marked (for tuning it alongside Test Scan)
+- **Analytics page** — SVG bar chart of applications over the last 7 days, platform donut chart, by-status breakdown, response and interview rates, advertised-salary spread (median / average / range, annualised), and a match-score histogram with your apply threshold marked (for tuning it alongside Test Scan)
 - **Interview rate by match score** — what share of each score band actually reached interview or offer. The histogram shows where your threshold sits; this shows whether it belongs there. Bands with too few applications to be meaningful are greyed out rather than shown as a confident 0% or 100%
 - **Timeline page** — collapsible day-by-day history of all applications grouped by platform
 
@@ -60,19 +66,22 @@
 - **Auto follow-up** — toggle on/off with configurable day threshold
 - **Company cooldown** — how long to wait before applying to another role at the same company
 - **Resume routing rules** — keyword → resume mapping, checked top to bottom
+- **Pages per scan** — how deep to page through each platform's results (1–10)
+- **Inbox cadence** — how often to check for replies, and whether to skip weekends
+- **No Response threshold** — days without a reply before an application is retired, with a Run Now button
 
 ---
 
 ### Mobile Companion
 - **Hiro Mobile** ([app/](app/)) — Expo React Native app, connects either over your local network **or** via the cloud
-- **On-the-go dashboard** — stats, 7-day chart, status and platform breakdowns
+- **On-the-go dashboard** — stats, 7-day chart, status and platform breakdowns, upcoming interviews, and the Needs Attention queue (all available over the cloud as well as LAN)
 - **Manage applications** — search, filter, update statuses, and add notes from your phone
 - **Trigger a scan from your phone** — queue a scan (with optional keyword override); over LAN it runs on the desktop immediately (or the moment the desktop is next turned on), and over the cloud the desktop picks it up on its next sync cycle (~2 minutes) — so you can kick off a scan from anywhere. Requests are saved on the phone if neither is reachable and delivered automatically later
 - **Watch scans live** — while the desktop scans, the phone shows a live "scanning now…" indicator (works over the cloud too) and, over Wi-Fi, a real-time feed of the desktop's activity log with a remote **Cancel scan** button
 - **App Store-ready** — in-app account deletion, privacy policy, EAS build config (see [app/README.md](app/README.md))
 - **Two ways to connect:**
   - **Local network (default)** — the phone talks directly to the desktop via a token-protected LAN API; no cloud involved
-  - **Cloud sync (optional)** — sign in to a Supabase account on both desktop and phone to mirror applications to the cloud, so the phone works from anywhere. Your local database stays the source of truth. See [supabase/SETUP.md](supabase/SETUP.md)
+  - **Cloud sync (optional)** — sign in to a Supabase account on both desktop and phone to mirror applications, interviews, and attention jobs to the cloud, so the phone works from anywhere. Your local database stays the source of truth. See [supabase/SETUP.md](supabase/SETUP.md)
 
 ---
 

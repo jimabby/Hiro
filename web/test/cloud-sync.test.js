@@ -9,6 +9,10 @@ const { stub, service, createChecker } = require('./helpers')
 
 // ── Fake local database ───────────────────────────────────────────
 let rows = []
+// Desktop-owned mirrors: the phone only reads these, so sync pushes the whole
+// current set and deletes whatever the cloud still has that no longer exists.
+let interviewRows = []
+let attentionRows = []
 const byId = (id) => rows.find(r => r.id === id)
 
 const db = {
@@ -24,6 +28,8 @@ const db = {
     if (r && r.updated_at === localUpdatedAt) { r.cloud_dirty = 0; r.cloud_updated_at = cloudUpdatedAt }
   },
   markCloudSeen: (id, cloudUpdatedAt) => { const r = byId(id); if (r) r.cloud_updated_at = cloudUpdatedAt },
+  getAllInterviewEventsForSync: () => interviewRows,
+  getAttentionJobs: () => attentionRows,
   applyCloudEdit: (id, changes, cloudUpdatedAt) => {
     const r = byId(id)
     if (!r) return
@@ -38,17 +44,42 @@ const db = {
 let remoteRows = []
 let upserted = []
 let deletedLocalIds = []
+// Per-table records, so a mirror push can be asserted without being confused
+// with the applications push.
+let upsertedBy = {}
+let keptBy = {}
+// Tables the fake should pretend don't exist, to exercise the graceful-skip
+// path for a project that hasn't re-run schema.sql.
+let missingTables = new Set()
 
 function makeQuery(table) {
   const q = {
     _rows: table === 'applications' ? remoteRows : [],
     select() { return q },
     eq() { return q },
+    gte() { return q },
     in(_col, vals) { deletedLocalIds.push(...vals); return q },
+    // Used by the mirrors to delete everything EXCEPT the current local ids.
+    not(_col, _op, vals) {
+      keptBy[table] = String(vals).replace(/[()]/g, '').split(',').filter(Boolean).map(Number)
+      return q
+    },
     order() { return q },
     delete() { q._deleting = true; return q },
-    upsert(payload) { upserted.push(...payload); return Promise.resolve({ error: null }) },
-    then(res) { return Promise.resolve({ data: q._rows, error: null }).then(res) },
+    upsert(payload) {
+      if (missingTables.has(table)) {
+        return Promise.resolve({ error: { message: `relation "public.${table}" does not exist` } })
+      }
+      upserted.push(...payload)
+      upsertedBy[table] = (upsertedBy[table] || []).concat(payload)
+      return Promise.resolve({ error: null })
+    },
+    then(res) {
+      const error = missingTables.has(table)
+        ? { message: `relation "public.${table}" does not exist` }
+        : null
+      return Promise.resolve({ data: q._rows, error }).then(res)
+    },
   }
   return q
 }
@@ -73,7 +104,10 @@ stub({
 const cloudSync = service('cloudSync.js')
 const { check, done } = createChecker()
 
-const reset = () => { upserted = []; deletedLocalIds = [] }
+const reset = () => {
+  upserted = []; deletedLocalIds = []; upsertedBy = {}; keptBy = {}
+  interviewRows = []; attentionRows = []; missingTables = new Set()
+}
 
 ;(async () => {
   // ── A phone edit the desktop hasn't seen is applied locally. ────
@@ -133,6 +167,54 @@ const reset = () => { upserted = []; deletedLocalIds = [] }
   await cloudSync.sync()
 
   check('orphaned cloud row deleted', deletedLocalIds.includes(99), true)
+
+  // ── Desktop-owned mirrors ───────────────────────────────────────
+  // Interviews and attention jobs are pushed as a full set: the phone can't
+  // edit them, so there's nothing to reconcile, only to replicate.
+  rows = []
+  remoteRows = []
+  reset()
+  interviewRows = [{
+    id: 5, application_id: 1, scheduled_at: '2026-08-14 14:30:00', has_time: 1,
+    source: 'inbox', note: 'Invite', job_title: 'Dev', company: 'Acme', platform: 'Seek',
+  }]
+  attentionRows = [{
+    id: 9, job_title: 'Lead', company: 'Globex', platform: 'Indeed', salary: '$150k',
+    salary_min: 150000, salary_max: 150000, job_url: 'https://x/1', match_score: 71,
+    talking_points: '[]', reason: 'Requires manual application', closing_date: null,
+    found_at: '2026-08-01 09:00:00',
+  }]
+  await cloudSync.sync()
+
+  check('sync completed without error', cloudSync.getStatus().error, null)
+  check('interview mirrored to cloud', upsertedBy.interview_events?.[0]?.local_id, 5)
+  check('interview carries its application id', upsertedBy.interview_events?.[0]?.application_local_id, 1)
+  check('interview has_time normalised to boolean', upsertedBy.interview_events?.[0]?.has_time, true)
+  check('interview keeps the desktop local time', upsertedBy.interview_events?.[0]?.scheduled_at, '2026-08-14 14:30:00')
+  check('attention job mirrored to cloud', upsertedBy.attention_jobs?.[0]?.local_id, 9)
+  check('attention job carries parsed salary', upsertedBy.attention_jobs?.[0]?.salary_min, 150000)
+  // Anything the cloud still holds that isn't in the local set is removed.
+  check('mirror keeps only current interview ids', keptBy.interview_events, [5])
+  check('mirror keeps only current attention ids', keptBy.attention_jobs, [9])
+
+  // An empty local set must delete everything rather than build an invalid
+  // `not in ()` clause.
+  reset()
+  await cloudSync.sync()
+  check('empty mirror still syncs cleanly', cloudSync.getStatus().error, null)
+  check('empty mirror issues an unfiltered delete', keptBy.interview_events, undefined)
+
+  // ── Optional tables ─────────────────────────────────────────────
+  // A Supabase project that hasn't re-run schema.sql has no mirror tables. That
+  // must not fail the whole sync and take applications down with it.
+  reset()
+  interviewRows = [{
+    id: 5, application_id: 1, scheduled_at: '2026-08-14 14:30:00', has_time: 1,
+    source: 'inbox', note: '', job_title: 'Dev', company: 'Acme', platform: 'Seek',
+  }]
+  missingTables = new Set(['interview_events', 'attention_jobs'])
+  await cloudSync.sync()
+  check('missing mirror tables do not fail the sync', cloudSync.getStatus().error, null)
 
   done()
 })()

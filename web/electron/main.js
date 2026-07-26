@@ -66,6 +66,9 @@ app.whenReady().then(async () => {
   // Sweep rows orphaned by older versions, which deleted an application
   // without its interview prep / status history.
   database.pruneOrphanedRows()
+  // Backfill the normalised salary columns for rows saved before they existed,
+  // so salary filters and averages cover history rather than only new scans.
+  database.backfillSalaryColumns()
   // Rotating daily backup: once on launch, then re-checked periodically so
   // long-running sessions still get one backup per day.
   database.maybeBackup()
@@ -507,12 +510,23 @@ ipcMain.handle('resume:openDocx', async (_, resumeText, originalPath) => {
 // ─── IPC: Export CSV ─────────────────────────────────────────────
 ipcMain.handle('db:exportCSV', async (_, filters) => {
   const apps = database.getApplications(filters || {})
-  const header = ['ID', 'Job Title', 'Company', 'Platform', 'Salary', 'Match Score', 'Match Explanation', 'Status', 'Comment', 'Applied At', 'Job URL']
+  const header = [
+    'ID', 'Job Title', 'Company', 'Platform', 'Salary', 'Salary Min (annual)', 'Salary Max (annual)',
+    'Match Score', 'Match Explanation', 'Status', 'Comment', 'Applied At', 'Closing Date', 'Job URL',
+  ]
   const rows = apps.map(a => [
     a.id, a.job_title, a.company, a.platform, a.salary,
+    a.salary_min ?? '', a.salary_max ?? '',
     a.match_score, a.match_explanation || '', a.status, a.comment || '',
-    a.applied_at, a.job_url,
-  ].map(v => `"${String(v || '').replace(/"/g, '""')}"`).join(','))
+    a.applied_at, a.closing_date || '', a.job_url,
+    // A leading =, +, - or @ makes a spreadsheet treat the cell as a formula.
+    // Job titles and AI-written explanations are untrusted text, so prefix a
+    // quote to keep them inert on open.
+  ].map(v => {
+    const str = String(v ?? '')
+    const safe = /^[=+\-@\t\r]/.test(str) ? `'${str}` : str
+    return `"${safe.replace(/"/g, '""')}"`
+  }).join(','))
   const csv = [header.join(','), ...rows].join('\n')
   const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
     title: 'Export Applications',
@@ -591,6 +605,49 @@ ipcMain.handle('db:addInterviewEvent', (_, payload) => {
 })
 ipcMain.handle('db:deleteInterviewEvent', (_, id) => {
   try { return database.deleteInterviewEvent(id) } catch (err) { return { success: false, error: err.message } }
+})
+
+// ─── IPC: Interview calendar export (.ics) ───────────────────────
+// Pass an eventId to export one interview, or omit it for every upcoming one.
+ipcMain.handle('calendar:exportICS', async (_, eventId) => {
+  try {
+    const { buildCalendar } = require('./services/calendar')
+    const events = eventId != null
+      ? [database.getInterviewEvent(eventId)].filter(Boolean)
+      : database.getUpcomingInterviews(200)
+    if (events.length === 0) {
+      return { success: false, error: 'No upcoming interviews to export.' }
+    }
+    const { ics, count } = buildCalendar(events)
+    if (count === 0) return { success: false, error: 'No interview had a usable date.' }
+
+    const single = events.length === 1 ? events[0] : null
+    const slug = (s) => String(s || '').replace(/[^\w-]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'interview'
+    const defaultPath = single
+      ? `hiro-interview-${slug(single.company)}.ics`
+      : `hiro-interviews-${new Date().toISOString().slice(0, 10)}.ics`
+
+    const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+      title: 'Export Interviews',
+      defaultPath,
+      filters: [{ name: 'Calendar', extensions: ['ics'] }],
+    })
+    if (canceled || !filePath) return { canceled: true }
+    require('fs').writeFileSync(filePath, ics, 'utf8')
+    return { success: true, count, filePath }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+// ─── IPC: Salary analytics ───────────────────────────────────────
+ipcMain.handle('analytics:salaryStats', () => database.getSalaryStats())
+
+// ─── IPC: Stale-application sweep (manual trigger) ───────────────
+ipcMain.handle('db:sweepStale', () => {
+  try { return { success: true, ...scheduler.runStaleSweep() } } catch (err) {
+    return { success: false, error: err.message }
+  }
 })
 
 // ─── IPC: Closing date ───────────────────────────────────────────
@@ -753,8 +810,11 @@ ipcMain.handle('gmail:login', async (_, email) => {
 })
 
 ipcMain.handle('gmail:logout', () => {
-  gmailAuth.clearSession()
-  return { success: true }
+  const result = gmailAuth.clearSession()
+  // Inbox check and follow-up are switched off by clearSession — restart so the
+  // cron tasks actually stop instead of firing against cleared credentials.
+  scheduler.restart(mainWindow)
+  return result
 })
 
 // ─── IPC: Interview Prep ─────────────────────────────────────────

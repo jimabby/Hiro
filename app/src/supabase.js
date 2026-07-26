@@ -40,6 +40,10 @@ export async function deleteAccount() {
   try { await supabase.auth.signOut() } catch { /* session already invalid */ }
 }
 
+// Statuses that mean the employer replied. Mirrors RESPONDED_STATUSES in
+// web/electron/services/database.js — keep the two in sync.
+const RESPONDED_STATUSES = ['interview', 'offer', 'rejected', 'pending']
+
 function startOfDay(d) {
   const x = new Date(d)
   x.setHours(0, 0, 0, 0)
@@ -140,6 +144,21 @@ export class CloudClient {
     return { success: true }
   }
 
+  // Count of mirrored attention jobs, or null when the table isn't there yet —
+  // null tells the UI to hide the tile rather than show a misleading 0.
+  async _attentionCount() {
+    try {
+      const { count, error } = await supabase
+        .from('attention_jobs')
+        .select('local_id', { count: 'exact', head: true })
+        .eq('user_id', this.userId)
+      if (error) return null
+      return count ?? null
+    } catch {
+      return null
+    }
+  }
+
   // Stats and per-day are derived client-side from the application list.
   async getStats() {
     const apps = await this._all()
@@ -147,7 +166,10 @@ export class CloudClient {
     const today = startOfDay(now).getTime()
     const weekAgo = today - 6 * 86400000
     const counted = apps.filter(a => a.status !== 'skipped')
-    const interviews = apps.filter(a => a.status === 'interview').length
+    // Keep these definitions identical to the desktop's getStats(): an offer
+    // implies the interview stage was reached, and a rejection is still a reply.
+    const interviews = apps.filter(a => a.status === 'interview' || a.status === 'offer').length
+    const responded = apps.filter(a => RESPONDED_STATUSES.includes(a.status)).length
 
     const byStatus = {}
     const byPlatform = {}
@@ -162,11 +184,13 @@ export class CloudClient {
       totalThisWeek: apps.filter(a => appliedTime(a) >= weekAgo).length,
       totalAllTime: apps.length,
       interviews,
-      // Match the desktop's definition (interviews ÷ non-skipped) so both agree.
-      responseRate: counted.length ? Math.round((interviews / counted.length) * 100) : 0,
-      // Attention jobs never sync to the cloud — report "unknown" (null) so
-      // the UI hides the tile instead of showing a misleading 0.
-      attentionCount: null,
+      // Match the desktop's definitions so both agree.
+      responseRate: counted.length ? Math.round((responded / counted.length) * 100) : 0,
+      interviewRate: counted.length ? Math.round((interviews / counted.length) * 100) : 0,
+      // Mirrored from the desktop. Still null when the table doesn't exist yet
+      // (older schema, or a desktop that hasn't pushed) so the UI hides the tile
+      // rather than showing a misleading 0.
+      attentionCount: await this._attentionCount(),
       byStatus: Object.entries(byStatus).map(([status, count]) => ({ status, count })),
       byPlatform: Object.entries(byPlatform).map(([platform, count]) => ({ platform, count })),
     }
@@ -191,8 +215,41 @@ export class CloudClient {
     return out
   }
 
-  // Attention jobs never sync to the cloud.
-  async getAttention() { return [] }
+  // Attention jobs are mirrored from the desktop (read-only here). The table is
+  // optional — a project that hasn't re-run schema.sql, or a desktop still on an
+  // older build, simply has nothing to return.
+  async getAttention() {
+    const { data, error } = await supabase
+      .from('attention_jobs')
+      .select('local_id, job_title, company, platform, salary, salary_min, salary_max, job_url, match_score, talking_points, reason, closing_date, found_at')
+      .eq('user_id', this.userId)
+      .order('found_at', { ascending: false })
+    if (error) return []
+    return (data || []).map(r => this._map(r))
+  }
+
+  // Upcoming interviews, mirrored from the desktop. Filtered to today onward so
+  // an interview later today doesn't vanish at midnight-plus-one-second, which
+  // matches the desktop's own getUpcomingInterviews().
+  async getUpcomingInterviews(limit = 25) {
+    const today = (() => {
+      const d = new Date()
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    })()
+    const { data, error } = await supabase
+      .from('interview_events')
+      .select('local_id, application_local_id, scheduled_at, has_time, source, note, job_title, company, platform')
+      .eq('user_id', this.userId)
+      .gte('scheduled_at', today)
+      .order('scheduled_at', { ascending: true })
+      .limit(limit)
+    if (error) return []
+    return (data || []).map(r => ({
+      ...r,
+      id: r.local_id,
+      application_id: r.application_local_id,
+    }))
+  }
 
   // Live desktop status over the cloud: the desktop upserts its row in
   // scan_status when a scan starts/finishes, and queued scan_requests are the

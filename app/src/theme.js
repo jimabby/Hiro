@@ -20,5 +20,23 @@ export const statusColors = {
   interview: colors.green,
   offer: colors.green,
   rejected: colors.red,
+  pending: colors.yellow,
+  no_response: colors.border,
   skipped: colors.textMuted,
+}
+
+// Human-readable label for a status. Needed because the raw values are no
+// longer all single words — "no_response" rendered as-is looks like a bug.
+export const statusLabels = {
+  applied: 'Applied',
+  interview: 'Interview',
+  offer: 'Offer',
+  rejected: 'Rejected',
+  pending: 'Pending',
+  no_response: 'No Response',
+  skipped: 'Skipped',
+}
+
+export function statusLabel(status) {
+  return statusLabels[status] || String(status || '')
 }

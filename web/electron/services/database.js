@@ -1,6 +1,7 @@
 const fs = require('fs')
 const path = require('path')
 const { CONFIG_DIR } = require('./config')
+const { parseSalaryColumns } = require('./salaryParser')
 
 const DB_PATH = path.join(CONFIG_DIR, 'autoapply.db')
 
@@ -132,6 +133,17 @@ function migrate() {
   // by what actually expires soonest instead of by when it was found.
   try { db.run('ALTER TABLE applications ADD COLUMN closing_date TEXT') } catch {}
   try { db.run('ALTER TABLE attention_jobs ADD COLUMN closing_date TEXT') } catch {}
+  // IMAP uid of the last recruiter reply we classified for this application.
+  // The inbox check now revisits non-terminal statuses (not just 'applied'), so
+  // without this it would re-download and re-classify the same email on every
+  // pass — burning an AI call each time for no new information.
+  try { db.run('ALTER TABLE applications ADD COLUMN last_reply_uid INTEGER') } catch {}
+  // Salary parsed out of the ad's free-text salary string, so it can be
+  // filtered, sorted, and averaged. NULL means "couldn't parse" (or not listed).
+  try { db.run('ALTER TABLE applications ADD COLUMN salary_min INTEGER') } catch {}
+  try { db.run('ALTER TABLE applications ADD COLUMN salary_max INTEGER') } catch {}
+  try { db.run('ALTER TABLE attention_jobs ADD COLUMN salary_min INTEGER') } catch {}
+  try { db.run('ALTER TABLE attention_jobs ADD COLUMN salary_max INTEGER') } catch {}
 
   // Indexes for frequent queries
   try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_applied_at ON applications(applied_at DESC)') } catch {}
@@ -185,9 +197,28 @@ function getApplications(filters = {}) {
     const to = /^\d{4}-\d{2}-\d{2}$/.test(filters.dateTo) ? filters.dateTo + ' 23:59:59' : filters.dateTo
     conditions.push('applied_at <= ?'); params.push(to)
   }
+  // Salary bounds work on the normalised annual columns. A row whose salary
+  // couldn't be parsed has NULL on both and is excluded from a salary filter —
+  // treating unknown as 0 would hide every unlisted-salary job behind a filter
+  // the user didn't intend to be that aggressive.
+  if (filters.salaryFrom != null && filters.salaryFrom !== '') {
+    conditions.push('COALESCE(salary_max, salary_min) >= ?'); params.push(Number(filters.salaryFrom))
+  }
+  if (filters.salaryTo != null && filters.salaryTo !== '') {
+    conditions.push('COALESCE(salary_min, salary_max) <= ?'); params.push(Number(filters.salaryTo))
+  }
 
   if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ')
-  sql += ' ORDER BY applied_at DESC'
+
+  // Sorting is whitelisted, never interpolated from caller input.
+  const SORTS = {
+    applied_at: 'applied_at DESC',
+    match_score: 'match_score DESC, applied_at DESC',
+    salary: 'COALESCE(salary_max, salary_min) DESC, applied_at DESC',
+    company: 'company COLLATE NOCASE ASC, applied_at DESC',
+    closing_date: "CASE WHEN closing_date IS NULL OR closing_date = '' THEN 1 ELSE 0 END, closing_date ASC, applied_at DESC",
+  }
+  sql += ' ORDER BY ' + (SORTS[filters.sort] || SORTS.applied_at)
   return query(sql, params)
 }
 
@@ -219,10 +250,18 @@ function findRecentApplicationToCompany(company, cooldownDays) {
 }
 
 function insertApplication(data) {
+  // Salary is stored both as scraped (for display) and normalised to annual
+  // numbers (for filtering and averaging). Callers may pass the parsed values
+  // through; anything unparsed falls back to deriving them here so no insert
+  // path can silently skip it.
+  const parsed = data.salary_min == null && data.salary_max == null
+    ? parseSalaryColumns(data.salary || '')
+    : { salary_min: data.salary_min ?? null, salary_max: data.salary_max ?? null }
+
   db.run(`
     INSERT INTO applications
-      (job_title, company, platform, salary, job_url, job_description, match_score, match_explanation, tailored_resume, cover_letter, screening_qa, status, closing_date)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (job_title, company, platform, salary, job_url, job_description, match_score, match_explanation, tailored_resume, cover_letter, screening_qa, status, closing_date, salary_min, salary_max)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     data.job_title, data.company, data.platform, data.salary || '',
     data.job_url, data.job_description, data.match_score,
@@ -231,6 +270,7 @@ function insertApplication(data) {
     JSON.stringify(data.screening_qa || []),
     data.status || 'applied',
     data.closing_date || null,
+    parsed.salary_min, parsed.salary_max,
   ])
   // Read the new row id BEFORE persist(): db.export() resets last_insert_rowid.
   const newId = queryOne('SELECT last_insert_rowid() as id')?.id
@@ -254,11 +294,11 @@ function updateApplicationStatus(id, status) {
   return { success: true }
 }
 
-function updateApplicationAfterApply(id, tailoredResume, coverLetter) {
+function updateApplicationAfterApply(id, tailoredResume, coverLetter, screeningQa) {
   const current = queryOne('SELECT status FROM applications WHERE id = ?', [id])
   run(
-    "UPDATE applications SET status = 'applied', tailored_resume = ?, cover_letter = ?, updated_at = datetime('now'), cloud_dirty = 1 WHERE id = ?",
-    [tailoredResume, coverLetter, id]
+    "UPDATE applications SET status = 'applied', tailored_resume = ?, cover_letter = ?, screening_qa = ?, updated_at = datetime('now'), cloud_dirty = 1 WHERE id = ?",
+    [tailoredResume, coverLetter, JSON.stringify(screeningQa || []), id]
   )
   if (current && current.status !== 'applied') recordStatusChange(id, 'applied')
 }
@@ -313,6 +353,72 @@ function pruneOrphanedRows() {
   }
 }
 
+// One-off backfill of the normalised salary columns for rows inserted before
+// they existed. Runs on launch; idempotent, and skips rows already backfilled
+// so it costs one query once the sweep has happened.
+function backfillSalaryColumns() {
+  try {
+    const rows = query(`
+      SELECT id, salary FROM applications
+      WHERE salary_min IS NULL AND salary_max IS NULL AND salary IS NOT NULL AND salary != ''
+    `)
+    const attention = query(`
+      SELECT id, salary FROM attention_jobs
+      WHERE salary_min IS NULL AND salary_max IS NULL AND salary IS NOT NULL AND salary != ''
+    `)
+    if (rows.length === 0 && attention.length === 0) return { updated: 0 }
+
+    let updated = 0
+    batch(() => {
+      for (const r of rows) {
+        const { salary_min, salary_max } = parseSalaryColumns(r.salary)
+        if (salary_min == null && salary_max == null) continue
+        run('UPDATE applications SET salary_min = ?, salary_max = ? WHERE id = ?', [salary_min, salary_max, r.id])
+        updated++
+      }
+      for (const r of attention) {
+        const { salary_min, salary_max } = parseSalaryColumns(r.salary)
+        if (salary_min == null && salary_max == null) continue
+        run('UPDATE attention_jobs SET salary_min = ?, salary_max = ? WHERE id = ?', [salary_min, salary_max, r.id])
+        updated++
+      }
+    })
+    return { updated }
+  } catch {
+    return { updated: 0 }
+  }
+}
+
+// Salary distribution across everything actually submitted, for the Analytics
+// page. Rows whose salary couldn't be parsed are reported separately rather
+// than folded in as zeros.
+function getSalaryStats() {
+  const rows = query(`
+    SELECT salary_min, salary_max, match_score, status FROM applications
+    WHERE status != 'skipped'
+  `)
+  // Midpoint of the advertised range is the fairest single number to average;
+  // a one-sided range contributes the side it states.
+  const midpoints = []
+  let unparsed = 0
+  for (const r of rows) {
+    if (r.salary_min == null && r.salary_max == null) { unparsed++; continue }
+    if (r.salary_min != null && r.salary_max != null) midpoints.push((r.salary_min + r.salary_max) / 2)
+    else midpoints.push(r.salary_min ?? r.salary_max)
+  }
+  if (midpoints.length === 0) return { count: 0, unparsed, min: null, max: null, median: null, average: null }
+  midpoints.sort((a, b) => a - b)
+  const mid = Math.floor(midpoints.length / 2)
+  return {
+    count: midpoints.length,
+    unparsed,
+    min: Math.round(midpoints[0]),
+    max: Math.round(midpoints[midpoints.length - 1]),
+    median: Math.round(midpoints.length % 2 ? midpoints[mid] : (midpoints[mid - 1] + midpoints[mid]) / 2),
+    average: Math.round(midpoints.reduce((a, b) => a + b, 0) / midpoints.length),
+  }
+}
+
 // ─── Cloud Sync Bookkeeping ──────────────────────────────────────
 
 // Rows with local changes the cloud hasn't seen (new rows start dirty).
@@ -348,6 +454,18 @@ function applyCloudEdit(id, { status, comment }, cloudUpdatedAt) {
   if (status != null) recordStatusChange(id, status) // phone edits show in the timeline too
 }
 
+// Every interview joined to its application, for the cloud mirror. Unlike
+// getUpcomingInterviews this isn't date-filtered — the phone applies its own
+// window, and filtering here would make a past interview look deleted.
+function getAllInterviewEventsForSync() {
+  return query(`
+    SELECT e.id, e.application_id, e.scheduled_at, e.has_time, e.source, e.note,
+           a.job_title, a.company, a.platform
+    FROM interview_events e
+    JOIN applications a ON a.id = e.application_id
+  `)
+}
+
 // ─── Attention Jobs ──────────────────────────────────────────────
 
 // Jobs with a known closing date come first, soonest deadline at the top —
@@ -368,15 +486,20 @@ function getAttentionJob(id) {
 }
 
 function insertAttentionJob(data) {
+  const parsed = data.salary_min == null && data.salary_max == null
+    ? parseSalaryColumns(data.salary || '')
+    : { salary_min: data.salary_min ?? null, salary_max: data.salary_max ?? null }
+
   run(`
     INSERT INTO attention_jobs
-      (job_title, company, platform, salary, job_url, job_description, match_score, talking_points, reason, closing_date)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (job_title, company, platform, salary, job_url, job_description, match_score, talking_points, reason, closing_date, salary_min, salary_max)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     data.job_title, data.company, data.platform, data.salary || '',
     data.job_url, data.job_description, data.match_score,
     JSON.stringify(data.talking_points || []), data.reason || '',
     data.closing_date || null,
+    parsed.salary_min, parsed.salary_max,
   ])
 }
 
@@ -435,8 +558,17 @@ const TODAY_START = "datetime('now','localtime','start of day','utc')"
 const WEEK_START = "datetime('now','localtime','start of day','-6 days','utc')"
 const LAST_WEEK_START = "datetime('now','localtime','start of day','-13 days','utc')"
 
+// Statuses that mean "the employer got back to us". An offer implies the
+// interview stage was reached and a rejection is still a reply, so both count —
+// previously only 'interview' did, which meant moving a job forward to Offer
+// silently LOWERED the response rate. Matches getScoreBandConversion, which
+// already counted offers as conversions.
+const RESPONDED_STATUSES = ['interview', 'offer', 'rejected', 'pending']
+const RESPONDED_SQL = RESPONDED_STATUSES.map(s => `'${s}'`).join(', ')
+
 function getStats() {
-  const interviews = queryOne("SELECT COUNT(*) as c FROM applications WHERE status = 'interview'")?.c || 0
+  const interviews = queryOne("SELECT COUNT(*) as c FROM applications WHERE status IN ('interview', 'offer')")?.c || 0
+  const responded = queryOne(`SELECT COUNT(*) as c FROM applications WHERE status IN (${RESPONDED_SQL})`)?.c || 0
   const appliedCount = queryOne("SELECT COUNT(*) as c FROM applications WHERE status != 'skipped'")?.c || 0
 
   return {
@@ -449,7 +581,11 @@ function getStats() {
     byPlatform: query("SELECT platform, COUNT(*) as count FROM applications GROUP BY platform"),
     byStatus: query("SELECT status, COUNT(*) as count FROM applications GROUP BY status"),
     todayJobs: query(`SELECT job_title, company, platform, match_score, status FROM applications WHERE applied_at >= ${TODAY_START} ORDER BY applied_at DESC`),
-    responseRate: appliedCount > 0 ? Math.round((interviews / appliedCount) * 100) : 0,
+    // Any reply at all, over everything submitted.
+    responseRate: appliedCount > 0 ? Math.round((responded / appliedCount) * 100) : 0,
+    // Reached interview or offer — the number most people actually mean when
+    // they ask how the search is going. Reported alongside, not instead of.
+    interviewRate: appliedCount > 0 ? Math.round((interviews / appliedCount) * 100) : 0,
   }
 }
 
@@ -492,12 +628,51 @@ function getApplicationsPerDay(days) {
   return out
 }
 
+// ─── Inbox reply tracking ────────────────────────────────────────
+// Statuses the inbox check should keep watching. 'applied' is the obvious one,
+// but 'pending' (a reply arrived that we couldn't classify) and 'no_response'
+// (we gave up waiting) must stay in scope too — previously the inbox only
+// looked at 'applied', so the moment a thread was marked pending it was frozen
+// and a later email actually scheduling an interview was never seen.
+const OPEN_STATUSES = ['applied', 'pending', 'no_response']
+
+function getApplicationsAwaitingReply() {
+  const list = OPEN_STATUSES.map(s => `'${s}'`).join(', ')
+  return query(`SELECT * FROM applications WHERE status IN (${list}) ORDER BY applied_at DESC`)
+}
+
+// Remember which email we last classified, so the next pass can skip it.
+function setLastReplyUid(id, uid) {
+  run('UPDATE applications SET last_reply_uid = ? WHERE id = ?', [uid ?? null, id])
+}
+
 function getApplicationsForFollowUp(daysOld) {
   return query("SELECT * FROM applications WHERE status = 'applied' AND follow_up_sent = 0 AND applied_at <= datetime('now', '-' || ? || ' days')", [daysOld])
 }
 
 function markFollowUpSent(id) {
   run('UPDATE applications SET follow_up_sent = 1 WHERE id = ?', [id])
+}
+
+// ─── Stale applications ──────────────────────────────────────────
+// An application that never gets a reply sat at 'applied' forever, which meant
+// the response-rate denominator kept growing with rows that were never going to
+// resolve. After `days` with no reply, move it to 'no_response' — a terminal
+// status that's excluded from the response numerator but still visible, and
+// still re-checked by the inbox in case a late reply arrives.
+function markStaleApplications(days) {
+  const n = Number(days)
+  if (!Number.isFinite(n) || n <= 0) return { updated: 0 }
+  const stale = query(
+    `SELECT id FROM applications
+     WHERE status = 'applied' AND applied_at <= datetime('now', '-' || ? || ' days')`,
+    [n]
+  )
+  if (stale.length === 0) return { updated: 0 }
+  batch(() => {
+    for (const row of stale) updateApplicationStatus(row.id, 'no_response')
+  })
+  return { updated: stale.length }
 }
 
 function clearAllCachedAnswers() {
@@ -568,7 +743,7 @@ function getInterviewEvents(applicationId) {
 function getUpcomingInterviews(limit = 25) {
   return query(`
     SELECT e.id, e.application_id, e.scheduled_at, e.has_time, e.source, e.note,
-           a.job_title, a.company, a.platform, a.status
+           a.job_title, a.company, a.platform, a.status, a.job_url
     FROM interview_events e
     JOIN applications a ON a.id = e.application_id
     WHERE e.scheduled_at >= date('now','localtime')
@@ -580,6 +755,17 @@ function getUpcomingInterviews(limit = 25) {
 function deleteInterviewEvent(id) {
   run('DELETE FROM interview_events WHERE id = ?', [id])
   return { success: true }
+}
+
+// A single interview joined to its application, for one-off calendar export.
+function getInterviewEvent(id) {
+  return queryOne(`
+    SELECT e.id, e.application_id, e.scheduled_at, e.has_time, e.source, e.note,
+           a.job_title, a.company, a.platform, a.status, a.job_url
+    FROM interview_events e
+    JOIN applications a ON a.id = e.application_id
+    WHERE e.id = ?
+  `, [id])
 }
 
 // ─── Closing dates ───────────────────────────────────────────────
@@ -646,7 +832,8 @@ function getWeeklyReportData() {
     byStatus[a.status] = (byStatus[a.status] || 0) + 1
     matchSum += a.match_score || 0
   }
-  const interviews = byStatus.interview || 0
+  const interviews = (byStatus.interview || 0) + (byStatus.offer || 0)
+  const responded = RESPONDED_STATUSES.reduce((n, s) => n + (byStatus[s] || 0), 0)
   const applied = totalApps - (byStatus.skipped || 0)
 
   return {
@@ -658,7 +845,8 @@ function getWeeklyReportData() {
     byPlatform,
     byStatus,
     avgMatchScore: totalApps > 0 ? Math.round(matchSum / totalApps) : 0,
-    responseRate: applied > 0 ? Math.round((interviews / applied) * 100) : 0,
+    responseRate: applied > 0 ? Math.round((responded / applied) * 100) : 0,
+    interviewRate: applied > 0 ? Math.round((interviews / applied) * 100) : 0,
     perDay: query("SELECT DATE(applied_at,'localtime') as date, COUNT(*) as count FROM applications WHERE applied_at >= ? AND applied_at < ? GROUP BY DATE(applied_at,'localtime') ORDER BY date", [dateFrom, dateTo]),
     topCompanies: query('SELECT company, COUNT(*) as count FROM applications WHERE applied_at >= ? AND applied_at < ? GROUP BY company ORDER BY count DESC LIMIT 5', [dateFrom, dateTo]),
   }
@@ -768,17 +956,19 @@ function getStorageInfo() {
 }
 
 module.exports = {
-  init, batch, pruneOrphanedRows,
+  init, batch, pruneOrphanedRows, backfillSalaryColumns,
   getApplications, getApplication, hasJobUrl, findRecentApplicationToCompany, insertApplication, updateApplicationStatus,
   updateApplicationAfterApply, updateApplicationComment, updateRecruiterEmail, deleteApplication, clearAllApplications,
   getDirtyApplications, getAllApplicationIds, markCloudSynced, markCloudSeen, applyCloudEdit,
   getAttentionJobs, getAttentionJob, insertAttentionJob, dismissAttentionJob, deleteAttentionJob, clearAllAttentionJobs,
+  getAllInterviewEventsForSync,
   getCachedAnswer, saveCachedAnswer, getAllCachedAnswers, deleteCachedAnswer, clearAllCachedAnswers,
-  getStats, getTodayCountByPlatform,
+  getStats, getTodayCountByPlatform, getSalaryStats,
   findDuplicateAcrossPlatforms, getApplicationsByDate, getApplicationsPerDay,
   getApplicationsForFollowUp, markFollowUpSent,
+  getApplicationsAwaitingReply, setLastReplyUid, markStaleApplications, OPEN_STATUSES,
   saveInterviewPrep, getInterviewPrep, deleteInterviewPrep,
-  addInterviewEvent, upsertDetectedInterview, getInterviewEvents, getUpcomingInterviews, deleteInterviewEvent,
+  addInterviewEvent, upsertDetectedInterview, getInterviewEvents, getUpcomingInterviews, getInterviewEvent, deleteInterviewEvent,
   updateClosingDate, getScoreBandConversion,
   getWeeklyReportData, getStorageInfo,
   getStatusHistory,

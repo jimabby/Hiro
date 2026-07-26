@@ -15,7 +15,7 @@ last-write-wins on `updated_at`.
    - **Project URL** (e.g. `https://xxxx.supabase.co`)
    - **anon / public** key
 
-## 2. Create the database table
+## 2. Create the database tables
 
 1. Open **SQL Editor → New query**.
 2. Paste the contents of [`schema.sql`](./schema.sql) and click **Run**.
@@ -56,3 +56,12 @@ added alongside. Re-running is needed if your project predates:
 - `scan_requests` — triggering scans from your phone over the cloud
 - `scan_status` — the phone's live "scanning now…" indicator away from home
 - `delete_account()` — in-app account deletion (required for App Store release)
+- `interview_events` — the phone's Upcoming Interviews panel
+- `attention_jobs` — the phone's Needs Attention list and its count tile
+- `applications.salary_min` / `salary_max` — normalised salary, so the phone
+  sorts and filters on pay the same way the desktop does
+
+Until you re-run it, the desktop skips whatever is missing rather than failing
+the whole sync — the phone simply shows nothing for those sections. The two
+mirror tables are written by the desktop and read by the phone; nothing on the
+phone edits them, so there is no conflict to resolve.

@@ -3,10 +3,10 @@ import {
   View, Text, FlatList, TextInput, TouchableOpacity,
   RefreshControl, StyleSheet,
 } from 'react-native'
-import { colors, radius, statusColors } from '../theme'
+import { colors, radius, statusColors, statusLabel } from '../theme'
 import ApplicationDetailScreen from './ApplicationDetailScreen'
 
-const STATUS_FILTERS = ['all', 'applied', 'interview', 'offer', 'rejected', 'skipped']
+const STATUS_FILTERS = ['all', 'applied', 'interview', 'offer', 'rejected', 'pending', 'no_response', 'skipped']
 
 export default function ApplicationsScreen({ client }) {
   const [apps, setApps] = useState([])
@@ -69,7 +69,7 @@ export default function ApplicationsScreen({ client }) {
             style={[styles.filterChip, statusFilter === f && styles.filterChipActive]}
             onPress={() => setStatusFilter(f)}
           >
-            <Text style={[styles.filterText, statusFilter === f && styles.filterTextActive]}>{f}</Text>
+            <Text style={[styles.filterText, statusFilter === f && styles.filterTextActive]}>{f === 'all' ? 'All' : statusLabel(f)}</Text>
           </TouchableOpacity>
         ))}
       </View>
@@ -96,7 +96,7 @@ export default function ApplicationsScreen({ client }) {
               )}
               <View style={[styles.statusBadge, { borderColor: statusColors[item.status] || colors.border }]}>
                 <Text style={[styles.statusText, { color: statusColors[item.status] || colors.textMuted }]}>
-                  {item.status}
+                  {statusLabel(item.status)}
                 </Text>
               </View>
             </View>

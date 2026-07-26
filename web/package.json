@@ -38,8 +38,8 @@
     "extraResources": []
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.30.0",
-    "@google/generative-ai": "^0.21.0",
+    "@anthropic-ai/sdk": "^0.115.0",
+    "@google/generative-ai": "^0.24.1",
     "@supabase/supabase-js": "^2.108.1",
     "adm-zip": "^0.5.16",
     "docx": "^9.6.1",
@@ -47,7 +47,7 @@
     "mammoth": "^1.11.0",
     "node-cron": "^3.0.3",
     "nodemailer": "^6.9.16",
-    "openai": "^4.77.0",
+    "openai": "^6.49.0",
     "pdf-parse": "^2.4.5",
     "pdfkit": "^0.17.2",
     "playwright": "^1.49.1",

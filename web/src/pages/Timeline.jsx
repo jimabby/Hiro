@@ -7,6 +7,7 @@ const STATUS_BADGE = {
   offer: { label: 'Offer', color: 'badge-green' },
   rejected: { label: 'Rejected', color: 'badge-red' },
   pending: { label: 'Pending', color: 'badge-yellow' },
+  no_response: { label: 'No Response', color: 'badge-gray' },
   skipped: { label: 'Skipped', color: 'badge-gray' },
 }
 

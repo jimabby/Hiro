@@ -17,8 +17,20 @@ const STATUS_BADGE = {
   offer: { label: 'Offer', color: 'badge-green' },
   rejected: { label: 'Rejected', color: 'badge-red' },
   pending: { label: 'Pending', color: 'badge-yellow' },
+  no_response: { label: 'No Response', color: 'badge-gray' },
   skipped: { label: 'Skipped', color: 'badge-gray' },
 }
+
+// The statuses a user may set by hand, in the order they appear in every picker.
+// 'skipped' is deliberately absent — it's assigned by the scan, not chosen.
+const SETTABLE_STATUSES = [
+  { value: 'applied', label: 'Applied' },
+  { value: 'interview', label: 'Interview' },
+  { value: 'offer', label: 'Offer' },
+  { value: 'rejected', label: 'Rejected' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'no_response', label: 'No Response' },
+]
 
 const PAGE_SIZE = 25
 
@@ -158,7 +170,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
   const [stats, setStats] = useState(null)
   const [apps, setApps] = useState([])
   const [selected, setSelected] = useState(null)
-  const [filter, setFilter] = useState({ status: '', platform: '', search: '' })
+  const [filter, setFilter] = useState({ status: '', platform: '', search: '', salaryFrom: '', salaryTo: '' })
   const [sort, setSort] = useState({ key: 'applied_at', dir: 'desc' })
   const [currentPage, setCurrentPage] = useState(1)
   const [selectedIds, setSelectedIds] = useState(new Set())
@@ -175,6 +187,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
   const [skippedApplyResult, setSkippedApplyResult] = useState(null)
   const [logCollapsed, setLogCollapsed] = useState(false)
   const [scanInfo, setScanInfo] = useState(null)
+  const [icsMsg, setIcsMsg] = useState(null)
   const [interviews, setInterviews] = useState([])
   const [appInterviews, setAppInterviews] = useState([])
   const [newInterviewAt, setNewInterviewAt] = useState('')
@@ -254,12 +267,29 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
         const q = filter.search.toLowerCase()
         if (!(a.job_title || '').toLowerCase().includes(q) && !(a.company || '').toLowerCase().includes(q)) return false
       }
+      // Salary bounds use the normalised annual columns, entered in thousands.
+      // A listing with no parseable salary has neither bound and is excluded
+      // from a salary filter — treating unknown as 0 would hide every
+      // unlisted-salary job behind a filter the user didn't mean that broadly.
+      if (filter.salaryFrom !== '' || filter.salaryTo !== '') {
+        const lo = a.salary_min ?? a.salary_max
+        const hi = a.salary_max ?? a.salary_min
+        if (lo == null || hi == null) return false
+        if (filter.salaryFrom !== '' && hi < Number(filter.salaryFrom) * 1000) return false
+        if (filter.salaryTo !== '' && lo > Number(filter.salaryTo) * 1000) return false
+      }
       return true
     })
 
     // Sort
     result.sort((a, b) => {
       let va = a[sort.key], vb = b[sort.key]
+      // Sorting the free-text salary string puts "$90,000" above "$120,000".
+      // Sort on the normalised annual value instead; unparsed rows sort last.
+      if (sort.key === 'salary') {
+        va = a.salary_max ?? a.salary_min ?? (sort.dir === 'asc' ? Infinity : -Infinity)
+        vb = b.salary_max ?? b.salary_min ?? (sort.dir === 'asc' ? Infinity : -Infinity)
+      }
       if (sort.key === 'match_score') { va = va || 0; vb = vb || 0 }
       if (sort.key === 'applied_at') { va = va || ''; vb = vb || '' }
       if (typeof va === 'number' && typeof vb === 'number') {
@@ -484,9 +514,41 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
         </div>
       )}
 
+      {/* Platforms that refused to serve results on the last scan. Distinct
+          from a failure and from an empty result set: the listings exist, we
+          just weren't allowed to see them, and the user has to act (back off,
+          or re-authenticate) for the next scan to work. */}
+      {scanInfo?.lastScanBlocked?.length > 0 && !scanRunning && scanInfo.lastScanAt !== dismissedScanAt && (
+        <div className="card" style={{
+          marginBottom: 16, padding: '12px 16px', display: 'flex',
+          alignItems: 'flex-start', justifyContent: 'space-between', gap: 12,
+          borderLeft: '3px solid var(--yellow)',
+        }}>
+          <div style={{ fontSize: 13 }}>
+            <span style={{ color: 'var(--yellow)', fontWeight: 600 }}>
+              Blocked on {scanInfo.lastScanBlocked.map(b => b.platform).join(', ')}
+            </span>
+            <div style={{ color: 'var(--text-muted)', marginTop: 4 }}>
+              {scanInfo.lastScanBlocked.map(b => (
+                <div key={b.platform}>{b.platform}: {b.message.replace(`${b.platform}: `, '')}</div>
+              ))}
+              <div style={{ marginTop: 4 }}>
+                Results from these platforms are missing, not empty. Wait a while before
+                re-scanning, lower the pages-per-scan in Settings, or re-login if the
+                session expired.
+              </div>
+            </div>
+          </div>
+          <button className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 10px', flexShrink: 0 }}
+            onClick={() => setDismissedScanAt(scanInfo.lastScanAt)}>
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Stats */}
       {!stats && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16, marginBottom: 24 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 16, marginBottom: 24 }}>
           {Array.from({ length: 5 }).map((_, i) => (
             <div key={i} className="card stat-card" style={{ opacity: 0.5 }}>
               <div className="stat-value">—</div>
@@ -496,7 +558,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
         </div>
       )}
       {stats && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16, marginBottom: 24 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 16, marginBottom: 24 }}>
           {[
             { label: 'Today', value: stats.totalToday },
             {
@@ -510,6 +572,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
             { label: 'All Time', value: stats.totalAllTime },
             { label: 'Interviews', value: stats.interviews },
             { label: 'Response Rate', value: stats.responseRate != null ? `${stats.responseRate}%` : '—' },
+            { label: 'Interview Rate', value: stats.interviewRate != null ? `${stats.interviewRate}%` : '—' },
           ].map(s => (
             <div key={s.label} className="card stat-card">
               <div className="stat-value">{s.value}</div>
@@ -525,9 +588,28 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
         <div className="card" style={{ marginBottom: 24, borderLeft: '3px solid var(--green)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
             <span style={{ fontWeight: 600, fontSize: 14 }}>Upcoming Interviews</span>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-              detected from recruiter replies — click a row to open the application
-            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                detected from recruiter replies — click a row to open the application
+              </span>
+              {/* Hiro already knows when these are; this hands them to the
+                  calendar the user actually lives in. */}
+              <button className="btn btn-ghost" style={{ fontSize: 11, padding: '3px 8px', flexShrink: 0 }}
+                onClick={async () => {
+                  const res = await window.api.exportInterviewsICS()
+                  if (res?.error) setIcsMsg({ type: 'error', text: res.error })
+                  else if (res?.success) setIcsMsg({ type: 'success', text: `✓ ${res.count} exported` })
+                  if (res?.error || res?.success) setTimeout(() => setIcsMsg(null), 4000)
+                }}
+                title="Save all upcoming interviews as a .ics calendar file">
+                Add to calendar
+              </button>
+              {icsMsg && (
+                <span style={{ fontSize: 11, color: icsMsg.type === 'success' ? 'var(--green)' : 'var(--red)' }}>
+                  {icsMsg.text}
+                </span>
+              )}
+            </div>
           </div>
           {interviews.map(iv => {
             const when = new Date(iv.scheduled_at.replace(' ', 'T'))
@@ -559,6 +641,17 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                     background: days <= 1 ? 'var(--green)' : 'var(--surface)',
                     color: days <= 1 ? '#fff' : 'var(--text-muted)',
                   }}>{rel}</span>
+                  <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }}
+                    onClick={async (e) => {
+                      e.stopPropagation()
+                      const res = await window.api.exportInterviewsICS(iv.id)
+                      if (res?.error) setIcsMsg({ type: 'error', text: res.error })
+                      else if (res?.success) setIcsMsg({ type: 'success', text: '✓ added' })
+                      if (res?.error || res?.success) setTimeout(() => setIcsMsg(null), 4000)
+                    }}
+                    title="Save just this interview as a .ics calendar file">
+                    .ics
+                  </button>
                   <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }}
                     onClick={async (e) => {
                       e.stopPropagation()
@@ -614,6 +707,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
             { value: 'offer', label: 'Offer' },
             { value: 'pending', label: 'Pending' },
             { value: 'rejected', label: 'Rejected' },
+            { value: 'no_response', label: 'No Response' },
             { value: 'skipped', label: 'Skipped' },
           ]
           return (
@@ -656,11 +750,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                   style={{ width: 'auto', padding: '3px 6px', fontSize: 11 }}
                 >
                   <option value="" disabled>Set status...</option>
-                  <option value="applied">Applied</option>
-                  <option value="interview">Interview</option>
-                  <option value="offer">Offer</option>
-                  <option value="rejected">Rejected</option>
-                  <option value="pending">Pending</option>
+                  {SETTABLE_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
                 </select>
                 <button className="btn btn-ghost" style={{ fontSize: 11, color: 'var(--red)', padding: '2px 8px' }} onClick={bulkDelete}>Delete</button>
               </div>
@@ -674,13 +764,37 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
               placeholder="Search... (/)"
               style={{ width: 180, padding: '6px 10px', fontSize: 12 }}
             />
+            {/* Salary bounds in thousands — "120" means $120k. Annualised, so an
+                hourly-rate listing is comparable with a salaried one. */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--text-muted)' }}>
+              <span>$</span>
+              <input type="number" min="0" step="10" placeholder="min" aria-label="Minimum salary in thousands"
+                value={filter.salaryFrom}
+                onChange={e => setFilter(f => ({ ...f, salaryFrom: e.target.value }))}
+                style={{ width: 70, padding: '6px 8px', fontSize: 12 }} />
+              <span>–</span>
+              <input type="number" min="0" step="10" placeholder="max" aria-label="Maximum salary in thousands"
+                value={filter.salaryTo}
+                onChange={e => setFilter(f => ({ ...f, salaryTo: e.target.value }))}
+                style={{ width: 70, padding: '6px 8px', fontSize: 12 }} />
+              <span>k</span>
+              {(filter.salaryFrom !== '' || filter.salaryTo !== '') && (
+                <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 6px' }}
+                  onClick={() => setFilter(f => ({ ...f, salaryFrom: '', salaryTo: '' }))}>clear</button>
+              )}
+            </div>
             <select value={filter.platform} onChange={e => setFilter(f => ({ ...f, platform: e.target.value }))} style={{ width: 180, padding: '6px 10px', fontSize: 12 }}>
               <option value="">All Platforms</option>
               <option value="Seek">Seek</option>
               <option value="Indeed">Indeed</option>
               <option value="LinkedIn">LinkedIn</option>
             </select>
-            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => window.api.exportCSV(filter)}>Export CSV</button>
+            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => window.api.exportCSV({
+              ...filter,
+              // The inputs are in thousands; the query expects annual dollars.
+              salaryFrom: filter.salaryFrom === '' ? '' : Number(filter.salaryFrom) * 1000,
+              salaryTo: filter.salaryTo === '' ? '' : Number(filter.salaryTo) * 1000,
+            })}>Export CSV</button>
             <button className="btn btn-ghost" onClick={loadData} style={{ whiteSpace: 'nowrap' }}>Refresh</button>
             {apps.length > 0 && (
               <button className="btn btn-ghost" style={{ fontSize: 12, color: 'var(--red)' }} onClick={clearAll}>Clear All</button>
@@ -756,11 +870,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                         ) : (
                           <select value={a.status} style={{ width: 'auto', padding: '3px 6px', fontSize: 12 }}
                             onChange={e => changeStatus(a.id, e.target.value, e)}>
-                            <option value="applied">Applied</option>
-                            <option value="interview">Interview</option>
-                            <option value="offer">Offer</option>
-                            <option value="rejected">Rejected</option>
-                            <option value="pending">Pending</option>
+                            {SETTABLE_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
                           </select>
                         )}
                       </td>
@@ -838,11 +948,38 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                 {selected.match_explanation && (
                   <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{selected.match_explanation}</div>
                 )}
-                {selected.closing_date && (
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
-                    Applications close {new Date(`${selected.closing_date}T12:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}
-                  </div>
-                )}
+                {/* Closing date is parsed out of the ad, which is best-effort —
+                    so it has to be correctable, and settable when the parse
+                    found nothing. It drives the Needs Attention ordering. */}
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span>Applications close</span>
+                  <input
+                    type="date"
+                    value={selected.closing_date || ''}
+                    aria-label="Application closing date"
+                    style={{ width: 'auto', padding: '2px 6px', fontSize: 12 }}
+                    onChange={async (e) => {
+                      const value = e.target.value || null
+                      const res = await window.api.updateClosingDate(selected.id, value)
+                      if (res?.success !== false) {
+                        setSelected(prev => ({ ...prev, closing_date: value }))
+                        setApps(prev => prev.map(a => a.id === selected.id ? { ...a, closing_date: value } : a))
+                      }
+                    }}
+                  />
+                  {!selected.closing_date && <span style={{ opacity: 0.7 }}>— not stated in the ad</span>}
+                  {selected.closing_date && (
+                    <button className="btn btn-ghost" style={{ fontSize: 11, padding: '1px 6px' }}
+                      title="Clear the closing date"
+                      onClick={async () => {
+                        const res = await window.api.updateClosingDate(selected.id, null)
+                        if (res?.success !== false) {
+                          setSelected(prev => ({ ...prev, closing_date: null }))
+                          setApps(prev => prev.map(a => a.id === selected.id ? { ...a, closing_date: null } : a))
+                        }
+                      }}>clear</button>
+                  )}
+                </div>
               </div>
               <div style={{ display: 'flex', gap: 6 }}>
                 <button className="btn btn-ghost" style={{ fontSize: 12, color: 'var(--red)' }}
@@ -1076,7 +1213,18 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                 <label style={{ marginBottom: 8 }}>Screening Q&A</label>
                 {safeParseJSON(selected.screening_qa).map((qa, i) => (
                   <div key={i} style={{ marginBottom: 10, padding: 12, background: 'var(--surface2)', borderRadius: 8 }}>
-                    <div style={{ fontWeight: 500, marginBottom: 4, fontSize: 13 }}>Q: {qa.question}</div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
+                      <div style={{ fontWeight: 500, fontSize: 13 }}>Q: {qa.question}</div>
+                      {/* Who supplied the answer — worth knowing before an
+                          interview, since an AI-written answer is one you may
+                          not remember giving. */}
+                      {qa.source && (
+                        <span className={qa.source === 'user' ? 'badge badge-blue' : 'badge badge-gray'}
+                          style={{ flexShrink: 0, fontSize: 10 }}>
+                          {qa.source === 'user' ? 'you' : qa.source === 'ai' ? 'AI' : 'reused'}
+                        </span>
+                      )}
+                    </div>
                     <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>A: {qa.answer}</div>
                   </div>
                 ))}

@@ -24,8 +24,20 @@ function getSavedEmail() {
   return configService.load().gmailAddress || ''
 }
 
+// Actually clear the stored mailbox credentials. This used to be a no-op while
+// the IPC handler still reported success, so "Disconnect" left the address and
+// App Password on disk and the inbox check kept running against them.
 function clearSession() {
-  // no-op — user clears fields in Settings
+  configService.update({
+    gmailAddress: '',
+    gmailAppPassword: '',
+    // Features that can't work without a mailbox, and whose schedules would
+    // otherwise keep firing and logging auth failures every couple of hours.
+    enableInboxCheck: false,
+    enableFollowUp: false,
+    lastInboxCheck: null,
+  })
+  return { success: true }
 }
 
 async function loginWithBrowser(email, onStatus) {

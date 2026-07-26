@@ -357,6 +357,8 @@ export default function Settings({ showToast, active }) {
   const [gmailLogging, setGmailLogging] = useState(false)
   const [gmailMsg, setGmailMsg] = useState('')
   const [checkingInbox, setCheckingInbox] = useState(false)
+  const [sweeping, setSweeping] = useState(false)
+  const [sweepResult, setSweepResult] = useState(null)
   const [inboxResult, setInboxResult] = useState(null)
   const [mobileInfo, setMobileInfo] = useState(null)
   const [mobileBusy, setMobileBusy] = useState(false)
@@ -448,6 +450,12 @@ export default function Settings({ showToast, active }) {
       companyCooldownDays: clamp(form.companyCooldownDays, 0, 365, 30),
       smartScheduleBatchSize: clamp(form.smartScheduleBatchSize, 1, 20, 3),
       smartScheduleJitter: clamp(form.smartScheduleJitter, 0, 60, 15),
+      // MAX_PAGES in the scrapers is 10; anything higher is silently capped
+      // there, so clamp here to keep the form honest about what will happen.
+      scrapePages: clamp(form.scrapePages, 1, 10, 3),
+      // 0 is meaningful (disables the sweep), so the floor is 0, not 1.
+      staleAfterDays: clamp(form.staleAfterDays, 0, 365, 45),
+      inboxCheckHours: clamp(form.inboxCheckHours, 1, 24, 2),
       // Drop rules whose resume was deleted, or the applicator would silently
       // fall through to the default for a rule the user thinks is active.
       resumeRules: (form.resumeRules || []).filter(r =>
@@ -665,9 +673,32 @@ export default function Settings({ showToast, active }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: 0 }}>
               <input type="checkbox" style={{ width: 'auto' }} checked={!!form.enableInboxCheck} onChange={e => set('enableInboxCheck', e.target.checked)} />
-              Auto-check inbox for recruiter replies (every 2 hours)
+              Auto-check inbox for recruiter replies
             </label>
           </div>
+          {form.enableInboxCheck && (
+            <div style={{ display: 'flex', gap: 16, alignItems: 'flex-end', marginBottom: 12, flexWrap: 'wrap' }}>
+              <div>
+                <label style={{ fontSize: 12 }}>Check every</label>
+                <select value={form.inboxCheckHours ?? 2} onChange={e => set('inboxCheckHours', e.target.value)}
+                  style={{ width: 130, padding: '6px 10px', fontSize: 12 }}>
+                  {[1, 2, 3, 4, 6, 8, 12, 24].map(h => (
+                    <option key={h} value={h}>{h === 1 ? 'hour' : `${h} hours`}</option>
+                  ))}
+                </select>
+              </div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: 6, fontSize: 12 }}>
+                <input type="checkbox" style={{ width: 'auto' }} checked={!!form.inboxCheckWeekdaysOnly}
+                  onChange={e => set('inboxCheckWeekdaysOnly', e.target.checked)} />
+                Weekdays only
+              </label>
+              <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '0 0 6px', flex: '1 1 220px', minWidth: 200 }}>
+                Checks run every day by default — a Friday-evening reply otherwise
+                waits until Monday. Applications marked Pending or No Response are
+                re-checked too, so a later email can still move them forward.
+              </p>
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <button className="btn btn-ghost" style={{ fontSize: 12 }}
               disabled={checkingInbox || !form.gmailAddress || !form.gmailAppPassword}
@@ -1034,6 +1065,49 @@ export default function Settings({ showToast, active }) {
             After applying to a company, wait this many days before applying to another
             role there. Set to 0 to allow multiple roles at the same company right away.
             Duplicate listings and cross-platform repeats are always skipped regardless.
+          </div>
+        </div>
+        <div className="form-group">
+          <label>Pages per scan</label>
+          <input type="number" min={1} max={10}
+            value={form.scrapePages ?? 3}
+            onChange={e => set('scrapePages', e.target.value)} />
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+            How many pages of search results to walk on each platform. One page is
+            roughly 20 listings, and because already-seen jobs are skipped, a single
+            page stops turning up anything new within a few days. More pages find more
+            work but take longer and raise the chance of being rate-limited — if scans
+            start reporting blocks, lower this.
+          </div>
+        </div>
+        <div className="form-group">
+          <label>Mark as No Response after (days)</label>
+          <input type="number" min={0} max={365}
+            value={form.staleAfterDays ?? 45}
+            onChange={e => set('staleAfterDays', e.target.value)} />
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+            An application with no reply after this long moves to No Response, so it
+            stops dragging down your response rate. Nothing is deleted, and the inbox
+            check keeps watching it in case a late reply arrives. Set to 0 to leave
+            everything at Applied indefinitely.
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+            <button className="btn btn-ghost" style={{ fontSize: 12 }}
+              disabled={sweeping}
+              onClick={async () => {
+                setSweeping(true); setSweepResult(null)
+                const res = await window.api.sweepStaleApplications()
+                setSweeping(false); setSweepResult(res)
+              }}>
+              {sweeping ? 'Sweeping...' : 'Run Now'}
+            </button>
+            {sweepResult && (
+              <span style={{ fontSize: 12, color: sweepResult.success ? 'var(--green)' : 'var(--red)' }}>
+                {sweepResult.success
+                  ? `✓ ${sweepResult.updated || 0} application${sweepResult.updated === 1 ? '' : 's'} marked No Response`
+                  : `✗ ${sweepResult.error}`}
+              </span>
+            )}
           </div>
         </div>
         <div style={{ marginBottom: 16 }}>

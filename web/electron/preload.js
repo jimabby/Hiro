@@ -117,8 +117,15 @@ contextBridge.exposeInMainWorld('api', {
   // Application closing date
   updateClosingDate: (id, closingDate) => ipcRenderer.invoke('db:updateClosingDate', id, closingDate),
 
+  // Interview calendar export. Pass an eventId for one interview, omit for all.
+  exportInterviewsICS: (eventId) => ipcRenderer.invoke('calendar:exportICS', eventId),
+
   // Score-band conversion analytics
   getScoreBandConversion: () => ipcRenderer.invoke('analytics:scoreBandConversion'),
+  getSalaryStats: () => ipcRenderer.invoke('analytics:salaryStats'),
+
+  // Retire applications that never got a reply (also runs on a schedule)
+  sweepStaleApplications: () => ipcRenderer.invoke('db:sweepStale'),
 
   // Settings export / import (encrypted bundle)
   exportConfig: (passphrase, includeSecrets) => ipcRenderer.invoke('config:export', passphrase, includeSecrets),

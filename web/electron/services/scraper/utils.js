@@ -38,6 +38,70 @@ function uniqueTempPath(fileName) {
   return path.join(dir, fileName)
 }
 
+// Is the page we just loaded a block page rather than search results?
+//
+// Without this, a rate-limit page, a Cloudflare interstitial, or a login wall
+// returns zero job cards, which is indistinguishable from "there are no jobs
+// matching your search". Scans then reported "found 0 jobs" for days while
+// actually being blocked, and there was nothing in the log to say so.
+async function detectBlock(page) {
+  try {
+    return await page.evaluate(() => {
+      const text = (document.body?.innerText || '').toLowerCase()
+      const title = (document.title || '').toLowerCase()
+      const captcha = !!document.querySelector(
+        'iframe[src*="captcha"], iframe[src*="recaptcha"], iframe[title*="challenge"], #challenge-form, .g-recaptcha, [data-sitekey], #cf-challenge-running'
+      )
+      if (captcha) return { blocked: true, kind: 'captcha' }
+      if (/just a moment|checking your browser|attention required|cf-browser-verification/.test(title + ' ' + text)) {
+        return { blocked: true, kind: 'challenge' }
+      }
+      if (/unusual traffic|too many requests|rate limit|access denied|you have been blocked|temporarily blocked|verify you are human|are you a robot/.test(text)) {
+        return { blocked: true, kind: 'rate-limit' }
+      }
+      if (/sign in to continue|please log in to continue|session (has )?expired|authwall/.test(text)) {
+        return { blocked: true, kind: 'login-required' }
+      }
+      return { blocked: false }
+    })
+  } catch {
+    // Can't inspect the page — don't claim a block we didn't observe.
+    return { blocked: false }
+  }
+}
+
+const BLOCK_MESSAGES = {
+  captcha: 'a CAPTCHA challenge was shown instead of results',
+  challenge: 'a bot-verification interstitial was shown instead of results',
+  'rate-limit': 'the site is rate-limiting this machine',
+  'login-required': 'the site asked for a login — re-authenticate in Settings',
+}
+
+function blockReason(kind) {
+  return BLOCK_MESSAGES[kind] || 'the site returned a block page instead of results'
+}
+
+// Thrown by a scraper when it is being blocked, so the applicator can report
+// the real cause rather than logging "found 0 jobs".
+class BlockedError extends Error {
+  constructor(platform, kind) {
+    super(`${platform}: ${blockReason(kind)}`)
+    this.name = 'BlockedError'
+    this.blocked = true
+    this.kind = kind
+    this.platform = platform
+  }
+}
+
+// Load a results page and fail loudly if it's a block page. Shared by all three
+// scrapers so the detection can't drift between them.
+async function gotoResultsPage(page, url, platform) {
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+  await randomDelay(2000, 4000)
+  const block = await detectBlock(page)
+  if (block.blocked) throw new BlockedError(platform, block.kind)
+}
+
 // After clicking a final submit button, look for signs the submission was NOT
 // accepted (visible validation error, CAPTCHA) — previously a mere click was
 // recorded as "applied" and the job skipped forever even if nothing went
@@ -679,6 +743,7 @@ async function buildAnalyticsReportPDF(data) {
       ['Total Applications', String(data.totalApps || 0)],
       ['Avg Match Score', `${data.avgMatchScore || 0}%`],
       ['Response Rate', `${data.responseRate || 0}%`],
+      ['Interview Rate', `${data.interviewRate || 0}%`],
     ]
     for (const [label, val] of stats) {
       doc.fontSize(10).font('Helvetica-Bold').fillColor(BODY).text(`${label}: `, ML + 10, doc.y, { continued: true })
@@ -743,4 +808,4 @@ async function buildAnalyticsReportPDF(data) {
   })
 }
 
-module.exports = { randomUserAgent, randomDelay, humanType, stripMarkdown, verifySubmission, buildResumePDF, buildResumeDocx, buildCoverLetterPDF, buildAnalyticsReportPDF, tailorDocx, buildResumeFile }
+module.exports = { randomUserAgent, randomDelay, humanType, stripMarkdown, verifySubmission, detectBlock, blockReason, BlockedError, gotoResultsPage, buildResumePDF, buildResumeDocx, buildCoverLetterPDF, buildAnalyticsReportPDF, tailorDocx, buildResumeFile }

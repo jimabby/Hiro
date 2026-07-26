@@ -64,6 +64,16 @@ export class HiroClient {
   getAttention() { return this.request('/api/attention') }
   getPerDay(days = 7) { return this.request(`/api/perday?days=${days}`) }
 
+  // Upcoming interviews — same panel the desktop shows. An older desktop build
+  // has no such route, so a 404 resolves to an empty list rather than an error.
+  async getUpcomingInterviews(limit = 25) {
+    try {
+      return await this.request(`/api/interviews?limit=${limit}`)
+    } catch {
+      return []
+    }
+  }
+
   // Queue a scan on the desktop. `opts` may include { keywords, location } to
   // override the desktop's saved search for this run.
   requestScan(opts = {}) {

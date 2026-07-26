@@ -106,6 +106,8 @@ function localToCloud(a) {
     company: a.company,
     platform: a.platform,
     salary: a.salary || '',
+    salary_min: a.salary_min ?? null,
+    salary_max: a.salary_max ?? null,
     job_url: a.job_url || '',
     job_description: a.job_description || '',
     match_score: a.match_score ?? null,
@@ -198,6 +200,83 @@ async function pullChanges(c) {
   }
 }
 
+// ─── One-way mirrors (desktop → cloud) ───────────────────────────
+// Interviews and attention jobs are desktop-owned: the phone only reads them,
+// so these push the full current set and delete anything the cloud still has
+// that no longer exists locally. Both tables are optional (added later than
+// `applications`) — a project that hasn't re-run schema.sql skips them quietly
+// rather than failing the whole sync.
+//
+// Full-set replacement rather than dirty-tracking: both tables are small
+// (dozens of rows), and the alternative is another pair of bookkeeping columns
+// for data the phone can't edit anyway.
+function isMissingTable(error, table) {
+  return new RegExp(table).test(error?.message || '')
+}
+
+async function mirrorTable(c, table, rows, toCloud) {
+  const payload = rows.map(toCloud)
+  if (payload.length > 0) {
+    for (let i = 0; i < payload.length; i += 200) {
+      const { error } = await c.from(table).upsert(payload.slice(i, i + 200), { onConflict: 'user_id,local_id' })
+      if (error) {
+        if (isMissingTable(error, table)) return { skipped: true }
+        throw new Error(error.message)
+      }
+    }
+  }
+
+  // Remove cloud rows whose local counterpart is gone. `not in` with an empty
+  // list is invalid, so an empty local set is a plain delete-all instead.
+  const keep = rows.map(r => r.id)
+  let del = c.from(table).delete().eq('user_id', user.id)
+  if (keep.length > 0) del = del.not('local_id', 'in', `(${keep.join(',')})`)
+  const { error: delErr } = await del
+  if (delErr) {
+    if (isMissingTable(delErr, table)) return { skipped: true }
+    throw new Error(delErr.message)
+  }
+  return { skipped: false, count: payload.length }
+}
+
+async function pushInterviews(c) {
+  const rows = database.getAllInterviewEventsForSync()
+  return mirrorTable(c, 'interview_events', rows, (e) => ({
+    user_id: user.id,
+    local_id: e.id,
+    application_local_id: e.application_id,
+    scheduled_at: e.scheduled_at,
+    has_time: e.has_time === 1 || e.has_time === true,
+    source: e.source || 'manual',
+    note: e.note || '',
+    job_title: e.job_title || '',
+    company: e.company || '',
+    platform: e.platform || '',
+    updated_at: new Date().toISOString(),
+  }))
+}
+
+async function pushAttentionJobs(c) {
+  const rows = database.getAttentionJobs()
+  return mirrorTable(c, 'attention_jobs', rows, (j) => ({
+    user_id: user.id,
+    local_id: j.id,
+    job_title: j.job_title,
+    company: j.company,
+    platform: j.platform,
+    salary: j.salary || '',
+    salary_min: j.salary_min ?? null,
+    salary_max: j.salary_max ?? null,
+    job_url: j.job_url || '',
+    match_score: j.match_score ?? null,
+    talking_points: j.talking_points || '[]',
+    reason: j.reason || '',
+    closing_date: j.closing_date || null,
+    found_at: toISO(j.found_at),
+    updated_at: new Date().toISOString(),
+  }))
+}
+
 // Pick up scan requests the phone queued via the cloud (scan_requests table):
 // delete-then-queue, with .select() confirming which rows THIS desktop claimed,
 // so a request is never queued twice even if two syncs overlap.
@@ -257,6 +336,10 @@ async function sync() {
 
     await pullChanges(c) // apply phone edits first so we don't clobber them
     await pushDirty(c)
+    // Desktop-owned mirrors. Pushed after applications so an interview always
+    // lands alongside an application row the phone can already resolve.
+    await pushInterviews(c)
+    await pushAttentionJobs(c)
     await pollScanRequests(c)
     lastError = null
     configService.update({ lastCloudSyncAt: new Date().toISOString() })

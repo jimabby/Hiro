@@ -1,9 +1,32 @@
 const { chromium } = require('playwright')
-const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown, verifySubmission } = require('./utils')
+const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown, verifySubmission, gotoResultsPage } = require('./utils')
 
-// Node.js substitute for the browser-only CSS.escape()
+// Search results to walk per scan. One page is ~20 listings, and because
+// already-seen job URLs are skipped, a single page stops yielding anything new
+// within a few days of running. Bounded so a scan can't crawl indefinitely.
+const MAX_PAGES = 10
+
+// Node.js substitute for the browser-only CSS.escape().
+// A leading digit needs the numeric escape form (`\31 foo`), not a backslash —
+// `#1foo` is not a valid selector at all, and querySelector rejects it. The
+// failure was silent (swallowed by the caller's .catch), so any screening field
+// whose id started with a digit was skipped without explanation.
 function cssEscape(str) {
-  return str.replace(/([^\w-])/g, '\\$1')
+  const s = String(str)
+  let out = ''
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    const code = s.charCodeAt(i)
+    // A digit is only a problem in first position; elsewhere it's fine bare.
+    if (i === 0 && code >= 0x30 && code <= 0x39) {
+      out += '\\3' + ch + ' '
+    } else if (/[\w-]/.test(ch)) {
+      out += ch
+    } else {
+      out += '\\' + ch
+    }
+  }
+  return out
 }
 
 const seekSession = require('../seekSession')
@@ -17,28 +40,47 @@ async function scrape(cfg) {
   const page = await context.newPage()
 
   const jobs = []
+  const seen = new Set()
+  const pages = Math.min(MAX_PAGES, Math.max(1, Number(cfg.scrapePages) || 1))
 
   try {
     const query = encodeURIComponent(jobKeywords)
     const location = encodeURIComponent(jobLocation || 'Australia')
-    const url = `https://www.seek.com.au/${query}-jobs/in-${location}?salaryrange=${salaryMin || 0}-999999&salarytype=annual`
+    const base = `https://www.seek.com.au/${query}-jobs/in-${location}?salaryrange=${salaryMin || 0}-999999&salarytype=annual`
 
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
-    await randomDelay(2000, 4000)
+    for (let pageNum = 1; pageNum <= pages; pageNum++) {
+      const url = pageNum === 1 ? base : `${base}&page=${pageNum}`
+      // Throws BlockedError if Seek serves a challenge instead of results, so a
+      // block is reported as a block rather than as "found 0 jobs".
+      await gotoResultsPage(page, url, 'Seek')
 
-    const jobCards = await page.$$('[data-testid="job-card"]')
+      const jobCards = await page.$$('[data-testid="job-card"]')
+      // Past the last page Seek returns an empty result set — stop rather than
+      // requesting the remaining pages for nothing.
+      if (jobCards.length === 0) break
 
-    for (const card of jobCards.slice(0, 20)) {
-      try {
-        const title = await card.$eval('[data-automation="jobTitle"]', el => el.textContent.trim()).catch(() => '')
-        const company = await card.$eval('[data-automation="jobCompany"]', el => el.textContent.trim()).catch(() => '')
-        const salary = await card.$eval('[data-automation="jobSalary"]', el => el.textContent.trim()).catch(() => '')
-        const href = await card.$eval('a[data-automation="jobTitle"]', el => el.href).catch(() => '')
+      let added = 0
+      for (const card of jobCards) {
+        try {
+          const title = await card.$eval('[data-automation="jobTitle"]', el => el.textContent.trim()).catch(() => '')
+          const company = await card.$eval('[data-automation="jobCompany"]', el => el.textContent.trim()).catch(() => '')
+          const salary = await card.$eval('[data-automation="jobSalary"]', el => el.textContent.trim()).catch(() => '')
+          const href = await card.$eval('a[data-automation="jobTitle"]', el => el.href).catch(() => '')
 
-        if (title && company && href) {
-          jobs.push({ job_title: title, company, salary, job_url: href, platform: 'Seek' })
-        }
-      } catch { /* skip malformed card */ }
+          if (title && company && href && !seen.has(href)) {
+            seen.add(href)
+            jobs.push({ job_title: title, company, salary, job_url: href, platform: 'Seek' })
+            added++
+          }
+        } catch { /* skip malformed card */ }
+      }
+
+      // Nothing new on this page means we've looped back onto the same results
+      // (Seek clamps an out-of-range page number to the last one).
+      if (added === 0) break
+      // Space out page requests — a burst of sequential result pages is the
+      // pattern that gets a scraper rate-limited.
+      if (pageNum < pages) await randomDelay(2500, 6000)
     }
   } finally {
     await browser.close()
@@ -80,6 +122,17 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
   let resumePath = null
   if (tailoredResume) {
     resumePath = await buildResumeFile(tailoredResume, cfg).catch(() => null)
+  }
+
+  // Screening questions answered during this submission, so they can be stored
+  // on the application. Deduped by question — a multi-step form can present the
+  // same field twice, and the record should read as one answer, not two.
+  const screeningQa = []
+  function recordAnswer(question, answer, source) {
+    const q = String(question || '').trim()
+    if (!q || !answer) return
+    if (screeningQa.some(e => e.question === q)) return
+    screeningQa.push({ question: q, answer: String(answer), source })
   }
 
   try {
@@ -276,10 +329,13 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
 
       // Dynamically detect and answer screening questions on this step
       if (cfg.aiProvider && cfg.aiApiKey) {
-        // Helper: get/cache an AI answer for a question
+        // Helper: get/cache an AI answer for a question. Every answer it hands
+        // back is also recorded on `screeningQa` so the finished application
+        // shows what was actually submitted on the user's behalf — the detail
+        // panel has always had a section for this and it was always empty.
         async function getAnswer(questionText, optionHint) {
           const cached = database.getCachedAnswer(questionText)
-          if (cached) return cached
+          if (cached) { recordAnswer(questionText, cached, 'cache'); return cached }
           let aiAnswer = ''
           try {
             aiAnswer = await aiAdapter.answerScreeningQuestion(
@@ -295,10 +351,17 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
           if (isUncertain && cfg.askQuestion) {
             const prompt = optionHint ? `${questionText} (${optionHint})` : questionText
             const userAnswer = await cfg.askQuestion(prompt).catch(() => '')
-            if (userAnswer) { database.saveCachedAnswer(questionText, userAnswer); return userAnswer }
+            if (userAnswer) {
+              database.saveCachedAnswer(questionText, userAnswer)
+              recordAnswer(questionText, userAnswer, 'user')
+              return userAnswer
+            }
             return ''
           }
-          if (aiAnswer) database.saveCachedAnswer(questionText, aiAnswer)
+          if (aiAnswer) {
+            database.saveCachedAnswer(questionText, aiAnswer)
+            recordAnswer(questionText, aiAnswer, 'ai')
+          }
           return aiAnswer || ''
         }
 
@@ -448,8 +511,8 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
         await submitBtn.evaluate(el => el.click())
         await randomDelay(3000, 5000)
         const check = await verifySubmission(page)
-        if (!check.ok) return { success: false, reason: check.reason }
-        return { success: true }
+        if (!check.ok) return { success: false, reason: check.reason, screeningQa }
+        return { success: true, screeningQa }
       }
 
       // Look for Next/Continue button to advance the wizard

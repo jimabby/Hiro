@@ -4,6 +4,15 @@ const PLATFORM_COLORS = { Seek: 'var(--accent)', LinkedIn: 'var(--green)', Indee
 const STATUS_COLORS = {
   applied: 'var(--accent)', interview: 'var(--green)', offer: 'var(--green)',
   rejected: 'var(--red)', pending: 'var(--yellow)', skipped: 'var(--text-muted)',
+  no_response: 'var(--border)',
+}
+
+// Compact annual figure. Salaries are whole thousands often enough that "$120k"
+// reads better than "$120,000", but an odd figure shouldn't be rounded away.
+function formatMoney(n) {
+  if (n == null) return '—'
+  if (n % 1000 === 0) return `$${Math.round(n / 1000)}k`
+  return `$${n.toLocaleString()}`
 }
 
 function BarChart({ data }) {
@@ -184,6 +193,7 @@ export default function Analytics() {
   const [advice, setAdvice] = useState(null)
   const [applyingAdvice, setApplyingAdvice] = useState(false)
   const [bands, setBands] = useState([])
+  const [salary, setSalary] = useState(null)
 
   useEffect(() => {
     Promise.all([
@@ -199,6 +209,7 @@ export default function Analytics() {
 
   useEffect(() => {
     window.api.getScoreBandConversion?.().then(b => setBands(b || [])).catch(() => {})
+    window.api.getSalaryStats?.().then(s => setSalary(s || null)).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -224,6 +235,7 @@ export default function Analytics() {
   const byPlatform = stats.byPlatform || []
   const byStatus = stats.byStatus || []
   const responseRate = stats.responseRate ?? 0
+  const interviewRate = stats.interviewRate ?? 0
   const mostActive = byPlatform.reduce((a, b) => b.count > (a?.count || 0) ? b : a, null)
 
   // Computed metrics
@@ -237,6 +249,10 @@ export default function Analytics() {
   const rejectedCount = allApps.filter(a => a.status === 'rejected').length
   const pendingCount = allApps.filter(a => a.status === 'pending' || a.status === 'applied').length
   const skippedCount = allApps.filter(a => a.status === 'skipped').length
+  const noResponseCount = allApps.filter(a => a.status === 'no_response').length
+  // Any reply at all — matches RESPONDED_STATUSES on the backend.
+  const respondedCount = interviewCount + offerCount + rejectedCount
+    + allApps.filter(a => a.status === 'pending').length
 
   // Week-over-week trend
   const thisWeek = allApps.filter(a => {
@@ -270,9 +286,10 @@ export default function Analytics() {
       </div>
 
       {/* Key metrics row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 24 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 16, marginBottom: 24 }}>
         {[
-          { label: 'Response Rate', value: `${responseRate}%`, sub: `${interviewCount} interviews` },
+          { label: 'Response Rate', value: `${responseRate}%`, sub: `${respondedCount} replied` },
+          { label: 'Interview Rate', value: `${interviewRate}%`, sub: `${interviewCount + offerCount} reached interview` },
           { label: 'Avg Match Score', value: `${avgMatch}%`, sub: `across ${allApps.length} jobs` },
           { label: 'Most Active', value: mostActive?.platform || '—', sub: mostActive ? `${mostActive.count} applications` : '' },
           {
@@ -391,6 +408,35 @@ export default function Analytics() {
         </p>
       </div>
 
+      {/* Advertised salary. Derived from the normalised annual columns, so a
+          posting quoting an hourly rate is comparable with one quoting a
+          package. Rows whose salary text couldn't be parsed are reported
+          separately rather than folded in as zeros. */}
+      {salary && salary.count > 0 && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>Advertised Salary</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              annualised · from {salary.count} listing{salary.count === 1 ? '' : 's'}
+              {salary.unparsed > 0 && ` · ${salary.unparsed} not stated`}
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 16 }}>
+            {[
+              { label: 'Median', value: salary.median },
+              { label: 'Average', value: salary.average },
+              { label: 'Lowest', value: salary.min },
+              { label: 'Highest', value: salary.max },
+            ].map(m => (
+              <div key={m.label}>
+                <div style={{ fontSize: 18, fontWeight: 700 }}>{formatMoney(m.value)}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{m.label}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Funnel + Status breakdown */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <div className="card">
@@ -400,6 +446,7 @@ export default function Analytics() {
           <FunnelBar label="Got Interview" count={interviewCount} total={allApps.length} color="var(--green)" />
           <FunnelBar label="Got Offer" count={offerCount} total={allApps.length} color="var(--green)" />
           <FunnelBar label="Rejected" count={rejectedCount} total={allApps.length} color="var(--red)" />
+          <FunnelBar label="No Response" count={noResponseCount} total={allApps.length} color="var(--text-muted)" />
           <FunnelBar label="Skipped" count={skippedCount} total={allApps.length} color="var(--text-muted)" />
         </div>
 

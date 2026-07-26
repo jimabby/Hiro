@@ -79,6 +79,74 @@ create policy "own scan status" on public.scan_status
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
 
+-- Upcoming interviews, mirrored so the phone can show the same "Upcoming
+-- Interviews" panel the desktop does. The desktop is the only writer; the phone
+-- reads. Keyed by the desktop's local interview_events row id per user.
+create table if not exists public.interview_events (
+  id            uuid primary key default gen_random_uuid(),
+  user_id       uuid not null references auth.users (id) on delete cascade,
+  local_id      integer not null,   -- the desktop's local interview_events row id
+  application_local_id integer,     -- the applications.local_id it belongs to
+  scheduled_at  text not null,      -- local "YYYY-MM-DD HH:MM:SS", as stored on the desktop
+  has_time      boolean default true,
+  source        text default 'manual',
+  note          text default '',
+  job_title     text,
+  company       text,
+  platform      text,
+  updated_at    timestamptz default now(),
+  unique (user_id, local_id)
+);
+
+alter table public.interview_events enable row level security;
+
+drop policy if exists "own interview events" on public.interview_events;
+create policy "own interview events" on public.interview_events
+  for all
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+create index if not exists idx_interviews_user_when
+  on public.interview_events (user_id, scheduled_at);
+
+-- Jobs that need a manual application. Mirrored read-only so the phone can show
+-- the same queue (and its count) instead of hiding the tile.
+create table if not exists public.attention_jobs (
+  id            uuid primary key default gen_random_uuid(),
+  user_id       uuid not null references auth.users (id) on delete cascade,
+  local_id      integer not null,   -- the desktop's local attention_jobs row id
+  job_title     text not null,
+  company       text not null,
+  platform      text not null,
+  salary        text,
+  salary_min    integer,
+  salary_max    integer,
+  job_url       text,
+  match_score   integer,
+  talking_points text,
+  reason        text,
+  closing_date  text,
+  found_at      timestamptz,
+  updated_at    timestamptz default now(),
+  unique (user_id, local_id)
+);
+
+alter table public.attention_jobs enable row level security;
+
+drop policy if exists "own attention jobs" on public.attention_jobs;
+create policy "own attention jobs" on public.attention_jobs
+  for all
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+create index if not exists idx_attention_user_found
+  on public.attention_jobs (user_id, found_at desc);
+
+-- Normalised salary range, mirrored alongside the free-text `salary` so the
+-- phone can sort and filter on it the same way the desktop does.
+alter table public.applications add column if not exists salary_min integer;
+alter table public.applications add column if not exists salary_max integer;
+
 -- In-app account deletion (required by Apple App Store guideline 5.1.1(v)).
 -- Runs as the function owner (security definer) so a signed-in user can delete
 -- their OWN auth record; the on-delete-cascade foreign keys above then remove

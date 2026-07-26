@@ -76,7 +76,20 @@ const DEFAULTS = {
   followUpDays: 7,
   enableFollowUp: false,
   enableInboxCheck: false,
+  // Inbox checks used to run Mon–Fri only, so a Friday-evening recruiter reply
+  // wasn't seen until Monday. Every day by default; the weekday-only cadence is
+  // still available for anyone who wants a quiet weekend.
+  inboxCheckWeekdaysOnly: false,
+  inboxCheckHours: 2,
   lastInboxCheck: null,
+  // After this many days with no reply, an application moves to 'no_response'
+  // so it stops inflating the response-rate denominator. 0 disables the sweep
+  // and leaves everything at 'applied' indefinitely.
+  staleAfterDays: 45,
+  // Pages of search results to walk per platform per scan. One page is ~20
+  // listings; with a daily limit and duplicate-skipping, a single page goes
+  // stale within days.
+  scrapePages: 3,
   personalLinks: { portfolio: '', github: '', linkedin: '' },
   webhooks: [],
   enableWeeklyReport: false,

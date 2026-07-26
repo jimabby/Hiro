@@ -12,6 +12,7 @@ let reportTask = null
 let followUpTask = null
 let inboxTask = null
 let weeklyReportTask = null
+let staleTask = null
 let batchTimeouts = []
 let running = false
 let win = null
@@ -19,7 +20,7 @@ let batchSchedule = [] // today's planned batch times for UI
 // Outcome of the most recent real scan, so the dashboard and the phone can tell
 // a failed scan from one that simply found nothing. Without this, runScan's
 // catch swallowed the error and lastScanAt was stamped either way.
-let lastScanOutcome = null // { at, ok, error, source }
+let lastScanOutcome = null // { at, ok, error, source, blocked[] }
 // Score distribution from the most recent test scan, kept in memory so the
 // Analytics page can recommend a match threshold from real scored jobs.
 let lastDryRun = null // { at, scores[], wouldApply, threshold }
@@ -27,6 +28,8 @@ let lastDryRun = null // { at, scores[], wouldApply, threshold }
 function init(mainWindow) {
   win = mainWindow
   startTasks()
+  // Catch up on the overnight sweep if the desktop wasn't running at 3:30am.
+  runStaleSweep()
   // Drain any scans queued (e.g. from the mobile app) while the desktop was off.
   processQueue()
 }
@@ -81,7 +84,24 @@ function startTasks() {
   }
 
   if (cfg.enableInboxCheck) {
-    inboxTask = cron.schedule('0 */2 * * 1-5', async () => { await runInboxCheck() })
+    try {
+      // Recruiter replies don't respect business hours — default to every day.
+      const days = cfg.inboxCheckWeekdaysOnly ? '1-5' : '*'
+      const every = Math.min(24, Math.max(1, Number(cfg.inboxCheckHours) || 2))
+      inboxTask = cron.schedule(`0 */${every} * * ${days}`, async () => { await runInboxCheck() })
+    } catch (err) {
+      log(`Could not schedule the inbox check: ${err.message}`)
+    }
+  }
+
+  // Retire applications that never got a reply. Daily, early, so the dashboard
+  // is already accurate by the time anyone looks at it.
+  if (Number(cfg.staleAfterDays) > 0) {
+    try {
+      staleTask = cron.schedule('30 3 * * *', () => { runStaleSweep() })
+    } catch (err) {
+      log(`Could not schedule the stale-application sweep: ${err.message}`)
+    }
   }
 
   if (cfg.enableWeeklyReport) {
@@ -173,11 +193,13 @@ async function runBatch(batchSize) {
 
   running = true
   let batchError = null
+  let batchBlocked = []
   log(`Starting batch (${batchSize} apps max)...`)
   cloudSync.updateScanStatus(true).catch(() => {})
 
   try {
-    await applicator.run({ ...cfg, askQuestion: makeAskQuestion(win), batchLimit: batchSize }, { log, notifyAttention })
+    const result = await applicator.run({ ...cfg, askQuestion: makeAskQuestion(win), batchLimit: batchSize }, { log, notifyAttention })
+    if (result?.blocked?.length) batchBlocked = result.blocked
   } catch (err) {
     batchError = err.message
     log(`Batch error: ${err.message}`)
@@ -187,14 +209,18 @@ async function runBatch(batchSize) {
       at: new Date().toISOString(),
       ok: !batchError,
       error: batchError,
+      blocked: batchBlocked,
       source: 'batch',
     }
     cloudSync.updateScanStatus(false).catch(() => {})
     log(batchError ? `Batch failed: ${batchError}` : 'Batch complete.')
-    notify({ type: 'scan-complete', error: batchError })
+    notify({ type: 'scan-complete', error: batchError, blocked: batchBlocked })
     webhooks.send('scan-complete', {
-      message: batchError ? `Batch failed: ${batchError}` : `Batch of ${batchSize} complete`,
+      message: batchError
+        ? `Batch failed: ${batchError}`
+        : (batchBlocked.length ? `Batch complete, but blocked on: ${batchBlocked.map(b => b.platform).join(', ')}` : `Batch of ${batchSize} complete`),
       ok: !batchError,
+      blocked: batchBlocked,
     }).catch(() => {})
     cloudSync.sync().catch(() => {})
     setImmediate(() => { processQueue() })
@@ -207,6 +233,7 @@ function stop() {
   if (followUpTask) { followUpTask.stop(); followUpTask = null }
   if (inboxTask) { inboxTask.stop(); inboxTask = null }
   if (weeklyReportTask) { weeklyReportTask.stop(); weeklyReportTask = null }
+  if (staleTask) { staleTask.stop(); staleTask = null }
   for (const t of batchTimeouts) clearTimeout(t)
   batchTimeouts = []
   batchSchedule = []
@@ -302,6 +329,7 @@ async function runScan(overrides = {}) {
   running = true
   const dryRun = !!overrides.dryRun
   let scanError = null
+  let scanBlocked = []
   log(dryRun ? 'Starting test scan (dry run — nothing will be submitted)...' : 'Starting job scan...')
   cloudSync.updateScanStatus(true).catch(() => {})
 
@@ -311,6 +339,7 @@ async function runScan(overrides = {}) {
     if (overrides.location) runCfg.jobLocation = overrides.location
     if (dryRun) runCfg.dryRun = true
     const result = await applicator.run(runCfg, { log, notifyAttention })
+    if (result?.blocked?.length) scanBlocked = result.blocked
     if (dryRun && result) lastDryRun = { at: new Date().toISOString(), ...result }
   } catch (err) {
     scanError = err.message
@@ -329,22 +358,31 @@ async function runScan(overrides = {}) {
         at: new Date().toISOString(),
         ok: !scanError,
         error: scanError,
+        blocked: scanBlocked,
         source: overrides.fromQueue ? 'queue' : (overrides.source || 'desktop'),
       }
     }
     log(dryRun ? 'Test scan complete (dry run — nothing was submitted).' : 'Scan complete.')
-    notify({ type: 'scan-complete', error: scanError })
+    notify({ type: 'scan-complete', error: scanError, blocked: scanBlocked })
     if (!dryRun) {
       try {
         const s = database.getStats()
+        // A block is the one outcome the user has to act on, so it takes
+        // priority over the routine "N applications today" summary.
+        const blockNote = scanBlocked.length
+          ? `Blocked on ${scanBlocked.map(b => b.platform).join(', ')}`
+          : null
         nativeNotify(
-          scanError ? 'Scan failed' : 'Scan complete',
-          scanError || `${s.totalToday} application${s.totalToday === 1 ? '' : 's'} today · ${s.attentionCount} need${s.attentionCount === 1 ? 's' : ''} attention`
+          scanError ? 'Scan failed' : (blockNote ? 'Scan partially blocked' : 'Scan complete'),
+          scanError || blockNote || `${s.totalToday} application${s.totalToday === 1 ? '' : 's'} today · ${s.attentionCount} need${s.attentionCount === 1 ? 's' : ''} attention`
         )
       } catch { /* stats are decorative here */ }
       webhooks.send('scan-complete', {
-        message: scanError ? `Scan failed: ${scanError}` : 'Full scan complete',
+        message: scanError
+          ? `Scan failed: ${scanError}`
+          : (scanBlocked.length ? `Scan complete, but blocked on: ${scanBlocked.map(b => b.platform).join(', ')}` : 'Full scan complete'),
         ok: !scanError,
+        blocked: scanBlocked,
       }).catch(() => {})
       cloudSync.sync().catch(() => {})
       // Drain scans queued (e.g. from the phone) while this scan was running.
@@ -369,6 +407,9 @@ function getScanInfo() {
     lastScanAt: cfg.lastScanAt || null,
     lastScanOk: lastScanOutcome ? lastScanOutcome.ok : null,
     lastScanError: lastScanOutcome?.error || null,
+    // Platforms that refused to serve results on the last scan. Non-empty here
+    // means missing results, not absent results.
+    lastScanBlocked: lastScanOutcome?.blocked || [],
     batchSchedule,
   }
 }
@@ -419,6 +460,25 @@ async function runFollowUp() {
     }
   } catch (err) {
     log(`Follow-up error: ${err.message}`)
+  }
+}
+
+// Move applications that never got a reply to 'no_response'. Also runs once on
+// launch (via init) so a desktop that's only open during the day still catches up.
+function runStaleSweep() {
+  try {
+    const cfg = configService.load()
+    const days = Number(cfg.staleAfterDays)
+    if (!Number.isFinite(days) || days <= 0) return { updated: 0 }
+    const result = database.markStaleApplications(days)
+    if (result.updated > 0) {
+      log(`Marked ${result.updated} application${result.updated === 1 ? '' : 's'} as No Response (no reply after ${days} days)`)
+      cloudSync.sync().catch(() => {})
+    }
+    return result
+  } catch (err) {
+    log(`Stale sweep error: ${err.message}`)
+    return { updated: 0 }
   }
 }
 
@@ -489,4 +549,4 @@ function getBatchSchedule() {
   return batchSchedule
 }
 
-module.exports = { init, restart, stop, cancelScan, runNow, runDryRun, requestScan, processQueue, getScanInfo, getLastDryRun, runInboxCheck, getStatus, getBatchSchedule }
+module.exports = { init, restart, stop, cancelScan, runNow, runDryRun, requestScan, processQueue, getScanInfo, getLastDryRun, runInboxCheck, runStaleSweep, getStatus, getBatchSchedule }

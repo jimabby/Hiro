@@ -1,11 +1,27 @@
 const { chromium } = require('playwright')
-const { randomDelay, randomUserAgent, buildResumeFile, verifySubmission } = require('./utils')
+const { randomDelay, randomUserAgent, buildResumeFile, verifySubmission, gotoResultsPage } = require('./utils')
 const linkedinSession = require('../linkedinSession')
 const aiAdapter = require('../ai/index')
 const database = require('../database')
 
+// See seek.js — one page of results goes stale within days once already-seen
+// listings are skipped.
+const MAX_PAGES = 10
+
+// Node.js substitute for the browser-only CSS.escape(). A leading digit needs
+// the numeric escape form; a plain backslash produces a selector querySelector
+// rejects outright.
 function cssEscape(str) {
-  return str.replace(/([^\w-])/g, '\\$1')
+  const s = String(str)
+  let out = ''
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    const code = s.charCodeAt(i)
+    if (i === 0 && code >= 0x30 && code <= 0x39) out += '\\3' + ch + ' '
+    else if (/[\w-]/.test(ch)) out += ch
+    else out += '\\' + ch
+  }
+  return out
 }
 
 function extractRecentJob(resumeText) {
@@ -39,40 +55,54 @@ async function scrape(cfg) {
   const context = await browser.newContext(contextOptions)
   const page = await context.newPage()
   const jobs = []
+  const seen = new Set()
+  const pages = Math.min(MAX_PAGES, Math.max(1, Number(cfg.scrapePages) || 1))
 
   try {
     const query = encodeURIComponent(jobKeywords)
     const location = encodeURIComponent(jobLocation || 'Australia')
-    const url = `https://www.linkedin.com/jobs/search/?keywords=${query}&location=${location}&f_AL=true`
+    const base = `https://www.linkedin.com/jobs/search/?keywords=${query}&location=${location}&f_AL=true`
 
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
-    await randomDelay(2000, 4000)
+    for (let pageNum = 0; pageNum < pages; pageNum++) {
+      // LinkedIn pages by result offset in 25s.
+      const url = pageNum === 0 ? base : `${base}&start=${pageNum * 25}`
+      // LinkedIn is the most likely of the three to answer with an auth wall
+      // rather than results — gotoResultsPage turns that into a clear error.
+      await gotoResultsPage(page, url, 'LinkedIn')
 
-    const jobCards = await page.$$('.jobs-search__results-list li, .base-card, .job-card-container')
+      const jobCards = await page.$$('.jobs-search__results-list li, .base-card, .job-card-container')
+      if (jobCards.length === 0) break
 
-    for (const card of jobCards.slice(0, 20)) {
-      try {
-        const title = await card.$eval(
-          '.base-search-card__title, h3.base-search-card__title, .job-card-list__title, .job-card-container__link',
-          el => el.textContent.trim()
-        ).catch(() => '')
-        const company = await card.$eval(
-          '.base-search-card__subtitle, h4.base-search-card__subtitle, .job-card-container__company-name',
-          el => el.textContent.trim()
-        ).catch(() => '')
-        const salary = await card.$eval(
-          '.job-search-card__salary-info, .job-card-container__metadata-item--salary',
-          el => el.textContent.trim()
-        ).catch(() => '')
-        const href = await card.$eval(
-          'a.base-card__full-link, a[href*="/jobs/view/"], a.job-card-list__title',
-          el => el.href
-        ).catch(() => '')
+      let added = 0
+      for (const card of jobCards) {
+        try {
+          const title = await card.$eval(
+            '.base-search-card__title, h3.base-search-card__title, .job-card-list__title, .job-card-container__link',
+            el => el.textContent.trim()
+          ).catch(() => '')
+          const company = await card.$eval(
+            '.base-search-card__subtitle, h4.base-search-card__subtitle, .job-card-container__company-name',
+            el => el.textContent.trim()
+          ).catch(() => '')
+          const salary = await card.$eval(
+            '.job-search-card__salary-info, .job-card-container__metadata-item--salary',
+            el => el.textContent.trim()
+          ).catch(() => '')
+          const href = await card.$eval(
+            'a.base-card__full-link, a[href*="/jobs/view/"], a.job-card-list__title',
+            el => el.href
+          ).catch(() => '')
 
-        if (title && company && href) {
-          jobs.push({ job_title: title, company, salary, job_url: href, platform: 'LinkedIn' })
-        }
-      } catch { /* skip malformed card */ }
+          if (title && company && href && !seen.has(href)) {
+            seen.add(href)
+            jobs.push({ job_title: title, company, salary, job_url: href, platform: 'LinkedIn' })
+            added++
+          }
+        } catch { /* skip malformed card */ }
+      }
+
+      if (added === 0) break
+      if (pageNum < pages - 1) await randomDelay(2500, 6000)
     }
   } finally {
     await browser.close()
@@ -124,6 +154,17 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
   }
 
   const recentJob = extractRecentJob(cfg?.masterResume || tailoredResume || '')
+
+  // Screening questions answered during this submission, so they can be stored
+  // on the application. Deduped by question — a multi-step form can present the
+  // same field twice, and the record should read as one answer, not two.
+  const screeningQa = []
+  function recordAnswer(question, answer, source) {
+    const q = String(question || '').trim()
+    if (!q || !answer) return
+    if (screeningQa.some(e => e.question === q)) return
+    screeningQa.push({ question: q, answer: String(answer), source })
+  }
 
   try {
     await page.goto(jobUrl, { waitUntil: 'domcontentloaded', timeout: 30000 })
@@ -250,9 +291,11 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
           if (currentVal.trim()) continue
 
           let answer = ''
+          let answerSource = ''
           const cached = database.getCachedAnswer(questionText)
           if (cached) {
             answer = cached
+            answerSource = 'cache'
           } else {
             let aiAnswer = ''
             try {
@@ -267,14 +310,18 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
 
             if (isUncertain && cfg.askQuestion) {
               const userAnswer = await cfg.askQuestion(questionText).catch(() => '')
-              if (userAnswer) { answer = userAnswer; database.saveCachedAnswer(questionText, userAnswer) }
+              if (userAnswer) { answer = userAnswer; answerSource = 'user'; database.saveCachedAnswer(questionText, userAnswer) }
             } else if (aiAnswer) {
               answer = aiAnswer
+              answerSource = 'ai'
               database.saveCachedAnswer(questionText, aiAnswer)
             }
           }
 
           if (!answer) continue
+          // Recorded so the saved application shows what was submitted for the
+          // user, rather than leaving the detail panel's Q&A section empty.
+          recordAnswer(questionText, answer, answerSource)
 
           if (tag === 'select') {
             await input.selectOption({ label: answer }).catch(() => {})
@@ -297,8 +344,8 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
         await submitBtn.evaluate(el => el.click())
         await randomDelay(3000, 5000)
         const check = await verifySubmission(page)
-        if (!check.ok) return { success: false, reason: check.reason }
-        return { success: true }
+        if (!check.ok) return { success: false, reason: check.reason, screeningQa }
+        return { success: true, screeningQa }
       }
 
       // Click next/continue

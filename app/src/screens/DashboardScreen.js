@@ -7,6 +7,7 @@ export default function DashboardScreen({ client }) {
   const [stats, setStats] = useState(null)
   const [perDay, setPerDay] = useState([])
   const [attention, setAttention] = useState([])
+  const [interviews, setInterviews] = useState([])
   const [error, setError] = useState('')
   const [refreshing, setRefreshing] = useState(false)
 
@@ -24,12 +25,17 @@ export default function DashboardScreen({ client }) {
       setStats(s)
       setPerDay(pd)
       setError('')
+      // Interviews are available over both transports now. A desktop or schema
+      // that can't serve them returns an empty list, so this never throws.
+      try { setInterviews(await client.getUpcomingInterviews(10)) } catch { setInterviews([]) }
+      // Attention jobs are mirrored to the cloud too, so this no longer needs
+      // a live desktop — but the scan-status and queue polling below does.
+      try { setAttention(await client.getAttention()) } catch { setAttention([]) }
       if (client.canScan) {
         // Desktop is reachable — deliver any scans queued while it was offline.
         await flush(client)
         // Clear on failure rather than keep displaying stale running/queued info.
         try { setScanStatus(await client.getScanStatus()) } catch { setScanStatus(null) }
-        try { setAttention(await client.getAttention()) } catch { setAttention([]) }
         setPendingCount((await getPending()).length)
       }
     } catch (err) {
@@ -187,12 +193,42 @@ export default function DashboardScreen({ client }) {
           </View>
           <View style={styles.statRow}>
             <StatCard label="Response Rate" value={`${stats.responseRate}%`} />
-            {/* Attention jobs don't sync to the cloud (attentionCount: null) —
-                hide the tile there instead of showing a misleading 0. */}
-            {stats.attentionCount != null && (
-              <StatCard label="Needs Attention" value={stats.attentionCount} accent={stats.attentionCount > 0 ? colors.yellow : undefined} />
-            )}
+            <StatCard label="Interview Rate" value={`${stats.interviewRate ?? 0}%`} />
           </View>
+          {/* Older desktop builds don't publish attention jobs to the cloud
+              (attentionCount: null) — hide the tile instead of showing a
+              misleading 0. */}
+          {stats.attentionCount != null && (
+            <View style={styles.statRow}>
+              <StatCard label="Needs Attention" value={stats.attentionCount} accent={stats.attentionCount > 0 ? colors.yellow : undefined} />
+            </View>
+          )}
+
+          {/* Upcoming interviews — mirrored from the desktop, which detects them
+              from recruiter replies. Read-only here. */}
+          {interviews.length > 0 && (
+            <View style={[styles.card, { borderLeftWidth: 3, borderLeftColor: colors.green }]}>
+              <Text style={styles.cardTitle}>Upcoming interviews</Text>
+              {interviews.map(iv => {
+                const when = new Date(String(iv.scheduled_at).replace(' ', 'T'))
+                const days = Math.round((when - new Date()) / 86400000)
+                const rel = days <= 0 ? 'today' : days === 1 ? 'tomorrow' : `in ${days} days`
+                const hasTime = iv.has_time === true || iv.has_time === 1
+                return (
+                  <View key={iv.id} style={styles.attentionRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.attentionTitle} numberOfLines={1}>{iv.job_title}</Text>
+                      <Text style={styles.muted} numberOfLines={1}>
+                        {iv.company} · {when.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}
+                        {hasTime ? ` at ${when.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ' (time not detected)'}
+                      </Text>
+                    </View>
+                    <Text style={[styles.attentionScore, { color: days <= 1 ? colors.green : colors.textMuted }]}>{rel}</Text>
+                  </View>
+                )
+              })}
+            </View>
+          )}
 
           {/* Last 7 days bar chart */}
           <View style={styles.card}>
@@ -212,7 +248,7 @@ export default function DashboardScreen({ client }) {
           </View>
 
           {/* Jobs flagged for manual application (LAN only — these don't sync) */}
-          {client.canScan && attention.length > 0 && (
+          {attention.length > 0 && (
             <View style={styles.card}>
               <Text style={styles.cardTitle}>Needs attention ({attention.length})</Text>
               {attention.slice(0, 5).map(job => (

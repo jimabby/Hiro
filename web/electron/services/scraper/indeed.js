@@ -1,13 +1,29 @@
 const { chromium } = require('playwright-extra')
 const StealthPlugin = require('puppeteer-extra-plugin-stealth')
 chromium.use(StealthPlugin())
-const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown, verifySubmission } = require('./utils')
+const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown, verifySubmission, gotoResultsPage } = require('./utils')
 const indeedSession = require('../indeedSession')
 const aiAdapter = require('../ai/index')
 const database = require('../database')
 
+// See seek.js — one page of results goes stale within days once already-seen
+// listings are skipped.
+const MAX_PAGES = 10
+
+// Node.js substitute for the browser-only CSS.escape(). A leading digit needs
+// the numeric escape form; a plain backslash produces a selector querySelector
+// rejects outright.
 function cssEscape(str) {
-  return str.replace(/([^\w-])/g, '\\$1')
+  const s = String(str)
+  let out = ''
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    const code = s.charCodeAt(i)
+    if (i === 0 && code >= 0x30 && code <= 0x39) out += '\\3' + ch + ' '
+    else if (/[\w-]/.test(ch)) out += ch
+    else out += '\\' + ch
+  }
+  return out
 }
 
 // Extract the most recent job title + company from resume text
@@ -39,38 +55,50 @@ async function scrape(cfg) {
   const page = await context.newPage()
 
   const jobs = []
+  const seen = new Set()
+  const pages = Math.min(MAX_PAGES, Math.max(1, Number(cfg.scrapePages) || 1))
 
   try {
     const query = encodeURIComponent(jobKeywords)
     const location = encodeURIComponent(jobLocation || 'Australia')
     const salary = salaryMin ? `&salary=${salaryMin}` : ''
-    const url = `https://au.indeed.com/jobs?q=${query}&l=${location}${salary}`
+    const base = `https://au.indeed.com/jobs?q=${query}&l=${location}${salary}`
 
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
-    await randomDelay(2000, 4000)
+    for (let pageNum = 0; pageNum < pages; pageNum++) {
+      // Indeed pages by result offset in tens, not by page number.
+      const url = pageNum === 0 ? base : `${base}&start=${pageNum * 10}`
+      await gotoResultsPage(page, url, 'Indeed')
 
-    const jobCards = await page.$$('.job_seen_beacon, .resultContent, [data-testid="slider_item"]')
+      const jobCards = await page.$$('.job_seen_beacon, .resultContent, [data-testid="slider_item"]')
+      if (jobCards.length === 0) break
 
-    for (const card of jobCards.slice(0, 20)) {
-      try {
-        const title = await card.$eval(
-          'h2.jobTitle span[title], h2.jobTitle a span, h2 a span',
-          el => el.textContent.trim()
-        ).catch(() => '')
-        const company = await card.$eval(
-          '[data-testid="company-name"], .companyName, [class*="companyName"]',
-          el => el.textContent.trim()
-        ).catch(() => '')
-        const salary = await card.$eval(
-          '[data-testid="attribute_snippet_testid"], .salaryOnly, [class*="salary"]',
-          el => el.textContent.trim()
-        ).catch(() => '')
-        const href = await card.$eval('h2.jobTitle a, h2 a', el => el.href).catch(() => '')
+      let added = 0
+      for (const card of jobCards) {
+        try {
+          const title = await card.$eval(
+            'h2.jobTitle span[title], h2.jobTitle a span, h2 a span',
+            el => el.textContent.trim()
+          ).catch(() => '')
+          const company = await card.$eval(
+            '[data-testid="company-name"], .companyName, [class*="companyName"]',
+            el => el.textContent.trim()
+          ).catch(() => '')
+          const salary = await card.$eval(
+            '[data-testid="attribute_snippet_testid"], .salaryOnly, [class*="salary"]',
+            el => el.textContent.trim()
+          ).catch(() => '')
+          const href = await card.$eval('h2.jobTitle a, h2 a', el => el.href).catch(() => '')
 
-        if (title && company && href) {
-          jobs.push({ job_title: title, company, salary, job_url: href, platform: 'Indeed' })
-        }
-      } catch { /* skip malformed card */ }
+          if (title && company && href && !seen.has(href)) {
+            seen.add(href)
+            jobs.push({ job_title: title, company, salary, job_url: href, platform: 'Indeed' })
+            added++
+          }
+        } catch { /* skip malformed card */ }
+      }
+
+      if (added === 0) break
+      if (pageNum < pages - 1) await randomDelay(2500, 6000)
     }
   } finally {
     await browser.close()
@@ -115,6 +143,17 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
 
   // Extract most recent job title + company for work history fields
   const recentJob = extractRecentJob(cfg?.masterResume || tailoredResume || '')
+
+  // Screening questions answered during this submission, so they can be stored
+  // on the application. Deduped by question — a multi-step form can present the
+  // same field twice, and the record should read as one answer, not two.
+  const screeningQa = []
+  function recordAnswer(question, answer, source) {
+    const q = String(question || '').trim()
+    if (!q || !answer) return
+    if (screeningQa.some(e => e.question === q)) return
+    screeningQa.push({ question: q, answer: String(answer), source })
+  }
 
   try {
     await page.goto(jobUrl, { waitUntil: 'domcontentloaded', timeout: 30000 })
@@ -245,9 +284,11 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
 
       // Dynamically detect and answer screening questions on this step
       if (cfg.aiProvider && cfg.aiApiKey) {
+        // Every answer handed back is recorded on `screeningQa` so the saved
+        // application shows what was actually submitted for the user.
         async function getAnswer(questionText, optionHint) {
           const cached = database.getCachedAnswer(questionText)
-          if (cached) return cached
+          if (cached) { recordAnswer(questionText, cached, 'cache'); return cached }
           let aiAnswer = ''
           try {
             aiAnswer = await aiAdapter.answerScreeningQuestion(
@@ -261,10 +302,17 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
           if (isUncertain && cfg.askQuestion) {
             const prompt = optionHint ? `${questionText} (${optionHint})` : questionText
             const userAnswer = await cfg.askQuestion(prompt).catch(() => '')
-            if (userAnswer) { database.saveCachedAnswer(questionText, userAnswer); return userAnswer }
+            if (userAnswer) {
+              database.saveCachedAnswer(questionText, userAnswer)
+              recordAnswer(questionText, userAnswer, 'user')
+              return userAnswer
+            }
             return ''
           }
-          if (aiAnswer) database.saveCachedAnswer(questionText, aiAnswer)
+          if (aiAnswer) {
+            database.saveCachedAnswer(questionText, aiAnswer)
+            recordAnswer(questionText, aiAnswer, 'ai')
+          }
           return aiAnswer || ''
         }
 
@@ -398,8 +446,8 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
         await submitBtn.evaluate(el => el.click())
         await randomDelay(3000, 5000)
         const check = await verifySubmission(workFrame)
-        if (!check.ok) return { success: false, reason: check.reason }
-        return { success: true }
+        if (!check.ok) return { success: false, reason: check.reason, screeningQa }
+        return { success: true, screeningQa }
       }
 
       // Click next/continue to advance the wizard

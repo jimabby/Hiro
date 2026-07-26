@@ -3,9 +3,9 @@ import {
   View, Text, ScrollView, TouchableOpacity, TextInput,
   Linking, StyleSheet,
 } from 'react-native'
-import { colors, radius, statusColors } from '../theme'
+import { colors, radius, statusColors, statusLabel } from '../theme'
 
-const STATUSES = ['applied', 'interview', 'offer', 'rejected', 'skipped']
+const STATUSES = ['applied', 'interview', 'offer', 'rejected', 'pending', 'no_response', 'skipped']
 
 export default function ApplicationDetailScreen({ client, id, onBack }) {
   const [app, setApp] = useState(null)
@@ -92,7 +92,7 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
                     style={[styles.statusChip, { borderColor: active ? c : colors.border, backgroundColor: active ? c + '26' : 'transparent' }]}
                     onPress={() => setStatus(s)}
                   >
-                    <Text style={[styles.statusChipText, { color: active ? c : colors.textMuted }]}>{s}</Text>
+                    <Text style={[styles.statusChipText, { color: active ? c : colors.textMuted }]}>{statusLabel(s)}</Text>
                   </TouchableOpacity>
                 )
               })}
