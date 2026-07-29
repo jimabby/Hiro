@@ -165,7 +165,10 @@ export class CloudClient {
     const now = new Date()
     const today = startOfDay(now).getTime()
     const weekAgo = today - 6 * 86400000
-    const counted = apps.filter(a => a.status !== 'skipped')
+    // 'held' is drafted-but-not-sent, same as 'skipped' for any rate: counting
+    // it would make holding a job for review look like an application that
+    // never got a reply. Mirrors UNSENT_STATUSES on the desktop.
+    const counted = apps.filter(a => a.status !== 'skipped' && a.status !== 'held')
     // Keep these definitions identical to the desktop's getStats(): an offer
     // implies the interview stage was reached, and a rejection is still a reply.
     const interviews = apps.filter(a => a.status === 'interview' || a.status === 'offer').length

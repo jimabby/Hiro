@@ -1,5 +1,21 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, nativeImage } = require('electron')
 const path = require('path')
+
+// Point Playwright at the Chromium bundled with the app. This MUST run before
+// anything requires playwright — the module reads the variable at load time.
+// Without it, a packaged build looks in a per-user cache directory that was
+// never installed on the end user's machine, and every scrape failed with
+// "Executable doesn't exist".
+if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
+  const fs = require('fs')
+  const bundled = app.isPackaged
+    ? path.join(process.resourcesPath, 'browsers')
+    : path.join(__dirname, '..', 'browsers')
+  // Fall back to Playwright's own cache when the bundle is absent (a dev clone
+  // that skipped the postinstall download), rather than pointing at nothing.
+  if (fs.existsSync(bundled)) process.env.PLAYWRIGHT_BROWSERS_PATH = bundled
+}
+
 const configService = require('./services/config')
 const database = require('./services/database')
 const scheduler = require('./services/scheduler')
@@ -14,10 +30,29 @@ const mobileApi = require('./services/mobileApi')
 const cloudSync = require('./services/cloudSync')
 const logger = require('./services/logger')
 const configTransfer = require('./services/configTransfer')
+const tray = require('./services/tray')
+const updater = require('./services/updater')
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
 let mainWindow
+
+// Two copies of Hiro means two schedulers, two mobile API servers (the second
+// silently losing the port), and two processes rewriting the same SQLite file —
+// sql.js persists by replacing the WHOLE file, so the loser's writes vanish
+// without a trace. Refuse the second launch and surface the existing window.
+const gotTheLock = app.requestSingleInstanceLock()
+if (!gotTheLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+      mainWindow.focus()
+    }
+  })
+}
 
 function createWindow() {
   const iconPath = path.join(__dirname, '..', 'public', 'logo.png')
@@ -43,7 +78,19 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
 
-  mainWindow.once('ready-to-show', () => mainWindow.show())
+  // Launch-on-login can start us hidden, and Settings has a "start minimised"
+  // option — in both cases showing the window would defeat the point.
+  const startHidden = process.argv.includes('--hidden') || configService.load().startMinimised
+  mainWindow.once('ready-to-show', () => { if (!startHidden) mainWindow.show() })
+
+  // Closing the window hides it instead of quitting, so the scheduler keeps
+  // running. Only honoured when a tray icon actually exists — otherwise the
+  // app would keep running with no way to reach it.
+  mainWindow.on('close', (e) => {
+    if (tray.isQuitting() || !tray.hasTray() || !configService.load().minimizeToTray) return
+    e.preventDefault()
+    mainWindow.hide()
+  })
 
   // Open external links in system browser instead of Electron
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -73,22 +120,73 @@ app.whenReady().then(async () => {
   // long-running sessions still get one backup per day.
   database.maybeBackup()
   setInterval(() => database.maybeBackup(), 6 * 60 * 60 * 1000)
+  // Usage rows are diagnostic; six months is plenty and keeps the file small.
+  database.pruneAiUsage(180)
   createWindow()
+
+  // Tray first: createWindow's close handler asks whether a tray exists.
+  tray.init({
+    getMainWindow: () => mainWindow,
+    actions: {
+      runScan: () => {
+        const blocked = scanStartBlocker()
+        if (blocked) { logger.append(`[tray] Scan not started — ${blocked}`); return }
+        scheduler.runNow(mainWindow)
+      },
+      checkInbox: () => { scheduler.runInboxCheck().catch(() => {}) },
+    },
+  })
+
+  const cfg = configService.load()
+  // Reconcile the OS login item with the saved preference — the user may have
+  // removed it outside the app, and a stale entry pointing at an old install
+  // path is worse than none.
+  if (cfg.launchOnLogin) tray.applyLoginItem(true, { startMinimised: cfg.startMinimised })
+
   scheduler.init(mainWindow)
-  if (configService.load().mobileApiEnabled) mobileApi.start()
+  if (cfg.mobileApiEnabled) mobileApi.start()
   cloudSync.init().catch(() => {})
+  updater.init({
+    onStatus: (status) => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update:status', status)
+    },
+    busyCheck: () => scheduler.getStatus().running || applicator.isBusy(),
+  })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    else tray.showWindow()
   })
 })
 
+// With a tray icon the app deliberately outlives its window — that is the
+// whole point of background operation. Without one (some Linux desktops, or
+// the feature turned off) fall back to the conventional quit-on-close.
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  if (process.platform === 'darwin') return
+  if (tray.hasTray() && configService.load().minimizeToTray && !tray.isQuitting()) return
+  app.quit()
+})
+
+app.on('before-quit', () => {
+  tray.beginQuit()
+})
+
+// Shut the background services down deliberately rather than letting the
+// process die with a scan half-written: stop the cron tasks, cancel any
+// in-flight apply, and close the LAN server so the port is released.
+app.on('will-quit', () => {
+  try { scheduler.stop() } catch { /* shutting down anyway */ }
+  try { mobileApi.stop() } catch { /* shutting down anyway */ }
+  try { tray.destroy() } catch { /* shutting down anyway */ }
 })
 
 // ─── IPC: Config ────────────────────────────────────────────────
 ipcMain.handle('config:get', () => configService.load())
+
+// Surfaced in Settings so a config file that failed to parse is reported
+// rather than silently appearing as a factory reset.
+ipcMain.handle('config:loadError', () => configService.getLoadError())
 
 // Keys owned by background services (scheduler, cloud sync, mobile API,
 // inbox). The renderer's form is a snapshot from page load — saving it
@@ -104,6 +202,10 @@ ipcMain.handle('config:save', (_, config) => {
   const merged = { ...config }
   for (const key of RUNTIME_CONFIG_KEYS) merged[key] = current[key]
   configService.save(merged)
+  // Keep the OS login item in step with the setting that claims to control it.
+  if (merged.launchOnLogin !== current.launchOnLogin || merged.startMinimised !== current.startMinimised) {
+    tray.applyLoginItem(merged.launchOnLogin, { startMinimised: merged.startMinimised })
+  }
   scheduler.restart(mainWindow)
   return { success: true }
 })
@@ -722,7 +824,10 @@ ipcMain.handle('db:restoreBackup', (_, name) => {
 })
 
 // ─── IPC: Database ──────────────────────────────────────────────
-ipcMain.handle('db:getApplications', (_, filters) => database.getApplications(filters))
+// The list view gets slim rows — SELECT * shipped every job description,
+// tailored resume and cover letter across IPC on each dashboard load.
+ipcMain.handle('db:getApplications', (_, filters) => database.getApplicationsList(filters))
+ipcMain.handle('db:getApplicationsFull', (_, filters) => database.getApplications(filters))
 ipcMain.handle('db:getApplication', (_, id) => database.getApplication(id))
 ipcMain.handle('db:updateStatus', (_, id, status) => database.updateApplicationStatus(id, status))
 ipcMain.handle('db:updateComment', (_, id, comment) => database.updateApplicationComment(id, comment))
@@ -887,6 +992,76 @@ ipcMain.handle('mobile:regenerateToken', () => {
   mobileApi.regenerateToken()
   return mobileApi.getInfo()
 })
+
+// ─── IPC: Review queue (review-before-submit) ────────────────────
+ipcMain.handle('review:list', () => database.getHeldApplications())
+
+ipcMain.handle('review:approve', async (_, id) => {
+  try {
+    const cfg = { ...configService.load(), askQuestion: makeAskQuestion(mainWindow) }
+    return await applicator.approveHeldApplication(id, cfg, reviewLog)
+  } catch (err) {
+    return { success: false, reason: err.message }
+  } finally {
+    scheduler.processQueue().catch(() => {})
+  }
+})
+
+ipcMain.handle('review:approveMany', async (_, ids) => {
+  if (!Array.isArray(ids) || ids.length === 0) return { success: false, reason: 'No applications selected' }
+  try {
+    const cfg = { ...configService.load(), askQuestion: makeAskQuestion(mainWindow) }
+    return await applicator.approveHeldApplications(ids, cfg, reviewLog)
+  } catch (err) {
+    return { success: false, reason: err.message }
+  } finally {
+    scheduler.processQueue().catch(() => {})
+  }
+})
+
+ipcMain.handle('review:reject', (_, id) => {
+  try { return database.rejectHeldApplication(id) } catch (err) { return { success: false, error: err.message } }
+})
+
+function reviewLog(msg) {
+  logger.append(`[review] ${msg}`)
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('review:log', msg)
+}
+
+// ─── IPC: AI usage & cost ────────────────────────────────────────
+ipcMain.handle('ai:usage', () => database.getAiUsageSummary())
+ipcMain.handle('ai:clearUsage', () => database.clearAiUsage())
+
+// ─── IPC: Resume conversion analytics ────────────────────────────
+ipcMain.handle('analytics:resumeConversion', () => database.getResumeConversion())
+
+// ─── IPC: ATS job boards ─────────────────────────────────────────
+// Validate a board before saving it, so a typo in the slug is caught here
+// rather than as an empty scan three days later.
+ipcMain.handle('ats:testBoard', async (_, provider, slug) => {
+  try {
+    const ats = require('./services/scraper/ats')
+    const jobs = await ats.scrape({
+      atsBoards: [{ provider, slug, label: slug }],
+      jobKeywords: '', jobLocation: '',
+    })
+    return { success: true, count: jobs.length, sample: jobs.slice(0, 3).map(j => j.job_title) }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+// ─── IPC: Updates ────────────────────────────────────────────────
+ipcMain.handle('update:status', () => updater.getStatus())
+ipcMain.handle('update:check', () => updater.check())
+ipcMain.handle('update:download', () => updater.download())
+ipcMain.handle('update:install', () => updater.installNow())
+
+// ─── IPC: Background operation ───────────────────────────────────
+ipcMain.handle('tray:status', () => ({
+  hasTray: tray.hasTray(),
+  ...tray.getLoginItem(),
+}))
 
 // ─── IPC: Inbox Check ────────────────────────────────────────────
 ipcMain.handle('inbox:checkNow', async () => {

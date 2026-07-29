@@ -5,6 +5,7 @@
 const { stub, service, createChecker } = require('./helpers')
 
 const statusWrites = []
+const rejects = []
 const TOKEN = 'a'.repeat(32)
 const PORT = 48231
 const cfg = { mobileApiEnabled: true, mobileApiPort: PORT, mobileApiToken: TOKEN }
@@ -20,6 +21,12 @@ stub({
     getUpcomingInterviews: (limit) => [{ id: 1, job_title: 'Dev', company: 'Acme', scheduled_at: '2026-08-14 14:30:00', _limit: limit }],
     getSalaryStats: () => ({ count: 3, median: 120000 }),
     updateApplicationStatus: (id, status) => { statusWrites.push({ id, status }); return { success: true } },
+    // Review mode: the phone may look at what is held back and reject a bad
+    // draft, but approving means submitting, which needs the desktop's browser.
+    getHeldApplications: () => [{ id: 4, job_title: 'Held Role', company: 'Acme', match_score: 91 }],
+    rejectHeldApplication: (id) => { rejects.push(id); return { success: true } },
+    getAiUsageSummary: () => ({ month: { calls: 12, cost: 0.42 }, today: { calls: 3, cost: 0.1 } }),
+    getApplicationsList: () => [],
   },
   './scheduler': { getScanInfo: () => ({ running: false }), requestScan: () => ({ id: 'x' }), cancelScan: () => {} },
   './logger': { append: () => {}, tail: () => [] },
@@ -83,16 +90,39 @@ const post = async (path, body) => {
   // ── Status vocabulary ───────────────────────────────────────────
   // Every status the desktop can write must be settable from the phone, or the
   // phone can display a status it isn't allowed to choose.
-  for (const status of ['applied', 'interview', 'offer', 'rejected', 'pending', 'no_response', 'skipped']) {
+  for (const status of ['applied', 'interview', 'offer', 'rejected', 'pending', 'no_response', 'skipped', 'held']) {
     const res = await post('/api/applications/1/status', { status })
     check(`status '${status}' accepted`, res.status, 200)
   }
   check('unknown status rejected', (await post('/api/applications/1/status', { status: 'maybe' })).status, 400)
   check('missing status rejected', (await post('/api/applications/1/status', {})).status, 400)
-  check('accepted statuses reached the database', statusWrites.length, 7)
+  check('accepted statuses reached the database', statusWrites.length, 8)
+
+  // ── Review queue over the LAN ───────────────────────────────────
+  const heldRes = await get('/api/held')
+  check('held drafts are served', heldRes.status, 200)
+  check('held draft carries its match score', heldRes.body[0].match_score, 91)
+  check('a held draft can be rejected from the phone', (await post('/api/held/4/reject', {})).status, 200)
+  check('the rejection reached the database', rejects, [4])
+
+  check('ai usage is served', (await get('/api/ai-usage')).body.month.cost, 0.42)
 
   check('unknown route still 404s', (await get('/api/nope')).status, 404)
 
-  mobileApi.stop()
+  // ── Stopping actually stops ─────────────────────────────────────
+  // close() alone leaves keep-alive sockets serving requests, so turning the
+  // mobile API off in Settings did not cut off a connected phone.
+  await mobileApi.stop()
+  check('the server reports stopped', mobileApi.getInfo().running, false)
+  let reachable = true
+  try {
+    await fetch(`http://127.0.0.1:${PORT}/api/ping`, {
+      headers: { Authorization: `Bearer ${cfg.mobileApiToken}` },
+    })
+  } catch {
+    reachable = false
+  }
+  check('the port is no longer served', reachable, false)
+
   done()
 })()

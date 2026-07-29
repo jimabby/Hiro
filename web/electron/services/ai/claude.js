@@ -1,4 +1,5 @@
 const Anthropic = require('@anthropic-ai/sdk')
+const { withUsage } = require('./usage')
 
 // Two tiers, named so a model change is one edit rather than thirteen.
 //   FAST  — short, structured, cheap: connection tests, scores, labels, lists.
@@ -20,9 +21,24 @@ function parseJSON(text) {
   return JSON.parse(cleaned)
 }
 
+// Single entry point for every request. Routing all of them through withUsage
+// means retry/backoff, the monthly budget cap and cost accounting are applied
+// uniformly instead of being remembered at thirteen call sites.
+async function complete(operation, apiKey, params) {
+  return withUsage(operation, 'claude', async () => {
+    const client = new Anthropic({ apiKey })
+    const response = await client.messages.create(params)
+    // With thinking disabled the first block is the text; be defensive anyway
+    // so a future response shape can't throw a TypeError mid-scan.
+    const text = response.content?.find(b => b.type === 'text')?.text
+      ?? response.content?.[0]?.text
+      ?? ''
+    return { value: text, model: params.model, usage: response.usage }
+  })
+}
+
 async function testConnection(apiKey) {
-  const client = new Anthropic({ apiKey })
-  await client.messages.create({
+  await complete('testConnection', apiKey, {
     model: FAST_MODEL,
     max_tokens: 10,
     messages: [{ role: 'user', content: 'hi' }],
@@ -30,8 +46,7 @@ async function testConnection(apiKey) {
 }
 
 async function tailorResume(jobDescription, masterResume, apiKey) {
-  const client = new Anthropic({ apiKey })
-  const response = await client.messages.create({
+  const text = await complete('tailorResume', apiKey, {
     ...SMART,
     max_tokens: 2000,
     messages: [{
@@ -49,12 +64,11 @@ MASTER RESUME:
 ${masterResume}`,
     }],
   })
-  return response.content[0].text
+  return text
 }
 
 async function answerScreeningQuestion(question, jobDescription, masterResume, apiKey) {
-  const client = new Anthropic({ apiKey })
-  const response = await client.messages.create({
+  const text = await complete('answerScreeningQuestion', apiKey, {
     model: FAST_MODEL,
     max_tokens: 500,
     messages: [{
@@ -76,12 +90,11 @@ RESUME: ${masterResume.slice(0, 1000)}
 Return ONLY the answer, no commentary.`,
     }],
   })
-  return response.content[0].text
+  return text
 }
 
 async function generateTalkingPoints(jobDescription, masterResume, apiKey) {
-  const client = new Anthropic({ apiKey })
-  const response = await client.messages.create({
+  const text = await complete('generateTalkingPoints', apiKey, {
     model: FAST_MODEL,
     max_tokens: 600,
     messages: [{
@@ -95,15 +108,14 @@ RESUME: ${masterResume.slice(0, 1000)}`,
     }],
   })
   try {
-    return parseJSON(response.content[0].text)
+    return parseJSON(text)
   } catch {
-    return [response.content[0].text]
+    return [text]
   }
 }
 
 async function scoreMatch(jobDescription, masterResume, apiKey) {
-  const client = new Anthropic({ apiKey })
-  const response = await client.messages.create({
+  const text = await complete('scoreMatch', apiKey, {
     model: FAST_MODEL,
     max_tokens: 50,
     messages: [{
@@ -115,15 +127,14 @@ JOB: ${jobDescription.slice(0, 800)}
 RESUME: ${masterResume.slice(0, 1000)}`,
     }],
   })
-  const score = parseInt(response.content[0].text.trim(), 10)
+  const score = parseInt(text.trim(), 10)
   return isNaN(score) ? 50 : Math.min(100, Math.max(0, score))
 }
 
 async function generateCoverLetter(jobDescription, masterResume, apiKey, _geminiModel, tone, template) {
-  const client = new Anthropic({ apiKey })
   const toneInstruction = tone === 'casual' ? 'Write in a warm, approachable, conversational tone.' : tone === 'confident' ? 'Write with assertive, direct confidence — lead with impact.' : ''
   const templateInstruction = template ? `Use the following as the structural base, filling in job-specific details:\n\n${template}\n\n` : ''
-  const response = await client.messages.create({
+  const text = await complete('generateCoverLetter', apiKey, {
     ...SMART,
     max_tokens: 800,
     messages: [{
@@ -145,12 +156,11 @@ RESUME:
 ${masterResume}`,
     }],
   })
-  return response.content[0].text
+  return text
 }
 
 async function scoreMatchWithExplanation(jobDescription, masterResume, apiKey) {
-  const client = new Anthropic({ apiKey })
-  const response = await client.messages.create({
+  const text = await complete('scoreMatchWithExplanation', apiKey, {
     model: FAST_MODEL,
     max_tokens: 200,
     messages: [{ role: 'user', content: `Score how well this resume matches this job description.
@@ -161,18 +171,17 @@ JOB: ${jobDescription.slice(0, 800)}
 RESUME: ${masterResume.slice(0, 1000)}` }],
   })
   try {
-    const parsed = parseJSON(response.content[0].text)
+    const parsed = parseJSON(text)
     const score = parseInt(parsed.score, 10)
     return { score: isNaN(score) ? 50 : Math.min(100, Math.max(0, score)), explanation: parsed.explanation || '' }
   } catch {
-    const score = parseInt(response.content[0].text.trim(), 10)
+    const score = parseInt(text.trim(), 10)
     return { score: isNaN(score) ? 50 : Math.min(100, Math.max(0, score)), explanation: '' }
   }
 }
 
 async function generateInterviewQuestions(jobDescription, masterResume, apiKey) {
-  const client = new Anthropic({ apiKey })
-  const response = await client.messages.create({
+  const text = await complete('generateInterviewQuestions', apiKey, {
     ...SMART,
     max_tokens: 3000,
     messages: [{ role: 'user', content: `Generate 8 likely interview questions for this job with a tailored sample answer for each, based on the candidate's actual resume experience.
@@ -184,13 +193,12 @@ Answers should be 2-4 sentences, specific to the candidate's real experience. No
 JOB: ${jobDescription.slice(0, 1000)}
 RESUME: ${masterResume.slice(0, 1200)}` }],
   })
-  try { return parseJSON(response.content[0].text) }
+  try { return parseJSON(text) }
   catch { return [] }
 }
 
 async function generateFollowUpQuestion(question, userAnswer, jobDescription, apiKey) {
-  const client = new Anthropic({ apiKey })
-  const response = await client.messages.create({
+  const text = await complete('generateFollowUpQuestion', apiKey, {
     model: FAST_MODEL,
     max_tokens: 300,
     messages: [{ role: 'user', content: `You are an interview coach. The candidate was asked this interview question and gave the answer below. Generate ONE follow-up probe question an interviewer might ask to dig deeper.
@@ -200,12 +208,11 @@ ORIGINAL QUESTION: ${question}
 CANDIDATE'S ANSWER: ${userAnswer}
 JOB CONTEXT: ${(jobDescription || '').slice(0, 500)}` }],
   })
-  return response.content[0].text.trim()
+  return text.trim()
 }
 
 async function analyzeKeywordGap(jobDescription, masterResume, apiKey) {
-  const client = new Anthropic({ apiKey })
-  const response = await client.messages.create({
+  const text = await complete('analyzeKeywordGap', apiKey, {
     model: FAST_MODEL,
     max_tokens: 600,
     messages: [{ role: 'user', content: `Analyze which key skills and qualifications from this job are present or missing in this resume.
@@ -215,13 +222,12 @@ Max 10 items each. Focus on specific technical skills, tools, certifications.
 JOB: ${jobDescription.slice(0, 1000)}
 RESUME: ${masterResume.slice(0, 800)}` }],
   })
-  try { return parseJSON(response.content[0].text) }
+  try { return parseJSON(text) }
   catch { return { missing: [], present: [] } }
 }
 
 async function generateFollowUpEmail(jobTitle, company, masterResume, apiKey) {
-  const client = new Anthropic({ apiKey })
-  const response = await client.messages.create({
+  const text = await complete('generateFollowUpEmail', apiKey, {
     ...SMART,
     max_tokens: 400,
     messages: [{ role: 'user', content: `Write a brief professional follow-up email for a job application.
@@ -232,12 +238,11 @@ Return ONLY the email body text.
 RESUME:
 ${masterResume.slice(0, 800)}` }],
   })
-  return response.content[0].text
+  return text
 }
 
 async function improveResume(resumeText, apiKey) {
-  const client = new Anthropic({ apiKey })
-  const response = await client.messages.create({
+  const text = await complete('improveResume', apiKey, {
     ...SMART,
     max_tokens: 4000,
     messages: [{
@@ -253,14 +258,13 @@ RESUME:
 ${resumeText}`,
     }],
   })
-  return response.content[0].text
+  return text
 }
 
 // Classify a recruiter's reply into an application status. Returns one of
 // 'interview' | 'rejected' | 'offer' | 'pending'.
 async function classifyReply(subject, body, company, apiKey) {
-  const client = new Anthropic({ apiKey })
-  const response = await client.messages.create({
+  const text = await complete('classifyReply', apiKey, {
     model: FAST_MODEL,
     max_tokens: 10,
     messages: [{ role: 'user', content: `Classify this reply to a job application at "${company}" into exactly one label:
@@ -273,7 +277,7 @@ Reply with ONLY the single lowercase label.
 SUBJECT: ${(subject || '').slice(0, 200)}
 BODY: ${(body || '').slice(0, 1500)}` }],
   })
-  return (response.content[0].text || '').trim().toLowerCase()
+  return (text || '').trim().toLowerCase()
 }
 
 module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply }

@@ -2,3 +2,6 @@ node_modules
 dist
 dist-electron
 .claude
+# Playwright Chromium, downloaded by web/scripts/install-browser.js and bundled
+# into the installer by electron-builder. ~150 MB of binaries, not source.
+web/browsers

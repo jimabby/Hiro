@@ -40,12 +40,34 @@ function clearSession() {
   return { success: true }
 }
 
+// Unlike the LinkedIn/Seek/Indeed handlers, there is no browser session to
+// capture here — mailbox access uses an App Password the user creates and
+// pastes in. This only opens the right page for their provider.
+//
+// It used to return { success: true }, which the Settings UI read as "you are
+// now connected" even though nothing had been stored and the inbox check still
+// had no credentials. `connected: false` says plainly that a manual step
+// remains, and the caller reports it as an instruction rather than a result.
 async function loginWithBrowser(email, onStatus) {
-  const url = getAppPasswordUrl(email)
-  onStatus('Opening App Passwords page in your browser...')
-  shell.openExternal(url)
-  onStatus('Create an App Password, copy it, and paste it into the App Password field below.')
-  return { success: true }
+  const address = String(email || '').trim()
+  if (!address.includes('@')) {
+    return { success: false, connected: false, error: 'Enter your email address first — the provider decides which App Password page to open.' }
+  }
+  const url = getAppPasswordUrl(address)
+  onStatus?.('Opening your provider\'s App Passwords page in the browser...')
+  try {
+    await shell.openExternal(url)
+  } catch (err) {
+    return { success: false, connected: false, error: `Could not open ${url} — ${err.message}` }
+  }
+  onStatus?.('Create an App Password there, then paste it into the App Password field and press Save. Nothing is connected until you do.')
+  return {
+    success: true,
+    connected: false,
+    pendingAppPassword: true,
+    url,
+    message: 'Create an App Password, paste it into the field below, and save. The mailbox is not connected until then.',
+  }
 }
 
 module.exports = { hasSession, getSavedEmail, clearSession, loginWithBrowser }

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import Setup from './pages/Setup'
 import Dashboard from './pages/Dashboard'
 import NeedsAttention from './pages/NeedsAttention'
+import Review from './pages/Review'
 import Settings from './pages/Settings'
 import Timeline from './pages/Timeline'
 import Analytics from './pages/Analytics'
@@ -9,10 +10,11 @@ import HiroLogo from './components/HiroLogo'
 
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: '▦', shortcut: '1' },
-  { id: 'attention', label: 'Needs Attention', icon: '⚑', shortcut: '2' },
-  { id: 'timeline', label: 'Timeline', icon: '◷', shortcut: '3' },
-  { id: 'analytics', label: 'Analytics', icon: '◔', shortcut: '4' },
-  { id: 'settings', label: 'Settings', icon: '⚙', shortcut: '5' },
+  { id: 'review', label: 'Review', icon: '◇', shortcut: '2' },
+  { id: 'attention', label: 'Needs Attention', icon: '⚑', shortcut: '3' },
+  { id: 'timeline', label: 'Timeline', icon: '◷', shortcut: '4' },
+  { id: 'analytics', label: 'Analytics', icon: '◔', shortcut: '5' },
+  { id: 'settings', label: 'Settings', icon: '⚙', shortcut: '6' },
 ]
 
 export default function App() {
@@ -25,7 +27,9 @@ export default function App() {
     localStorage.setItem('theme', theme)
   }, [theme])
   const [attentionCount, setAttentionCount] = useState(0)
+  const [heldCount, setHeldCount] = useState(0)
   const [todayCount, setTodayCount] = useState(0)
+  const [update, setUpdate] = useState(null)
   const [toast, setToast] = useState(null)
   const [logs, setLogs] = useState([])
   const [scanRunning, setScanRunning] = useState(false)
@@ -45,8 +49,19 @@ export default function App() {
 
     window.api.getStats().then(s => {
       setAttentionCount(s.attentionCount || 0)
+      setHeldCount(s.heldCount || 0)
       setTodayCount(s.totalToday || 0)
     })
+
+    // A config file that failed to parse used to look exactly like a first run
+    // — every setting gone with no explanation. Say what happened.
+    window.api.getConfigLoadError?.().then(err => {
+      if (err) showToast(err, 'error')
+    }).catch(() => {})
+
+    // Update availability, pushed from the main process as it changes.
+    window.api.getUpdateStatus?.().then(setUpdate).catch(() => {})
+    window.api.onUpdateStatus?.(setUpdate)
 
     // Seed the activity log from the persisted file so it survives a restart.
     window.api.getRecentLogs?.().then(lines => {
@@ -62,6 +77,7 @@ export default function App() {
         setScanRunning(false)
         window.api.getStats().then(s => {
           setAttentionCount(s.attentionCount || 0)
+          setHeldCount(s.heldCount || 0)
           setTodayCount(s.totalToday || 0)
         })
         // A scan that died partway used to report "Scan complete" like any
@@ -72,6 +88,14 @@ export default function App() {
         // results that are missing. The dashboard banner has the detail.
         else if (data.blocked?.length) {
           showToast(`Scan complete — blocked on ${data.blocked.map(b => b.platform).join(', ')}`, 'error')
+        }
+        // Jobs the AI couldn't score weren't saved and will be retried. Saying
+        // "Scan complete" over that would read as "nothing was worth applying to".
+        else if (data.scoringFailures > 0) {
+          showToast(`Scan complete — ${data.scoringFailures} job${data.scoringFailures === 1 ? '' : 's'} could not be scored and will be retried`, 'error')
+        }
+        else if (data.held > 0) {
+          showToast(`${data.held} application${data.held === 1 ? '' : 's'} drafted and waiting in Review — nothing was sent`, 'info')
         }
         else showToast('Scan complete', 'success')
       }
@@ -93,6 +117,7 @@ export default function App() {
       window.api.removeAllListeners('notification')
       window.api.removeAllListeners('automation:log')
       window.api.removeAllListeners('question:ask')
+      window.api.removeAllListeners('update:status')
     }
   }, [showToast])
 
@@ -179,11 +204,14 @@ export default function App() {
 
   const pages = {
     dashboard: <Dashboard active={page === 'dashboard'} logs={logs} scanRunning={scanRunning} onScanStart={() => beginScan('real')} onDryRun={() => beginScan('dry')} onClearLogs={handleClearLogs} showToast={showToast} />,
+    review: <Review active={page === 'review'} onCountChange={setHeldCount} showToast={showToast} />,
     attention: <NeedsAttention onCountChange={setAttentionCount} showToast={showToast} />,
     timeline: <Timeline />,
-    analytics: <Analytics />,
+    analytics: <Analytics active={page === 'analytics'} />,
     settings: <Settings active={page === 'settings'} showToast={showToast} />,
   }
+
+  const badgeFor = (id) => (id === 'attention' ? attentionCount : id === 'review' ? heldCount : 0)
 
   return (
     <div style={{ display: 'flex', height: '100vh' }}>
@@ -209,11 +237,13 @@ export default function App() {
           }}>
             <span style={{ fontSize: 15, width: 20, textAlign: 'center', opacity: page === n.id ? 1 : 0.6 }}>{n.icon}</span>
             <span style={{ flex: 1 }}>{n.label}</span>
-            {n.id === 'attention' && attentionCount > 0 && (
+            {badgeFor(n.id) > 0 && (
               <span style={{
-                background: 'var(--red)', color: '#fff', borderRadius: 10,
+                // Review is a queue waiting on the user, not a problem — amber
+                // rather than the red used for jobs that failed to apply.
+                background: n.id === 'review' ? 'var(--accent)' : 'var(--red)', color: '#fff', borderRadius: 10,
                 fontSize: 10, padding: '1px 6px', fontWeight: 700, minWidth: 18, textAlign: 'center',
-              }}>{attentionCount}</span>
+              }}>{badgeFor(n.id)}</span>
             )}
             <span className="kbd">{n.shortcut}</span>
           </button>
@@ -257,6 +287,42 @@ export default function App() {
 
       {/* Main content — all pages stay mounted so background tasks (AI improve) survive tab switches */}
       <main style={{ flex: 1, overflow: 'auto', padding: 28, transition: 'background 0.3s ease' }}>
+        {/* Update banner. Downloading and installing are both explicit — an
+            update that restarted the app mid-scan would abandon a
+            half-submitted application. */}
+        {update?.updateAvailable && (
+          <div className="card" style={{
+            marginBottom: 20, display: 'flex', alignItems: 'center', gap: 14,
+            borderLeft: '3px solid var(--accent)',
+          }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>
+                Hiro {update.version} is available
+                <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> · you have {update.currentVersion}</span>
+              </div>
+              {update.downloading && (
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+                  Downloading… {update.progress}%
+                </div>
+              )}
+              {update.error && (
+                <div style={{ fontSize: 12, color: 'var(--red)', marginTop: 4 }}>{update.error}</div>
+              )}
+            </div>
+            {update.downloaded ? (
+              <button className="btn btn-primary" onClick={async () => {
+                const res = await window.api.installUpdate()
+                if (!res?.success) showToast(res?.error || 'Could not install', 'error')
+              }}>Restart & install</button>
+            ) : (
+              <button className="btn btn-primary" disabled={update.downloading} onClick={async () => {
+                const res = await window.api.downloadUpdate()
+                if (!res?.success) showToast(res?.error || 'Could not download', 'error')
+              }}>{update.downloading ? 'Downloading…' : 'Download'}</button>
+            )}
+          </div>
+        )}
+
         {Object.entries(pages).map(([key, component]) => (
           <div key={key} style={{ display: key === page ? 'block' : 'none' }}>
             {component}

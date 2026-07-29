@@ -23,6 +23,8 @@ export const statusColors = {
   pending: colors.yellow,
   no_response: colors.border,
   skipped: colors.textMuted,
+  // Review mode drafted this but hasn't sent it — waiting on the user, not done.
+  held: colors.yellow,
 }
 
 // Human-readable label for a status. Needed because the raw values are no
@@ -35,6 +37,7 @@ export const statusLabels = {
   pending: 'Pending',
   no_response: 'No Response',
   skipped: 'Skipped',
+  held: 'Held for review',
 }
 
 export function statusLabel(status) {

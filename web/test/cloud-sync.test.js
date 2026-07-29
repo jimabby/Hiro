@@ -51,6 +51,10 @@ let keptBy = {}
 // Tables the fake should pretend don't exist, to exercise the graceful-skip
 // path for a project that hasn't re-run schema.sql.
 let missingTables = new Set()
+// Distinct from missingTables on purpose: an RLS denial quotes the table name
+// too, and the old substring check treated it as "this project hasn't created
+// the table yet" — so a genuinely broken mirror was skipped silently forever.
+let rlsTables = new Set()
 
 function makeQuery(table) {
   const q = {
@@ -68,16 +72,22 @@ function makeQuery(table) {
     delete() { q._deleting = true; return q },
     upsert(payload) {
       if (missingTables.has(table)) {
-        return Promise.resolve({ error: { message: `relation "public.${table}" does not exist` } })
+        return Promise.resolve({ error: { code: 'PGRST205', message: `Could not find the table 'public.${table}' in the schema cache` } })
+      }
+      if (rlsTables.has(table)) {
+        return Promise.resolve({ error: { code: '42501', message: `new row violates row-level security policy for table "${table}"` } })
       }
       upserted.push(...payload)
       upsertedBy[table] = (upsertedBy[table] || []).concat(payload)
       return Promise.resolve({ error: null })
     },
     then(res) {
-      const error = missingTables.has(table)
-        ? { message: `relation "public.${table}" does not exist` }
-        : null
+      let error = null
+      if (missingTables.has(table)) {
+        error = { code: 'PGRST205', message: `Could not find the table 'public.${table}' in the schema cache` }
+      } else if (rlsTables.has(table)) {
+        error = { code: '42501', message: `new row violates row-level security policy for table "${table}"` }
+      }
       return Promise.resolve({ data: q._rows, error }).then(res)
     },
   }
@@ -106,7 +116,7 @@ const { check, done } = createChecker()
 
 const reset = () => {
   upserted = []; deletedLocalIds = []; upsertedBy = {}; keptBy = {}
-  interviewRows = []; attentionRows = []; missingTables = new Set()
+  interviewRows = []; attentionRows = []; missingTables = new Set(); rlsTables = new Set()
 }
 
 ;(async () => {
@@ -215,6 +225,16 @@ const reset = () => {
   missingTables = new Set(['interview_events', 'attention_jobs'])
   await cloudSync.sync()
   check('missing mirror tables do not fail the sync', cloudSync.getStatus().error, null)
+
+  // ── A real failure must NOT be mistaken for a missing table ─────
+  // RLS denials and permission errors quote the table name, and the old
+  // substring check swallowed them as "not set up yet" — so a mirror that was
+  // genuinely broken looked like an optional feature nobody had enabled.
+  reset()
+  attentionRows = [{ id: 9, job_title: 'Dev', company: 'Acme', platform: 'Seek' }]
+  rlsTables = new Set(['attention_jobs'])
+  await cloudSync.sync()
+  check('an RLS denial is surfaced, not swallowed', /row-level security/.test(cloudSync.getStatus().error || ''), true)
 
   done()
 })()

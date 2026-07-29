@@ -19,6 +19,9 @@ const STATUS_BADGE = {
   pending: { label: 'Pending', color: 'badge-yellow' },
   no_response: { label: 'No Response', color: 'badge-gray' },
   skipped: { label: 'Skipped', color: 'badge-gray' },
+  // Drafted by review mode but not sent. Amber, because it is waiting on the
+  // user rather than finished.
+  held: { label: 'Held for review', color: 'badge-yellow' },
 }
 
 // The statuses a user may set by hand, in the order they appear in every picker.
@@ -233,6 +236,17 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
     setAppInterviews([])
     setNewInterviewAt('')
     if (selected?.id) {
+      // The table query returns slim rows — job descriptions, tailored resumes
+      // and cover letters are whole documents and shipping them for every row
+      // on every load cost tens of MB across IPC. Fetch the full row only for
+      // the one actually opened.
+      if (selected.job_description === undefined) {
+        const wanted = selected.id
+        window.api.getApplication(selected.id).then(full => {
+          // The user may have moved on while this was in flight.
+          if (full) setSelected(prev => (prev?.id === wanted ? { ...prev, ...full } : prev))
+        }).catch(() => {})
+      }
       window.api.getInterviewPrep(selected.id).then(saved => {
         if (saved?.questions) {
           try { setInterviewQuestions(JSON.parse(saved.questions)) } catch { /* ignore */ }
@@ -703,6 +717,9 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
           const TAB_STATUSES = [
             { value: '', label: 'All' },
             { value: 'applied', label: 'Applied' },
+            // Drafted by review mode, not yet sent. Sits next to Applied so
+            // it's obvious these are waiting rather than done.
+            { value: 'held', label: 'Held' },
             { value: 'interview', label: 'Interview' },
             { value: 'offer', label: 'Offer' },
             { value: 'pending', label: 'Pending' },
@@ -788,6 +805,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
               <option value="Seek">Seek</option>
               <option value="Indeed">Indeed</option>
               <option value="LinkedIn">LinkedIn</option>
+              <option value="ATS">Career Boards</option>
             </select>
             <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => window.api.exportCSV({
               ...filter,

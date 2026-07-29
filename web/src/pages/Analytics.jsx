@@ -182,8 +182,10 @@ function FunnelBar({ label, count, total, color }) {
   )
 }
 
-export default function Analytics() {
+export default function Analytics({ active }) {
   const [stats, setStats] = useState(null)
+  const [resumeConv, setResumeConv] = useState([])
+  const [aiUsage, setAiUsage] = useState(null)
   const [perDay, setPerDay] = useState([])
   const [allApps, setAllApps] = useState([])
   const [exporting, setExporting] = useState(false)
@@ -207,10 +209,15 @@ export default function Analytics() {
     })
   }, [timeRange])
 
+  // Re-read on every visit to the page — spend and conversion move whenever a
+  // scan runs, and a stale panel here is a panel nobody trusts.
   useEffect(() => {
+    if (active === false) return
     window.api.getScoreBandConversion?.().then(b => setBands(b || [])).catch(() => {})
     window.api.getSalaryStats?.().then(s => setSalary(s || null)).catch(() => {})
-  }, [])
+    window.api.getResumeConversion?.().then(r => setResumeConv(r || [])).catch(() => {})
+    window.api.getAiUsage?.().then(u => setAiUsage(u || null)).catch(() => {})
+  }, [active])
 
   useEffect(() => {
     window.api.getConfig().then(c => setMatchThreshold(c.matchThreshold ?? 80))
@@ -243,7 +250,9 @@ export default function Analytics() {
     ? Math.round(allApps.reduce((sum, a) => sum + (a.match_score || 0), 0) / allApps.length)
     : 0
 
-  const submittedCount = allApps.filter(a => a.status !== 'skipped').length
+  // 'held' is drafted-but-not-sent, same as 'skipped' as far as any rate goes.
+  const UNSENT = ['skipped', 'held']
+  const submittedCount = allApps.filter(a => !UNSENT.includes(a.status)).length
   const interviewCount = allApps.filter(a => a.status === 'interview').length
   const offerCount = allApps.filter(a => a.status === 'offer').length
   const rejectedCount = allApps.filter(a => a.status === 'rejected').length
@@ -407,6 +416,101 @@ export default function Analytics() {
           meaningful yet.
         </p>
       </div>
+
+      {/* Which resume actually converts. Routing rules send different jobs to
+          different resumes; the score histogram can't tell them apart, so
+          until now the rules were an untested assumption. */}
+      {resumeConv.length > 0 && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+            <span style={{ fontWeight: 600, fontSize: 14 }}>Which Resume Converts</span>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              interview or offer rate per resume sent
+            </span>
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: 'var(--text-muted)', fontSize: 11 }}>
+                <th style={{ padding: '4px 8px 8px 0', fontWeight: 500 }}>Resume</th>
+                <th style={{ padding: '4px 8px 8px', fontWeight: 500, textAlign: 'right' }}>Sent</th>
+                <th style={{ padding: '4px 8px 8px', fontWeight: 500, textAlign: 'right' }}>Avg match</th>
+                <th style={{ padding: '4px 8px 8px', fontWeight: 500, textAlign: 'right' }}>Replied</th>
+                <th style={{ padding: '4px 0 8px 8px', fontWeight: 500, textAlign: 'right' }}>Interview rate</th>
+              </tr>
+            </thead>
+            <tbody>
+              {resumeConv.map(r => (
+                <tr key={r.resumeId || r.name} style={{ borderTop: '1px solid var(--border)' }}>
+                  <td style={{ padding: '8px 8px 8px 0' }}>{r.name}</td>
+                  <td style={{ padding: '8px', textAlign: 'right', color: 'var(--text-muted)' }}>{r.applied}</td>
+                  <td style={{ padding: '8px', textAlign: 'right', color: 'var(--text-muted)' }}>{r.avgMatchScore}%</td>
+                  <td style={{ padding: '8px', textAlign: 'right', color: 'var(--text-muted)' }}>{r.responseRate}%</td>
+                  <td style={{
+                    padding: '8px 0 8px 8px', textAlign: 'right', fontWeight: 600,
+                    // Below the sample floor a rate is noise — show it, but
+                    // don't dress it up as a finding.
+                    color: r.significant ? 'var(--text)' : 'var(--text-muted)',
+                    opacity: r.significant ? 1 : 0.55,
+                  }}>
+                    {r.conversionRate}%{!r.significant && <span style={{ fontSize: 10, fontWeight: 400 }}> ?</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 10, marginBottom: 0 }}>
+            Rates marked “?” come from fewer than 10 applications and aren't meaningful yet. Once a
+            resume has a real sample, this is the evidence for keeping or dropping the routing rule
+            that sends jobs to it.
+          </p>
+        </div>
+      )}
+
+      {/* Model spend. Each scanned job costs several API calls, and until now
+          the only place that showed up was the provider's monthly bill. */}
+      {aiUsage && (aiUsage.month?.calls > 0 || aiUsage.today?.calls > 0) && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+            <span style={{ fontWeight: 600, fontSize: 14 }}>AI Usage &amp; Cost</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              estimated from published token prices — indicative, not an invoice
+            </span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 16, marginBottom: 16 }}>
+            {[
+              { label: 'Today', value: `$${(aiUsage.today?.cost || 0).toFixed(2)}`, sub: `${aiUsage.today?.calls || 0} calls` },
+              { label: 'This month', value: `$${(aiUsage.month?.cost || 0).toFixed(2)}`, sub: `${aiUsage.month?.calls || 0} calls` },
+              { label: 'Input tokens', value: (aiUsage.month?.inputTokens || 0).toLocaleString(), sub: 'this month' },
+              { label: 'Output tokens', value: (aiUsage.month?.outputTokens || 0).toLocaleString(), sub: 'this month' },
+            ].map(m => (
+              <div key={m.label}>
+                <div style={{ fontSize: 18, fontWeight: 700 }}>{m.value}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{m.label} · {m.sub}</div>
+              </div>
+            ))}
+          </div>
+          {(aiUsage.byOperation || []).length > 0 && (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr style={{ textAlign: 'left', color: 'var(--text-muted)', fontSize: 11 }}>
+                  <th style={{ padding: '4px 8px 8px 0', fontWeight: 500 }}>Operation</th>
+                  <th style={{ padding: '4px 8px 8px', fontWeight: 500, textAlign: 'right' }}>Calls</th>
+                  <th style={{ padding: '4px 0 8px 8px', fontWeight: 500, textAlign: 'right' }}>Cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {aiUsage.byOperation.map(o => (
+                  <tr key={o.operation} style={{ borderTop: '1px solid var(--border)' }}>
+                    <td style={{ padding: '6px 8px 6px 0' }}>{o.operation}</td>
+                    <td style={{ padding: '6px 8px', textAlign: 'right', color: 'var(--text-muted)' }}>{o.calls}</td>
+                    <td style={{ padding: '6px 0 6px 8px', textAlign: 'right' }}>${(o.cost || 0).toFixed(3)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
 
       {/* Advertised salary. Derived from the normalised annual columns, so a
           posting quoting an hourly rate is comparable with one quoting a

@@ -206,6 +206,17 @@ async function checkInbox() {
             database.updateApplicationStatus(app.id, newStatus)
             database.setLastReplyUid(app.id, match.uid)
 
+            // The sender of a real reply is the best follow-up address there
+            // is — a human who has already read the application. Without this,
+            // recruiter_email stayed blank and auto follow-up skipped the job.
+            if (cfg.extractRecruiterEmail !== false && !app.recruiter_email) {
+              try {
+                const { recruiterEmailFromReply } = require('./contactExtractor')
+                const contact = recruiterEmailFromReply(match.from, { company: app.company })
+                if (contact) database.updateRecruiterEmail(app.id, contact)
+              } catch { /* contact capture is a bonus — never fail the check */ }
+            }
+
             // An interview reply usually proposes a time. Pull it out so the
             // user gets it on the dashboard instead of having to find the
             // email again. Best-effort and always editable in the UI.

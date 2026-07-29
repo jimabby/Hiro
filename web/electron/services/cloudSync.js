@@ -118,6 +118,11 @@ function localToCloud(a) {
     comment: a.comment || '',
     recruiter_email: a.recruiter_email || '',
     status: a.status || 'applied',
+    // Which resume was sent, and whether review mode is still holding this
+    // back — the phone needs both to label the row honestly.
+    resume_id: a.resume_id || null,
+    resume_name: a.resume_name || null,
+    held_at: a.held_at ? toISO(a.held_at) : null,
     applied_at: toISO(a.applied_at),
     updated_at: toISO(a.updated_at),
   }
@@ -210,8 +215,23 @@ async function pullChanges(c) {
 // Full-set replacement rather than dirty-tracking: both tables are small
 // (dozens of rows), and the alternative is another pair of bookkeeping columns
 // for data the phone can't edit anyway.
+// "Does this project have the table yet?" — NOT "does the message mention the
+// table name?". The old substring test matched any error quoting the table,
+// including RLS denials ("new row violates row-level security policy for table
+// \"attention_jobs\"") and permission errors, so a genuinely broken mirror was
+// silently treated as an optional feature that wasn't set up and skipped
+// forever. PostgREST reports an unknown relation as PGRST205/42P01.
+const MISSING_TABLE_CODES = new Set(['PGRST205', 'PGRST202', '42P01'])
+
 function isMissingTable(error, table) {
-  return new RegExp(table).test(error?.message || '')
+  if (!error) return false
+  if (error.code && MISSING_TABLE_CODES.has(error.code)) return true
+  // Fall back to the message only for the shapes that unambiguously mean the
+  // relation does not exist — never a bare table-name match.
+  const msg = String(error.message || '')
+  return new RegExp(
+    `(could not find the table|relation) [^]*${table}[^]*(in the schema cache|does not exist)`, 'i'
+  ).test(msg)
 }
 
 async function mirrorTable(c, table, rows, toCloud) {
@@ -289,7 +309,9 @@ async function pollScanRequests(c) {
   if (error) {
     // The table is optional (added later than applications) — if it doesn't
     // exist in this project yet, skip quietly rather than failing the sync.
-    if (/scan_requests/.test(error.message)) return
+    // Anything else (RLS, permissions, network) is a real failure and must
+    // surface, or a broken mirror looks like an unconfigured one.
+    if (isMissingTable(error, 'scan_requests')) return
     throw new Error(error.message)
   }
   if (!data || data.length === 0) return

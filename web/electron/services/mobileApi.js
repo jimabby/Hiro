@@ -15,7 +15,7 @@ let server = null
 // Must cover every status the desktop can write, or the phone can see a status
 // it isn't allowed to set back. 'pending' comes from the inbox classifier and
 // 'no_response' from the stale sweep; both were missing here.
-const VALID_STATUSES = ['applied', 'interview', 'rejected', 'offer', 'pending', 'no_response', 'skipped']
+const VALID_STATUSES = ['applied', 'interview', 'rejected', 'offer', 'pending', 'no_response', 'skipped', 'held']
 
 // The token is read on every single request. Reading it from disk each time
 // also meant an OS-keychain decrypt per request, so cache it in memory and
@@ -165,7 +165,9 @@ async function handle(req, res) {
       const filters = {}
       if (url.searchParams.get('status')) filters.status = url.searchParams.get('status')
       if (url.searchParams.get('platform')) filters.platform = url.searchParams.get('platform')
-      let apps = database.getApplications(filters)
+      // The slim query already omits the document columns, so slimApplication
+      // below is now belt-and-braces rather than the thing doing the work.
+      let apps = database.getApplicationsList(filters)
       const search = (url.searchParams.get('search') || '').toLowerCase()
       if (search) {
         apps = apps.filter(a =>
@@ -231,6 +233,23 @@ async function handle(req, res) {
       return json(res, 200, database.getAttentionJobs())
     }
 
+    // Applications review mode is holding back. The phone can see what is
+    // waiting and reject a bad draft, but approving means submitting — which
+    // needs the desktop's browser session, so that stays a desktop action.
+    if (req.method === 'GET' && path === '/api/held') {
+      return json(res, 200, database.getHeldApplications())
+    }
+
+    const rejectMatch = path.match(/^\/api\/held\/(\d+)\/reject$/)
+    if (req.method === 'POST' && rejectMatch) {
+      return json(res, 200, database.rejectHeldApplication(Number(rejectMatch[1])))
+    }
+
+    // Model spend, so a runaway scan is visible from the phone too.
+    if (req.method === 'GET' && path === '/api/ai-usage') {
+      return json(res, 200, database.getAiUsageSummary())
+    }
+
     if (req.method === 'GET' && path === '/api/interviews') {
       const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 25))
       return json(res, 200, database.getUpcomingInterviews(limit))
@@ -275,12 +294,25 @@ function start() {
   })
 }
 
+// Turning the mobile API off has to actually cut the phone off. server.close()
+// alone only stops NEW connections — an already-connected phone keeps its
+// keep-alive socket and carries on making authenticated requests. And clearing
+// `server` synchronously made getInfo() report running:false while the port was
+// still bound, so re-enabling immediately hit EADDRINUSE.
 function stop() {
-  if (server) {
-    server.close()
-    server = null
-  }
-  return getInfo()
+  const srv = server
+  if (!srv) return getInfo()
+  server = null
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = () => { if (!settled) { settled = true; resolve(getInfo()) } }
+    srv.close(finish)
+    // Drop live keep-alive sockets, or close() waits for each client to
+    // disconnect on its own and the callback may never fire.
+    try { srv.closeAllConnections?.() } catch { /* older Node */ }
+    // Never let a stuck socket hang the caller (the Settings toggle awaits it).
+    setTimeout(finish, 3000).unref?.()
+  })
 }
 
 function getInfo() {

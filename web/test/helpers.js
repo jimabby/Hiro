@@ -37,9 +37,14 @@ function createChecker() {
     if (!ok) failures++
     console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${ok ? '' : `  (got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)})`}`)
   }
+  // Set the exit code and let the event loop drain rather than calling
+  // process.exit(). Exiting while a handle is still closing (an http server
+  // that has just had close() called on it) trips a libuv assertion on
+  // Windows — "!(handle->flags & UV_HANDLE_CLOSING)" — which killed the
+  // process with exit 127 and reported a passing suite as failed.
   const done = () => {
     console.log(failures === 0 ? 'All checks passed.' : `${failures} check(s) failed.`)
-    process.exit(failures === 0 ? 0 : 1)
+    process.exitCode = failures === 0 ? 0 : 1
   }
   return { check, done }
 }

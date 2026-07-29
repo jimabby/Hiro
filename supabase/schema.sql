@@ -147,6 +147,16 @@ create index if not exists idx_attention_user_found
 alter table public.applications add column if not exists salary_min integer;
 alter table public.applications add column if not exists salary_max integer;
 
+-- Which resume was actually sent, so the phone can show it and the desktop's
+-- "which resume converts" analysis survives a restore from the cloud.
+alter table public.applications add column if not exists resume_id text;
+alter table public.applications add column if not exists resume_name text;
+
+-- Review mode: when this is set, the row was drafted but NOT submitted. The
+-- phone shows these as "Held for review" and must keep them out of response
+-- and interview rates, exactly as the desktop does.
+alter table public.applications add column if not exists held_at timestamptz;
+
 -- In-app account deletion (required by Apple App Store guideline 5.1.1(v)).
 -- Runs as the function owner (security definer) so a signed-in user can delete
 -- their OWN auth record; the on-delete-cascade foreign keys above then remove

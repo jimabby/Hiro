@@ -6,7 +6,7 @@ import {
 import { colors, radius, statusColors, statusLabel } from '../theme'
 import ApplicationDetailScreen from './ApplicationDetailScreen'
 
-const STATUS_FILTERS = ['all', 'applied', 'interview', 'offer', 'rejected', 'pending', 'no_response', 'skipped']
+const STATUS_FILTERS = ['all', 'applied', 'held', 'interview', 'offer', 'rejected', 'pending', 'no_response', 'skipped']
 
 export default function ApplicationsScreen({ client }) {
   const [apps, setApps] = useState([])

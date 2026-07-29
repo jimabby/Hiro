@@ -25,6 +25,10 @@ const RUNTIME_KEYS = new Set([
   'pendingScans', 'lastScanAt', 'lastInboxCheck', 'lastCloudSyncAt',
   'setupComplete', 'mobileApiToken', 'mobileApiEnabled',
   'supabaseRefreshToken', 'cloudSyncEnabled',
+  // Registers a login item pointing at THIS machine's install path, and the
+  // OS-level entry is written by the tray service rather than by config alone.
+  // Importing it elsewhere would tick the box without registering anything.
+  'launchOnLogin', 'startMinimised',
 ])
 
 // Credentials. Excluded unless the user explicitly opts in, so the default
@@ -126,6 +130,7 @@ function inspectBundle(raw, passphrase) {
       blacklistedCompanies: Array.isArray(payload.blacklistedCompanies) ? payload.blacklistedCompanies.length : 0,
       resumeRules: Array.isArray(payload.resumeRules) ? payload.resumeRules.length : 0,
       webhooks: Array.isArray(payload.webhooks) ? payload.webhooks.length : 0,
+      atsBoards: Array.isArray(payload.atsBoards) ? payload.atsBoards.length : 0,
       keys: Object.keys(payload).length,
     },
   }

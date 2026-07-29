@@ -1,6 +1,200 @@
 import { useState, useEffect, useRef } from 'react'
 import HiroLogo from '../components/HiroLogo'
 
+const ATS_PROVIDERS = [
+  { id: 'greenhouse', label: 'Greenhouse', hint: 'boards.greenhouse.io/SLUG' },
+  { id: 'lever', label: 'Lever', hint: 'jobs.lever.co/SLUG' },
+  { id: 'ashby', label: 'Ashby', hint: 'jobs.ashbyhq.com/SLUG' },
+]
+
+// Company career boards. These serve structured JSON with no login and no bot
+// defenses, which makes them far steadier than scraping the aggregators — but
+// their application forms are custom per company, so matches are routed to
+// Needs Attention with the documents already drafted rather than submitted.
+function AtsBoards({ form, set, showToast }) {
+  const [provider, setProvider] = useState('greenhouse')
+  const [slug, setSlug] = useState('')
+  const [label, setLabel] = useState('')
+  const [testing, setTesting] = useState(false)
+
+  const boards = Array.isArray(form.atsBoards) ? form.atsBoards : []
+  const active = ATS_PROVIDERS.find(p => p.id === provider)
+
+  async function addBoard() {
+    const cleanSlug = slug.trim()
+    if (!cleanSlug) return
+    if (boards.some(b => b.provider === provider && b.slug.toLowerCase() === cleanSlug.toLowerCase())) {
+      showToast?.('That board is already in the list', 'error')
+      return
+    }
+    // Validate before saving — a typo caught here beats an empty scan three
+    // days from now that looks like a quiet job market.
+    setTesting(true)
+    try {
+      const res = await window.api.testAtsBoard(provider, cleanSlug)
+      if (!res?.success) {
+        showToast?.(`Could not read that board: ${res?.error || 'unknown error'}`, 'error')
+        return
+      }
+      set('atsBoards', [...boards, {
+        id: Date.now().toString(36),
+        provider,
+        slug: cleanSlug,
+        label: label.trim() || cleanSlug,
+      }])
+      setSlug('')
+      setLabel('')
+      showToast?.(`Added — ${res.count} open role${res.count === 1 ? '' : 's'} on that board right now`, 'success')
+    } catch (err) {
+      showToast?.(`Could not read that board: ${err.message}`, 'error')
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <h3 style={{ marginBottom: 6, fontSize: 15 }}>Company Career Boards</h3>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
+        Watch specific employers directly on Greenhouse, Lever or Ashby. These have no bot defenses
+        and don't change shape, so they're more reliable than the job aggregators. They can't be
+        auto-submitted — matches land in Needs Attention with your tailored resume and cover letter
+        ready to paste.
+      </p>
+
+      <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, cursor: 'pointer', marginBottom: 14 }}>
+        <input
+          type="checkbox"
+          checked={!!form.enableAtsBoards}
+          onChange={e => set('enableAtsBoards', e.target.checked)}
+        />
+        <span>Include career boards in scans</span>
+      </label>
+
+      {boards.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          {boards.map(b => (
+            <div key={b.id} style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '8px 12px', background: 'var(--surface2)', borderRadius: 8, marginBottom: 6,
+            }}>
+              <div style={{ fontSize: 13 }}>
+                {b.label}
+                <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+                  {' '}· {ATS_PROVIDERS.find(p => p.id === b.provider)?.label || b.provider} / {b.slug}
+                </span>
+              </div>
+              <button
+                className="btn btn-ghost"
+                style={{ fontSize: 12 }}
+                onClick={() => set('atsBoards', boards.filter(x => x.id !== b.id))}
+              >Remove</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <div className="form-group" style={{ marginBottom: 0, minWidth: 130 }}>
+          <label>Provider</label>
+          <select value={provider} onChange={e => setProvider(e.target.value)}>
+            {ATS_PROVIDERS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+          </select>
+        </div>
+        <div className="form-group" style={{ marginBottom: 0, flex: 1, minWidth: 150 }}>
+          <label>Board slug</label>
+          <input
+            value={slug}
+            onChange={e => setSlug(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') addBoard() }}
+            placeholder={active?.hint.split('/')[1] || 'company'}
+          />
+        </div>
+        <div className="form-group" style={{ marginBottom: 0, flex: 1, minWidth: 130 }}>
+          <label>Display name (optional)</label>
+          <input value={label} onChange={e => setLabel(e.target.value)} placeholder="Acme Corp" />
+        </div>
+        <button className="btn btn-primary" onClick={addBoard} disabled={testing || !slug.trim()}>
+          {testing ? 'Checking…' : 'Add board'}
+        </button>
+      </div>
+      <small style={{ color: 'var(--text-muted)', display: 'block', marginTop: 8 }}>
+        The slug is the company name in their careers URL — {active?.hint}. The board is checked
+        before it's added.
+      </small>
+
+      <div className="form-group" style={{ marginTop: 16, marginBottom: 0, maxWidth: 200 }}>
+        <label>Daily application limit</label>
+        <input
+          type="number" min="1" max="50"
+          value={form.dailyLimitAts ?? 10}
+          onChange={e => set('dailyLimitAts', Number(e.target.value) || 10)}
+        />
+      </div>
+    </div>
+  )
+}
+
+// Auto-update. Downloading and installing are both explicit — an update that
+// restarted the app mid-scan would abandon a half-submitted application.
+function UpdatePanel({ form, set, showToast }) {
+  const [status, setStatus] = useState(null)
+  const [checking, setChecking] = useState(false)
+
+  useEffect(() => {
+    window.api.getUpdateStatus?.().then(setStatus).catch(() => {})
+    window.api.onUpdateStatus?.(setStatus)
+    return () => window.api.removeAllListeners?.('update:status')
+  }, [])
+
+  async function check() {
+    setChecking(true)
+    try {
+      const res = await window.api.checkForUpdate()
+      setStatus(res)
+      if (res?.error) showToast?.(res.error, 'error')
+      else if (!res?.updateAvailable) showToast?.('You are on the latest version', 'success')
+    } catch (err) {
+      showToast?.(`Update check failed: ${err.message}`, 'error')
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <h3 style={{ marginBottom: 6, fontSize: 15 }}>Updates</h3>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
+        Hiro checks for a new version daily. Nothing downloads or installs without you asking, and a
+        restart is refused while a scan or apply is running.
+      </p>
+
+      <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, cursor: 'pointer', marginBottom: 14 }}>
+        <input
+          type="checkbox"
+          checked={form.autoCheckUpdates !== false}
+          onChange={e => set('autoCheckUpdates', e.target.checked)}
+        />
+        <span>Check for updates automatically</span>
+      </label>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <button className="btn btn-ghost" onClick={check} disabled={checking}>
+          {checking ? 'Checking…' : 'Check now'}
+        </button>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+          {status?.currentVersion && `Version ${status.currentVersion}`}
+          {status?.updateAvailable && ` · ${status.version} available`}
+          {status?.downloaded && ' · downloaded, restart to install'}
+        </span>
+      </div>
+      {status?.error && (
+        <div style={{ fontSize: 12, color: 'var(--red)', marginTop: 8 }}>{status.error}</div>
+      )}
+    </div>
+  )
+}
+
 function IndeedAccountCard() {
   const [loggedIn, setLoggedIn] = useState(false)
   const [logging, setLogging] = useState(false)
@@ -500,6 +694,7 @@ export default function Settings({ showToast, active }) {
         const TABS = [
           { id: 'accounts', label: 'Accounts & Schedule' },
           { id: 'criteria', label: 'Job, Resume & Cover Letter' },
+          { id: 'automation', label: 'Automation & Boards' },
           { id: 'notifications', label: 'Notifications' },
           { id: 'data', label: 'Data Management' },
           { id: 'about', label: 'About' },
@@ -1596,6 +1791,105 @@ export default function Settings({ showToast, active }) {
             </div>
           </div>
         </div>
+      </div>}
+
+      {settingsTab === 'automation' && <div>
+        {/* Review before submit — the mitigation for this product's core risk:
+            a bad tailoring pass reaching ten employers before anyone looks. */}
+        <div className="card" style={{ marginBottom: 16 }}>
+          <h3 style={{ marginBottom: 6, fontSize: 15 }}>Review Before Submit</h3>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
+            Draft everything, send nothing. Jobs that clear your match threshold are fully prepared —
+            resume tailored, cover letter written — then held on the Review page until you approve them.
+            Approving costs no extra AI calls.
+          </p>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={!!form.reviewBeforeSubmit}
+              onChange={e => set('reviewBeforeSubmit', e.target.checked)}
+            />
+            <span>Hold applications for review instead of submitting automatically</span>
+          </label>
+        </div>
+
+        {/* AI budget & reliability */}
+        <div className="card" style={{ marginBottom: 16 }}>
+          <h3 style={{ marginBottom: 6, fontSize: 15 }}>AI Budget &amp; Reliability</h3>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
+            Each scanned job costs several model calls. The cap is checked before every call, so it
+            stops work rather than reporting an overrun after the money is spent. See the Analytics
+            page for what you have actually used.
+          </p>
+          <div className="form-group">
+            <label>Monthly spend cap (USD)</label>
+            <input
+              type="number" min="0" step="1"
+              value={form.aiMonthlyBudgetUsd ?? 0}
+              onChange={e => set('aiMonthlyBudgetUsd', Number(e.target.value) || 0)}
+            />
+            <small style={{ color: 'var(--text-muted)' }}>0 disables the cap. Costs are estimated from published token prices.</small>
+          </div>
+          <div className="form-group">
+            <label>Retries on a failed AI call</label>
+            <input
+              type="number" min="0" max="6"
+              value={form.aiMaxRetries ?? 3}
+              onChange={e => set('aiMaxRetries', Math.max(0, Math.min(6, Number(e.target.value) || 0)))}
+            />
+            <small style={{ color: 'var(--text-muted)' }}>
+              Retried with exponential backoff. A job that still can't be scored is left unsaved and
+              retried on the next scan, rather than recorded with a guessed score.
+            </small>
+          </div>
+        </div>
+
+        {/* Company career boards */}
+        <AtsBoards form={form} set={set} showToast={showToast} />
+
+        {/* Background operation */}
+        <div className="card" style={{ marginBottom: 16 }}>
+          <h3 style={{ marginBottom: 6, fontSize: 15 }}>Background Operation</h3>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
+            Scheduled scans, inbox checks, follow-ups and the stale sweep only run while Hiro is
+            running. With these on, closing the window keeps it working in the tray instead of quitting.
+          </p>
+          {[
+            { key: 'minimizeToTray', label: 'Keep running in the tray when the window is closed' },
+            { key: 'launchOnLogin', label: 'Start Hiro when I log in' },
+            { key: 'startMinimised', label: 'Start minimised to the tray' },
+          ].map(opt => (
+            <label key={opt.key} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, cursor: 'pointer', marginBottom: 10 }}>
+              <input type="checkbox" checked={!!form[opt.key]} onChange={e => set(opt.key, e.target.checked)} />
+              <span>{opt.label}</span>
+            </label>
+          ))}
+          <small style={{ color: 'var(--text-muted)' }}>
+            Launch-on-login applies to the installed app only — it has no effect in a development run.
+          </small>
+        </div>
+
+        {/* Recruiter contact extraction */}
+        <div className="card" style={{ marginBottom: 16 }}>
+          <h3 style={{ marginBottom: 6, fontSize: 15 }}>Recruiter Contact</h3>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
+            Auto follow-up needs an address to write to. With this on, Hiro reads one out of the job ad
+            and out of any recruiter reply. Platform, no-reply and placeholder addresses are ignored,
+            and an ambiguous ad yields nothing rather than a guess — you can always set it by hand in
+            the job detail panel.
+          </p>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={form.extractRecruiterEmail !== false}
+              onChange={e => set('extractRecruiterEmail', e.target.checked)}
+            />
+            <span>Find a follow-up address automatically</span>
+          </label>
+        </div>
+
+        {/* Updates */}
+        <UpdatePanel form={form} set={set} showToast={showToast} />
       </div>}
 
       {settingsTab === 'about' && <div>

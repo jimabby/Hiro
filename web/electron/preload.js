@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 contextBridge.exposeInMainWorld('api', {
   // Config
   getConfig: () => ipcRenderer.invoke('config:get'),
+  getConfigLoadError: () => ipcRenderer.invoke('config:loadError'),
   saveConfig: (config) => ipcRenderer.invoke('config:save', config),
   testAiConnection: (provider, apiKey, geminiModel) => ipcRenderer.invoke('ai:test', provider, apiKey, geminiModel),
   testEmailConnection: (email, password) => ipcRenderer.invoke('email:test', email, password),
@@ -154,6 +155,34 @@ contextBridge.exposeInMainWorld('api', {
   cloudSignIn: (email, password) => ipcRenderer.invoke('cloud:signIn', email, password),
   cloudSignOut: () => ipcRenderer.invoke('cloud:signOut'),
   cloudSyncNow: () => ipcRenderer.invoke('cloud:syncNow'),
+
+  // Review queue (review-before-submit). Approving submits the already-drafted
+  // documents; rejecting files the job as skipped so it isn't re-drafted.
+  getHeldApplications: () => ipcRenderer.invoke('review:list'),
+  approveHeldApplication: (id) => ipcRenderer.invoke('review:approve', id),
+  approveHeldApplications: (ids) => ipcRenderer.invoke('review:approveMany', ids),
+  rejectHeldApplication: (id) => ipcRenderer.invoke('review:reject', id),
+  onReviewLog: (cb) => ipcRenderer.on('review:log', (_, msg) => cb(msg)),
+
+  // AI usage & spend
+  getAiUsage: () => ipcRenderer.invoke('ai:usage'),
+  clearAiUsage: () => ipcRenderer.invoke('ai:clearUsage'),
+
+  // Which resume actually converts
+  getResumeConversion: () => ipcRenderer.invoke('analytics:resumeConversion'),
+
+  // Company career boards (Greenhouse / Lever / Ashby)
+  testAtsBoard: (provider, slug) => ipcRenderer.invoke('ats:testBoard', provider, slug),
+
+  // Updates
+  getUpdateStatus: () => ipcRenderer.invoke('update:status'),
+  checkForUpdate: () => ipcRenderer.invoke('update:check'),
+  downloadUpdate: () => ipcRenderer.invoke('update:download'),
+  installUpdate: () => ipcRenderer.invoke('update:install'),
+  onUpdateStatus: (cb) => ipcRenderer.on('update:status', (_, status) => cb(status)),
+
+  // Tray / launch-on-login availability
+  getTrayStatus: () => ipcRenderer.invoke('tray:status'),
 
   // Gmail sign-in & inbox
   gmailStatus: () => ipcRenderer.invoke('gmail:status'),

@@ -6,6 +6,8 @@
   "main": "electron/main.js",
   "scripts": {
     "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "postinstall": "node scripts/install-browser.js",
+    "prebuild": "node scripts/install-browser.js",
     "build": "vite build && electron-builder",
     "preview": "vite preview",
     "test": "node test/run.js"
@@ -20,7 +22,9 @@
       "dist/**/*",
       "electron/**/*",
       "public/**/*",
-      "node_modules/**/*"
+      "!**/node_modules/**/{test,tests,__tests__,example,examples,doc,docs,.github}/**",
+      "!**/node_modules/**/*.{md,map,ts,flow}",
+      "!**/node_modules/.cache/**"
     ],
     "icon": "public/logo.png",
     "win": {
@@ -35,7 +39,15 @@
       "target": "AppImage",
       "icon": "public/logo.png"
     },
-    "extraResources": []
+    "extraResources": [
+      {
+        "from": "browsers",
+        "to": "browsers",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ]
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
@@ -43,6 +55,7 @@
     "@supabase/supabase-js": "^2.108.1",
     "adm-zip": "^0.5.16",
     "docx": "^9.6.1",
+    "electron-updater": "^6.8.9",
     "imapflow": "^1.2.13",
     "mammoth": "^1.11.0",
     "node-cron": "^3.0.3",

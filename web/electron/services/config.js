@@ -111,10 +111,60 @@ const DEFAULTS = {
   supabaseEmail: '',
   supabaseRefreshToken: '',
   lastCloudSyncAt: null,
+
+  // ─── Review before submit ──────────────────────────────────────
+  // When on, a job that clears the match threshold is drafted in full but
+  // parked as 'held' rather than submitted. Nothing reaches an employer until
+  // the user approves it on the Review page.
+  reviewBeforeSubmit: false,
+
+  // ─── Background operation ──────────────────────────────────────
+  // Closing the window used to quit the app on Windows/Linux, which stopped
+  // every scheduled task — the daily scan, inbox checks, follow-ups and the
+  // stale sweep only ran while someone had the window open.
+  minimizeToTray: true,
+  launchOnLogin: false,
+  startMinimised: false,
+
+  // ─── Updates ───────────────────────────────────────────────────
+  autoCheckUpdates: true,
+
+  // ─── AI budget ─────────────────────────────────────────────────
+  // Hard cap on model spend per calendar month, in USD. 0 disables the cap.
+  // Checked before each call, so it stops work rather than reporting an
+  // overrun after the money is gone.
+  aiMonthlyBudgetUsd: 0,
+  // Retries for a failed model call, with exponential backoff. A rate limit
+  // used to leave the job scored at a fabricated 50 and filed as skipped.
+  aiMaxRetries: 3,
+
+  // ─── ATS job boards ────────────────────────────────────────────
+  // Company career boards hosted on Greenhouse / Lever / Ashby. These serve
+  // structured JSON and have no bot defenses, so they're far more reliable
+  // than scraping the aggregators. Each entry is { id, provider, slug, label }.
+  atsBoards: [],
+  enableAtsBoards: false,
+  dailyLimitAts: 10,
+
+  // ─── Recruiter contact extraction ──────────────────────────────
+  // Pull a contact address out of the job ad and out of recruiter replies, so
+  // auto follow-up has somewhere to send. Without it, follow-up skipped every
+  // application, because nothing ever populated recruiter_email.
+  extractRecruiterEmail: true,
 }
 
 function ensureDir() {
   if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
+}
+
+// Set when load() finds a config file it can't parse. Falling back to DEFAULTS
+// silently was indistinguishable from a first run — every setting, resume,
+// routing rule and API key appeared to have vanished with no explanation. The
+// broken file is preserved and this is surfaced in Settings instead.
+let loadError = null
+
+function getLoadError() {
+  return loadError
 }
 
 function load() {
@@ -122,15 +172,35 @@ function load() {
   if (!fs.existsSync(CONFIG_FILE)) return { ...DEFAULTS }
   try {
     const raw = fs.readFileSync(CONFIG_FILE, 'utf8')
-    return mapSecrets({ ...DEFAULTS, ...JSON.parse(raw) }, decryptValue)
-  } catch {
+    const parsed = JSON.parse(raw)
+    loadError = null
+    return mapSecrets({ ...DEFAULTS, ...parsed }, decryptValue)
+  } catch (err) {
+    // Keep the unreadable file so it can be recovered by hand, and do it only
+    // once — a later successful save must not be shadowed by a stale copy.
+    const salvage = CONFIG_FILE + '.corrupt'
+    try {
+      if (!fs.existsSync(salvage)) fs.copyFileSync(CONFIG_FILE, salvage)
+    } catch { /* best-effort */ }
+    loadError = `Settings file could not be read (${err.message}). A copy was kept at ${salvage}; defaults are in use until it is fixed or overwritten.`
     return { ...DEFAULTS }
   }
 }
 
+// Written via a temp file + rename so a crash or power loss partway through
+// can't leave a truncated config — rename is atomic on NTFS and POSIX alike.
 function save(config) {
   ensureDir()
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(mapSecrets(config, encryptValue), null, 2), 'utf8')
+  const json = JSON.stringify(mapSecrets(config, encryptValue), null, 2)
+  const tmp = CONFIG_FILE + '.tmp'
+  try {
+    fs.writeFileSync(tmp, json, 'utf8')
+    fs.renameSync(tmp, CONFIG_FILE)
+    loadError = null
+  } catch (err) {
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp) } catch { /* best-effort */ }
+    throw err
+  }
 }
 
 // Atomic read-modify-write. Background services (scheduler, cloud sync, mobile
@@ -145,4 +215,4 @@ function update(patch) {
   return next
 }
 
-module.exports = { load, save, update, CONFIG_DIR }
+module.exports = { load, save, update, getLoadError, CONFIG_DIR, DEFAULTS }

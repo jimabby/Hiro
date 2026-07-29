@@ -8,6 +8,11 @@
 
 ### Automation
 - **Multi-platform scraping** — Seek, Indeed, LinkedIn (with stealth session login), walking a configurable number of result pages per scan (default 3) so repeat scans keep finding new listings instead of re-reading the same first page
+- **Company career boards** — watch specific employers directly on Greenhouse, Lever or Ashby. These publish structured JSON, need no login, and have no bot defenses, so they're far steadier than the aggregators. Their application forms are custom per company and can't be automated, so matches land in Needs Attention with the tailored resume and cover letter already written. Boards are validated when you add them, so a typo in the slug is caught immediately rather than as an empty scan three days later
+- **Review before submit** *(optional)* — draft everything, send nothing. Jobs clearing the match threshold are fully prepared and held on the Review page until you approve them. Approving submits the documents already written, so it costs no extra AI calls. Rejecting files the job as skipped so it isn't re-drafted
+- **Runs in the background** — closing the window minimises to the tray instead of quitting, so scheduled scans, inbox checks, follow-ups and the stale sweep keep running. Optional launch-on-login and start-minimised
+- **Reliable AI calls** — model calls are retried with exponential backoff (honouring `Retry-After`), and a permanent failure such as a bad API key is not retried. A job that still can't be scored is **left unsaved and retried next scan** rather than recorded with a fabricated score
+- **Spend cap and cost meter** — per-call token usage and estimated cost are recorded and broken down by operation on the Analytics page. An optional monthly cap is checked *before* each call, so it stops work rather than reporting the overrun afterwards
 - **Block detection** — a CAPTCHA, rate-limit page, or expired login is reported as *blocked* rather than as "found 0 jobs", so a silently throttled scan is visible instead of looking like an empty market
 - **AI match scoring** — rates each job against your resume (0–100%) with a one-sentence explanation of the score
 - **Resume tailoring** — AI rewrites your resume to match each job description (without changing facts)
@@ -15,7 +20,9 @@
 - **Screening Q&A** — AI answers common application questions; answers are cached and reused
 - **Auto-apply** — submits Seek Quick Apply, LinkedIn Easy Apply, and Indeed applications automatically
 - **Resume routing** — keyword rules pick a different base resume per job type (e.g. send "data, analytics, sql" roles to your data resume); anything unmatched uses your default
-- **Cross-platform duplicate detection** — skips jobs already applied to via another platform
+- **Cross-platform duplicate detection** — skips jobs already applied to via another platform, and recognises jobs already sitting in Needs Attention so a failed apply isn't re-scored, re-tailored and re-queued on every subsequent scan
+- **Daily limits count what was actually sent** — jobs scored below the threshold, or held for review, don't consume the per-platform daily allowance
+- **Recruiter contact extraction** — pulls a follow-up address out of the job ad, and out of any recruiter reply. Platform, no-reply and placeholder addresses are ignored, and an ambiguous ad yields nothing rather than a guess. Without this, auto follow-up skipped every application because nothing ever filled the field in
 - **Company cooldown** — after applying to a company, other roles there are skipped for a configurable window (default 30 days, 0 to disable) rather than being blocked permanently
 - **Closing-date detection** — parses the application deadline out of the job ad so you can act on what expires first, and it's editable in the job detail panel when the ad didn't state one (or stated it oddly)
 - **Screening Q&A recorded** — the answers submitted on your behalf are saved against the application, labelled by whether the AI wrote them, you did, or they were reused from the cache
@@ -57,6 +64,8 @@
 ### Analytics & Timeline
 - **Analytics page** — SVG bar chart of applications over the last 7 days, platform donut chart, by-status breakdown, response and interview rates, advertised-salary spread (median / average / range, annualised), and a match-score histogram with your apply threshold marked (for tuning it alongside Test Scan)
 - **Interview rate by match score** — what share of each score band actually reached interview or offer. The histogram shows where your threshold sits; this shows whether it belongs there. Bands with too few applications to be meaningful are greyed out rather than shown as a confident 0% or 100%
+- **Which resume converts** — interview rate, response rate and average match score per resume actually sent. Routing rules send different jobs to different resumes; this is the evidence for keeping or dropping each rule instead of assuming it helps. Rates from fewer than 10 applications are marked as not yet meaningful
+- **AI usage and cost** — spend today and this month, token counts, and a breakdown by operation (scoring, tailoring, cover letters), so an expensive scan is visible before the bill is
 - **Timeline page** — collapsible day-by-day history of all applications grouped by platform
 
 ### Settings
@@ -69,6 +78,11 @@
 - **Pages per scan** — how deep to page through each platform's results (1–10)
 - **Inbox cadence** — how often to check for replies, and whether to skip weekends
 - **No Response threshold** — days without a reply before an application is retired, with a Run Now button
+- **Review before submit** — hold applications for approval instead of submitting automatically
+- **AI budget and retries** — monthly spend cap (0 for none) and how many times a failed model call is retried
+- **Company career boards** — add Greenhouse / Lever / Ashby boards by slug, each checked before it's saved
+- **Background operation** — keep running in the tray on window close, launch on login, start minimised
+- **Updates** — automatic daily check; downloading and installing are always explicit, and a restart is refused while a scan or apply is running
 
 ---
 
@@ -125,15 +139,17 @@ Hiro/
 git clone <repo-url>
 cd hiro/web
 
-# 2. Install dependencies
+# 2. Install dependencies. This also downloads Chromium into web/browsers
+#    (~150 MB, one-off) so that packaged builds can ship it.
 npm install
 
-# 3. Install Playwright browsers
-npx playwright install chromium
-
-# 4. Start in development mode
+# 3. Start in development mode
 npm run dev
 ```
+
+Set `HIRO_SKIP_BROWSER_INSTALL=1` to skip the Chromium download (CI running unit
+tests only). Scraping won't work until it has run — re-run it with
+`npm run --prefix web postinstall`.
 
 To set up the mobile companion app, see [app/README.md](app/README.md).
 
@@ -156,6 +172,14 @@ npm run build
 ```
 
 Output is placed in `web/dist-electron/`. Supports Windows (NSIS installer), macOS (DMG), and Linux (AppImage).
+
+Chromium is bundled into the installer from `web/browsers` (the build refuses to
+proceed without it — otherwise the installed app looks fine and then fails every
+scrape on the user's machine). At runtime the app points Playwright at the
+bundled copy, falling back to Playwright's own cache in a development run.
+
+Installed builds check for updates once a day. Nothing downloads or installs
+without you asking, and a restart is refused while a scan or apply is running.
 
 ---
 
@@ -196,5 +220,11 @@ All AI features (match scoring, resume tailoring, cover letter, interview questi
 ## Data & Privacy
 
 All data (config, database, session files) is stored **locally** on your machine under `~/.hiro/`. Nothing is sent to any server except the AI API you configure and the job platforms you log into.
+
+The config file and the database are both written via a temp file and an atomic
+rename, so a crash or power loss partway through a write can't truncate them. If
+the config file is ever unreadable anyway, the broken copy is kept alongside it
+as `config.json.corrupt` and the app says so — rather than silently starting
+from defaults, which is indistinguishable from having lost every setting.
 
 If you opt in to **Cloud Sync**, your applications are also mirrored to **your own** Supabase project (which you create and control). Row Level Security restricts the data to your account. Cloud sync is off until you sign in.

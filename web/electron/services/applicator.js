@@ -1,6 +1,7 @@
 const seek = require('./scraper/seek')
 const indeed = require('./scraper/indeed')
 const linkedin = require('./scraper/linkedin')
+const ats = require('./scraper/ats')
 const aiAdapter = require('./ai/index')
 const database = require('./database')
 const { randomDelay, stripMarkdown } = require('./scraper/utils')
@@ -26,7 +27,10 @@ function selectResume(cfg, job) {
   return { resume: resumes.find(r => r.id === cfg.defaultResumeId) || null, ruleKeywords: null }
 }
 
-// Merge the chosen resume into the config the scrapers read.
+// Merge the chosen resume into the config the scrapers read. The resume's
+// identity travels along so it can be recorded on the application — without it
+// there's no way to tell afterwards which resume was actually sent, and the
+// routing rules can't be judged against interview rates.
 function withResume(cfg, job, log) {
   const { resume, ruleKeywords } = selectResume(cfg, job)
   if (ruleKeywords && log) log(`  Resume rule matched (${ruleKeywords}) → "${resume.name || resume.id}"`)
@@ -35,6 +39,22 @@ function withResume(cfg, job, log) {
     masterResume: resume?.text || cfg.masterResume || '',
     activeResumeOriginalPath: resume?.originalPath,
     activeResumeOriginalExt: resume?.originalExt,
+    activeResumeId: resume?.id || cfg.defaultResumeId || null,
+    activeResumeName: resume?.name || null,
+  }
+}
+
+// Best contact address for follow-up, pulled from the ad. Auto follow-up used
+// to skip every application because nothing ever set recruiter_email.
+function findRecruiterEmail(cfg, job, log) {
+  if (!cfg.extractRecruiterEmail) return ''
+  try {
+    const { extractRecruiterEmail } = require('./contactExtractor')
+    const email = extractRecruiterEmail(job.job_description || '', { company: job.company })
+    if (email && log) log(`  Contact for follow-up: ${email}`)
+    return email
+  } catch {
+    return ''
   }
 }
 
@@ -74,8 +94,16 @@ async function doRun(cfg, { log, notifyAttention }) {
   if (cfg.enableSeek) scrapers.push({ name: 'Seek', scraper: seek, limit: cfg.dailyLimitSeek })
   if (cfg.enableIndeed) scrapers.push({ name: 'Indeed', scraper: indeed, limit: cfg.dailyLimitIndeed })
   if (cfg.enableLinkedIn) scrapers.push({ name: 'LinkedIn', scraper: linkedin, limit: cfg.dailyLimitLinkedIn })
+  // Company career boards (Greenhouse / Lever / Ashby). These serve structured
+  // JSON with no bot defenses, so they're far steadier than the aggregators —
+  // but they can't be auto-submitted, so everything found goes to Needs
+  // Attention with its documents already drafted.
+  if (cfg.enableAtsBoards && (cfg.atsBoards || []).length > 0) {
+    scrapers.push({ name: 'ATS', scraper: ats, limit: cfg.dailyLimitAts })
+  }
 
   let batchCount = 0
+  let heldCount = 0
   let dryWouldApply = 0
   // Every score a dry run produced, so the caller can recommend a threshold
   // from the real distribution rather than guesswork.
@@ -84,10 +112,16 @@ async function doRun(cfg, { log, notifyAttention }) {
   // expired login). Reported in the summary so the caller can tell "blocked"
   // apart from "nothing found".
   const blocked = []
+  // Jobs the model couldn't score this run. They are deliberately NOT saved —
+  // the next scan retries them — but the count is surfaced so a scan that
+  // quietly achieved nothing because the API was down doesn't look like a scan
+  // that found nothing worth applying to.
+  let scoringFailures = 0
+  let budgetStopped = false
   const batchLimit = cfg.batchLimit || Infinity // smart scheduling passes a finite limit
   const summary = () => (cfg.dryRun
-    ? { dryRun: true, scores: dryScores, wouldApply: dryWouldApply, threshold: cfg.matchThreshold, blocked }
-    : { dryRun: false, applied: batchCount, blocked })
+    ? { dryRun: true, scores: dryScores, wouldApply: dryWouldApply, threshold: cfg.matchThreshold, blocked, scoringFailures, budgetStopped }
+    : { dryRun: false, applied: batchCount, held: heldCount, blocked, scoringFailures, budgetStopped })
 
   for (const { name, scraper, limit } of scrapers) {
     if (cancelled || batchCount >= batchLimit) { if (cancelled) log('Scan cancelled.'); return summary() }
@@ -104,6 +138,9 @@ async function doRun(cfg, { log, notifyAttention }) {
     let jobs
     try {
       jobs = await scraper.scrape(cfg)
+      // ATS boards return the description with the listing; hand it forward so
+      // getJobDescription is a lookup rather than a second network round trip.
+      scraper.primeDescriptions?.(jobs)
       log(`${name}: found ${jobs.length} jobs across ${cfg.scrapePages || 1} page(s)`)
       // A successful scrape that finds nothing is worth saying out loud — it's
       // the signal that the search is too narrow or has been exhausted.
@@ -123,8 +160,11 @@ async function doRun(cfg, { log, notifyAttention }) {
       continue
     }
 
-    const blacklist = (cfg.blacklistedCompanies || []).map(c => c.toLowerCase())
-    const filtered = jobs.filter(j => !blacklist.includes(j.company.toLowerCase()))
+    const blacklist = (cfg.blacklistedCompanies || []).map(c => String(c).toLowerCase())
+    // Defensive on both sides: a listing with no company name (a malformed card,
+    // or a career board that omits it) used to throw here and take the whole
+    // platform's results down with it.
+    const filtered = jobs.filter(j => j?.job_url && !blacklist.includes(String(j.company || '').toLowerCase()))
 
     for (const job of filtered) {
       if (cancelled || batchCount >= batchLimit) { if (cancelled) log('Scan cancelled.'); return summary() }
@@ -132,8 +172,11 @@ async function doRun(cfg, { log, notifyAttention }) {
       const currentCount = database.getTodayCountByPlatform(name)
       if (!cfg.dryRun && currentCount >= limit) break
 
-      // Skip already-seen jobs (applied or skipped)
-      if (database.hasJobUrl(job.job_url)) continue
+      // Skip already-seen jobs. Checks BOTH tables: a job whose apply failed
+      // sits in attention_jobs with no applications row, so checking only
+      // applications meant every scan re-scored, re-tailored and re-submitted
+      // it, and added another duplicate Needs Attention entry each time.
+      if (database.hasSeenJobUrl(job.job_url)) continue
 
       // Skip companies applied to inside the cooldown window. This is a
       // rate-limit on spamming one employer, not a permanent ban — see
@@ -173,8 +216,15 @@ async function doRun(cfg, { log, notifyAttention }) {
 
       if (cancelled) { log('Scan cancelled.'); return summary() }
 
-      // Score match
-      let matchScore = 50
+      // Score match.
+      //
+      // A failure here used to leave matchScore at its initialiser of 50, which
+      // was then written to the database as though the model had really said
+      // 50 — and because the row existed, the job was never looked at again. A
+      // single rate limit permanently discarded a job and poisoned the score
+      // histogram the threshold advice is derived from. Now a scoring failure
+      // leaves the job untouched so the next scan retries it.
+      let matchScore = null
       let matchExplanation = ''
       try {
         const matchResult = await aiAdapter.scoreMatchWithExplanation(jobCfg.aiProvider, jobCfg.aiApiKey, jobDescription || job.job_title, jobCfg.masterResume, jobCfg.geminiModel)
@@ -182,7 +232,18 @@ async function doRun(cfg, { log, notifyAttention }) {
         matchExplanation = matchResult.explanation
         log(`  Match score: ${matchScore}%`)
       } catch (err) {
-        log(`  Scoring error: ${err.message}`)
+        // The budget cap is a deliberate stop, not a failure — no point
+        // grinding through the rest of the queue to fail identically.
+        if (err.budgetExceeded) {
+          log(`  ${err.message}`)
+          log('Scan stopped: AI budget reached. Nothing was discarded — unscored jobs will be picked up on the next scan.')
+          budgetStopped = true
+          return summary()
+        }
+        log(`  Scoring failed (${err.message}) — leaving this job for the next scan rather than recording a guessed score.`)
+        scoringFailures++
+        await randomDelay(1000, 2500)
+        continue
       }
 
       job.match_score = matchScore
@@ -222,6 +283,8 @@ async function doRun(cfg, { log, notifyAttention }) {
           screening_qa: [],
           status: 'skipped',
           closing_date: job.closing_date,
+          resume_id: jobCfg.activeResumeId,
+          resume_name: jobCfg.activeResumeName,
         })
 
         // Also add to Needs Attention if score is close to threshold
@@ -237,13 +300,16 @@ async function doRun(cfg, { log, notifyAttention }) {
 
       if (cancelled) { log('Scan cancelled.'); return summary() }
 
-      // Tailor resume
+      // Tailor resume. Unlike scoring, a failure here is recoverable — the
+      // untailored master resume is a real resume, just a less targeted one —
+      // so it's logged and the flow continues rather than dropping the job.
       let tailoredResume = jobCfg.masterResume
       try {
         tailoredResume = stripMarkdown(await aiAdapter.tailorResume(jobCfg.aiProvider, jobCfg.aiApiKey, jobDescription, jobCfg.masterResume, jobCfg.geminiModel))
         log(`  Resume tailored`)
       } catch (err) {
-        log(`  Resume tailoring error: ${err.message}`)
+        if (err.budgetExceeded) { log(`  ${err.message}`); budgetStopped = true; return summary() }
+        log(`  Resume tailoring error: ${err.message} — sending the untailored resume`)
       }
 
       // Generate cover letter
@@ -252,10 +318,54 @@ async function doRun(cfg, { log, notifyAttention }) {
         coverLetter = stripMarkdown(await aiAdapter.generateCoverLetter(jobCfg.aiProvider, jobCfg.aiApiKey, jobDescription, jobCfg.masterResume, jobCfg.geminiModel, jobCfg.coverLetterTone, jobCfg.coverLetterTemplate))
         log(`  Cover letter generated`)
       } catch (err) {
+        if (err.budgetExceeded) { log(`  ${err.message}`); budgetStopped = true; return summary() }
         log(`  Cover letter error: ${err.message}`)
       }
 
       if (cancelled) { log('Scan cancelled.'); return summary() }
+
+      const recruiterEmail = findRecruiterEmail(jobCfg, { ...job, job_description: jobDescription }, log)
+
+      // Company career boards have no automatable submit step. Route them to
+      // Needs Attention with the documents drafted rather than calling apply()
+      // and reporting a failure that was never going to be a success.
+      if (scraper.supportsAutoApply === false) {
+        job.reason = 'Company career board — submit on the site; your tailored documents are ready'
+        job.tailored_resume = tailoredResume
+        job.cover_letter = coverLetter
+        job.recruiter_email = recruiterEmail
+        await addAttentionJob(job, jobCfg, log, notifyAttention)
+        await randomDelay(1500, 4000)
+        continue
+      }
+
+      // Review mode: everything is drafted, nothing is sent. The documents are
+      // stored on the row, so approving on the Review page submits without
+      // spending another AI call.
+      if (cfg.reviewBeforeSubmit) {
+        database.insertApplication({
+          job_title: job.job_title,
+          company: job.company,
+          platform: name,
+          salary: job.salary || '',
+          job_url: job.job_url,
+          job_description: jobDescription,
+          match_score: matchScore,
+          match_explanation: matchExplanation,
+          tailored_resume: tailoredResume,
+          cover_letter: coverLetter,
+          screening_qa: [],
+          status: 'held',
+          closing_date: job.closing_date,
+          resume_id: jobCfg.activeResumeId,
+          resume_name: jobCfg.activeResumeName,
+          recruiter_email: recruiterEmail,
+        })
+        heldCount++
+        log(`  Held for review (${matchScore}%) — nothing submitted`)
+        await randomDelay(1500, 4000)
+        continue
+      }
 
       // Apply
       await randomDelay(3000, 8000)
@@ -283,11 +393,19 @@ async function doRun(cfg, { log, notifyAttention }) {
           screening_qa: result.screeningQa || [],
           status: 'applied',
           closing_date: job.closing_date,
+          resume_id: jobCfg.activeResumeId,
+          resume_name: jobCfg.activeResumeName,
+          recruiter_email: recruiterEmail,
         })
         log(`  Saved to history`)
         batchCount++
       } else {
         job.reason = result.reason
+        // Carry the drafted documents across so a manual retry from Needs
+        // Attention doesn't have to pay for them a second time.
+        job.tailored_resume = tailoredResume
+        job.cover_letter = coverLetter
+        job.recruiter_email = recruiterEmail
         await addAttentionJob(job, jobCfg, log, notifyAttention)
       }
 
@@ -297,6 +415,12 @@ async function doRun(cfg, { log, notifyAttention }) {
 
   if (cfg.dryRun) {
     log(`Dry run summary: ${dryWouldApply} job${dryWouldApply === 1 ? '' : 's'} would have been applied to at the ${cfg.matchThreshold}% threshold.`)
+  }
+  if (heldCount > 0) {
+    log(`Review mode: ${heldCount} application${heldCount === 1 ? '' : 's'} drafted and held. Nothing was submitted — approve them on the Review page.`)
+  }
+  if (scoringFailures > 0) {
+    log(`${scoringFailures} job${scoringFailures === 1 ? '' : 's'} could not be scored (AI unavailable) and ${scoringFailures === 1 ? 'was' : 'were'} left unsaved — the next scan will retry ${scoringFailures === 1 ? 'it' : 'them'}.`)
   }
   if (blocked.length > 0) {
     log(`Blocked on ${blocked.length} platform(s): ${blocked.map(b => b.platform).join(', ')}. Results from those are missing, not empty.`)
@@ -445,6 +569,81 @@ async function doApplySkippedJob(jobId, cfg, log) {
   return result
 }
 
+// ─── Review mode: approve a held draft ───────────────────────────
+// Submits an application that review mode parked. The resume and cover letter
+// were written when the job was found and are stored on the row, so approving
+// costs no AI calls — it goes straight to the platform's submit flow.
+
+async function approveHeldApplication(id, cfg, log) {
+  if (busy) return { success: false, reason: 'A scan or another apply is currently running — wait for it to finish and try again.' }
+  busy = true
+  try {
+    return await doApproveHeld(id, cfg, log)
+  } finally {
+    busy = false
+  }
+}
+
+async function doApproveHeld(id, cfg, log) {
+  const job = database.getApplication(id)
+  if (!job) return { success: false, reason: 'Application not found' }
+  if (job.status !== 'held') return { success: false, reason: `This application is already "${job.status}" — nothing to approve.` }
+
+  const platformMap = { Seek: seek, Indeed: indeed, LinkedIn: linkedin, ATS: ats }
+  const scraper = platformMap[job.platform]
+  if (!scraper) return { success: false, reason: `No scraper for platform: ${job.platform}` }
+  if (scraper.supportsAutoApply === false) {
+    return { success: false, reason: 'This is a company career board — open the posting and submit there. Your documents are on the row.' }
+  }
+
+  const jobCfg = resolveActiveResume(cfg, job, log)
+  log(`Submitting held application: ${job.job_title} at ${job.company}`)
+
+  let result
+  try {
+    result = await scraper.apply(job.job_url, job.tailored_resume, job.cover_letter, { ...jobCfg, jobDescription: job.job_description })
+    log(`Apply result: ${result.success ? 'SUCCESS' : 'FAILED — ' + result.reason}`)
+  } catch (err) {
+    result = { success: false, reason: err.message }
+    log(`Apply error: ${err.message}`)
+  }
+
+  if (result.success) {
+    database.markHeldApplied(id, result.screeningQa)
+    log('Submitted and moved to Applied.')
+  }
+  return result
+}
+
+// Approve several held drafts in one pass, spacing submissions the way a scan
+// does — a burst of rapid applies is exactly what these sites flag.
+async function approveHeldApplications(ids, cfg, log) {
+  if (busy) return { success: false, reason: 'A scan or another apply is currently running — wait for it to finish and try again.' }
+  busy = true
+  cancelled = false
+  const results = []
+  try {
+    for (let i = 0; i < ids.length; i++) {
+      if (cancelled) { log(`Approval run cancelled — ${results.length} of ${ids.length} processed.`); break }
+      log(`— Approving ${i + 1} of ${ids.length} —`)
+      let result
+      try {
+        result = await doApproveHeld(ids[i], cfg, log)
+      } catch (err) {
+        result = { success: false, reason: err.message }
+        log(`Approval error: ${err.message}`)
+      }
+      results.push({ id: ids[i], ...result })
+      if (i < ids.length - 1 && !cancelled) await randomDelay(5000, 12000)
+    }
+  } finally {
+    busy = false
+  }
+  const succeeded = results.filter(r => r.success).length
+  log(`Approval run finished: ${succeeded} of ${results.length} submitted.`)
+  return { success: true, succeeded, failed: results.length - succeeded, results }
+}
+
 // Retry several Needs Attention jobs in one pass. Holds `busy` for the whole
 // run rather than per job, so a scheduled scan can't slip in between them and
 // interleave submissions. Honours cancel() between jobs.
@@ -482,5 +681,6 @@ async function applyAttentionJobs(jobIds, cfg, log) {
 
 module.exports = {
   run, cancel, isBusy, applyAttentionJob, applyAttentionJobs, applySkippedJob,
+  approveHeldApplication, approveHeldApplications,
   selectResume, // exported for tests
 }

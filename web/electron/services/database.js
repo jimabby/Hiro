@@ -31,10 +31,22 @@ async function init() {
 // callers that touch many rows (cloud sync, cascading deletes) must use it.
 let persistDepth = 0
 
+// Written via a temp file + rename. sql.js has no incremental write, so every
+// persist replaces the entire database file — a crash or power loss partway
+// through a bare writeFileSync left a truncated file that no longer opened,
+// destroying all history. rename() is atomic on both NTFS and POSIX, so the
+// old file survives intact until the new one is complete.
 function persist() {
   if (!db || persistDepth > 0) return
-  const data = db.export()
-  fs.writeFileSync(DB_PATH, Buffer.from(data))
+  const data = Buffer.from(db.export())
+  const tmp = DB_PATH + '.tmp'
+  try {
+    fs.writeFileSync(tmp, data)
+    fs.renameSync(tmp, DB_PATH)
+  } catch (err) {
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp) } catch { /* best-effort */ }
+    throw err
+  }
 }
 
 function batch(fn) {
@@ -103,6 +115,19 @@ function createTables() {
       changed_at TEXT DEFAULT (datetime('now'))
     );
 
+    -- Per-call AI usage, so the cost of a scan is visible instead of only
+    -- showing up on the provider's monthly bill. One row per API call.
+    CREATE TABLE IF NOT EXISTS ai_usage (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      operation TEXT NOT NULL,
+      input_tokens INTEGER DEFAULT 0,
+      output_tokens INTEGER DEFAULT 0,
+      cost_usd REAL DEFAULT 0,
+      called_at TEXT DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS interview_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       application_id INTEGER NOT NULL,
@@ -145,8 +170,20 @@ function migrate() {
   try { db.run('ALTER TABLE attention_jobs ADD COLUMN salary_min INTEGER') } catch {}
   try { db.run('ALTER TABLE attention_jobs ADD COLUMN salary_max INTEGER') } catch {}
 
+  // Which resume was actually sent. Routing rules mean different jobs go out
+  // with different resumes, and without recording the choice there's no way to
+  // tell afterwards which one converts — the routing rules were untestable.
+  try { db.run('ALTER TABLE applications ADD COLUMN resume_id TEXT') } catch {}
+  try { db.run('ALTER TABLE applications ADD COLUMN resume_name TEXT') } catch {}
+  // Review mode ('held' status) parks a job instead of submitting it. These
+  // carry the drafted documents forward so approving it doesn't re-run the AI.
+  try { db.run('ALTER TABLE applications ADD COLUMN held_at TEXT') } catch {}
+
   // Indexes for frequent queries
   try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_applied_at ON applications(applied_at DESC)') } catch {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_job_url ON applications(job_url)') } catch {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_attention_url ON attention_jobs(job_url)') } catch {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_ai_usage_at ON ai_usage(called_at DESC)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_status ON applications(status)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_platform ON applications(platform)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_company ON applications(company)') } catch {}
@@ -183,8 +220,26 @@ function queryOne(sql, params = []) {
 
 // ─── Applications ────────────────────────────────────────────────
 
+// Columns that hold whole documents. A list view never renders them, but
+// SELECT * shipped every one of them across the IPC boundary on every dashboard
+// load — tens of MB once history builds up. getApplications keeps the full row
+// for callers that genuinely need it (CSV export, cloud push); the UI uses
+// getApplicationsList, which omits them and fetches detail on selection.
+const LIST_COLUMNS = `id, job_title, company, platform, salary, salary_min, salary_max, job_url,
+  match_score, match_explanation, status, comment, recruiter_email, applied_at, updated_at,
+  closing_date, follow_up_sent, resume_id, resume_name`
+
 function getApplications(filters = {}) {
-  let sql = 'SELECT * FROM applications'
+  return runApplicationQuery('*', filters)
+}
+
+// Same filters and sorting, minus the document columns.
+function getApplicationsList(filters = {}) {
+  return runApplicationQuery(LIST_COLUMNS, filters)
+}
+
+function runApplicationQuery(columns, filters = {}) {
+  let sql = `SELECT ${columns} FROM applications`
   const params = []
   const conditions = []
 
@@ -230,6 +285,22 @@ function hasJobUrl(jobUrl) {
   return !!queryOne('SELECT 1 FROM applications WHERE job_url = ? LIMIT 1', [jobUrl])
 }
 
+// A job whose apply attempt failed lands in attention_jobs WITHOUT an
+// applications row, so hasJobUrl alone didn't recognise it on the next scan:
+// every run re-fetched the description, re-scored, re-tailored and re-submitted
+// it, then inserted ANOTHER Needs Attention row for the same listing. Dismissed
+// rows are deliberately still counted — the user has already ruled on that job
+// and doesn't want it resurrected.
+function hasAttentionJobUrl(jobUrl) {
+  if (!jobUrl) return false
+  return !!queryOne('SELECT 1 FROM attention_jobs WHERE job_url = ? LIMIT 1', [jobUrl])
+}
+
+// Either table has seen this listing before.
+function hasSeenJobUrl(jobUrl) {
+  return hasJobUrl(jobUrl) || hasAttentionJobUrl(jobUrl)
+}
+
 // Has this company been applied to *recently*? Previously this matched any
 // non-skipped row ever, so a single application permanently blacklisted the
 // employer — every later role there was silently skipped. The window is
@@ -242,7 +313,7 @@ function findRecentApplicationToCompany(company, cooldownDays) {
   if (!Number.isFinite(days) || days <= 0) return null
   return queryOne(
     `SELECT job_title, applied_at FROM applications
-     WHERE LOWER(company) = LOWER(?) AND status != 'skipped'
+     WHERE LOWER(company) = LOWER(?) AND ${SENT_ONLY}
        AND applied_at >= datetime('now', '-' || ? || ' days')
      ORDER BY applied_at DESC LIMIT 1`,
     [company, days]
@@ -258,24 +329,61 @@ function insertApplication(data) {
     ? parseSalaryColumns(data.salary || '')
     : { salary_min: data.salary_min ?? null, salary_max: data.salary_max ?? null }
 
+  const status = data.status || 'applied'
   db.run(`
     INSERT INTO applications
-      (job_title, company, platform, salary, job_url, job_description, match_score, match_explanation, tailored_resume, cover_letter, screening_qa, status, closing_date, salary_min, salary_max)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (job_title, company, platform, salary, job_url, job_description, match_score, match_explanation, tailored_resume, cover_letter, screening_qa, status, closing_date, salary_min, salary_max, resume_id, resume_name, recruiter_email, held_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     data.job_title, data.company, data.platform, data.salary || '',
     data.job_url, data.job_description, data.match_score,
     data.match_explanation || '',
     data.tailored_resume, data.cover_letter || '',
     JSON.stringify(data.screening_qa || []),
-    data.status || 'applied',
+    status,
     data.closing_date || null,
     parsed.salary_min, parsed.salary_max,
+    data.resume_id || null, data.resume_name || null,
+    data.recruiter_email || '',
+    status === 'held' ? new Date().toISOString() : null,
   ])
   // Read the new row id BEFORE persist(): db.export() resets last_insert_rowid.
   const newId = queryOne('SELECT last_insert_rowid() as id')?.id
-  if (newId) db.run('INSERT INTO status_history (application_id, status) VALUES (?, ?)', [newId, data.status || 'applied'])
+  if (newId) db.run('INSERT INTO status_history (application_id, status) VALUES (?, ?)', [newId, status])
   persist()
+  return { success: true, id: newId }
+}
+
+// ─── Review mode (held applications) ─────────────────────────────
+// When review mode is on, a job that clears the match threshold is drafted in
+// full (resume tailored, cover letter written) and parked as 'held' instead of
+// being submitted. Nothing is sent until the user approves it, so a bad
+// tailoring pass can't reach ten employers before anyone notices.
+
+function getHeldApplications() {
+  return query(`SELECT ${LIST_COLUMNS}, held_at FROM applications WHERE status = 'held' ORDER BY match_score DESC, held_at ASC`)
+}
+
+// Mark an approved-and-submitted held job as applied. Its documents are already
+// on the row, so approving costs no AI calls.
+function markHeldApplied(id, screeningQa) {
+  const current = queryOne('SELECT status FROM applications WHERE id = ?', [id])
+  run(`UPDATE applications
+       SET status = 'applied', applied_at = datetime('now'), held_at = NULL,
+           screening_qa = ?, updated_at = datetime('now'), cloud_dirty = 1
+       WHERE id = ?`, [JSON.stringify(screeningQa || []), id])
+  if (current && current.status !== 'applied') recordStatusChange(id, 'applied')
+  return { success: true }
+}
+
+// The user declined a held draft. It stays in history as 'skipped' so the same
+// listing isn't re-scored and re-drafted on the next scan.
+function rejectHeldApplication(id) {
+  const current = queryOne('SELECT status FROM applications WHERE id = ?', [id])
+  run(`UPDATE applications SET status = 'skipped', held_at = NULL,
+       updated_at = datetime('now'), cloud_dirty = 1 WHERE id = ?`, [id])
+  if (current && current.status !== 'skipped') recordStatusChange(id, 'skipped')
+  return { success: true }
 }
 
 // Append to the per-application status timeline (only on real changes).
@@ -395,7 +503,7 @@ function backfillSalaryColumns() {
 function getSalaryStats() {
   const rows = query(`
     SELECT salary_min, salary_max, match_score, status FROM applications
-    WHERE status != 'skipped'
+    WHERE ${SENT_ONLY}
   `)
   // Midpoint of the advertised range is the fairest single number to average;
   // a one-sided range contributes the side it states.
@@ -486,6 +594,12 @@ function getAttentionJob(id) {
 }
 
 function insertAttentionJob(data) {
+  // Guard at the write, not only at the caller: a re-scan, a cloud-triggered
+  // scan and a manual retry all reach here, and a duplicate row is invisible
+  // in the UI except as the same job listed twice.
+  if (data.job_url && hasAttentionJobUrl(data.job_url)) {
+    return { success: true, skipped: 'duplicate' }
+  }
   const parsed = data.salary_min == null && data.salary_max == null
     ? parseSalaryColumns(data.salary || '')
     : { salary_min: data.salary_min ?? null, salary_max: data.salary_max ?? null }
@@ -501,6 +615,7 @@ function insertAttentionJob(data) {
     data.closing_date || null,
     parsed.salary_min, parsed.salary_max,
   ])
+  return { success: true }
 }
 
 function dismissAttentionJob(id) {
@@ -566,10 +681,19 @@ const LAST_WEEK_START = "datetime('now','localtime','start of day','-13 days','u
 const RESPONDED_STATUSES = ['interview', 'offer', 'rejected', 'pending']
 const RESPONDED_SQL = RESPONDED_STATUSES.map(s => `'${s}'`).join(', ')
 
+// Rows that were never actually submitted to an employer: scored below the
+// match threshold ('skipped') or waiting on the user's approval in review mode
+// ('held'). They must stay out of every rate denominator and out of the
+// "applied today / this week" counts, or holding a job for review would look
+// like an application that simply never got a reply.
+const UNSENT_STATUSES = ['skipped', 'held']
+const UNSENT_SQL = UNSENT_STATUSES.map(s => `'${s}'`).join(', ')
+const SENT_ONLY = `status NOT IN (${UNSENT_SQL})`
+
 function getStats() {
   const interviews = queryOne("SELECT COUNT(*) as c FROM applications WHERE status IN ('interview', 'offer')")?.c || 0
   const responded = queryOne(`SELECT COUNT(*) as c FROM applications WHERE status IN (${RESPONDED_SQL})`)?.c || 0
-  const appliedCount = queryOne("SELECT COUNT(*) as c FROM applications WHERE status != 'skipped'")?.c || 0
+  const appliedCount = queryOne(`SELECT COUNT(*) as c FROM applications WHERE ${SENT_ONLY}`)?.c || 0
 
   return {
     totalAllTime: queryOne('SELECT COUNT(*) as c FROM applications')?.c || 0,
@@ -578,6 +702,8 @@ function getStats() {
     totalLastWeek: queryOne(`SELECT COUNT(*) as c FROM applications WHERE applied_at >= ${LAST_WEEK_START} AND applied_at < ${WEEK_START}`)?.c || 0,
     interviews,
     attentionCount: queryOne('SELECT COUNT(*) as c FROM attention_jobs WHERE dismissed = 0')?.c || 0,
+    // Jobs parked by review mode, waiting for the user to approve or reject.
+    heldCount: queryOne("SELECT COUNT(*) as c FROM applications WHERE status = 'held'")?.c || 0,
     byPlatform: query("SELECT platform, COUNT(*) as count FROM applications GROUP BY platform"),
     byStatus: query("SELECT status, COUNT(*) as count FROM applications GROUP BY status"),
     todayJobs: query(`SELECT job_title, company, platform, match_score, status FROM applications WHERE applied_at >= ${TODAY_START} ORDER BY applied_at DESC`),
@@ -589,16 +715,23 @@ function getStats() {
   }
 }
 
+// How many applications were actually SUBMITTED to this platform today. Rows
+// saved as 'skipped' (scored below the match threshold) and 'held' (waiting on
+// review) were never sent, so they must not consume the daily limit — counting
+// them meant a scan whose first N jobs scored badly stopped before applying to
+// anything at all.
 function getTodayCountByPlatform(platform) {
   return queryOne(
-    `SELECT COUNT(*) as c FROM applications WHERE platform = ? AND applied_at >= ${TODAY_START}`,
+    `SELECT COUNT(*) as c FROM applications
+     WHERE platform = ? AND status NOT IN ('skipped', 'held') AND applied_at >= ${TODAY_START}`,
     [platform]
   )?.c || 0
 }
 
 function findDuplicateAcrossPlatforms(jobTitle, company, currentPlatform) {
   return queryOne(
-    "SELECT id, platform FROM applications WHERE LOWER(job_title) = LOWER(?) AND LOWER(company) = LOWER(?) AND platform != ? AND status != 'skipped' LIMIT 1",
+    `SELECT id, platform FROM applications
+     WHERE LOWER(job_title) = LOWER(?) AND LOWER(company) = LOWER(?) AND platform != ? AND ${SENT_ONLY} LIMIT 1`,
     [jobTitle, company, currentPlatform]
   )
 }
@@ -785,7 +918,7 @@ function updateClosingDate(id, closingDate) {
 function getScoreBandConversion() {
   const rows = query(`
     SELECT match_score, status FROM applications
-    WHERE status != 'skipped' AND match_score IS NOT NULL
+    WHERE ${SENT_ONLY} AND match_score IS NOT NULL
   `)
   const bands = Array.from({ length: 10 }, (_, i) => ({
     lo: i * 10, hi: i === 9 ? 100 : i * 10 + 9,
@@ -806,6 +939,110 @@ function getScoreBandConversion() {
     b.conversionRate = b.applied > 0 ? Math.round((b.converted / b.applied) * 100) : null
   }
   return bands
+}
+
+// ─── Resume conversion ───────────────────────────────────────────
+// Which resume actually converts. Routing rules send different jobs to
+// different resumes, and the score-band histogram can't distinguish them —
+// this does, so the rules in Settings can be judged on outcomes rather than
+// on the assumption that they help. Rows saved before resume_id existed are
+// grouped as "unattributed" rather than silently folded into the default.
+function getResumeConversion() {
+  const rows = query(`
+    SELECT resume_id, resume_name, status, match_score FROM applications
+    WHERE ${SENT_ONLY}
+  `)
+  const byResume = new Map()
+  for (const r of rows) {
+    const key = r.resume_id || '__unattributed__'
+    if (!byResume.has(key)) {
+      byResume.set(key, {
+        resumeId: r.resume_id || null,
+        name: r.resume_name || (r.resume_id ? 'Deleted resume' : 'Before tracking'),
+        applied: 0, interviews: 0, offers: 0, rejected: 0, pending: 0, scoreSum: 0,
+      })
+    }
+    const b = byResume.get(key)
+    b.applied++
+    b.scoreSum += r.match_score || 0
+    if (r.status === 'interview') b.interviews++
+    else if (r.status === 'offer') b.offers++
+    else if (r.status === 'rejected') b.rejected++
+    else if (r.status === 'pending') b.pending++
+  }
+  return [...byResume.values()].map(b => ({
+    ...b,
+    converted: b.interviews + b.offers,
+    // Below this, a rate is noise rather than signal — the UI greys these out
+    // instead of presenting a confident 0% or 100% off three applications.
+    significant: b.applied >= 10,
+    conversionRate: b.applied > 0 ? Math.round(((b.interviews + b.offers) / b.applied) * 100) : null,
+    responseRate: b.applied > 0
+      ? Math.round(((b.interviews + b.offers + b.rejected + b.pending) / b.applied) * 100)
+      : null,
+    avgMatchScore: b.applied > 0 ? Math.round(b.scoreSum / b.applied) : 0,
+  })).sort((a, b) => b.applied - a.applied)
+}
+
+// ─── AI usage & cost ─────────────────────────────────────────────
+
+function recordAiUsage({ provider, model, operation, inputTokens = 0, outputTokens = 0, costUsd = 0 }) {
+  run(
+    'INSERT INTO ai_usage (provider, model, operation, input_tokens, output_tokens, cost_usd) VALUES (?, ?, ?, ?, ?, ?)',
+    [provider || '', model || '', operation || '', inputTokens, outputTokens, costUsd]
+  )
+}
+
+// Spend for the current calendar month (local time), used for the budget cap,
+// plus a 30-day breakdown for the Analytics page.
+function getAiUsageSummary() {
+  const monthStart = "datetime('now','localtime','start of month','utc')"
+  const dayStart = "datetime('now','localtime','start of day','utc')"
+  const num = (sql) => queryOne(sql)?.v || 0
+  return {
+    today: {
+      calls: num(`SELECT COUNT(*) as v FROM ai_usage WHERE called_at >= ${dayStart}`),
+      cost: num(`SELECT COALESCE(SUM(cost_usd), 0) as v FROM ai_usage WHERE called_at >= ${dayStart}`),
+    },
+    month: {
+      calls: num(`SELECT COUNT(*) as v FROM ai_usage WHERE called_at >= ${monthStart}`),
+      cost: num(`SELECT COALESCE(SUM(cost_usd), 0) as v FROM ai_usage WHERE called_at >= ${monthStart}`),
+      inputTokens: num(`SELECT COALESCE(SUM(input_tokens), 0) as v FROM ai_usage WHERE called_at >= ${monthStart}`),
+      outputTokens: num(`SELECT COALESCE(SUM(output_tokens), 0) as v FROM ai_usage WHERE called_at >= ${monthStart}`),
+    },
+    byOperation: query(`
+      SELECT operation, COUNT(*) as calls, COALESCE(SUM(cost_usd), 0) as cost
+      FROM ai_usage WHERE called_at >= ${monthStart}
+      GROUP BY operation ORDER BY cost DESC
+    `),
+    perDay: query(`
+      SELECT DATE(called_at,'localtime') as date, COALESCE(SUM(cost_usd), 0) as cost, COUNT(*) as calls
+      FROM ai_usage
+      WHERE called_at >= datetime('now','localtime','start of day','-29 days','utc')
+      GROUP BY DATE(called_at,'localtime') ORDER BY date ASC
+    `),
+  }
+}
+
+// Spend so far this calendar month, in USD. Read before every AI call when a
+// budget cap is set, so the cap actually stops work rather than reporting the
+// overrun afterwards.
+function getMonthlyAiSpend() {
+  return queryOne(
+    "SELECT COALESCE(SUM(cost_usd), 0) as v FROM ai_usage WHERE called_at >= datetime('now','localtime','start of month','utc')"
+  )?.v || 0
+}
+
+// Usage rows are diagnostic, not history worth keeping forever.
+function pruneAiUsage(keepDays = 180) {
+  try {
+    run("DELETE FROM ai_usage WHERE called_at < datetime('now', '-' || ? || ' days')", [keepDays])
+  } catch { /* best-effort */ }
+}
+
+function clearAiUsage() {
+  run('DELETE FROM ai_usage')
+  return { success: true }
 }
 
 // ─── Weekly Report Data ──────────────────────────────────────────
@@ -834,7 +1071,7 @@ function getWeeklyReportData() {
   }
   const interviews = (byStatus.interview || 0) + (byStatus.offer || 0)
   const responded = RESPONDED_STATUSES.reduce((n, s) => n + (byStatus[s] || 0), 0)
-  const applied = totalApps - (byStatus.skipped || 0)
+  const applied = totalApps - UNSENT_STATUSES.reduce((n, s) => n + (byStatus[s] || 0), 0)
 
   return {
     // Labels stay in local time — toISOString() is UTC and would shift the
@@ -957,7 +1194,11 @@ function getStorageInfo() {
 
 module.exports = {
   init, batch, pruneOrphanedRows, backfillSalaryColumns,
-  getApplications, getApplication, hasJobUrl, findRecentApplicationToCompany, insertApplication, updateApplicationStatus,
+  getApplications, getApplicationsList, getApplication, hasJobUrl, hasAttentionJobUrl, hasSeenJobUrl,
+  findRecentApplicationToCompany, insertApplication, updateApplicationStatus,
+  getHeldApplications, markHeldApplied, rejectHeldApplication,
+  getResumeConversion, recordAiUsage, getAiUsageSummary, getMonthlyAiSpend, pruneAiUsage, clearAiUsage,
+  UNSENT_STATUSES,
   updateApplicationAfterApply, updateApplicationComment, updateRecruiterEmail, deleteApplication, clearAllApplications,
   getDirtyApplications, getAllApplicationIds, markCloudSynced, markCloudSeen, applyCloudEdit,
   getAttentionJobs, getAttentionJob, insertAttentionJob, dismissAttentionJob, deleteAttentionJob, clearAllAttentionJobs,

@@ -227,7 +227,12 @@ async function runBatch(batchSize) {
   }
 }
 
-function stop() {
+// Tear down the cron tasks. `abortRun` also cancels an in-flight scan and
+// clears the running flag — correct on app shutdown, but NOT on restart():
+// restart() runs on every Settings save, so cancelling there meant editing any
+// unrelated setting silently killed a scan mid-submission and left getScanInfo
+// reporting idle while the applicator was still unwinding.
+function stop({ abortRun = true } = {}) {
   if (scanTask) { scanTask.stop(); scanTask = null }
   if (reportTask) { reportTask.stop(); reportTask = null }
   if (followUpTask) { followUpTask.stop(); followUpTask = null }
@@ -237,8 +242,10 @@ function stop() {
   for (const t of batchTimeouts) clearTimeout(t)
   batchTimeouts = []
   batchSchedule = []
-  applicator.cancel()
-  running = false
+  if (abortRun) {
+    applicator.cancel()
+    running = false
+  }
 }
 
 function cancelScan() {
@@ -251,9 +258,12 @@ function cancelScan() {
   cloudSync.updateScanStatus(false).catch(() => {})
 }
 
+// Re-read the schedule after a settings change. Deliberately leaves a running
+// scan alone: the user changed a preference, they didn't ask to abort the work
+// in progress. Smart-schedule batches for today are rebuilt by startTasks().
 function restart(mainWindow) {
   win = mainWindow
-  stop()
+  stop({ abortRun: false })
   startTasks()
   // Settings may have just completed setup — drain any scans queued before it.
   processQueue()
@@ -330,6 +340,11 @@ async function runScan(overrides = {}) {
   const dryRun = !!overrides.dryRun
   let scanError = null
   let scanBlocked = []
+  // Surfaced on the dashboard and the phone: a scan that drafted ten
+  // applications for review, or that couldn't score anything because the AI
+  // was down, must not look like a scan that simply found nothing.
+  let scanHeld = 0
+  let scanScoringFailures = 0
   log(dryRun ? 'Starting test scan (dry run — nothing will be submitted)...' : 'Starting job scan...')
   cloudSync.updateScanStatus(true).catch(() => {})
 
@@ -340,6 +355,11 @@ async function runScan(overrides = {}) {
     if (dryRun) runCfg.dryRun = true
     const result = await applicator.run(runCfg, { log, notifyAttention })
     if (result?.blocked?.length) scanBlocked = result.blocked
+    scanHeld = result?.held || 0
+    scanScoringFailures = result?.scoringFailures || 0
+    // A scan that stopped on the budget cap is not a success, but it isn't a
+    // crash either — say which it was rather than reporting "Scan complete".
+    if (result?.budgetStopped) scanError = 'AI monthly budget reached — scan stopped early'
     if (dryRun && result) lastDryRun = { at: new Date().toISOString(), ...result }
   } catch (err) {
     scanError = err.message
@@ -359,11 +379,13 @@ async function runScan(overrides = {}) {
         ok: !scanError,
         error: scanError,
         blocked: scanBlocked,
+        held: scanHeld,
+        scoringFailures: scanScoringFailures,
         source: overrides.fromQueue ? 'queue' : (overrides.source || 'desktop'),
       }
     }
     log(dryRun ? 'Test scan complete (dry run — nothing was submitted).' : 'Scan complete.')
-    notify({ type: 'scan-complete', error: scanError, blocked: scanBlocked })
+    notify({ type: 'scan-complete', error: scanError, blocked: scanBlocked, held: scanHeld, scoringFailures: scanScoringFailures })
     if (!dryRun) {
       try {
         const s = database.getStats()
@@ -439,27 +461,79 @@ async function runWeeklyReport() {
   }
 }
 
+// One try per job, not one for the whole loop: a single AI or SMTP failure
+// used to abort the run, so every remaining application that day was skipped
+// silently and only one error appeared in the log.
 async function runFollowUp() {
+  let cfg
   try {
-    const cfg = configService.load()
+    cfg = configService.load()
     if (!cfg.enableFollowUp || !cfg.gmailAddress) return
-    const aiAdapter = require('./ai/index')
-    const jobs = database.getApplicationsForFollowUp(cfg.followUpDays || 7)
-    for (const job of jobs) {
-      if (!job.recruiter_email) {
-        log(`Follow-up skipped for ${job.job_title} at ${job.company} — no recruiter email`)
-        continue
-      }
-      const activeResume = (cfg.resumes || []).find(r => r.id === cfg.defaultResumeId)?.text || cfg.masterResume || ''
+  } catch (err) {
+    log(`Follow-up error: ${err.message}`)
+    return
+  }
+
+  const aiAdapter = require('./ai/index')
+  let jobs = []
+  try {
+    jobs = database.getApplicationsForFollowUp(cfg.followUpDays || 7)
+  } catch (err) {
+    log(`Follow-up error: could not load applications — ${err.message}`)
+    return
+  }
+
+  let sent = 0
+  let noAddress = 0
+  let failed = 0
+  for (const job of jobs) {
+    // The address may have arrived since the application was saved — from the
+    // ad itself, or from a recruiter reply the inbox check has since read.
+    const recipient = job.recruiter_email || recruiterEmailFor(job, cfg)
+    if (!recipient) {
+      noAddress++
+      continue
+    }
+    try {
+      const activeResume = (cfg.resumes || []).find(r => r.id === (job.resume_id || cfg.defaultResumeId))?.text
+        || cfg.masterResume || ''
       const emailText = await aiAdapter.generateFollowUpEmail(
         cfg.aiProvider, cfg.aiApiKey, job.job_title, job.company, activeResume, cfg.geminiModel
       )
-      await emailService.sendFollowUpEmail(job, emailText, cfg)
+      await emailService.sendFollowUpEmail({ ...job, recruiter_email: recipient }, emailText, cfg)
       database.markFollowUpSent(job.id)
+      sent++
       log(`Follow-up sent for ${job.job_title} at ${job.company}`)
+    } catch (err) {
+      failed++
+      log(`Follow-up failed for ${job.job_title} at ${job.company}: ${err.message}`)
     }
-  } catch (err) {
-    log(`Follow-up error: ${err.message}`)
+  }
+
+  if (jobs.length > 0) {
+    const parts = [`${sent} sent`]
+    if (failed) parts.push(`${failed} failed`)
+    if (noAddress) parts.push(`${noAddress} had no recruiter address`)
+    log(`Follow-up pass complete: ${parts.join(', ')}.`)
+  }
+}
+
+// Last-chance address lookup for a job whose recruiter_email is still blank:
+// re-read the stored job description. The scan already tries this at apply
+// time, but applications saved before extraction existed have never been
+// through it, and the description is right there on the row.
+function recruiterEmailFor(job, cfg) {
+  if (!cfg.extractRecruiterEmail) return ''
+  try {
+    const { extractRecruiterEmail } = require('./contactExtractor')
+    const found = extractRecruiterEmail(job.job_description || '', { company: job.company })
+    if (found) {
+      database.updateRecruiterEmail(job.id, found)
+      log(`Found a contact address for ${job.company} in the job ad: ${found}`)
+    }
+    return found || ''
+  } catch {
+    return ''
   }
 }
 
