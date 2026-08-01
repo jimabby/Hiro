@@ -167,6 +167,25 @@ function createTables() {
       deleted_at TEXT DEFAULT (datetime('now'))
     );
 
+    -- Every time sync had to pick a winner, and what it discarded.
+    --
+    -- The desktop wins when both sides changed since the last sync, because it
+    -- owns far more fields than the phone does. That is the right default and
+    -- it stays — but it was silent, so a status set on the phone could vanish
+    -- with no trace anywhere that it had ever existed. A conflict the user
+    -- cannot see is indistinguishable from data loss.
+    CREATE TABLE IF NOT EXISTS sync_conflicts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      application_id INTEGER NOT NULL,
+      job_title TEXT,
+      company TEXT,
+      field TEXT NOT NULL,
+      local_value TEXT,
+      remote_value TEXT,
+      resolved_as TEXT NOT NULL,
+      detected_at TEXT DEFAULT (datetime('now'))
+    );
+
     -- What was actually sent, frozen at the moment it was sent.
     --
     -- The applications row is mutable: approving a held draft overwrites
@@ -244,6 +263,7 @@ function migrate() {
   try { db.run('CREATE INDEX IF NOT EXISTS idx_attention_dismissed ON attention_jobs(dismissed)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_history_app ON status_history(application_id)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_snapshots_app ON application_snapshots(application_id, taken_at)') } catch {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_conflicts_at ON sync_conflicts(detected_at DESC)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_interview_app ON interview_events(application_id)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_interview_at ON interview_events(scheduled_at)') } catch {}
 }
@@ -470,6 +490,58 @@ function rejectHeldApplication(id) {
   return { success: true }
 }
 
+// ─── Sync conflict log ───────────────────────────────────────────
+// Append-only, same reasoning as the audit trail: the value of a record of what
+// was overwritten is that it cannot itself be overwritten.
+
+function recordSyncConflict({ applicationId, field, localValue, remoteValue, resolvedAs }) {
+  if (!applicationId || !field) return { success: false }
+  const row = queryOne('SELECT job_title, company FROM applications WHERE id = ?', [applicationId])
+  run(`
+    INSERT INTO sync_conflicts
+      (application_id, job_title, company, field, local_value, remote_value, resolved_as)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `, [
+    applicationId, row?.job_title || null, row?.company || null, field,
+    localValue == null ? null : String(localValue),
+    remoteValue == null ? null : String(remoteValue),
+    resolvedAs,
+  ])
+  return { success: true }
+}
+
+function getSyncConflicts(limit = 100) {
+  const n = Number.isFinite(limit) ? Math.max(1, Math.min(500, limit)) : 100
+  return query(`SELECT * FROM sync_conflicts ORDER BY detected_at DESC, id DESC LIMIT ${n}`)
+}
+
+function countSyncConflicts() {
+  return queryOne('SELECT COUNT(*) as c FROM sync_conflicts')?.c || 0
+}
+
+function clearSyncConflicts() {
+  run('DELETE FROM sync_conflicts')
+  return { success: true }
+}
+
+// Take the discarded side after the fact. The remote value is kept in the log
+// precisely so a wrong automatic resolution is recoverable.
+function applyConflictResolution(id) {
+  const conflict = queryOne('SELECT * FROM sync_conflicts WHERE id = ?', [id])
+  if (!conflict) return { success: false, reason: 'Conflict not found' }
+  if (conflict.field !== 'status' && conflict.field !== 'comment') {
+    return { success: false, reason: `Cannot re-apply the "${conflict.field}" field` }
+  }
+  const exists = queryOne('SELECT id FROM applications WHERE id = ?', [conflict.application_id])
+  if (!exists) return { success: false, reason: 'That application no longer exists' }
+
+  run(`UPDATE applications SET ${conflict.field} = ?, updated_at = datetime('now'), cloud_dirty = 1 WHERE id = ?`,
+    [conflict.remote_value, conflict.application_id])
+  if (conflict.field === 'status') recordStatusChange(conflict.application_id, conflict.remote_value)
+  run('UPDATE sync_conflicts SET resolved_as = ? WHERE id = ?', ['remote-applied', id])
+  return { success: true }
+}
+
 // ─── Audit / version history ─────────────────────────────────────
 // Snapshots are append-only. Nothing in here is ever updated in place —
 // a record that can be rewritten after the fact is not an audit trail.
@@ -610,6 +682,8 @@ function clearAllApplications() {
     run('DELETE FROM status_history')
     run('DELETE FROM interview_prep')
     run('DELETE FROM interview_events')
+    run('DELETE FROM application_snapshots')
+    run('DELETE FROM sync_conflicts')
   })
   return { success: true }
 }
@@ -706,6 +780,14 @@ function getDirtyApplications() {
 
 function getAllApplicationIds() {
   return query('SELECT id FROM applications').map(r => r.id)
+}
+
+// Mark every row as needing an upload. Used when the user chooses to seed a
+// cloud account from this device: without it only rows edited since the last
+// sync would push, and a re-seed would silently upload a fraction of history.
+function markAllDirty() {
+  run("UPDATE applications SET cloud_dirty = 1, cloud_updated_at = NULL")
+  return { success: true }
 }
 
 function countApplications() {
@@ -1414,11 +1496,12 @@ module.exports = {
   findRecentApplicationToCompany, insertApplication, updateApplicationStatus,
   getHeldApplications, markHeldApplied, rejectHeldApplication,
   recordSnapshot, getSnapshots, getSnapshot, getSnapshotDiff, restoreSnapshot,
+  recordSyncConflict, getSyncConflicts, countSyncConflicts, clearSyncConflicts, applyConflictResolution,
   getResumeConversion, recordAiUsage, getAiUsageSummary, getMonthlyAiSpend, pruneAiUsage, clearAiUsage,
   UNSENT_STATUSES,
   updateApplicationAfterApply, updateApplicationComment, updateRecruiterEmail, deleteApplication, clearAllApplications,
   getDirtyApplications, getAllApplicationIds, markCloudSynced, markCloudSeen, applyCloudEdit,
-  countApplications, getTombstones, clearTombstones, restoreApplicationFromCloud,
+  countApplications, markAllDirty, getTombstones, clearTombstones, restoreApplicationFromCloud,
   getAttentionJobs, getAttentionJob, insertAttentionJob, dismissAttentionJob, deleteAttentionJob, clearAllAttentionJobs,
   getAllInterviewEventsForSync,
   getCachedAnswer, saveCachedAnswer, getAllCachedAnswers, deleteCachedAnswer, clearAllCachedAnswers,

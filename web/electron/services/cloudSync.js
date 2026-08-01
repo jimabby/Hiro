@@ -6,6 +6,7 @@
 const configService = require('./config')
 const database = require('./database')
 const logger = require('./logger')
+const deviceIdentity = require('./deviceIdentity')
 
 let createClient = null
 try {
@@ -23,6 +24,9 @@ let lastError = null
 // Set when a sync pulled down rows this device had never seen, so Settings can
 // say "restored 42 applications from the cloud" instead of them just appearing.
 let lastRestore = null
+// Set when a sync stopped because this device and the account both hold data
+// and nobody has said how to combine them. Sync stays paused until they do.
+let pendingFirstSync = null
 
 function getClient() {
   if (!createClient) return null
@@ -63,6 +67,12 @@ function getStatus() {
     // Status is polled by the UI and can be asked for before the database has
     // finished opening — never let a status read throw.
     pendingDeletions: (() => { try { return database.getTombstones().length } catch { return 0 } })(),
+    // A paused sync is not a broken one, but it is not a working one either —
+    // the UI has to be able to tell the difference and say what is needed.
+    pendingFirstSync,
+    deviceId: cfg.deviceId || null,
+    deviceName: cfg.deviceName || null,
+    conflicts: (() => { try { return database.countSyncConflicts() } catch { return 0 } })(),
   }
 }
 
@@ -206,7 +216,26 @@ async function pullChanges(c) {
       if (lastSeen != null && remoteTime === lastSeen) continue // remote unchanged since last sync
       // Both sides changed since the last sync: the desktop wins (it owns far
       // more fields) and pushDirty will overwrite the remote copy.
-      if (local.cloud_dirty) continue
+      //
+      // Log what is being discarded before discarding it. The rule is right,
+      // but silence made it indistinguishable from data loss — a status set on
+      // the phone disappeared with no record it had ever existed.
+      if (local.cloud_dirty) {
+        for (const field of ['status', 'comment']) {
+          const remoteValue = remote[field]
+          if (remoteValue == null || remoteValue === local[field]) continue
+          try {
+            database.recordSyncConflict({
+              applicationId: remote.local_id,
+              field,
+              localValue: local[field],
+              remoteValue,
+              resolvedAs: 'local-kept',
+            })
+          } catch { /* the log must never break a sync */ }
+        }
+        continue
+      }
 
       const changes = {}
       if (remote.status && remote.status !== local.status) changes.status = remote.status
@@ -386,6 +415,114 @@ async function updateScanStatus(running) {
   } catch { /* best-effort */ }
 }
 
+// ─── First-sync gate and device registration ─────────────────────
+
+// Count both sides without modifying either.
+async function checkFirstSync(c) {
+  const cfg = deviceIdentity.ensureDeviceIdentity(configService)
+  const localCount = database.countApplications()
+  const { count, error } = await c
+    .from('applications')
+    .select('local_id', { count: 'exact', head: true })
+    .eq('user_id', user.id)
+  if (error) throw new Error(error.message)
+  const remoteCount = count || 0
+
+  const mode = deviceIdentity.resolveFirstSyncMode(cfg, { localCount, remoteCount })
+  return { needsChoice: mode === 'ask', mode, localCount, remoteCount }
+}
+
+// Record the user's answer and let the next sync run.
+//
+// 'cloud' and 'local' are implemented as one-off preparations, after which the
+// ordinary merge machinery is correct: wiping the losing side first means the
+// existing pull/push does exactly the right thing with no special-casing
+// scattered through it.
+async function resolveFirstSync(choice) {
+  if (!deviceIdentity.isValidChoice(choice)) {
+    return { success: false, reason: `Unknown choice: ${choice}` }
+  }
+  const c = getClient()
+  if (!c) return { success: false, reason: 'Supabase is not configured.' }
+  if (!user && !(await restoreSession())) return { success: false, reason: 'Not signed in.' }
+
+  try {
+    if (choice === 'cloud') {
+      // Discard local history and take the account's copy.
+      //
+      // Order matters and the obvious order is wrong: clearAllApplications
+      // tombstones everything it removes, so clearing first and wiping second
+      // leaves a full set of tombstones that the next pull would replay as
+      // deletions against the very cloud rows being restored — destroying the
+      // account's data instead of copying it.
+      database.clearAllApplications()
+      database.clearTombstones(database.getTombstones())
+    } else if (choice === 'local') {
+      const { error } = await c.from('applications').delete().eq('user_id', user.id)
+      if (error) throw new Error(error.message)
+      database.markAllDirty()
+    }
+    configService.update({ cloudFirstSyncChoice: choice })
+    pendingFirstSync = null
+    logger.append(`Cloud sync: first-sync choice recorded as "${choice}".`)
+    await sync()
+    return { success: true, choice }
+  } catch (err) {
+    return { success: false, reason: err.message }
+  }
+}
+
+// Announce this device on the account so the user can see what is attached and
+// revoke anything they no longer control. Best-effort: an older project without
+// the table must not fail the whole sync.
+async function registerDevice(c) {
+  const cfg = deviceIdentity.ensureDeviceIdentity(configService)
+  // An array, like every other upsert here. A bare object works against real
+  // PostgREST and breaks anything that treats the payload as a list.
+  const { error } = await c.from('devices').upsert([{
+    user_id: user.id,
+    device_id: cfg.deviceId,
+    name: cfg.deviceName,
+    platform: process.platform,
+    kind: 'desktop',
+    last_seen_at: new Date().toISOString(),
+  }], { onConflict: 'user_id,device_id' })
+  if (error && !isMissingTable(error, 'devices')) throw new Error(error.message)
+}
+
+async function listDevices() {
+  const c = getClient()
+  if (!c) return []
+  if (!user && !(await restoreSession())) return []
+  const { data, error } = await c
+    .from('devices')
+    .select('*')
+    .eq('user_id', user.id)
+    .order('last_seen_at', { ascending: false })
+  if (error) {
+    if (isMissingTable(error, 'devices')) return []
+    throw new Error(error.message)
+  }
+  const cfg = configService.load()
+  return (data || []).map(d => ({ ...d, isThisDevice: d.device_id === cfg.deviceId }))
+}
+
+// Remove a device from the account. Revoking the device you are sitting at is
+// refused: it would strand this desktop while looking like it worked.
+async function revokeDevice(deviceId) {
+  const cfg = configService.load()
+  if (deviceId === cfg.deviceId) {
+    return { success: false, reason: 'This is the device you are using — sign out instead.' }
+  }
+  const c = getClient()
+  if (!c) return { success: false, reason: 'Supabase is not configured.' }
+  if (!user && !(await restoreSession())) return { success: false, reason: 'Not signed in.' }
+  const { error } = await c.from('devices').delete().eq('user_id', user.id).eq('device_id', deviceId)
+  if (error) return { success: false, reason: error.message }
+  logger.append(`Cloud sync: revoked device ${deviceId}`)
+  return { success: true }
+}
+
 async function sync() {
   if (syncing) return getStatus()
   syncing = true // set BEFORE any await, or two callers can both enter
@@ -393,6 +530,16 @@ async function sync() {
     const c = getClient()
     if (!c) return getStatus()
     if (!user && !(await restoreSession())) return getStatus()
+
+    // First contact with an account that already holds data. Stop before
+    // touching anything in either direction — merging is only one of three
+    // reasonable answers and the wrong one is destructive.
+    const gate = await checkFirstSync(c)
+    if (gate.needsChoice) {
+      pendingFirstSync = gate
+      logger.append(`Cloud sync paused: this device has ${gate.localCount} application(s) and the account has ${gate.remoteCount}. Choose how to combine them in Settings.`)
+      return getStatus()
+    }
 
     const pulled = await pullChanges(c) // apply phone edits first so we don't clobber them
     // Recovering rows from the cloud is a significant, user-visible event (it
@@ -408,6 +555,7 @@ async function sync() {
     await pushInterviews(c)
     await pushAttentionJobs(c)
     await pollScanRequests(c)
+    await registerDevice(c)
     lastError = null
     configService.update({ lastCloudSyncAt: new Date().toISOString() })
   } catch (err) {
@@ -437,4 +585,7 @@ async function init() {
   }
 }
 
-module.exports = { init, signIn, signOut, sync, getStatus, updateScanStatus }
+module.exports = {
+  init, signIn, signOut, sync, getStatus, updateScanStatus,
+  resolveFirstSync, listDevices, revokeDevice,
+}

@@ -147,7 +147,9 @@ const reset = () => {
 
   check('phone status edit applied locally', byId(1).status, 'interview')
   check('phone comment edit applied locally', byId(1).comment, 'called me')
-  check('edit not echoed back as a push', upserted.length, 0)
+  // Scoped to applications: sync also registers this device each pass, and a
+// mixed counter would call that a stray application push.
+check('edit not echoed back as a push', (upsertedBy.applications || []).length, 0)
 
   // ── An unchanged remote row is left alone. ──────────────────────
   rows = [{
@@ -171,7 +173,7 @@ const reset = () => {
   await cloudSync.sync()
 
   check('desktop wins a genuine conflict', byId(1).status, 'offer')
-  check('conflicting row is pushed to cloud', upserted[0]?.status, 'offer')
+  check('conflicting row is pushed to cloud', upsertedBy.applications?.[0]?.status, 'offer')
   check('row marked clean after push', byId(1).cloud_dirty, 0)
 
   // ── Clock skew must not drop an edit: remote updated_at is OLDER
@@ -201,7 +203,7 @@ const reset = () => {
   check('unseen cloud row is NOT deleted', deletedLocalIds.includes(99), false)
   check('unseen cloud row restored locally', byId(99)?.comment, 'keep me')
   check('restore is reported in status', cloudSync.getStatus().lastRestore?.count, 1)
-  check('restored row is not re-pushed as dirty', upserted.length, 0)
+  check('restored row is not re-pushed as dirty', (upsertedBy.applications || []).length, 0)
 
   // ── A genuine local deletion IS mirrored to the cloud. ──────────
   rows = []

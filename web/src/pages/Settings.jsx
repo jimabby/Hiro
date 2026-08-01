@@ -557,6 +557,9 @@ export default function Settings({ showToast, active }) {
   const [mobileInfo, setMobileInfo] = useState(null)
   const [mobileBusy, setMobileBusy] = useState(false)
   const [cloudStatus, setCloudStatus] = useState(null)
+  // null = not opened yet; an array = loaded (possibly empty).
+  const [syncConflicts, setSyncConflicts] = useState(null)
+  const [devices, setDevices] = useState(null)
   const [cloudUrl, setCloudUrl] = useState('')
   const [cloudKey, setCloudKey] = useState('')
   const [cloudEmail, setCloudEmail] = useState('')
@@ -1185,6 +1188,147 @@ export default function Settings({ showToast, active }) {
                 setCloudPassword('')
                 setCloudBusy(false)
               }}>Sign out</button>
+            </div>
+
+            {/* Sync has stopped on purpose. Both this device and the account
+                hold data, and merging is only one of three answers. */}
+            {cloudStatus.pendingFirstSync && (
+              <div style={{
+                marginTop: 14, padding: 14, borderRadius: 8,
+                background: 'var(--surface2)', borderLeft: '3px solid var(--yellow, #eab308)',
+              }}>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                  Sync paused — how should these be combined?
+                </div>
+                <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+                  This device has <strong>{cloudStatus.pendingFirstSync.localCount}</strong> application(s)
+                  and the account has <strong>{cloudStatus.pendingFirstSync.remoteCount}</strong>. Nothing
+                  has been changed on either side. This is asked once.
+                </p>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {[
+                    { id: 'merge', label: 'Keep both', hint: 'Combine them. Nothing is deleted.' },
+                    { id: 'cloud', label: 'Use the cloud copy', hint: 'Replaces this device’s history.' },
+                    { id: 'local', label: 'Use this device', hint: 'Replaces the account’s history.' },
+                  ].map(opt => (
+                    <button
+                      key={opt.id}
+                      className={opt.id === 'merge' ? 'btn btn-primary' : 'btn btn-ghost'}
+                      style={{ fontSize: 12 }}
+                      disabled={cloudBusy}
+                      title={opt.hint}
+                      onClick={async () => {
+                        if (opt.id !== 'merge' && !window.confirm(
+                          `${opt.hint}\n\nThis cannot be undone. Continue?`)) return
+                        setCloudBusy(true)
+                        const r = await window.api.cloudResolveFirstSync?.(opt.id)
+                        const s = await window.api.cloudStatus?.()
+                        if (s) setCloudStatus(s)
+                        setCloudBusy(false)
+                        showToast?.(r?.success ? 'Sync resumed' : `Could not resolve: ${r?.reason}`,
+                          r?.success ? 'success' : 'error')
+                      }}
+                    >{opt.label}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Conflicts: what sync discarded, and a way to take it back. */}
+            {cloudStatus.conflicts > 0 && (
+              <div style={{ marginTop: 14 }}>
+                <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={async () => {
+                  if (syncConflicts) return setSyncConflicts(null)
+                  setSyncConflicts(await window.api.cloudConflicts?.() || [])
+                }}>
+                  {syncConflicts ? 'Hide' : `Show ${cloudStatus.conflicts} sync conflict${cloudStatus.conflicts === 1 ? '' : 's'}`}
+                </button>
+                {syncConflicts && (
+                  <div style={{ marginTop: 10 }}>
+                    <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>
+                      This device and your phone changed the same field between syncs. The desktop copy
+                      was kept — it owns far more of the record — and the phone’s value is listed here
+                      rather than discarded silently.
+                    </p>
+                    {syncConflicts.map(c => (
+                      <div key={c.id} style={{
+                        background: 'var(--surface2)', borderRadius: 8, padding: '8px 10px',
+                        marginBottom: 6, fontSize: 12,
+                      }}>
+                        <div style={{ fontWeight: 600 }}>{c.job_title} · {c.company}</div>
+                        <div style={{ color: 'var(--text-muted)' }}>
+                          {c.field}: kept <strong>{c.local_value}</strong> · phone had <strong>{c.remote_value}</strong>
+                          {' · '}{new Date(String(c.detected_at).replace(' ', 'T') + 'Z').toLocaleString()}
+                        </div>
+                        {c.resolved_as === 'local-kept' && (c.field === 'status' || c.field === 'comment') && (
+                          <button className="btn btn-ghost" style={{ fontSize: 11, marginTop: 6, padding: '2px 8px' }}
+                            onClick={async () => {
+                              const r = await window.api.cloudApplyConflict?.(c.id)
+                              showToast?.(r?.success ? 'Applied the phone’s value' : `Could not apply: ${r?.reason}`,
+                                r?.success ? 'success' : 'error')
+                              setSyncConflicts(await window.api.cloudConflicts?.() || [])
+                            }}>Use the phone’s value instead</button>
+                        )}
+                        {c.resolved_as === 'remote-applied' && (
+                          <div style={{ color: 'var(--green)', marginTop: 4 }}>Phone’s value applied</div>
+                        )}
+                      </div>
+                    ))}
+                    <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={async () => {
+                      await window.api.cloudClearConflicts?.()
+                      setSyncConflicts([])
+                      const s = await window.api.cloudStatus?.()
+                      if (s) setCloudStatus(s)
+                    }}>Clear the log</button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Trusted devices. A device you cannot see is one you cannot revoke. */}
+            <div style={{ marginTop: 14 }}>
+              <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={async () => {
+                if (devices) return setDevices(null)
+                setDevices(await window.api.cloudListDevices?.() || [])
+              }}>{devices ? 'Hide devices' : 'Show devices on this account'}</button>
+              {devices && (
+                <div style={{ marginTop: 10 }}>
+                  {devices.length === 0 && (
+                    <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                      No devices registered yet. Run <strong>schema.sql</strong> against your Supabase
+                      project if you added cloud sync before this feature existed, then sync once.
+                    </p>
+                  )}
+                  {devices.map(d => (
+                    <div key={d.device_id} style={{
+                      display: 'flex', alignItems: 'center', gap: 10, background: 'var(--surface2)',
+                      borderRadius: 8, padding: '8px 10px', marginBottom: 6, fontSize: 12,
+                    }}>
+                      <div style={{ flex: 1 }}>
+                        <strong>{d.name || d.device_id}</strong>
+                        {d.isThisDevice && <span style={{ color: 'var(--accent)' }}> · this device</span>}
+                        <div style={{ color: 'var(--text-muted)' }}>
+                          {d.platform} · {d.kind} · last seen {new Date(d.last_seen_at).toLocaleString()}
+                        </div>
+                      </div>
+                      {!d.isThisDevice && (
+                        <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }}
+                          onClick={async () => {
+                            const r = await window.api.cloudRevokeDevice?.(d.device_id)
+                            showToast?.(r?.success ? 'Device revoked' : `Could not revoke: ${r?.reason}`,
+                              r?.success ? 'success' : 'error')
+                            setDevices(await window.api.cloudListDevices?.() || [])
+                          }}>Revoke</button>
+                      )}
+                    </div>
+                  ))}
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+                    Revoking removes a device’s standing on the account. It does not by itself end that
+                    device’s existing session — change your account password to force every device to
+                    sign in again.
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         ) : (

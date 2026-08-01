@@ -158,6 +158,12 @@ contextBridge.exposeInMainWorld('api', {
 
   // Cloud sync (Supabase)
   cloudStatus: () => ipcRenderer.invoke('cloud:status'),
+  cloudResolveFirstSync: (choice) => ipcRenderer.invoke('cloud:resolveFirstSync', choice),
+  cloudListDevices: () => ipcRenderer.invoke('cloud:listDevices'),
+  cloudRevokeDevice: (deviceId) => ipcRenderer.invoke('cloud:revokeDevice', deviceId),
+  cloudConflicts: () => ipcRenderer.invoke('cloud:conflicts'),
+  cloudClearConflicts: () => ipcRenderer.invoke('cloud:clearConflicts'),
+  cloudApplyConflict: (id) => ipcRenderer.invoke('cloud:applyConflict', id),
   cloudSignIn: (email, password) => ipcRenderer.invoke('cloud:signIn', email, password),
   cloudSignOut: () => ipcRenderer.invoke('cloud:signOut'),
   cloudSyncNow: () => ipcRenderer.invoke('cloud:syncNow'),

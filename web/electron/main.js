@@ -271,6 +271,18 @@ ipcMain.handle('config:save', (_, config) => {
 
 // ─── IPC: Cloud sync ────────────────────────────────────────────
 ipcMain.handle('cloud:status', () => cloudSync.getStatus())
+ipcMain.handle('cloud:resolveFirstSync', async (_, choice) => {
+  try { return await cloudSync.resolveFirstSync(choice) } catch (err) { return { success: false, reason: err.message } }
+})
+ipcMain.handle('cloud:listDevices', async () => {
+  try { return await cloudSync.listDevices() } catch { return [] }
+})
+ipcMain.handle('cloud:revokeDevice', async (_, deviceId) => {
+  try { return await cloudSync.revokeDevice(deviceId) } catch (err) { return { success: false, reason: err.message } }
+})
+ipcMain.handle('cloud:conflicts', () => database.getSyncConflicts())
+ipcMain.handle('cloud:clearConflicts', () => database.clearSyncConflicts())
+ipcMain.handle('cloud:applyConflict', (_, id) => database.applyConflictResolution(id))
 
 ipcMain.handle('cloud:signIn', async (_, email, password) => {
   try {

@@ -172,3 +172,35 @@ $$;
 
 revoke execute on function public.delete_account() from public, anon;
 grant execute on function public.delete_account() to authenticated;
+
+-- Devices attached to this account, so the user can see what is syncing and
+-- revoke anything they no longer control — a laptop that was sold, a phone that
+-- was lost. Without a registry, a leaked refresh token is invisible and there is
+-- nothing to revoke it from.
+--
+-- Keyed by (user_id, device_id) where device_id is generated once on the device
+-- and never regenerated. Deleting a row here does not by itself invalidate that
+-- device's Supabase session; it removes the device's standing on the account and
+-- is what the desktop's trusted-device list reads. Rotate the account password
+-- to force every session to re-authenticate.
+create table if not exists public.devices (
+  id            uuid primary key default gen_random_uuid(),
+  user_id       uuid not null references auth.users (id) on delete cascade,
+  device_id     text not null,
+  name          text,
+  platform      text,
+  kind          text default 'desktop',
+  created_at    timestamptz not null default now(),
+  last_seen_at  timestamptz not null default now(),
+  unique (user_id, device_id)
+);
+
+alter table public.devices enable row level security;
+
+create policy "own devices" on public.devices
+  for all
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+create index if not exists idx_devices_user_seen
+  on public.devices (user_id, last_seen_at desc);

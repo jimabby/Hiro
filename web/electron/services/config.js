@@ -112,6 +112,19 @@ const DEFAULTS = {
   supabaseRefreshToken: '',
   lastCloudSyncAt: null,
 
+  // This installation's identity on the account. Generated once, never
+  // regenerated — a device that changes id on every launch cannot be listed,
+  // trusted, or revoked, which is the whole point of having one.
+  deviceId: '',
+  deviceName: '',
+
+  // How this device combined its data with the account's the first time the two
+  // met, once both held rows. Empty means the question has not been asked yet;
+  // sync pauses rather than guessing, because the three reasonable answers
+  // (merge / take the cloud / seed from here) are not interchangeable and two
+  // of them destroy data on one side.
+  cloudFirstSyncChoice: '',
+
   // ─── Review before submit ──────────────────────────────────────
   // When on, a job that clears the match threshold is drafted in full but
   // parked as 'held' rather than submitted. Nothing reaches an employer until
