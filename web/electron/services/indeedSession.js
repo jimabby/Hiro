@@ -4,7 +4,6 @@ chromium.use(StealthPlugin())
 const fs = require('fs')
 const path = require('path')
 const { CONFIG_DIR } = require('./config')
-const { randomUserAgent } = require('./scraper/utils')
 
 const STORAGE_PATH = path.join(CONFIG_DIR, 'indeed-storage.json')
 

@@ -21,9 +21,9 @@ jobs:
       # download that postinstall would otherwise do on every run.
       HIRO_SKIP_BROWSER_INSTALL: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
           cache: npm
@@ -31,15 +31,17 @@ jobs:
 
       - run: npm ci --prefix web
 
+      - run: npm run lint --prefix web
+
       - run: npm test --prefix web
 
   mobile:
     name: Mobile install
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
           cache: npm
@@ -53,15 +55,23 @@ jobs:
       - run: npx expo config --type public
         working-directory: app
 
+      # The real check. `expo config` only proves app.json parses; an export
+      # actually runs Metro over every module, which is what catches a bad
+      # import or a syntax error after a dependency bump. There is still no
+      # mobile test suite, so this is the closest thing to one.
+      - name: Bundle the mobile app
+        run: npx expo export --platform ios --platform android
+        working-directory: app
+
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
     env:
       HIRO_SKIP_BROWSER_INSTALL: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
 

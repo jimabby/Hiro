@@ -20,9 +20,9 @@ jobs:
     env:
       HIRO_SKIP_BROWSER_INSTALL: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
           cache: npm
@@ -44,6 +44,8 @@ jobs:
 
       - run: npm ci --prefix web
 
+      - run: npm run lint --prefix web
+
       - run: npm test --prefix web
 
   build:
@@ -61,9 +63,9 @@ jobs:
       # job rather than producing an unsigned DMG.
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
           cache: npm

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, nativeImage } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
 const path = require('path')
 
 // Point Playwright at the Chromium bundled with the app. This MUST run before
@@ -1115,7 +1115,7 @@ ipcMain.handle('mobile:startPairing', async () => {
       svg = await require('qrcode').toString(session.payload, {
         type: 'svg', margin: 1, errorCorrectionLevel: 'M',
       })
-    } catch (err) {
+    } catch {
       // A missing renderer must not block pairing — the code can still be typed.
       svg = ''
     }

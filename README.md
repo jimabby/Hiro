@@ -193,7 +193,7 @@ audit. To ship:
 git tag v1.1.0 && git push origin v1.1.0
 ```
 
-`.github/workflows/release.yml` then re-runs the tests, refuses the tag if it
+`.github/workflows/release.yml` then re-runs lint and the tests, refuses the tag if it
 disagrees with `web/package.json`, and builds on macOS, Windows and Linux in
 parallel. Each runner downloads its own platform's Chromium so the installer
 ships with one. The installers and the `latest*.yml` update manifests are

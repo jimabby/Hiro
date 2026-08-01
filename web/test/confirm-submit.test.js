@@ -7,7 +7,7 @@
 
 const os = require('os')
 const path = require('path')
-const { stub, service, createChecker } = require('./helpers')
+const { stub, createChecker } = require('./helpers')
 
 const CONFIG_DIR = path.join(os.tmpdir(), 'hiro-confirm-' + Date.now())
 stub({ './config': { load: () => ({}), update: () => {}, CONFIG_DIR } })

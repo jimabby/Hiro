@@ -174,8 +174,6 @@ function stripMarkdown(text) {
 }
 
 async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
-  const os = require('os')
-  const path = require('path')
   const fs = require('fs')
   const PDFDocument = require('pdfkit')
 
@@ -480,8 +478,6 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
 }
 
 async function buildCoverLetterPDF(text) {
-  const os = require('os')
-  const path = require('path')
   const fs = require('fs')
   const PDFDocument = require('pdfkit')
   const tempPath = uniqueTempPath('cover-letter.pdf')
@@ -505,8 +501,6 @@ async function buildCoverLetterPDF(text) {
 }
 
 async function buildResumeDocx(text) {
-  const os = require('os')
-  const path = require('path')
   const { Document, Packer, Paragraph, TextRun, AlignmentType, BorderStyle,
     TabStopType, TabStopLeader } = require('docx')
 
@@ -644,8 +638,6 @@ async function buildResumeDocx(text) {
 
 async function tailorDocx(originalPath, tailoredText, candidateName) {
   const AdmZip = require('adm-zip')
-  const os = require('os')
-  const path = require('path')
 
   const zip = new AdmZip(originalPath)
   const xmlEntry = zip.getEntry('word/document.xml')
@@ -736,8 +728,6 @@ async function buildResumeFile(tailoredResume, cfg) {
 }
 
 async function buildAnalyticsReportPDF(data) {
-  const os = require('os')
-  const path = require('path')
   const fs = require('fs')
   const PDFDocument = require('pdfkit')
 

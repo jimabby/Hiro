@@ -2,7 +2,6 @@ const { chromium } = require('playwright')
 const fs = require('fs')
 const path = require('path')
 const { CONFIG_DIR } = require('./config')
-const { randomUserAgent } = require('./scraper/utils')
 
 const STORAGE_PATH = path.join(CONFIG_DIR, 'linkedin-storage.json')
 // Legacy cookies path — kept for backward-compat check
