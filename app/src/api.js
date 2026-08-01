@@ -2,6 +2,32 @@
 
 const TIMEOUT_MS = 8000
 
+// Exchange a one-time pairing code for a token belonging to this phone alone.
+//
+// Unauthenticated by necessity — it is how a token is obtained — so it is the
+// one call that cannot go through HiroClient. The desktop only accepts it from
+// a private-range address, only while a code is live, and only once.
+export async function pairWithDesktop({ host, port, code, deviceName, platform }) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
+  try {
+    const res = await fetch(`http://${host}:${port}/api/pair`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, deviceName, platform }),
+    })
+    const body = await res.json()
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`)
+    return body // { token, device, host }
+  } catch (err) {
+    if (err.name === 'AbortError') throw new Error('Connection timed out — is the desktop app running?')
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export class HiroClient {
   constructor({ host, port, token }) {
     this.baseUrl = `http://${host}:${port}`

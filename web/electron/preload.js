@@ -155,6 +155,11 @@ contextBridge.exposeInMainWorld('api', {
   getMobileInfo: () => ipcRenderer.invoke('mobile:getInfo'),
   setMobileEnabled: (enabled) => ipcRenderer.invoke('mobile:setEnabled', enabled),
   regenerateMobileToken: () => ipcRenderer.invoke('mobile:regenerateToken'),
+  startPairing: () => ipcRenderer.invoke('mobile:startPairing'),
+  cancelPairing: () => ipcRenderer.invoke('mobile:cancelPairing'),
+  listPairedDevices: () => ipcRenderer.invoke('mobile:listDevices'),
+  revokePairedDevice: (id) => ipcRenderer.invoke('mobile:revokeDevice', id),
+  revokeAllPairedDevices: () => ipcRenderer.invoke('mobile:revokeAllDevices'),
 
   // Cloud sync (Supabase)
   cloudStatus: () => ipcRenderer.invoke('cloud:status'),

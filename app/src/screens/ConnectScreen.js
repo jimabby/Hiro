@@ -3,7 +3,8 @@ import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   KeyboardAvoidingView, Platform, ScrollView,
 } from 'react-native'
-import { HiroClient } from '../api'
+import { HiroClient, pairWithDesktop } from '../api'
+import QrPairScanner from './QrPairScanner'
 import { supabase, isConfigured } from '../supabase'
 import { colors, radius } from '../theme'
 
@@ -16,6 +17,9 @@ export default function ConnectScreen({ onConnected }) {
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  // Pairing: a one-time code exchanged for a token belonging to this phone.
+  const [pairCode, setPairCode] = useState('')
+  const [scanning, setScanning] = useState(false)
 
   async function connect() {
     const conn = { host: host.trim(), port: Number(port) || 4823, token: token.trim() }
@@ -30,6 +34,40 @@ export default function ConnectScreen({ onConnected }) {
       const res = await client.ping()
       if (!res.ok) throw new Error('Unexpected response from server')
       await onConnected({ mode: 'lan', ...conn })
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // Redeem a pairing code. The desktop returns a token minted for this device,
+  // which is what gets stored — the shared token path below stays only for
+  // desktops that have not been updated yet.
+  async function pair(fromQr) {
+    const conn = {
+      host: (fromQr?.host || host).trim(),
+      port: Number(fromQr?.port || port) || 4823,
+      code: (fromQr?.code || pairCode).trim(),
+    }
+    if (!conn.host || !conn.code) {
+      setError('Server address and pairing code are required.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      const res = await pairWithDesktop({
+        ...conn,
+        // A human-recognisable default; the desktop truncates and the user
+        // can tell two phones apart by platform and pairing date.
+        deviceName: Platform.OS === 'ios' ? 'iPhone' : 'Android phone',
+        platform: Platform.OS,
+      })
+      const client = new HiroClient({ host: conn.host, port: conn.port, token: res.token })
+      const ping = await client.ping()
+      if (!ping.ok) throw new Error('Unexpected response from server')
+      await onConnected({ mode: 'lan', host: conn.host, port: conn.port, token: res.token })
     } catch (err) {
       setError(err.message)
     } finally {
@@ -103,8 +141,39 @@ export default function ConnectScreen({ onConnected }) {
     <>
       <Text style={styles.subtitle}>
         Pair with the Hiro desktop app.{'\n'}
-        Enable the mobile server in Settings → Notifications → Mobile App on your computer,
-        then enter the address and token shown there.
+        On your computer open Settings → Mobile App and press “Pair a phone”.
+      </Text>
+
+      <TouchableOpacity
+        style={[styles.button, busy && styles.buttonDisabled, { marginBottom: 14 }]}
+        onPress={() => { setError(''); setScanning(true) }}
+        disabled={busy}
+      >
+        <Text style={styles.buttonText}>Scan the QR code</Text>
+      </TouchableOpacity>
+
+      <Text style={styles.label}>…or enter the 8-character code</Text>
+      <TextInput
+        style={styles.input}
+        value={pairCode}
+        onChangeText={t => setPairCode(t.toUpperCase())}
+        placeholder="ABCD1234"
+        placeholderTextColor={colors.textMuted}
+        autoCapitalize="characters"
+        autoCorrect={false}
+        maxLength={8}
+      />
+
+      <TouchableOpacity
+        style={[styles.button, busy && styles.buttonDisabled, { marginBottom: 22 }]}
+        onPress={() => pair()}
+        disabled={busy}
+      >
+        <Text style={styles.buttonText}>{busy ? 'Pairing…' : 'Pair with code'}</Text>
+      </TouchableOpacity>
+
+      <Text style={styles.hint}>
+        Typing the code needs the address below too. Scanning fills in everything.
       </Text>
 
       <Text style={styles.label}>Server address (IP)</Text>
@@ -129,7 +198,7 @@ export default function ConnectScreen({ onConnected }) {
           keyboardType="number-pad"
         />
 
-        <Text style={styles.label}>Pairing token</Text>
+        <Text style={styles.label}>Shared token (older desktops only)</Text>
         <TextInput
           style={styles.input}
           value={token}
@@ -175,6 +244,21 @@ export default function ConnectScreen({ onConnected }) {
         )}
 
         {mode === 'cloud' ? renderCloud() : renderLan()}
+
+        {scanning && (
+          <QrPairScanner
+            onCancel={() => setScanning(false)}
+            onScanned={(payload) => {
+              setScanning(false)
+              // Fill the fields too, so a failed pair can be retried by hand
+              // instead of sending the user back to the desktop for a new code.
+              if (payload.host) setHost(String(payload.host))
+              if (payload.port) setPort(String(payload.port))
+              if (payload.code) setPairCode(String(payload.code))
+              pair(payload)
+            }}
+          />
+        )}
       </ScrollView>
     </KeyboardAvoidingView>
   )

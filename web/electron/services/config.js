@@ -125,6 +125,16 @@ const DEFAULTS = {
   // of them destroy data on one side.
   cloudFirstSyncChoice: '',
 
+  // ─── Mobile pairing ────────────────────────────────────────────
+  // Phones paired to this desktop. Each carries its own token — stored as a
+  // sha256 hash, so this file leaking does not hand anyone working access — plus
+  // an issue date and an expiry. The old model was one shared token that never
+  // aged out and could not be withdrawn from a single lost phone.
+  mobileDevices: [],
+  // Days a device token stays valid. 0 means never expires, which is a choice
+  // rather than an oversight and is treated as one.
+  mobileTokenTtlDays: 90,
+
   // ─── Review before submit ──────────────────────────────────────
   // When on, a job that clears the match threshold is drafted in full but
   // parked as 'held' rather than submitted. Nothing reaches an employer until

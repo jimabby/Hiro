@@ -1082,6 +1082,30 @@ ipcMain.handle('scheduler:getBatchSchedule', () => {
 // ─── IPC: Mobile Companion API ───────────────────────────────────
 ipcMain.handle('mobile:getInfo', () => mobileApi.getInfo())
 
+// QR pairing. The SVG is rendered in the main process because the renderer has
+// no network access and no module loader — it just draws what it is handed.
+ipcMain.handle('mobile:startPairing', async () => {
+  try {
+    const session = mobileApi.startPairing()
+    let svg = ''
+    try {
+      svg = await require('qrcode').toString(session.payload, {
+        type: 'svg', margin: 1, errorCorrectionLevel: 'M',
+      })
+    } catch (err) {
+      // A missing renderer must not block pairing — the code can still be typed.
+      svg = ''
+    }
+    return { ...session, svg }
+  } catch (err) {
+    return { error: err.message }
+  }
+})
+ipcMain.handle('mobile:cancelPairing', () => mobileApi.cancelPairing())
+ipcMain.handle('mobile:listDevices', () => mobileApi.listDevices())
+ipcMain.handle('mobile:revokeDevice', (_, id) => mobileApi.revokeDevice(id))
+ipcMain.handle('mobile:revokeAllDevices', () => mobileApi.revokeAllDevices())
+
 ipcMain.handle('mobile:setEnabled', (_, enabled) => {
   configService.update({ mobileApiEnabled: !!enabled })
   return enabled ? mobileApi.start() : mobileApi.stop()

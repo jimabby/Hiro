@@ -555,6 +555,8 @@ export default function Settings({ showToast, active }) {
   const [sweepResult, setSweepResult] = useState(null)
   const [inboxResult, setInboxResult] = useState(null)
   const [mobileInfo, setMobileInfo] = useState(null)
+  const [pairingSession, setPairingSession] = useState(null)
+  const [pairedDevices, setPairedDevices] = useState(null)
   const [mobileBusy, setMobileBusy] = useState(false)
   const [cloudStatus, setCloudStatus] = useState(null)
   // null = not opened yet; an array = loaded (possibly empty).
@@ -1133,8 +1135,102 @@ export default function Settings({ showToast, active }) {
               }}>Regenerate</button>
             </div>
             <p style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 10, marginBottom: 0 }}>
-              In the mobile app, enter the server address and token above to connect.
+              The token above is shared by every phone that has ever used it and never expires.
+              Pairing below gives each phone its own token instead — one you can age out and
+              withdraw from a single lost device.
             </p>
+
+            {/* ── QR pairing ───────────────────────────────────── */}
+            <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+              {!pairingSession ? (
+                <button className="btn" style={{ fontSize: 12 }} onClick={async () => {
+                  const s = await window.api.startPairing?.()
+                  if (s?.error) return showToast?.(`Could not start pairing: ${s.error}`, 'error')
+                  setPairingSession(s)
+                }}>Pair a phone</button>
+              ) : (
+                <div>
+                  <div style={{ display: 'flex', gap: 18, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                    {pairingSession.svg && (
+                      // Rendered in the main process; the renderer only draws it.
+                      <div
+                        style={{ background: '#fff', padding: 8, borderRadius: 8, width: 180, height: 180 }}
+                        dangerouslySetInnerHTML={{ __html: pairingSession.svg }}
+                      />
+                    )}
+                    <div style={{ flex: 1, minWidth: 220 }}>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
+                        Scan this in the Hiro app, or type the code:
+                      </div>
+                      <code style={{ fontSize: 22, letterSpacing: 3, fontWeight: 600 }}>
+                        {pairingSession.code}
+                      </code>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>
+                        Address: <code>{(pairingSession.addresses || [])[0] || '—'}:{pairingSession.port}</code>
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
+                        Single use, and expires{' '}
+                        {new Date(pairingSession.expiresAt).toLocaleTimeString()}.
+                      </div>
+                      <button className="btn btn-ghost" style={{ fontSize: 11, marginTop: 10 }} onClick={async () => {
+                        await window.api.cancelPairing?.()
+                        setPairingSession(null)
+                        setPairedDevices(await window.api.listPairedDevices?.() || [])
+                      }}>Done</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Trusted devices */}
+              <div style={{ marginTop: 14 }}>
+                <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={async () => {
+                  if (pairedDevices) return setPairedDevices(null)
+                  setPairedDevices(await window.api.listPairedDevices?.() || [])
+                }}>{pairedDevices ? 'Hide paired phones' : 'Show paired phones'}</button>
+
+                {pairedDevices && (
+                  <div style={{ marginTop: 10 }}>
+                    {pairedDevices.length === 0 && (
+                      <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                        No phones paired yet. Anything still connecting is using the shared token above.
+                      </p>
+                    )}
+                    {pairedDevices.map(d => (
+                      <div key={d.id} style={{
+                        display: 'flex', alignItems: 'center', gap: 10, background: 'var(--surface2)',
+                        borderRadius: 8, padding: '8px 10px', marginBottom: 6, fontSize: 12,
+                      }}>
+                        <div style={{ flex: 1 }}>
+                          <strong>{d.name}</strong>
+                          {d.expired && <span style={{ color: 'var(--red)' }}> · expired</span>}
+                          <div style={{ color: 'var(--text-muted)' }}>
+                            {d.platform} · paired {new Date(d.createdAt).toLocaleDateString()}
+                            {' · last seen '}{new Date(d.lastSeenAt).toLocaleString()}
+                            {d.expiresAt && ` · expires ${new Date(d.expiresAt).toLocaleDateString()}`}
+                          </div>
+                        </div>
+                        <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }}
+                          onClick={async () => {
+                            const r = await window.api.revokePairedDevice?.(d.id)
+                            showToast?.(r?.success ? `${d.name} revoked` : `Could not revoke: ${r?.reason}`,
+                              r?.success ? 'success' : 'error')
+                            setPairedDevices(await window.api.listPairedDevices?.() || [])
+                          }}>Revoke</button>
+                      </div>
+                    ))}
+                    {pairedDevices.length > 0 && (
+                      <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={async () => {
+                        if (!window.confirm('Revoke every paired phone? Each will need pairing again.')) return
+                        await window.api.revokeAllPairedDevices?.()
+                        setPairedDevices(await window.api.listPairedDevices?.() || [])
+                        showToast?.('All phones revoked', 'success')
+                      }}>Revoke all</button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
             {/* The token and the data it returns cross the network unencrypted,
                 so the choice of network is a security decision the user has to
                 be able to make knowingly. */}

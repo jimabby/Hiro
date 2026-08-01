@@ -2,6 +2,7 @@ const http = require('http')
 const os = require('os')
 const crypto = require('crypto')
 const configService = require('./config')
+const pairing = require('./pairing')
 const database = require('./database')
 const scheduler = require('./scheduler')
 const logger = require('./logger')
@@ -59,9 +60,20 @@ function authCheck(ip, token) {
   const entry = failures.get(ip)
   if (entry?.until > now) return { ok: false, retryAfter: Math.ceil((entry.until - now) / 1000) }
 
+  // A paired device presents its own token. Checked first because it is the
+  // path every phone should be on; the shared token stays valid so an install
+  // that paired before per-device tokens existed keeps working until it is
+  // re-paired, rather than silently losing access on upgrade.
+  const device = pairing.verifyDeviceToken(configService, token)
+  if (device) {
+    failures.delete(ip)
+    pairing.touchDevice(configService, device.id)
+    return { ok: true, device }
+  }
+
   if (timingSafeEqualStr(token, getToken())) {
     failures.delete(ip)
-    return { ok: true }
+    return { ok: true, legacy: true }
   }
 
   // `until: 0` means "counting failures, not locked out" — only a lockout that
@@ -149,6 +161,39 @@ function readBody(req) {
   })
 }
 
+// Exchange a pairing code for a token belonging to this phone alone.
+//
+// A wrong code counts against the same lockout as a wrong bearer token, so this
+// endpoint cannot be used to grind through the code space any faster than the
+// authenticated ones can be ground through the token space.
+async function handlePair(req, res, ip) {
+  let body
+  try {
+    body = await readBody(req)
+  } catch (err) {
+    return json(res, 400, { error: err.message })
+  }
+
+  const attempt = pairing.consumePairingCode(body.code)
+  if (!attempt.ok) {
+    const check = authCheck(ip, '') // deliberately fails: records the attempt
+    if (check.retryAfter) {
+      res.setHeader('Retry-After', String(check.retryAfter))
+      return json(res, 429, { error: 'Too many failed attempts — try again later.' })
+    }
+    return json(res, 401, { error: attempt.reason })
+  }
+
+  const { token, device } = pairing.issueDeviceToken(configService, {
+    name: body.deviceName,
+    platform: body.platform,
+  })
+  failures.delete(ip)
+  logger.append(`Mobile API: paired "${device.name}" (${device.platform})`)
+  // The token is returned exactly once. Only its hash is kept here.
+  return json(res, 200, { token, device, host: os.hostname() })
+}
+
 // Strip heavy text fields from list responses — the phone fetches detail separately
 function slimApplication(a) {
   const { tailored_resume, cover_letter, screening_qa, job_description, ...rest } = a
@@ -181,6 +226,14 @@ async function handle(req, res) {
   if (!isPrivateAddress(ip)) {
     logger.append(`Mobile API: refused non-local client ${ip}`)
     return json(res, 403, { error: 'Forbidden' })
+  }
+
+  // Pairing is the one endpoint that cannot require a token, because it is how
+  // a token is obtained. It is not unprotected: the private-address check above
+  // has already run, the pairing code is single-use and expires in minutes, and
+  // failed attempts feed the same lockout counter as a bad bearer token.
+  if (req.method === 'POST' && path === '/api/pair') {
+    return handlePair(req, res, ip)
   }
 
   const check = authCheck(ip, token)
@@ -363,7 +416,39 @@ function getInfo() {
     port: cfg.mobileApiPort || 4823,
     token: cfg.mobileApiToken || '',
     addresses: getLanAddresses(),
+    // Paired phones, each with its own token. The shared token above is kept
+    // only so installs that paired before this existed keep working.
+    devices: pairing.listDevices(configService),
+    tokenTtlDays: pairing.normaliseTtlDays(cfg.mobileTokenTtlDays),
+    pairingCode: pairing.getActiveCode(),
   }
 }
 
-module.exports = { start, stop, getInfo, regenerateToken, isPrivateAddress }
+// Start a pairing window. The code is short-lived and single-use, so this is
+// safe to leave on screen for the minute it takes to point a phone at it.
+function startPairing() {
+  const issued = pairing.createPairingCode()
+  const info = getInfo()
+  // What the QR encodes. The phone needs all three or the code is useless — an
+  // address it cannot reach is not a pairing.
+  const payload = JSON.stringify({
+    v: 1,
+    host: info.addresses[0] || '127.0.0.1',
+    port: info.port,
+    code: issued.code,
+  })
+  return { ...issued, payload, addresses: info.addresses, port: info.port }
+}
+
+function cancelPairing() {
+  pairing.clearPairingCode()
+  return { success: true }
+}
+
+module.exports = {
+  startPairing, cancelPairing,
+  listDevices: () => pairing.listDevices(configService),
+  revokeDevice: (id) => pairing.revokeDevice(configService, id),
+  revokeAllDevices: () => pairing.revokeAll(configService),
+  start, stop, getInfo, regenerateToken, isPrivateAddress,
+}

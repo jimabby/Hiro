@@ -36,6 +36,12 @@
             "usesCleartextTraffic": true
           }
         }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Hiro uses the camera only to scan the pairing code shown by the Hiro desktop app."
+        }
       ]
     ]
   }
