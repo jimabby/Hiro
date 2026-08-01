@@ -1,5 +1,10 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { View, Text, TouchableOpacity, StyleSheet, SafeAreaView, Platform } from 'react-native'
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native'
+// React Native's own SafeAreaView is iOS-only and deprecated as of 0.80, and
+// SDK 54 draws Android edge-to-edge by default — so the old hardcoded 32px
+// Android padding would sit the header under some status bars and the tab bar
+// under the gesture nav. This one measures the real insets on both platforms.
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
 import { StatusBar } from 'expo-status-bar'
 // The stored connection carries the LAN bearer token, so it goes to the
 // Keychain/Keystore rather than an unencrypted AsyncStorage file.
@@ -21,6 +26,14 @@ const TABS = [
 ]
 
 export default function App() {
+  return (
+    <SafeAreaProvider>
+      <AppContent />
+    </SafeAreaProvider>
+  )
+}
+
+function AppContent() {
   const [connection, setConnection] = useState(undefined) // undefined = loading
   const [tab, setTab] = useState('dashboard')
 
@@ -107,7 +120,6 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: colors.bg,
-    paddingTop: Platform.OS === 'android' ? 32 : 0,
   },
   content: { flex: 1 },
   tabBar: {

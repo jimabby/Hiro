@@ -181,6 +181,29 @@ bundled copy, falling back to Playwright's own cache in a development run.
 Installed builds check for updates once a day. Nothing downloads or installs
 without you asking, and a restart is refused while a scan or apply is running.
 
+### Cutting a release
+
+Every push and pull request to `main` runs `.github/workflows/ci.yml`: the
+desktop test suites, a mobile install/config check, and a production-dependency
+audit. To ship:
+
+```bash
+# 1. Bump the version in web/package.json, commit, and wait for CI to go green.
+# 2. Tag it — the tag must match that version exactly.
+git tag v1.1.0 && git push origin v1.1.0
+```
+
+`.github/workflows/release.yml` then re-runs the tests, refuses the tag if it
+disagrees with `web/package.json`, and builds on macOS, Windows and Linux in
+parallel. Each runner downloads its own platform's Chromium so the installer
+ships with one. The installers and the `latest*.yml` update manifests are
+uploaded to a **draft** GitHub release — review it, then publish, and installed
+copies see the update on their next daily check.
+
+Builds are unsigned; no Apple or Windows signing certificate is configured, so
+first launch shows the usual OS warning. Use the workflow's manual trigger
+(`Run workflow`, dry run) to produce installers without publishing anything.
+
 ---
 
 ## Platform Login

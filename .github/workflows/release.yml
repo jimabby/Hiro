@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build the installers but do not publish a release'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write # electron-builder uploads the installers to the GitHub release
+
+jobs:
+  verify:
+    name: Verify tag
+    runs-on: ubuntu-latest
+    env:
+      HIRO_SKIP_BROWSER_INSTALL: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # A tag that disagrees with package.json ships an installer whose
+      # auto-updater compares against the wrong version forever. Catch it before
+      # three platform builds run.
+      - name: Tag must match web/package.json version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./web/package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match web/package.json version $pkg" >&2
+            exit 1
+          fi
+          echo "Releasing $pkg"
+
+      - run: npm ci --prefix web
+
+      - run: npm test --prefix web
+
+  build:
+    name: Build ${{ matrix.os }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # No Apple Developer certificate is configured, so builds are unsigned.
+      # Without this, electron-builder searches the keychain and fails the mac
+      # job rather than producing an unsigned DMG.
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # Chromium is NOT skipped here — each runner downloads its own platform
+      # build so electron-builder can bundle it into that platform's installer.
+      - run: npm ci --prefix web
+
+      - name: Build and publish
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        run: npm run build:publish --prefix web
+
+      - name: Build only
+        if: "!(startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true)"
+        run: npm run build:dry --prefix web
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.os }}
+          retention-days: 14
+          path: |
+            web/dist-electron/*.dmg
+            web/dist-electron/*.exe
+            web/dist-electron/*.AppImage
+            web/dist-electron/*.yml
+          if-no-files-found: error

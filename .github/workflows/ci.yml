@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push to the same branch makes the in-flight run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    name: Desktop tests
+    runs-on: ubuntu-latest
+    env:
+      # The unit suites never launch a browser, so skip the 150 MB Chromium
+      # download that postinstall would otherwise do on every run.
+      HIRO_SKIP_BROWSER_INSTALL: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci --prefix web
+
+      - run: npm test --prefix web
+
+  mobile:
+    name: Mobile install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      # There is no mobile test suite yet. This at least proves the lockfile
+      # resolves and the Expo config parses against the installed SDK, which is
+      # what silently breaks on a dependency bump.
+      - run: npm ci --prefix app
+
+      - run: npx expo config --type public
+        working-directory: app
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    env:
+      HIRO_SKIP_BROWSER_INSTALL: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - run: npm ci --prefix web
+
+      - run: npm ci --prefix app
+
+      # Only shipped code gates the build. Build-toolchain advisories (Expo CLI,
+      # Metro, Vite) live on developer machines and would block every PR on
+      # something no release can act on; `npm audit` without --omit=dev is the
+      # way to see those deliberately.
+      - name: Audit desktop production dependencies
+        run: npm audit --omit=dev --audit-level=high --prefix web
+
+      # Lower bar than desktop, deliberately. `expo` depends on `@expo/cli` as a
+      # regular dependency, so --omit=dev cannot separate the build toolchain
+      # from what actually ships in the binary; on SDK 54 the residual highs are
+      # all inside that CLI (postcss, via Metro's web CSS path) and clear only
+      # on a major SDK bump. Gating at high would block every PR on something no
+      # release can act on.
+      - name: Audit mobile production dependencies
+        run: npm audit --omit=dev --audit-level=critical --prefix app
