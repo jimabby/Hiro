@@ -1080,6 +1080,28 @@ ipcMain.handle('scheduler:getBatchSchedule', () => {
 })
 
 // ─── IPC: Mobile Companion API ───────────────────────────────────
+ipcMain.handle('automation:health', () => {
+  const cfg = configService.load()
+  const platforms = []
+  if (cfg.enableSeek) platforms.push('Seek')
+  if (cfg.enableIndeed) platforms.push('Indeed')
+  if (cfg.enableLinkedIn) platforms.push('LinkedIn')
+  if (cfg.enableAtsBoards && (cfg.atsBoards || []).length > 0) platforms.push('ATS')
+
+  const sessions = {
+    Seek: seekSession.hasCookies(),
+    Indeed: indeedSession.hasCookies(),
+    LinkedIn: linkedinSession.hasCookies(),
+  }
+  return require('./services/automationHealth').summarise(platforms).map(h => ({
+    ...h,
+    // A platform with no stored login cannot work at all, whatever the event
+    // log says — report that before any subtler diagnosis.
+    hasSession: sessions[h.platform] !== undefined ? sessions[h.platform] : null,
+  }))
+})
+ipcMain.handle('automation:clearHealth', () => database.clearAutomationEvents())
+
 ipcMain.handle('mobile:getInfo', () => mobileApi.getInfo())
 
 // QR pairing. The SVG is rendered in the main process because the renderer has

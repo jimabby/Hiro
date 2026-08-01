@@ -6,6 +6,7 @@ const aiAdapter = require('./ai/index')
 const database = require('./database')
 const { randomDelay, stripMarkdown } = require('./scraper/utils')
 const { parseClosingDate } = require('./dateParser')
+const automationHealth = require('./automationHealth')
 
 // Pick the resume to use for a given job. A rule matches when any of its
 // comma-separated keywords appears in the job title or description; the first
@@ -170,11 +171,18 @@ async function doRun(cfg, { log, notifyAttention }) {
         // back off or re-authenticate rather than assuming there are no jobs.
         blocked.push({ platform: name, kind: err.kind, message: err.message })
         log(`${name}: BLOCKED — ${err.message}`)
+        automationHealth.recordScrape(name, { blocked: true })
       } else {
         log(`${name}: scrape error — ${err.message}`)
+        automationHealth.recordScrape(name, { error: err.message })
       }
       continue
     }
+
+    // A zero-result scrape that was not blocked and did not error is the exact
+    // shape of a scraper whose selectors have moved. One is meaningless; a run
+    // of them is the only warning this failure mode ever gives.
+    automationHealth.recordScrape(name, { found: jobs.length })
 
     const blacklist = (cfg.blacklistedCompanies || []).map(c => String(c).toLowerCase())
     // Defensive on both sides: a listing with no company name (a malformed card,
@@ -401,6 +409,11 @@ async function doRun(cfg, { log, notifyAttention }) {
         log(`  Apply result: ${result.success ? 'SUCCESS' : 'FAILED — ' + result.reason}`)
       } catch (err) {
         result = { success: false, reason: err.message }
+      }
+      // Declining at the submission check is a decision, not a malfunction, and
+      // must not count against the platform's health.
+      if (!result.cancelledByUser) {
+        automationHealth.recordApply(name, { success: result.success, reason: result.reason })
       }
 
       if (result.success) {

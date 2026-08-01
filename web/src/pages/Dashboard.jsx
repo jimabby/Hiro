@@ -193,6 +193,9 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
   const [statusHistory, setStatusHistory] = useState([])
   // Version history: the frozen record of what each employer actually received.
   const [snapshots, setSnapshots] = useState([])
+  // Per-platform verdicts. Empty until the first load, so the panel simply does
+  // not render rather than flashing a false all-clear.
+  const [automationHealth, setAutomationHealth] = useState([])
   const [openSnapshot, setOpenSnapshot] = useState(null) // { snapshot, diff }
   const [loadingGap, setLoadingGap] = useState(false)
   const [pdfModal, setPdfModal] = useState(null)
@@ -226,6 +229,9 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
   useEffect(() => {
     if (!active && scanInfo) return
     window.api.getScanInfo?.().then(setScanInfo).catch(() => {})
+    // Same cadence: a scan that has just finished is exactly when the verdict
+    // changes, and a stale panel is worse than none.
+    window.api.getAutomationHealth?.().then(h => setAutomationHealth(h || [])).catch(() => {})
   }, [active, scanRunning])
 
   useEffect(() => {
@@ -519,6 +525,36 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
           </button>
         </div>
       </div>
+
+      {/* Automation health. Only shown when something is wrong: a permanent
+          green panel is furniture people stop reading, and the whole point is
+          being noticed on the one morning it matters. */}
+      {automationHealth.some(h => h.status === 'critical' || h.status === 'warning') && (
+        <div className="card" style={{
+          marginBottom: 16, padding: '12px 16px',
+          borderLeft: `3px solid ${automationHealth.some(h => h.status === 'critical') ? 'var(--red)' : 'var(--yellow, #eab308)'}`,
+        }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Automation health</div>
+          {automationHealth
+            .filter(h => h.status === 'critical' || h.status === 'warning')
+            .sort((a, b) => (a.status === 'critical' ? -1 : 1) - (b.status === 'critical' ? -1 : 1))
+            .map(h => (
+              <div key={h.platform} style={{ marginBottom: 8, fontSize: 12 }}>
+                <span style={{
+                  color: h.status === 'critical' ? 'var(--red)' : 'var(--yellow, #eab308)',
+                  fontWeight: 600,
+                }}>{h.platform}</span>
+                <span style={{ color: 'var(--text)' }}> — {h.headline}</span>
+                {h.hasSession === false && (
+                  <span style={{ color: 'var(--red)' }}> · not logged in</span>
+                )}
+                {h.advice && (
+                  <div style={{ color: 'var(--text-muted)', marginTop: 2 }}>{h.advice}</div>
+                )}
+              </div>
+            ))}
+        </div>
+      )}
 
       {/* Last-scan outcome. A toast is easy to miss and disappears — a failed
           overnight scan should still be visible the next morning. */}

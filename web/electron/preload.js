@@ -152,6 +152,8 @@ contextBridge.exposeInMainWorld('api', {
   removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel),
 
   // Mobile companion API
+  getAutomationHealth: () => ipcRenderer.invoke('automation:health'),
+  clearAutomationHealth: () => ipcRenderer.invoke('automation:clearHealth'),
   getMobileInfo: () => ipcRenderer.invoke('mobile:getInfo'),
   setMobileEnabled: (enabled) => ipcRenderer.invoke('mobile:setEnabled', enabled),
   regenerateMobileToken: () => ipcRenderer.invoke('mobile:regenerateToken'),

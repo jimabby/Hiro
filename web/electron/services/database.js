@@ -167,6 +167,18 @@ function createTables() {
       deleted_at TEXT DEFAULT (datetime('now'))
     );
 
+    -- Per-platform automation events, so a scraper that quietly stopped working
+    -- can be told apart from a search that genuinely has no results. Bounded by
+    -- pruning, not by retention rules: this is a diagnostic, not history.
+    CREATE TABLE IF NOT EXISTS automation_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      platform TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      detail TEXT,
+      count INTEGER DEFAULT 0,
+      at TEXT DEFAULT (datetime('now'))
+    );
+
     -- Every time sync had to pick a winner, and what it discarded.
     --
     -- The desktop wins when both sides changed since the last sync, because it
@@ -264,6 +276,7 @@ function migrate() {
   try { db.run('CREATE INDEX IF NOT EXISTS idx_history_app ON status_history(application_id)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_snapshots_app ON application_snapshots(application_id, taken_at)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_conflicts_at ON sync_conflicts(detected_at DESC)') } catch {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_automation_platform ON automation_events(platform, at DESC)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_interview_app ON interview_events(application_id)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_interview_at ON interview_events(scheduled_at)') } catch {}
 }
@@ -487,6 +500,31 @@ function rejectHeldApplication(id) {
   run(`UPDATE applications SET status = 'skipped', held_at = NULL,
        updated_at = datetime('now'), cloud_dirty = 1 WHERE id = ?`, [id])
   if (current && current.status !== 'skipped') recordStatusChange(id, 'skipped')
+  return { success: true }
+}
+
+// ─── Automation health events ────────────────────────────────────
+
+function recordAutomationEvent({ platform, kind, detail, count }) {
+  if (!platform || !kind) return { success: false }
+  run('INSERT INTO automation_events (platform, kind, detail, count) VALUES (?, ?, ?, ?)',
+    [platform, kind, detail == null ? null : String(detail).slice(0, 500), Number(count) || 0])
+  // Keep the log to a working window per platform. Unbounded growth would make
+  // a diagnostic table the biggest thing in the database.
+  run(`DELETE FROM automation_events
+       WHERE platform = ?
+         AND id NOT IN (SELECT id FROM automation_events WHERE platform = ? ORDER BY id DESC LIMIT 200)`,
+    [platform, platform])
+  return { success: true }
+}
+
+function getAutomationEvents(platform, limit = 40) {
+  const n = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 40
+  return query(`SELECT * FROM automation_events WHERE platform = ? ORDER BY id DESC LIMIT ${n}`, [platform])
+}
+
+function clearAutomationEvents() {
+  run('DELETE FROM automation_events')
   return { success: true }
 }
 
@@ -1496,6 +1534,7 @@ module.exports = {
   findRecentApplicationToCompany, insertApplication, updateApplicationStatus,
   getHeldApplications, markHeldApplied, rejectHeldApplication,
   recordSnapshot, getSnapshots, getSnapshot, getSnapshotDiff, restoreSnapshot,
+  recordAutomationEvent, getAutomationEvents, clearAutomationEvents,
   recordSyncConflict, getSyncConflicts, countSyncConflicts, clearSyncConflicts, applyConflictResolution,
   getResumeConversion, recordAiUsage, getAiUsageSummary, getMonthlyAiSpend, pruneAiUsage, clearAiUsage,
   UNSENT_STATUSES,
