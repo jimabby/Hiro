@@ -412,6 +412,7 @@ ipcMain.handle('linkedin:logout', () => {
 // Shared with the scheduler; routes answers by question id so two concurrent
 // apply flows can never consume each other's answers.
 const { makeAskQuestion } = require('./services/askQuestion')
+const { makeConfirmSubmit } = require('./services/confirmSubmit')
 
 // ─── IPC: Screening answer from user ────────────────────────────
 // (Renderer sends this via ipcRenderer.send — not invoke)
@@ -1084,7 +1085,15 @@ ipcMain.handle('review:list', () => database.getHeldApplications())
 
 ipcMain.handle('review:approve', async (_, id) => {
   try {
-    const cfg = { ...configService.load(), askQuestion: makeAskQuestion(mainWindow) }
+    // confirmSubmit is supplied only here: these are user-initiated, so
+    // there is someone present to answer. A scheduled scan gets no
+    // callback and proceeds without blocking on a modal.
+    const saved = configService.load()
+    const cfg = {
+      ...saved,
+      askQuestion: makeAskQuestion(mainWindow),
+      confirmSubmit: saved.confirmBeforeSubmit ? makeConfirmSubmit(mainWindow) : undefined,
+    }
     return await applicator.approveHeldApplication(id, cfg, reviewLog)
   } catch (err) {
     return { success: false, reason: err.message }
@@ -1096,7 +1105,15 @@ ipcMain.handle('review:approve', async (_, id) => {
 ipcMain.handle('review:approveMany', async (_, ids) => {
   if (!Array.isArray(ids) || ids.length === 0) return { success: false, reason: 'No applications selected' }
   try {
-    const cfg = { ...configService.load(), askQuestion: makeAskQuestion(mainWindow) }
+    // confirmSubmit is supplied only here: these are user-initiated, so
+    // there is someone present to answer. A scheduled scan gets no
+    // callback and proceeds without blocking on a modal.
+    const saved = configService.load()
+    const cfg = {
+      ...saved,
+      askQuestion: makeAskQuestion(mainWindow),
+      confirmSubmit: saved.confirmBeforeSubmit ? makeConfirmSubmit(mainWindow) : undefined,
+    }
     return await applicator.approveHeldApplications(ids, cfg, reviewLog)
   } catch (err) {
     return { success: false, reason: err.message }

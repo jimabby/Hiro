@@ -73,6 +73,8 @@ contextBridge.exposeInMainWorld('api', {
   // answer must echo the id back so it reaches the apply flow that asked.
   onQuestionAsk: (cb) => ipcRenderer.on('question:ask', (_, payload) => cb(payload)),
   sendQuestionAnswer: (payload) => ipcRenderer.send('question:answer', payload),
+  onSubmitReview: (cb) => ipcRenderer.on('submit:review', (_, payload) => cb(payload)),
+  sendSubmitConfirm: (payload) => ipcRenderer.send('submit:confirm', payload),
 
   // Export CSV
   exportCSV: (filters) => ipcRenderer.invoke('db:exportCSV', filters),

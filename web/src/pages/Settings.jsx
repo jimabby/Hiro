@@ -1821,6 +1821,21 @@ export default function Settings({ showToast, active }) {
             <span>Hold applications for review instead of submitting automatically</span>
           </label>
 
+          <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, cursor: 'pointer', marginTop: 10 }}>
+            <input
+              type="checkbox"
+              checked={!!form.confirmBeforeSubmit}
+              onChange={e => set('confirmBeforeSubmit', e.target.checked)}
+            />
+            <span>Show me the screening answers before each one is sent</span>
+          </label>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6, marginLeft: 28 }}>
+            Screening answers are written while the employer’s form is being filled in, so they cannot
+            be shown on the Review page — there is nothing to show until then. With this on, approving
+            pauses at the last step and asks. Only applies to submissions you start; a scheduled scan
+            never waits on it.
+          </p>
+
           {form.reviewBeforeSubmit && (
             <div className="form-group" style={{ marginTop: 14 }}>
               <label>Auto-submit jobs scoring at least (%)</label>

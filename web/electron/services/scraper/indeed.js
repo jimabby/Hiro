@@ -1,7 +1,7 @@
 const { chromium } = require('playwright-extra')
 const StealthPlugin = require('puppeteer-extra-plugin-stealth')
 chromium.use(StealthPlugin())
-const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown, verifySubmission, gotoResultsPage } = require('./utils')
+const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown, verifySubmission, confirmSubmission, gotoResultsPage } = require('./utils')
 const indeedSession = require('../indeedSession')
 const aiAdapter = require('../ai/index')
 const database = require('../database')
@@ -443,6 +443,16 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
       if (submitBtn) {
         await submitBtn.scrollIntoViewIfNeeded().catch(() => {})
         await randomDelay(1000, 2000)
+
+        // Last checkpoint. The answers exist only now, so this is the earliest
+        // honest preview of what the employer is about to receive.
+        const approved = await confirmSubmission(cfg, {
+          platform: 'Indeed', jobUrl, screeningQa,
+        })
+        if (!approved) {
+          return { success: false, cancelledByUser: true, reason: 'Cancelled at the submission check — nothing was sent.', screeningQa }
+        }
+
         await submitBtn.evaluate(el => el.click())
         await randomDelay(3000, 5000)
         const check = await verifySubmission(workFrame)

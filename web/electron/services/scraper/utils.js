@@ -102,6 +102,30 @@ async function gotoResultsPage(page, url, platform) {
   if (block.blocked) throw new BlockedError(platform, block.kind)
 }
 
+// The last checkpoint before an application reaches an employer: show the user
+// the answers about to be sent and wait for a yes.
+//
+// Screening answers cannot be previewed earlier than this. They don't exist
+// until the form filler has walked the wizard, so the moment just before the
+// final click is the first point at which there is anything true to show.
+//
+// The two "no callback" cases are deliberately opposite:
+//
+//   absent  → proceed. A scheduled 3am scan has nobody at the keyboard, and
+//             main.js only supplies the callback for user-initiated submits.
+//             Blocking here would hang the scan on a modal no one will answer.
+//   throws  → stop. We asked and never learned the answer, and an unattended
+//             send is exactly what this gate exists to prevent. Anything other
+//             than an explicit `true` is treated as a no.
+async function confirmSubmission(cfg, details) {
+  if (typeof cfg?.confirmSubmit !== 'function') return true
+  try {
+    return (await cfg.confirmSubmit(details)) === true
+  } catch {
+    return false
+  }
+}
+
 // After clicking a final submit button, look for signs the submission was NOT
 // accepted (visible validation error, CAPTCHA) — previously a mere click was
 // recorded as "applied" and the job skipped forever even if nothing went
@@ -808,4 +832,4 @@ async function buildAnalyticsReportPDF(data) {
   })
 }
 
-module.exports = { randomUserAgent, randomDelay, humanType, stripMarkdown, verifySubmission, detectBlock, blockReason, BlockedError, gotoResultsPage, buildResumePDF, buildResumeDocx, buildCoverLetterPDF, buildAnalyticsReportPDF, tailorDocx, buildResumeFile }
+module.exports = { randomUserAgent, randomDelay, humanType, stripMarkdown, verifySubmission, confirmSubmission, detectBlock, blockReason, BlockedError, gotoResultsPage, buildResumePDF, buildResumeDocx, buildCoverLetterPDF, buildAnalyticsReportPDF, tailorDocx, buildResumeFile }

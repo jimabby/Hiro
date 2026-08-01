@@ -1,5 +1,5 @@
 const { chromium } = require('playwright')
-const { randomDelay, randomUserAgent, buildResumeFile, verifySubmission, gotoResultsPage } = require('./utils')
+const { randomDelay, randomUserAgent, buildResumeFile, verifySubmission, confirmSubmission, gotoResultsPage } = require('./utils')
 const linkedinSession = require('../linkedinSession')
 const aiAdapter = require('../ai/index')
 const database = require('../database')
@@ -341,6 +341,16 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
       if (submitBtn) {
         await submitBtn.scrollIntoViewIfNeeded().catch(() => {})
         await randomDelay(1000, 2000)
+
+        // Last checkpoint. The answers exist only now, so this is the earliest
+        // honest preview of what the employer is about to receive.
+        const approved = await confirmSubmission(cfg, {
+          platform: 'LinkedIn', jobUrl, screeningQa,
+        })
+        if (!approved) {
+          return { success: false, cancelledByUser: true, reason: 'Cancelled at the submission check — nothing was sent.', screeningQa }
+        }
+
         await submitBtn.evaluate(el => el.click())
         await randomDelay(3000, 5000)
         const check = await verifySubmission(page)

@@ -37,6 +37,8 @@ export default function App() {
   const [resumeUploading, setResumeUploading] = useState(false)
   const [question, setQuestion] = useState(null)
   const [questionAnswer, setQuestionAnswer] = useState('')
+  // Final checkpoint before an approved draft reaches an employer.
+  const [submitReview, setSubmitReview] = useState(null)
   const [scanMode, setScanMode] = useState('real') // 'real' | 'dry' — used by the resume-required flow
 
   const showToast = useCallback((msg, type = 'info') => {
@@ -113,10 +115,13 @@ export default function App() {
       setQuestionAnswer('')
     })
 
+    window.api.onSubmitReview?.((payload) => setSubmitReview(payload))
+
     return () => {
       window.api.removeAllListeners('notification')
       window.api.removeAllListeners('automation:log')
       window.api.removeAllListeners('question:ask')
+      window.api.removeAllListeners('submit:review')
       window.api.removeAllListeners('update:status')
     }
   }, [showToast])
@@ -356,6 +361,58 @@ export default function App() {
               <button className="btn btn-primary" onClick={handleResumeUpload} disabled={resumeUploading}>
                 {resumeUploading ? 'Uploading...' : 'Upload Resume'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Final submission check. The browser is sitting on the employer's
+          review step with the form filled in; nothing is sent until this is
+          answered, and closing the app or walking away counts as "no". */}
+      {submitReview && (
+        <div className="modal-overlay" style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 310, padding: 24,
+        }}>
+          <div className="card modal-content" style={{ width: 620, maxHeight: '85vh', overflowY: 'auto' }}>
+            <h2 style={{ fontSize: 16, marginBottom: 8 }}>Send this application?</h2>
+            <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 14 }}>
+              The form is filled in and one click from being submitted
+              {submitReview.platform ? ` on ${submitReview.platform}` : ''}. These are the answers that
+              will go with it.
+            </p>
+
+            {submitReview.screeningQa?.length > 0 ? (
+              <div style={{ marginBottom: 14 }}>
+                {submitReview.screeningQa.map((qa, i) => (
+                  <div key={i} style={{
+                    padding: '10px 14px', background: 'var(--surface2)', borderRadius: 8,
+                    marginBottom: 8, fontSize: 13, borderLeft: '3px solid var(--accent)',
+                  }}>
+                    <div style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 4 }}>{qa.question}</div>
+                    <div>
+                      {qa.answer}
+                      <span style={{ color: 'var(--text-muted)', fontSize: 12 }}> · answered by {qa.source}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p style={{ fontSize: 13, marginBottom: 14 }}>
+                This application had no screening questions.
+              </p>
+            )}
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn btn-ghost" onClick={() => {
+                window.api.sendSubmitConfirm({ id: submitReview.id, approved: false })
+                setSubmitReview(null)
+                showToast('Not sent — the draft is still held for review', 'info')
+              }}>Don’t send</button>
+              <button className="btn btn-primary" onClick={() => {
+                window.api.sendSubmitConfirm({ id: submitReview.id, approved: true })
+                setSubmitReview(null)
+              }}>Send application</button>
             </div>
           </div>
         </div>

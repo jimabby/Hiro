@@ -127,6 +127,15 @@ const DEFAULTS = {
   // safety net.
   autoSubmitThreshold: null,
 
+  // Pause at the last moment before an approved draft is sent and show the
+  // screening answers for a final yes.
+  //
+  // This is the only point where those answers can be shown at all: they do not
+  // exist until the form filler has walked the employer's wizard, so the Review
+  // page has nothing true to display. Only applies to submissions you started —
+  // a scheduled scan has nobody at the keyboard and never blocks on it.
+  confirmBeforeSubmit: false,
+
   // ─── Background operation ──────────────────────────────────────
   // Closing the window used to quit the app on Windows/Linux, which stopped
   // every scheduled task — the daily scan, inbox checks, follow-ups and the

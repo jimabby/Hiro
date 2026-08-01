@@ -640,6 +640,12 @@ async function doApproveHeld(id, cfg, log) {
   if (result.success) {
     database.markHeldApplied(id, result.screeningQa)
     log('Submitted and moved to Applied.')
+  } else if (result.cancelledByUser) {
+    // Declining at the submission check is not a failure. The draft stays
+    // held and unchanged so it can be approved later — marking it failed
+    // would push it to Needs Attention and invite a blind retry of the very
+    // thing the user just refused.
+    log('Cancelled at the submission check — the draft is still held.')
   }
   return result
 }
@@ -669,8 +675,11 @@ async function approveHeldApplications(ids, cfg, log) {
     busy = false
   }
   const succeeded = results.filter(r => r.success).length
-  log(`Approval run finished: ${succeeded} of ${results.length} submitted.`)
-  return { success: true, succeeded, failed: results.length - succeeded, results }
+  // Drafts the user declined at the submission check are reported apart from
+  // real failures: nothing went wrong, and they are still held.
+  const declined = results.filter(r => r.cancelledByUser).length
+  log(`Approval run finished: ${succeeded} of ${results.length} submitted${declined ? `, ${declined} declined and still held` : ''}.`)
+  return { success: true, succeeded, declined, failed: results.length - succeeded - declined, results }
 }
 
 // Retry several Needs Attention jobs in one pass. Holds `busy` for the whole
