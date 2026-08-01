@@ -118,6 +118,15 @@ const DEFAULTS = {
   // the user approves it on the Review page.
   reviewBeforeSubmit: false,
 
+  // With review on, this is the escape hatch: a job scoring at or above this
+  // goes straight out, everything else waits for approval. null means every
+  // draft is held, which is what "review before submit" meant before this
+  // existed. Deliberately separate from matchThreshold — that one decides what
+  // is worth applying to at all, this one decides what is safe to send unseen,
+  // and collapsing them would make raising your standards also remove your
+  // safety net.
+  autoSubmitThreshold: null,
+
   // ─── Background operation ──────────────────────────────────────
   // Closing the window used to quit the app on Windows/Linux, which stopped
   // every scheduled task — the daily scan, inbox checks, follow-ups and the

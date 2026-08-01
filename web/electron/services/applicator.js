@@ -65,6 +65,22 @@ let cancelled = false
 // manual apply mid-scan would interleave with the scan's own submissions.
 let busy = false
 
+// Whether a scored job has to wait for approval instead of going straight to
+// the employer. Pure and exported so the rule can be tested without driving a
+// browser — this is the last gate before something irreversible happens.
+//
+// Every uncertain case holds. A missing or malformed threshold, or a job that
+// never got a score, is not evidence of high confidence, and the cost of the
+// two mistakes is nowhere near symmetric: holding a good application wastes a
+// click, auto-sending a bad one cannot be taken back.
+function shouldHoldForReview(cfg, matchScore) {
+  if (!cfg.reviewBeforeSubmit) return false
+  const gate = cfg.autoSubmitThreshold
+  if (typeof gate !== 'number' || !Number.isFinite(gate)) return true
+  if (typeof matchScore !== 'number' || !Number.isFinite(matchScore)) return true
+  return matchScore < gate
+}
+
 function isBusy() {
   return busy
 }
@@ -342,7 +358,7 @@ async function doRun(cfg, { log, notifyAttention }) {
       // Review mode: everything is drafted, nothing is sent. The documents are
       // stored on the row, so approving on the Review page submits without
       // spending another AI call.
-      if (cfg.reviewBeforeSubmit) {
+      if (shouldHoldForReview(cfg, matchScore)) {
         database.insertApplication({
           job_title: job.job_title,
           company: job.company,
@@ -365,6 +381,13 @@ async function doRun(cfg, { log, notifyAttention }) {
         log(`  Held for review (${matchScore}%) — nothing submitted`)
         await randomDelay(1500, 4000)
         continue
+      }
+
+      // Say so when review was on and this job cleared the gate anyway —
+      // otherwise a submission with review enabled looks like the setting
+      // silently failed.
+      if (cfg.reviewBeforeSubmit) {
+        log(`  Auto-submitting (${matchScore}% ≥ ${cfg.autoSubmitThreshold}% auto-submit threshold)`)
       }
 
       // Apply
@@ -682,5 +705,5 @@ async function applyAttentionJobs(jobIds, cfg, log) {
 module.exports = {
   run, cancel, isBusy, applyAttentionJob, applyAttentionJobs, applySkippedJob,
   approveHeldApplication, approveHeldApplications,
-  selectResume, // exported for tests
+  selectResume, shouldHoldForReview, // exported for tests
 }

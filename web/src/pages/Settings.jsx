@@ -1820,6 +1820,31 @@ export default function Settings({ showToast, active }) {
             />
             <span>Hold applications for review instead of submitting automatically</span>
           </label>
+
+          {form.reviewBeforeSubmit && (
+            <div className="form-group" style={{ marginTop: 14 }}>
+              <label>Auto-submit jobs scoring at least (%)</label>
+              <input
+                type="number"
+                min="0"
+                max="100"
+                placeholder="Leave empty to review everything"
+                value={form.autoSubmitThreshold ?? ''}
+                onChange={e => {
+                  const raw = e.target.value.trim()
+                  if (raw === '') return set('autoSubmitThreshold', null)
+                  const n = Number(raw)
+                  set('autoSubmitThreshold', Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : null)
+                }}
+              />
+              <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
+                {form.autoSubmitThreshold == null
+                  ? 'Empty — every draft waits for your approval.'
+                  : <>Jobs at <strong>{form.autoSubmitThreshold}%</strong> or above are sent without review. Anything
+                     lower, or a job that could not be scored, still waits for you.</>}
+              </p>
+            </div>
+          )}
         </div>
 
         {/* AI budget & reliability */}

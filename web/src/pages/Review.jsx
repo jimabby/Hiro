@@ -249,6 +249,11 @@ export default function Review({ active, showToast, onCountChange }) {
                   {detail.company} · {detail.platform}
                   {detail.match_score != null && <> · <span style={{ color: scoreColour(detail.match_score) }}>{detail.match_score}% match</span></>}
                 </div>
+                {/* Salary belongs in the approval decision, not two clicks away
+                    on the posting — it is often the reason to reject. */}
+                <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 2 }}>
+                  {detail.salary ? detail.salary : 'Salary not listed in the ad'}
+                </div>
               </div>
               <button className="btn btn-ghost" onClick={() => setDetail(null)}>Close</button>
             </div>
@@ -283,6 +288,19 @@ export default function Review({ active, showToast, onCountChange }) {
                 whiteSpace: 'pre-wrap', fontFamily: 'inherit', color: 'var(--text)', margin: 0,
                 maxHeight: 300, overflowY: 'auto',
               }}>{detail.tailored_resume || '(master resume, untailored)'}</pre>
+            </section>
+
+            {/* Screening answers are written by the form filler at submission
+                time, not when the draft is held, so there is nothing to show
+                here yet. Saying so is better than a silent omission that reads
+                like "this job had no questions". */}
+            <section style={{ marginTop: 20 }}>
+              <h3 style={{ fontSize: 13, marginBottom: 8 }}>Screening questions</h3>
+              <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0 }}>
+                Not yet written. This posting’s questions are read from the form during submission,
+                so they cannot be previewed here. Anything the AI cannot answer confidently still
+                stops and asks you while the application is being filled in.
+              </p>
             </section>
 
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 22, gap: 8 }}>
