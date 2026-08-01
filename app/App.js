@@ -1,7 +1,9 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { View, Text, TouchableOpacity, StyleSheet, SafeAreaView, Platform } from 'react-native'
 import { StatusBar } from 'expo-status-bar'
-import AsyncStorage from '@react-native-async-storage/async-storage'
+// The stored connection carries the LAN bearer token, so it goes to the
+// Keychain/Keystore rather than an unencrypted AsyncStorage file.
+import secureStore from './src/secureStore'
 import { HiroClient } from './src/api'
 import { supabase, CloudClient } from './src/supabase'
 import { colors } from './src/theme'
@@ -33,7 +35,7 @@ export default function App() {
         }
       }
       try {
-        const raw = await AsyncStorage.getItem(STORAGE_KEY)
+        const raw = await secureStore.getItem(STORAGE_KEY)
         setConnection(raw ? JSON.parse(raw) : null)
       } catch {
         setConnection(null)
@@ -50,9 +52,9 @@ export default function App() {
   const handleConnected = useCallback(async (conn) => {
     // Cloud sessions persist via Supabase; only LAN connections need storing.
     if (conn.mode === 'cloud') {
-      await AsyncStorage.removeItem(STORAGE_KEY)
+      await secureStore.removeItem(STORAGE_KEY)
     } else {
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(conn))
+      await secureStore.setItem(STORAGE_KEY, JSON.stringify(conn))
     }
     setConnection(conn)
     setTab('dashboard')
@@ -62,7 +64,7 @@ export default function App() {
     if (connection?.mode === 'cloud' && supabase) {
       await supabase.auth.signOut()
     }
-    await AsyncStorage.removeItem(STORAGE_KEY)
+    await secureStore.removeItem(STORAGE_KEY)
     setConnection(null)
   }, [connection])
 

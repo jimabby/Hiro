@@ -13,6 +13,9 @@ let rows = []
 // current set and deletes whatever the cloud still has that no longer exists.
 let interviewRows = []
 let attentionRows = []
+// Local ids the desktop recorded as deleted. This is the ONLY thing that may
+// cause a cloud row to be removed — see the restore/delete tests below.
+let tombstones = []
 const byId = (id) => rows.find(r => r.id === id)
 
 const db = {
@@ -30,6 +33,19 @@ const db = {
   markCloudSeen: (id, cloudUpdatedAt) => { const r = byId(id); if (r) r.cloud_updated_at = cloudUpdatedAt },
   getAllInterviewEventsForSync: () => interviewRows,
   getAttentionJobs: () => attentionRows,
+  countApplications: () => rows.length,
+  // Mirrors the real query: a tombstone for a row that exists again is not a
+  // deletion.
+  getTombstones: () => tombstones.filter(id => !rows.some(r => r.id === id)),
+  clearTombstones: (ids) => { tombstones = tombstones.filter(id => !ids.includes(id)) },
+  restoreApplicationFromCloud: (r) => {
+    if (rows.some(x => x.id === r.local_id)) return
+    rows.push({
+      id: r.local_id, status: r.status, comment: r.comment || '',
+      cloud_dirty: 0, updated_at: r.updated_at, cloud_updated_at: r.updated_at,
+      job_title: r.job_title, company: r.company, platform: r.platform,
+    })
+  },
   applyCloudEdit: (id, changes, cloudUpdatedAt) => {
     const r = byId(id)
     if (!r) return
@@ -170,13 +186,55 @@ const reset = () => {
 
   check('edit survives a backwards phone clock', byId(1).status, 'interview')
 
-  // ── A cloud row with no local counterpart is deleted remotely. ──
+  // ── A cloud row this device has never seen is RESTORED, not deleted. ──
+  // This is the reinstall / reset-machine case. Inferring deletion from absence
+  // meant an empty local database wiped the user's entire cloud history on the
+  // first sync after reinstalling.
   rows = []
+  remoteRows = [{
+    local_id: 99, status: 'applied', comment: 'keep me', updated_at: '2026-01-02T00:00:00Z',
+    job_title: 'Dev', company: 'Acme', platform: 'Seek',
+  }]
+  reset()
+  await cloudSync.sync()
+
+  check('unseen cloud row is NOT deleted', deletedLocalIds.includes(99), false)
+  check('unseen cloud row restored locally', byId(99)?.comment, 'keep me')
+  check('restore is reported in status', cloudSync.getStatus().lastRestore?.count, 1)
+  check('restored row is not re-pushed as dirty', upserted.length, 0)
+
+  // ── A genuine local deletion IS mirrored to the cloud. ──────────
+  rows = []
+  tombstones = [99]
   remoteRows = [{ local_id: 99, status: 'applied', comment: '', updated_at: '2026-01-02T00:00:00Z' }]
   reset()
   await cloudSync.sync()
 
-  check('orphaned cloud row deleted', deletedLocalIds.includes(99), true)
+  check('tombstoned row deleted remotely', deletedLocalIds.includes(99), true)
+  check('tombstoned row not resurrected locally', byId(99), undefined)
+  check('tombstone cleared after confirmed delete', tombstones.includes(99), false)
+
+  // ── An empty local database against a populated cloud deletes nothing. ──
+  rows = []
+  tombstones = []
+  remoteRows = [1, 2, 3].map(n => ({
+    local_id: n, status: 'applied', comment: '', updated_at: '2026-01-02T00:00:00Z',
+    job_title: 'Dev', company: 'Acme', platform: 'Seek',
+  }))
+  reset()
+  await cloudSync.sync()
+
+  check('fresh install deletes nothing from the cloud', deletedLocalIds.length, 0)
+  check('fresh install restores the whole cloud history', rows.length, 3)
+
+  // ── A tombstone whose cloud row is already gone is reaped. ──────
+  rows = []
+  tombstones = [42]
+  remoteRows = []
+  reset()
+  await cloudSync.sync()
+
+  check('settled tombstone is cleared', tombstones.includes(42), false)
 
   // ── Desktop-owned mirrors ───────────────────────────────────────
   // Interviews and attention jobs are pushed as a full set: the phone can't

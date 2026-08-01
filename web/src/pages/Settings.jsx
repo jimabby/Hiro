@@ -1132,6 +1132,15 @@ export default function Settings({ showToast, active }) {
             <p style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 10, marginBottom: 0 }}>
               In the mobile app, enter the server address and token above to connect.
             </p>
+            {/* The token and the data it returns cross the network unencrypted,
+                so the choice of network is a security decision the user has to
+                be able to make knowingly. */}
+            <p style={{ color: 'var(--amber, #d98324)', fontSize: 12, marginTop: 8, marginBottom: 0 }}>
+              ⚠ This connection is not encrypted. Use it only on networks you trust —
+              on shared or public Wi-Fi, anyone watching the traffic can capture the
+              token and read your application data. Turn this off when you're away
+              from home, or use cloud sync instead.
+            </p>
           </div>
         )}
       </div>

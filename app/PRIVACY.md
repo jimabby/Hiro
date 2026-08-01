@@ -32,13 +32,23 @@ to sign in to your Supabase project. The session token is stored securely on
 your device.
 
 **Connection settings (Wi-Fi mode only)** — the IP address, port, and pairing
-token of your desktop, stored on your device.
+token of your desktop, stored securely on your device (iOS Keychain / Android
+Keystore).
 
 ## Where your data goes
 
 **Wi-Fi (LAN) mode:** your phone communicates directly with the Hiro desktop
 app on your local network. No data leaves your network and no third party is
 involved.
+
+> **Use this on networks you trust.** LAN mode speaks plain HTTP, so the
+> pairing token and the application data it returns are not encrypted in
+> transit. Anyone able to observe traffic on the same network — public or
+> guest Wi-Fi, for instance — could capture the token and reuse it while your
+> desktop is reachable. The desktop only accepts connections from private
+> network addresses, but that does not protect you from others on the same
+> network. On an untrusted network, prefer cloud mode or leave the mobile API
+> switched off.
 
 **Cloud mode (optional):** your application data is synced to a
 [Supabase](https://supabase.com) project that **you create and own**. The

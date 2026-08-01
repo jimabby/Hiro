@@ -5,6 +5,7 @@
 
 const configService = require('./config')
 const database = require('./database')
+const logger = require('./logger')
 
 let createClient = null
 try {
@@ -19,6 +20,9 @@ let user = null
 let syncing = false
 let timer = null
 let lastError = null
+// Set when a sync pulled down rows this device had never seen, so Settings can
+// say "restored 42 applications from the cloud" instead of them just appearing.
+let lastRestore = null
 
 function getClient() {
   if (!createClient) return null
@@ -55,6 +59,10 @@ function getStatus() {
     syncing,
     lastSyncAt: cfg.lastCloudSyncAt || null,
     error: lastError,
+    lastRestore,
+    // Status is polled by the UI and can be asked for before the database has
+    // finished opening — never let a status read throw.
+    pendingDeletions: (() => { try { return database.getTombstones().length } catch { return 0 } })(),
   }
 }
 
@@ -158,21 +166,39 @@ async function pushDirty(c) {
 // comparing the phone's clock against the desktop's, which silently dropped
 // edits whenever the two clocks disagreed.
 async function pullChanges(c) {
+  // Full rows, not just the editable columns: a row this device has never seen
+  // has to be reconstructable locally, and the cloud is the only copy left.
   const { data, error } = await c
     .from('applications')
-    .select('local_id, status, comment, updated_at')
+    .select('*')
     .eq('user_id', user.id)
   if (error) throw new Error(error.message)
 
   const localIds = new Set(database.getAllApplicationIds())
-  const orphans = []
+  // Deletions this desktop actually performed. Only these may be removed from
+  // the cloud — see the note above pullChanges.
+  const tombstoned = new Set(database.getTombstones())
+  const toDeleteRemotely = []
+  const restored = []
 
   // Same reason as pushDirty: markCloudSeen/applyCloudEdit fire once per remote
   // row, and each one would otherwise serialize the whole database.
   database.batch(() => {
     for (const remote of data || []) {
       if (remote.local_id == null) continue
-      if (!localIds.has(remote.local_id)) { orphans.push(remote.local_id); continue }
+      if (!localIds.has(remote.local_id)) {
+        // Absent locally means one of two very different things, and the old
+        // code assumed the destructive one for both.
+        if (tombstoned.has(remote.local_id)) {
+          toDeleteRemotely.push(remote.local_id)
+        } else {
+          // Never seen here: fresh install, reset machine, or a row created on
+          // another desktop. Pull it down rather than destroying it.
+          database.restoreApplicationFromCloud(remote)
+          restored.push(remote.local_id)
+        }
+        continue
+      }
       const local = database.getApplication(remote.local_id)
 
       const remoteTime = remote.updated_at ? new Date(remote.updated_at).getTime() : 0
@@ -193,16 +219,28 @@ async function pullChanges(c) {
     }
   })
 
-  // The desktop is the only writer that creates rows, so a cloud row without a
-  // local counterpart means the application was deleted locally — mirror that.
-  for (let i = 0; i < orphans.length; i += 200) {
+  // Mirror only deletions this desktop explicitly recorded. Tombstones are
+  // cleared per chunk AFTER the delete is confirmed, so an interrupted sync
+  // retries the rest next pass instead of dropping them silently.
+  for (let i = 0; i < toDeleteRemotely.length; i += 200) {
+    const chunk = toDeleteRemotely.slice(i, i + 200)
     const { error: delErr } = await c
       .from('applications')
       .delete()
       .eq('user_id', user.id)
-      .in('local_id', orphans.slice(i, i + 200))
+      .in('local_id', chunk)
     if (delErr) throw new Error(delErr.message)
+    database.clearTombstones(chunk)
   }
+
+  // A tombstone whose row is no longer in the cloud has already been mirrored
+  // (or never reached it). Without this the table would grow without bound and
+  // re-issue a delete for the same id on every sync, forever.
+  const remoteIds = new Set((data || []).map(r => r.local_id))
+  const settled = [...tombstoned].filter(id => !remoteIds.has(id))
+  if (settled.length > 0) database.clearTombstones(settled)
+
+  return { restored: restored.length, deleted: toDeleteRemotely.length }
 }
 
 // ─── One-way mirrors (desktop → cloud) ───────────────────────────
@@ -356,7 +394,14 @@ async function sync() {
     if (!c) return getStatus()
     if (!user && !(await restoreSession())) return getStatus()
 
-    await pullChanges(c) // apply phone edits first so we don't clobber them
+    const pulled = await pullChanges(c) // apply phone edits first so we don't clobber them
+    // Recovering rows from the cloud is a significant, user-visible event (it
+    // is what a reinstall looks like) — report it rather than letting the
+    // database silently repopulate.
+    if (pulled && pulled.restored > 0) {
+      lastRestore = { count: pulled.restored, at: new Date().toISOString() }
+      logger.append(`Cloud sync restored ${pulled.restored} application(s) not present on this device`)
+    }
     await pushDirty(c)
     // Desktop-owned mirrors. Pushed after applications so an interview always
     // lands alongside an application row the phone can already resolve.

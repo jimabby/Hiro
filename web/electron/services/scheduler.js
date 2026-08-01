@@ -232,13 +232,27 @@ async function runBatch(batchSize) {
 // restart() runs on every Settings save, so cancelling there meant editing any
 // unrelated setting silently killed a scan mid-submission and left getScanInfo
 // reporting idle while the applicator was still unwinding.
+// node-cron 4 keeps every scheduled task in a module-level registry, and
+// stop() only pauses it — the entry stays. restart() runs on every Settings
+// save, so stopping without destroying leaked one task per save for the life
+// of the process. destroy() deregisters it; stop() is the fallback for the
+// older API.
+function disposeTask(task) {
+  if (!task) return null
+  try {
+    if (typeof task.destroy === 'function') task.destroy()
+    else task.stop()
+  } catch { /* already torn down */ }
+  return null
+}
+
 function stop({ abortRun = true } = {}) {
-  if (scanTask) { scanTask.stop(); scanTask = null }
-  if (reportTask) { reportTask.stop(); reportTask = null }
-  if (followUpTask) { followUpTask.stop(); followUpTask = null }
-  if (inboxTask) { inboxTask.stop(); inboxTask = null }
-  if (weeklyReportTask) { weeklyReportTask.stop(); weeklyReportTask = null }
-  if (staleTask) { staleTask.stop(); staleTask = null }
+  scanTask = disposeTask(scanTask)
+  reportTask = disposeTask(reportTask)
+  followUpTask = disposeTask(followUpTask)
+  inboxTask = disposeTask(inboxTask)
+  weeklyReportTask = disposeTask(weeklyReportTask)
+  staleTask = disposeTask(staleTask)
   for (const t of batchTimeouts) clearTimeout(t)
   batchTimeouts = []
   batchSchedule = []

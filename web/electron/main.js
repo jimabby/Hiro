@@ -66,6 +66,17 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      // The preload only uses contextBridge + ipcRenderer, both of which are
+      // available to sandboxed preloads — so the renderer can run in the OS
+      // sandbox with no loss of function. Without this a renderer compromise
+      // has the full privileges of the user account.
+      sandbox: true,
+      // Defence in depth: the renderer has no legitimate reason to reach the
+      // Node integration in workers, or to load remote content over http.
+      nodeIntegrationInWorker: false,
+      webviewTag: false,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
     },
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     show: false,
@@ -99,14 +110,62 @@ function createWindow() {
     }
     return { action: 'deny' }
   })
+  // Navigation is pinned to the ONE page this app is allowed to be. The old
+  // check accepted any `file://` URL in production, so a single injected link
+  // could navigate the privileged renderer to an arbitrary local file —
+  // including one an attacker had just written to disk — and read it with the
+  // preload bridge attached.
   mainWindow.webContents.on('will-navigate', (e, url) => {
-    const appUrl = isDev ? 'http://localhost:5173' : 'file://'
-    if (!url.startsWith(appUrl)) {
-      e.preventDefault()
-      shell.openExternal(url)
-    }
+    if (isEntryPointUrl(url)) return
+    e.preventDefault()
+    // Only hand genuine web URLs to the browser; never file:// or custom
+    // schemes, which shell.openExternal would happily launch.
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url)
   })
+
+  // A redirect can land somewhere the initial URL check approved of; re-check.
+  mainWindow.webContents.on('will-redirect', (e, url) => {
+    if (!isEntryPointUrl(url)) e.preventDefault()
+  })
+
+  // Nothing in this app uses the camera, microphone, location or notifications
+  // from the renderer, so every permission request is illegitimate by default.
+  mainWindow.webContents.session.setPermissionRequestHandler((_wc, _perm, cb) => cb(false))
+  mainWindow.webContents.session.setPermissionCheckHandler(() => false)
+
+  // Refuse to attach a <webview>; the tag is disabled above, this covers the
+  // case where it is re-enabled by a future change.
+  mainWindow.webContents.on('will-attach-webview', (e) => e.preventDefault())
 }
+
+// The single URL the main window may occupy. In dev that's the Vite server; in
+// production it's the packaged entry file and nothing else. Compared as a
+// resolved path so `..` traversal can't smuggle in another file.
+const ENTRY_FILE = path.join(__dirname, '..', 'dist', 'index.html')
+
+function isEntryPointUrl(url) {
+  let parsed
+  try { parsed = new URL(url) } catch { return false }
+
+  if (isDev) {
+    return parsed.origin === 'http://localhost:5173'
+  }
+  if (parsed.protocol !== 'file:') return false
+  try {
+    return path.resolve(decodeURIComponent(parsed.pathname)) === path.resolve(ENTRY_FILE)
+  } catch { return false }
+}
+
+// Blanket guard for every webContents the app ever creates, not just the main
+// window — a future popup or devtools-spawned view would otherwise start with
+// none of the restrictions applied above.
+app.on('web-contents-created', (_e, contents) => {
+  contents.on('will-attach-webview', (e) => e.preventDefault())
+  contents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url)
+    return { action: 'deny' }
+  })
+})
 
 app.whenReady().then(async () => {
   await database.init()
@@ -559,12 +618,32 @@ ipcMain.handle('resume:download', async (_, resumeText, suggestedName, format = 
 })
 
 // ─── IPC: Resume PDF base64 (in-app viewer) ──────────────────────
+// `originalPath` arrives from the renderer, so it is untrusted input even
+// though the UI only ever sends a path it was handed back by resume:importFile.
+// Imported originals always live in CONFIG_DIR/resumes — anything else is
+// either a bug or an attempt to read (or launch) an unrelated file, since these
+// handlers otherwise hand back arbitrary file contents and call shell.openPath
+// on whatever they are given.
+function resolveResumeOriginal(originalPath, allowedExts) {
+  if (!originalPath || typeof originalPath !== 'string') return null
+  const pathMod = require('path')
+  const fs = require('fs')
+  const resumesDir = pathMod.resolve(configService.CONFIG_DIR, 'resumes')
+  const resolved = pathMod.resolve(originalPath)
+  // `dir + sep` prefix, not startsWith(dir): "…/resumes-evil" must not pass.
+  if (resolved !== resumesDir && !resolved.startsWith(resumesDir + pathMod.sep)) return null
+  if (!allowedExts.includes(pathMod.extname(resolved).slice(1).toLowerCase())) return null
+  if (!fs.existsSync(resolved)) return null
+  return resolved
+}
+
 ipcMain.handle('resume:getPDFBase64', async (_, resumeText, originalPath, originalExt) => {
   try {
     const fs = require('fs')
     // If uploaded as PDF, show the original file directly
-    if (originalPath && originalExt === 'pdf' && fs.existsSync(originalPath)) {
-      const base64 = fs.readFileSync(originalPath).toString('base64')
+    const safePdf = originalExt === 'pdf' ? resolveResumeOriginal(originalPath, ['pdf']) : null
+    if (safePdf) {
+      const base64 = fs.readFileSync(safePdf).toString('base64')
       return { success: true, base64 }
     }
     const { buildResumePDF } = require('./services/scraper/utils')
@@ -593,10 +672,13 @@ ipcMain.handle('coverLetter:getPDFBase64', async (_, text) => {
 // ─── IPC: Resume preview — open DOCX in system app ──────────────
 ipcMain.handle('resume:openDocx', async (_, resumeText, originalPath) => {
   try {
-    const fs = require('fs')
-    // If the original DOCX is available, open it directly — fastest and most accurate preview
-    if (originalPath && fs.existsSync(originalPath)) {
-      await shell.openPath(originalPath)
+    // If the original DOCX is available, open it directly — fastest and most
+    // accurate preview. Restricted to imported originals: shell.openPath hands
+    // the file to the OS handler, so an unchecked path here is arbitrary
+    // program execution, not just an arbitrary read.
+    const safeDoc = resolveResumeOriginal(originalPath, ['docx', 'doc'])
+    if (safeDoc) {
+      await shell.openPath(safeDoc)
       return { success: true }
     }
     // No original — generate a styled DOCX from the resume text

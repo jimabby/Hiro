@@ -187,6 +187,19 @@ function load() {
   }
 }
 
+// fsync before the rename, and fsync the directory after it. rename() is atomic
+// with respect to ordering, but it does not force the temp file's bytes to disk
+// first — after a power loss the entry can point at a file that is still partly
+// zeroes. Best-effort: some filesystems refuse fsync on a directory handle.
+function fsyncFile(file, flags) {
+  let fd = null
+  try {
+    fd = fs.openSync(file, flags)
+    fs.fsyncSync(fd)
+  } catch { /* best-effort */ }
+  finally { if (fd !== null) try { fs.closeSync(fd) } catch {} }
+}
+
 // Written via a temp file + rename so a crash or power loss partway through
 // can't leave a truncated config — rename is atomic on NTFS and POSIX alike.
 function save(config) {
@@ -195,7 +208,9 @@ function save(config) {
   const tmp = CONFIG_FILE + '.tmp'
   try {
     fs.writeFileSync(tmp, json, 'utf8')
+    fsyncFile(tmp, 'r+')
     fs.renameSync(tmp, CONFIG_FILE)
+    fsyncFile(CONFIG_DIR, 'r')
     loadError = null
   } catch (err) {
     try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp) } catch { /* best-effort */ }

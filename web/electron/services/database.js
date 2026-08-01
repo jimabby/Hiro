@@ -36,13 +36,30 @@ let persistDepth = 0
 // through a bare writeFileSync left a truncated file that no longer opened,
 // destroying all history. rename() is atomic on both NTFS and POSIX, so the
 // old file survives intact until the new one is complete.
+// rename() is atomic, but on its own it only guarantees ordering of the
+// directory entry — not that the temp file's BYTES reached the platter first.
+// After a power loss the rename can therefore land while the new file is still
+// partly zeroes, which is the same corruption the temp file was meant to
+// prevent. fsync the data before the rename, then fsync the directory so the
+// rename itself is durable.
+function fsyncFile(file, flags) {
+  let fd = null
+  try {
+    fd = fs.openSync(file, flags)
+    fs.fsyncSync(fd)
+  } catch { /* best-effort: filesystems may refuse fsync on directories */ }
+  finally { if (fd !== null) try { fs.closeSync(fd) } catch {} }
+}
+
 function persist() {
   if (!db || persistDepth > 0) return
   const data = Buffer.from(db.export())
   const tmp = DB_PATH + '.tmp'
   try {
     fs.writeFileSync(tmp, data)
+    fsyncFile(tmp, 'r+')
     fs.renameSync(tmp, DB_PATH)
+    fsyncFile(CONFIG_DIR, 'r')
   } catch (err) {
     try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp) } catch { /* best-effort */ }
     throw err
@@ -136,6 +153,18 @@ function createTables() {
       source TEXT DEFAULT 'manual',
       note TEXT DEFAULT '',
       created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Deletions the desktop has made but the cloud has not been told about yet.
+    -- Cloud sync used to infer deletion from ABSENCE — any cloud row with no
+    -- local counterpart was assumed deleted and removed. On a reinstalled or
+    -- reset machine the local table is empty, so that inference deleted the
+    -- user's entire cloud history. An explicit tombstone is the only safe
+    -- signal: absence now means "this device hasn't seen it yet", which is a
+    -- restore, not a delete.
+    CREATE TABLE IF NOT EXISTS deleted_applications (
+      local_id INTEGER PRIMARY KEY,
+      deleted_at TEXT DEFAULT (datetime('now'))
     );
   `)
   persist()
@@ -426,6 +455,10 @@ function updateRecruiterEmail(id, email) {
 // the count in Settings → Data, and had no way to be removed.
 function deleteApplication(id) {
   batch(() => {
+    // Tombstone first: if the process dies mid-delete, an extra tombstone for a
+    // row that still exists is harmless (sync skips tombstones whose row is
+    // present), whereas a missing tombstone silently resurrects the row.
+    run('INSERT OR REPLACE INTO deleted_applications (local_id) VALUES (?)', [id])
     run('DELETE FROM applications WHERE id = ?', [id])
     run('DELETE FROM status_history WHERE application_id = ?', [id])
     run('DELETE FROM interview_prep WHERE application_id = ?', [id])
@@ -436,6 +469,7 @@ function deleteApplication(id) {
 
 function clearAllApplications() {
   batch(() => {
+    run('INSERT OR REPLACE INTO deleted_applications (local_id) SELECT id FROM applications')
     run('DELETE FROM applications')
     run('DELETE FROM status_history')
     run('DELETE FROM interview_prep')
@@ -536,6 +570,52 @@ function getDirtyApplications() {
 
 function getAllApplicationIds() {
   return query('SELECT id FROM applications').map(r => r.id)
+}
+
+function countApplications() {
+  return queryOne('SELECT COUNT(*) as c FROM applications')?.c || 0
+}
+
+// Local ids the desktop has deleted and the cloud has not been told about yet.
+// Guarded against a tombstone whose id was later reused by AUTOINCREMENT reuse
+// or a restore — a row that exists again is not a deletion.
+function getTombstones() {
+  return query(
+    'SELECT local_id FROM deleted_applications WHERE local_id NOT IN (SELECT id FROM applications)'
+  ).map(r => r.local_id)
+}
+
+// Dropped only after the cloud delete is confirmed, so an interrupted sync
+// retries the deletion next time instead of losing it.
+function clearTombstones(ids) {
+  if (!ids || ids.length === 0) return
+  batch(() => {
+    for (const id of ids) run('DELETE FROM deleted_applications WHERE local_id = ?', [id])
+  })
+}
+
+// Write a cloud row back into the local database under its original id. Used
+// when this device has never seen the row (fresh install, restored machine) —
+// the cloud is the only remaining copy, so it is a recovery, not a conflict.
+// Inserted clean (cloud_dirty = 0) so restoring does not immediately re-push
+// everything it just pulled down.
+function restoreApplicationFromCloud(r) {
+  run(
+    `INSERT OR IGNORE INTO applications
+      (id, job_title, company, platform, salary, salary_min, salary_max, job_url,
+       job_description, match_score, match_explanation, tailored_resume, cover_letter,
+       screening_qa, comment, recruiter_email, status, resume_id, resume_name,
+       held_at, applied_at, updated_at, cloud_dirty, cloud_updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`,
+    [
+      r.local_id, r.job_title || '', r.company || '', r.platform || '', r.salary || '',
+      r.salary_min ?? null, r.salary_max ?? null, r.job_url || '', r.job_description || '',
+      r.match_score ?? null, r.match_explanation || '', r.tailored_resume || '',
+      r.cover_letter || '', r.screening_qa || '', r.comment || '', r.recruiter_email || '',
+      r.status || 'applied', r.resume_id || null, r.resume_name || null,
+      r.held_at || null, r.applied_at || null, r.updated_at || null, r.updated_at || null,
+    ]
+  )
 }
 
 // Clear the dirty flag after a successful push — but only if the row wasn't
@@ -1201,6 +1281,7 @@ module.exports = {
   UNSENT_STATUSES,
   updateApplicationAfterApply, updateApplicationComment, updateRecruiterEmail, deleteApplication, clearAllApplications,
   getDirtyApplications, getAllApplicationIds, markCloudSynced, markCloudSeen, applyCloudEdit,
+  countApplications, getTombstones, clearTombstones, restoreApplicationFromCloud,
   getAttentionJobs, getAttentionJob, insertAttentionJob, dismissAttentionJob, deleteAttentionJob, clearAllAttentionJobs,
   getAllInterviewEventsForSync,
   getCachedAnswer, saveCachedAnswer, getAllCachedAnswers, deleteCachedAnswer, clearAllCachedAnswers,

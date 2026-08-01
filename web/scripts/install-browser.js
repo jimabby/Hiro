@@ -25,6 +25,30 @@ function alreadyInstalled() {
   }
 }
 
+// Locate Playwright's CLI entry point.
+//
+// This used to be `require.resolve('playwright/cli')`, which stopped resolving
+// once Playwright added an "exports" map that doesn't list that subpath — so
+// every fresh install printed "Package subpath './cli' is not defined" and
+// silently shipped without a browser. Resolving the package's own manifest and
+// reading its `bin` field works regardless of the exports map, and follows the
+// package if the file is ever renamed again.
+function resolvePlaywrightCli() {
+  const pkgJsonPath = require.resolve('playwright/package.json')
+  const pkgDir = path.dirname(pkgJsonPath)
+  const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'))
+
+  const binField = pkg.bin
+  const relative = typeof binField === 'string' ? binField : binField?.playwright
+  const candidates = [relative, 'cli.js', 'lib/cli/cli.js'].filter(Boolean)
+
+  for (const rel of candidates) {
+    const full = path.join(pkgDir, rel)
+    if (fs.existsSync(full)) return full
+  }
+  throw new Error(`could not locate the Playwright CLI inside ${pkgDir}`)
+}
+
 function main() {
   // Opt-out for CI jobs that only run unit tests and don't need a 150 MB
   // download on every install.
@@ -39,7 +63,7 @@ function main() {
 
   console.log('[hiro] Downloading Chromium into web/browsers (one-off, ~150 MB)...')
   try {
-    execFileSync(process.execPath, [require.resolve('playwright/cli'), 'install', 'chromium'], {
+    execFileSync(process.execPath, [resolvePlaywrightCli(), 'install', 'chromium'], {
       stdio: 'inherit',
       env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: BROWSERS_DIR },
     })

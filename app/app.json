@@ -24,11 +24,19 @@
     },
     "android": {
       "package": "com.cessleigh.hiro",
-      "versionCode": 1,
-      "usesCleartextTraffic": true
+      "versionCode": 1
     },
     "plugins": [
-      "expo-asset"
+      "expo-asset",
+      "expo-secure-store",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
     ]
   }
 }

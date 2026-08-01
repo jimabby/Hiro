@@ -86,6 +86,34 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000).unref?.()
 
+// True only for loopback and the RFC1918 / RFC4193 private ranges the phone
+// can legitimately be on. Node reports IPv4 peers over a dual-stack socket as
+// "::ffff:192.168.1.5", so unwrap that form before testing.
+function isPrivateAddress(addr) {
+  if (!addr || addr === 'unknown') return false
+  let ip = addr
+  const zone = ip.indexOf('%') // strip IPv6 scope id, e.g. fe80::1%en0
+  if (zone !== -1) ip = ip.slice(0, zone)
+  if (ip.startsWith('::ffff:')) ip = ip.slice(7)
+
+  if (ip === '::1' || ip === '127.0.0.1') return true
+
+  const v4 = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])]
+    if (a === 10) return true
+    if (a === 127) return true
+    if (a === 192 && b === 168) return true
+    if (a === 172 && b >= 16 && b <= 31) return true
+    if (a === 169 && b === 254) return true // link-local
+    return false
+  }
+
+  const lower = ip.toLowerCase()
+  // fc00::/7 unique-local and fe80::/10 link-local.
+  return /^f[cd]/.test(lower) || lower.startsWith('fe80:')
+}
+
 function getLanAddresses() {
   const addresses = []
   const ifaces = os.networkInterfaces()
@@ -143,6 +171,18 @@ async function handle(req, res) {
   const auth = req.headers.authorization || ''
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : ''
   const ip = req.socket.remoteAddress || 'unknown'
+
+  // The server binds to every interface so the phone can find it, which means
+  // on a machine with a public address — or behind a forwarded port, or on a
+  // hotel/airport network that doesn't isolate clients — it would otherwise
+  // answer the open internet. The token travels in cleartext over HTTP, so a
+  // reachable endpoint is a harvestable one. Refuse anything that isn't a
+  // private-range peer, before the token is even compared.
+  if (!isPrivateAddress(ip)) {
+    logger.append(`Mobile API: refused non-local client ${ip}`)
+    return json(res, 403, { error: 'Forbidden' })
+  }
+
   const check = authCheck(ip, token)
   if (!check.ok) {
     if (check.retryAfter) {
@@ -326,4 +366,4 @@ function getInfo() {
   }
 }
 
-module.exports = { start, stop, getInfo, regenerateToken }
+module.exports = { start, stop, getInfo, regenerateToken, isPrivateAddress }

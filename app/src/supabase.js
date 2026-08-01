@@ -4,8 +4,11 @@
 //   EXPO_PUBLIC_SUPABASE_URL=...
 //   EXPO_PUBLIC_SUPABASE_ANON_KEY=...
 import 'react-native-url-polyfill/auto'
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import { createClient } from '@supabase/supabase-js'
+// The session Supabase persists here is a refresh token with full access to the
+// user's cloud account, so it belongs in the Keychain/Keystore, not in an
+// unencrypted AsyncStorage file. See src/secureStore.js.
+import secureStore from './secureStore'
 
 const url = process.env.EXPO_PUBLIC_SUPABASE_URL
 const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY
@@ -15,7 +18,7 @@ export const isConfigured = !!(url && anonKey)
 export const supabase = isConfigured
   ? createClient(url, anonKey, {
       auth: {
-        storage: AsyncStorage,
+        storage: secureStore,
         autoRefreshToken: true,
         persistSession: true,
         detectSessionInUrl: false,

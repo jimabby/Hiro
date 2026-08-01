@@ -124,5 +124,26 @@ const post = async (path, body) => {
   }
   check('the port is no longer served', reachable, false)
 
+  // ── Only private-range peers are served ─────────────────────────
+  // The listener binds to every interface, so a machine with a public address
+  // or a forwarded port would otherwise offer a cleartext bearer token to the
+  // internet.
+  const priv = mobileApi.isPrivateAddress
+  check('loopback allowed', priv('127.0.0.1'), true)
+  check('IPv6 loopback allowed', priv('::1'), true)
+  check('10/8 allowed', priv('10.1.2.3'), true)
+  check('192.168/16 allowed', priv('192.168.1.5'), true)
+  check('172.16/12 allowed', priv('172.20.0.9'), true)
+  check('IPv4-mapped IPv6 allowed', priv('::ffff:192.168.1.5'), true)
+  check('link-local allowed', priv('169.254.10.1'), true)
+  check('IPv6 unique-local allowed', priv('fd12::1'), true)
+  check('scoped link-local allowed', priv('fe80::1%en0'), true)
+
+  check('public IPv4 refused', priv('8.8.8.8'), false)
+  check('172.32 is public, refused', priv('172.32.0.1'), false)
+  check('public IPv6 refused', priv('2001:4860:4860::8888'), false)
+  check('IPv4-mapped public refused', priv('::ffff:8.8.8.8'), false)
+  check('unknown peer refused', priv('unknown'), false)
+
   done()
 })()
