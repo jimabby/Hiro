@@ -178,6 +178,12 @@ const DEFAULTS = {
   // Retries for a failed model call, with exponential backoff. A rate limit
   // used to leave the job scored at a fabricated 50 and filed as skipped.
   aiMaxRetries: 3,
+  // Retries allowed across a whole scan, not per call. Per-call retries bound
+  // one flaky request; this bounds a provider that is degrading, where every
+  // job burns its full allowance and the scan takes an order of magnitude
+  // longer while still being billed for each successful retry. 0 disables the
+  // run-level cap.
+  aiRetryBudgetPerScan: 20,
 
   // ─── ATS job boards ────────────────────────────────────────────
   // Company career boards hosted on Greenhouse / Lever / Ashby. These serve

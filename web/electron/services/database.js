@@ -220,7 +220,12 @@ function createTables() {
       cover_letter TEXT,
       screening_qa TEXT,
       match_score INTEGER,
-      status TEXT
+      status TEXT,
+      -- Which model wrote this version. Without it, two snapshots of the same
+      -- job are two blobs of text with no way to tell whether the difference
+      -- came from a prompt change, a model change, or chance.
+      provider TEXT,
+      model TEXT
     );
   `)
   persist()
@@ -277,6 +282,8 @@ function migrate() {
   try { db.run('CREATE INDEX IF NOT EXISTS idx_snapshots_app ON application_snapshots(application_id, taken_at)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_conflicts_at ON sync_conflicts(detected_at DESC)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_automation_platform ON automation_events(platform, at DESC)') } catch {}
+  try { db.run('ALTER TABLE application_snapshots ADD COLUMN provider TEXT') } catch {}
+  try { db.run('ALTER TABLE application_snapshots ADD COLUMN model TEXT') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_interview_app ON interview_events(application_id)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_interview_at ON interview_events(scheduled_at)') } catch {}
 }
@@ -450,6 +457,8 @@ function insertApplication(data) {
       screening_qa: data.screening_qa,
       match_score: data.match_score,
       status,
+      provider: data.provider,
+      model: data.model,
     })
   }
   persist()
@@ -588,14 +597,15 @@ function recordSnapshot(applicationId, reason, data = {}) {
   if (!applicationId || !reason) return { success: false, reason: 'applicationId and reason are required' }
   run(`
     INSERT INTO application_snapshots
-      (application_id, reason, base_resume, resume_name, tailored_resume, cover_letter, screening_qa, match_score, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (application_id, reason, base_resume, resume_name, tailored_resume, cover_letter, screening_qa, match_score, status, provider, model)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     applicationId, reason,
     data.base_resume || '', data.resume_name || null,
     data.tailored_resume || '', data.cover_letter || '',
     JSON.stringify(data.screening_qa || []),
     data.match_score ?? null, data.status || null,
+    data.provider || null, data.model || null,
   ])
   return { success: true, id: queryOne('SELECT last_insert_rowid() as id')?.id }
 }
@@ -604,7 +614,7 @@ function recordSnapshot(applicationId, reason, data = {}) {
 // a row with three full resumes on it makes the panel crawl.
 function getSnapshots(applicationId) {
   return query(`
-    SELECT id, application_id, reason, taken_at, match_score, status,
+    SELECT id, application_id, reason, taken_at, match_score, status, provider, model,
            LENGTH(tailored_resume) as tailored_length,
            LENGTH(cover_letter) as cover_letter_length
     FROM application_snapshots
@@ -628,6 +638,34 @@ function getSnapshotDiff(id) {
   const { diffLines, diffSummary } = require('./textDiff')
   const diff = diffLines(snap.base_resume || '', snap.tailored_resume || '')
   return { id: snap.id, taken_at: snap.taken_at, reason: snap.reason, diff, summary: diffSummary(diff) }
+}
+
+// Compare two saved versions of the same application.
+//
+// The base-vs-tailored diff answers "what did the model change about me".
+// This answers the other question — "is the new model actually better?" —
+// which needs two generated outputs side by side, not one against the source.
+function compareSnapshots(idA, idB, field = 'tailored_resume') {
+  if (field !== 'tailored_resume' && field !== 'cover_letter') {
+    return { error: `Cannot compare the "${field}" field` }
+  }
+  const a = getSnapshot(idA)
+  const b = getSnapshot(idB)
+  if (!a || !b) return { error: 'Snapshot not found' }
+  if (a.application_id !== b.application_id) {
+    // Diffing two different jobs' documents produces a wall of changes that
+    // means nothing. Refuse rather than render nonsense.
+    return { error: 'Those versions belong to different applications' }
+  }
+  const { diffLines, diffSummary } = require('./textDiff')
+  const diff = diffLines(a[field] || '', b[field] || '')
+  return {
+    field,
+    from: { id: a.id, reason: a.reason, taken_at: a.taken_at, provider: a.provider, model: a.model },
+    to: { id: b.id, reason: b.reason, taken_at: b.taken_at, provider: b.provider, model: b.model },
+    diff,
+    summary: diffSummary(diff),
+  }
 }
 
 // Undo: put a previous version's documents back on the live row.
@@ -1533,7 +1571,7 @@ module.exports = {
   getApplications, getApplicationsList, getApplication, hasJobUrl, hasAttentionJobUrl, hasSeenJobUrl,
   findRecentApplicationToCompany, insertApplication, updateApplicationStatus,
   getHeldApplications, markHeldApplied, rejectHeldApplication,
-  recordSnapshot, getSnapshots, getSnapshot, getSnapshotDiff, restoreSnapshot,
+  recordSnapshot, getSnapshots, getSnapshot, getSnapshotDiff, compareSnapshots, restoreSnapshot,
   recordAutomationEvent, getAutomationEvents, clearAutomationEvents,
   recordSyncConflict, getSyncConflicts, countSyncConflicts, clearSyncConflicts, applyConflictResolution,
   getResumeConversion, recordAiUsage, getAiUsageSummary, getMonthlyAiSpend, pruneAiUsage, clearAiUsage,

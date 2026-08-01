@@ -913,6 +913,7 @@ ipcMain.handle('db:getStatusHistory', (_, applicationId) => database.getStatusHi
 ipcMain.handle('db:getSnapshots', (_, applicationId) => database.getSnapshots(applicationId))
 ipcMain.handle('db:getSnapshot', (_, id) => database.getSnapshot(id))
 ipcMain.handle('db:getSnapshotDiff', (_, id) => database.getSnapshotDiff(id))
+ipcMain.handle('db:compareSnapshots', (_, a, b, field) => database.compareSnapshots(a, b, field))
 ipcMain.handle('db:restoreSnapshot', (_, id) => database.restoreSnapshot(id))
 ipcMain.handle('db:backupNow', () => {
   try { return database.backupNow() } catch (err) { return { success: false, error: err.message } }

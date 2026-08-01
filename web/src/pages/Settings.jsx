@@ -2131,6 +2131,20 @@ export default function Settings({ showToast, active }) {
               retried on the next scan, rather than recorded with a guessed score.
             </small>
           </div>
+          <div className="form-group">
+            <label>Retry budget per scan</label>
+            <input
+              type="number" min="0" max="500"
+              value={form.aiRetryBudgetPerScan ?? 20}
+              onChange={e => set('aiRetryBudgetPerScan', Math.max(0, Math.min(500, Number(e.target.value) || 0)))}
+            />
+            <small style={{ color: 'var(--text-muted)' }}>
+              Total retries allowed across one scan. The setting above bounds a single flaky
+              request; this bounds a provider having a bad twenty minutes, where every job burns
+              its full allowance and you are billed for each retry that succeeds. Once spent,
+              calls still run — they just stop being retried. 0 removes the cap.
+            </small>
+          </div>
         </div>
 
         {/* Company career boards */}

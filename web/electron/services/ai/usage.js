@@ -119,6 +119,40 @@ let getConfig = () => {
 // Test seam — lets a test drive the retry logic without a config file.
 function _setConfigReader(fn) { getConfig = fn }
 
+
+// ─── Retry budget ────────────────────────────────────────────────
+// Per-call retries bound one flaky request. They do nothing about the case
+// that actually costs money and hours: a provider degrading for twenty minutes,
+// where every job in a scan burns its full retry allowance, the scan takes an
+// order of magnitude longer, and each successful retry is still billed.
+//
+// So retries are also capped across a whole run. Once the run has spent its
+// budget, calls still happen — a request that succeeds first time is fine — but
+// nothing is retried, so a broken provider fails fast instead of slowly.
+//
+// Reset per scan rather than per process: a long-running desktop app would
+// otherwise exhaust the budget on day one and never retry again.
+let retryBudget = { spent: 0, limit: 0 }
+
+function resetRetryBudget(limit) {
+  retryBudget = { spent: 0, limit: Math.max(0, Number(limit) || 0) }
+}
+
+function retryBudgetStatus() {
+  return { ...retryBudget, exhausted: retryBudget.limit > 0 && retryBudget.spent >= retryBudget.limit }
+}
+
+// A limit of 0 means "no run-level cap", which keeps the previous behaviour for
+// anyone who wants it.
+function canRetry() {
+  if (retryBudget.limit <= 0) return true
+  return retryBudget.spent < retryBudget.limit
+}
+
+function chargeRetry() {
+  retryBudget.spent += 1
+}
+
 // Wrap one model call: enforce the budget, retry transient failures with
 // exponential backoff and jitter, and record what it cost.
 //
@@ -155,6 +189,13 @@ async function withUsage(operation, provider, fn) {
     } catch (err) {
       lastErr = err
       if (attempt === maxRetries || !isRetryable(err)) break
+      // The run-level cap. Checked before sleeping, so an exhausted budget
+      // fails immediately rather than waiting out a backoff it will not use.
+      if (!canRetry()) {
+        lastErr.retryBudgetExhausted = true
+        break
+      }
+      chargeRetry()
       // 1s, 2s, 4s… with jitter, unless the server named its own delay.
       const backoff = retryAfterMs(err) ?? Math.round((2 ** attempt) * 1000 * (0.75 + Math.random() * 0.5))
       await sleep(backoff)
@@ -164,13 +205,18 @@ async function withUsage(operation, provider, fn) {
   // Make the cause legible in the activity log — "AI error: 429" told the user
   // nothing about what to do next.
   if (lastErr && isRetryable(lastErr)) {
-    lastErr.message = `${lastErr.message} (gave up after ${maxRetries + 1} attempt${maxRetries === 0 ? '' : 's'})`
+    lastErr.message = lastErr.retryBudgetExhausted
+      // Naming the real cause matters: "gave up after 1 attempt" would read as
+      // a misconfigured retry count rather than a provider that has been
+      // failing all scan.
+      ? `${lastErr.message} (this scan's retry budget is spent — the provider has been failing repeatedly)`
+      : `${lastErr.message} (gave up after ${maxRetries + 1} attempt${maxRetries === 0 ? '' : 's'})`
     lastErr.retriesExhausted = true
   }
   throw lastErr
 }
 
 module.exports = {
-  withUsage, estimateCost, priceFor, isRetryable, isPermanent, readUsage,
+  withUsage, resetRetryBudget, retryBudgetStatus, estimateCost, priceFor, isRetryable, isPermanent, readUsage,
   BudgetExceededError, PRICING, _setConfigReader,
 }

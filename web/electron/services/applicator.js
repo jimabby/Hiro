@@ -103,6 +103,10 @@ async function run(cfg, callbacks) {
 async function doRun(cfg, { log, notifyAttention }) {
   cancelled = false
 
+  // Per scan, not per process — a desktop app left running for weeks would
+  // otherwise spend the budget on day one and never retry again.
+  require('./ai/usage').resetRetryBudget(cfg.aiRetryBudgetPerScan ?? 20)
+
   // Baseline resume — per-job routing rules may override this later, once the
   // job description is available to match against.
   cfg = withResume(cfg, null)
@@ -379,6 +383,10 @@ async function doRun(cfg, { log, notifyAttention }) {
           // The master resume as it stood at this moment, so the tailoring diff
           // survives the master being edited afterwards.
           base_resume: jobCfg.masterResume || '',
+          // Which model produced these documents, so two versions of the same
+          // job can be judged against each other rather than just compared.
+          provider: jobCfg.aiProvider || '',
+          model: jobCfg.geminiModel || '',
           tailored_resume: tailoredResume,
           cover_letter: coverLetter,
           screening_qa: [],
@@ -429,6 +437,10 @@ async function doRun(cfg, { log, notifyAttention }) {
           // The master resume as it stood at this moment, so the tailoring diff
           // survives the master being edited afterwards.
           base_resume: jobCfg.masterResume || '',
+          // Which model produced these documents, so two versions of the same
+          // job can be judged against each other rather than just compared.
+          provider: jobCfg.aiProvider || '',
+          model: jobCfg.geminiModel || '',
           tailored_resume: tailoredResume,
           cover_letter: coverLetter,
           // What the scraper actually answered on the application form.

@@ -197,6 +197,10 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
   // not render rather than flashing a false all-clear.
   const [automationHealth, setAutomationHealth] = useState([])
   const [openSnapshot, setOpenSnapshot] = useState(null) // { snapshot, diff }
+  // Two saved versions held up against each other — "is the new model better",
+  // which the base-vs-tailored diff cannot answer.
+  const [compareFrom, setCompareFrom] = useState(null)
+  const [comparison, setComparison] = useState(null)
   const [loadingGap, setLoadingGap] = useState(false)
   const [pdfModal, setPdfModal] = useState(null)
   const [pdfLoading, setPdfLoading] = useState(false)
@@ -273,6 +277,8 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
       window.api.getStatusHistory?.(selected.id).then(h => setStatusHistory(h || [])).catch(() => {})
       window.api.getSnapshots?.(selected.id).then(s => setSnapshots(s || [])).catch(() => setSnapshots([]))
       setOpenSnapshot(null)
+      setCompareFrom(null)
+      setComparison(null)
       window.api.getInterviewEvents?.(selected.id).then(e => setAppInterviews(e || [])).catch(() => {})
     }
   }, [selected?.id])
@@ -1233,7 +1239,23 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                       </span>
                       <span style={{ fontSize: 12, color: 'var(--text-muted)', flex: 1 }}>
                         {new Date(String(s.taken_at).replace(' ', 'T') + 'Z').toLocaleString()}
+                        {s.model && <> · {s.model}</>}
                       </span>
+                      {/* Pick one, then another, to diff the two generations. */}
+                      <button
+                        className="btn btn-ghost"
+                        style={{
+                          padding: '2px 10px', fontSize: 12,
+                          color: compareFrom === s.id ? 'var(--accent)' : undefined,
+                        }}
+                        onClick={async () => {
+                          if (compareFrom === s.id) { setCompareFrom(null); return setComparison(null) }
+                          if (compareFrom == null) { setComparison(null); return setCompareFrom(s.id) }
+                          const res = await window.api.compareSnapshots?.(compareFrom, s.id)
+                          setComparison(res)
+                          setCompareFrom(null)
+                        }}
+                      >{compareFrom === s.id ? 'Comparing…' : compareFrom == null ? 'Compare' : 'Compare to this'}</button>
                       <button
                         className="btn btn-ghost"
                         style={{ padding: '2px 10px', fontSize: 12 }}
@@ -1249,6 +1271,39 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                     </div>
                   ))}
                 </div>
+
+                {comparison && (
+                  <div style={{ marginTop: 10, background: 'var(--surface2)', borderRadius: 8, padding: 12 }}>
+                    {comparison.error ? (
+                      <div style={{ fontSize: 12, color: 'var(--red)' }}>{comparison.error}</div>
+                    ) : (
+                      <>
+                        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+                          {comparison.from.model || comparison.from.reason} → {comparison.to.model || comparison.to.reason}
+                          <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>
+                            {' '}· {comparison.summary.added} added, {comparison.summary.removed} removed
+                          </span>
+                        </div>
+                        <pre style={{
+                          margin: 0, fontSize: 11, lineHeight: 1.5, maxHeight: 260,
+                          overflowY: 'auto', whiteSpace: 'pre-wrap',
+                        }}>
+                          {comparison.diff.map((part, i) => (
+                            <div key={i} style={{
+                              color: part.type === 'added' ? 'var(--success, #4ade80)'
+                                : part.type === 'removed' ? 'var(--danger, #f87171)'
+                                : 'var(--text-muted)',
+                            }}>
+                              {part.type === 'added' ? '+ ' : part.type === 'removed' ? '− ' : '  '}{part.line}
+                            </div>
+                          ))}
+                        </pre>
+                      </>
+                    )}
+                    <button className="btn btn-ghost" style={{ fontSize: 11, marginTop: 10 }}
+                      onClick={() => setComparison(null)}>Close comparison</button>
+                  </div>
+                )}
 
                 {openSnapshot && (
                   <div style={{ marginTop: 10, background: 'var(--surface2)', borderRadius: 8, padding: 12 }}>
