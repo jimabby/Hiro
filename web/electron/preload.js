@@ -135,6 +135,10 @@ contextBridge.exposeInMainWorld('api', {
 
   // Status history & backups
   getStatusHistory: (applicationId) => ipcRenderer.invoke('db:getStatusHistory', applicationId),
+  getSnapshots: (applicationId) => ipcRenderer.invoke('db:getSnapshots', applicationId),
+  getSnapshot: (id) => ipcRenderer.invoke('db:getSnapshot', id),
+  getSnapshotDiff: (id) => ipcRenderer.invoke('db:getSnapshotDiff', id),
+  restoreSnapshot: (id) => ipcRenderer.invoke('db:restoreSnapshot', id),
   backupNow: () => ipcRenderer.invoke('db:backupNow'),
   listBackups: () => ipcRenderer.invoke('db:listBackups'),
   restoreBackup: (name) => ipcRenderer.invoke('db:restoreBackup', name),

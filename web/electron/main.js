@@ -897,6 +897,10 @@ ipcMain.handle('config:applyImport', () => {
 
 // ─── IPC: Status history & backups ───────────────────────────────
 ipcMain.handle('db:getStatusHistory', (_, applicationId) => database.getStatusHistory(applicationId))
+ipcMain.handle('db:getSnapshots', (_, applicationId) => database.getSnapshots(applicationId))
+ipcMain.handle('db:getSnapshot', (_, id) => database.getSnapshot(id))
+ipcMain.handle('db:getSnapshotDiff', (_, id) => database.getSnapshotDiff(id))
+ipcMain.handle('db:restoreSnapshot', (_, id) => database.restoreSnapshot(id))
 ipcMain.handle('db:backupNow', () => {
   try { return database.backupNow() } catch (err) { return { success: false, error: err.message } }
 })

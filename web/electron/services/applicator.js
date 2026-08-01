@@ -368,6 +368,9 @@ async function doRun(cfg, { log, notifyAttention }) {
           job_description: jobDescription,
           match_score: matchScore,
           match_explanation: matchExplanation,
+          // The master resume as it stood at this moment, so the tailoring diff
+          // survives the master being edited afterwards.
+          base_resume: jobCfg.masterResume || '',
           tailored_resume: tailoredResume,
           cover_letter: coverLetter,
           screening_qa: [],
@@ -410,6 +413,9 @@ async function doRun(cfg, { log, notifyAttention }) {
           job_description: jobDescription,
           match_score: matchScore,
           match_explanation: matchExplanation,
+          // The master resume as it stood at this moment, so the tailoring diff
+          // survives the master being edited afterwards.
+          base_resume: jobCfg.masterResume || '',
           tailored_resume: tailoredResume,
           cover_letter: coverLetter,
           // What the scraper actually answered on the application form.

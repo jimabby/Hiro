@@ -24,6 +24,15 @@ const STATUS_BADGE = {
   held: { label: 'Held for review', color: 'badge-yellow' },
 }
 
+// Why a version was frozen. Plain words — "drafted" and "submitted" are the
+// difference between what was written and what an employer actually received.
+const SNAPSHOT_LABEL = {
+  drafted: 'Drafted',
+  submitted: 'Submitted',
+  retailored: 'Re-tailored',
+  'before-restore': 'Replaced',
+}
+
 // The statuses a user may set by hand, in the order they appear in every picker.
 // 'skipped' is deliberately absent — it's assigned by the scan, not chosen.
 const SETTABLE_STATUSES = [
@@ -182,6 +191,9 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
   const [loadingQuestions, setLoadingQuestions] = useState(false)
   const [keywordGap, setKeywordGap] = useState(null)
   const [statusHistory, setStatusHistory] = useState([])
+  // Version history: the frozen record of what each employer actually received.
+  const [snapshots, setSnapshots] = useState([])
+  const [openSnapshot, setOpenSnapshot] = useState(null) // { snapshot, diff }
   const [loadingGap, setLoadingGap] = useState(false)
   const [pdfModal, setPdfModal] = useState(null)
   const [pdfLoading, setPdfLoading] = useState(false)
@@ -253,6 +265,8 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
         }
       })
       window.api.getStatusHistory?.(selected.id).then(h => setStatusHistory(h || [])).catch(() => {})
+      window.api.getSnapshots?.(selected.id).then(s => setSnapshots(s || [])).catch(() => setSnapshots([]))
+      setOpenSnapshot(null)
       window.api.getInterviewEvents?.(selected.id).then(e => setAppInterviews(e || [])).catch(() => {})
     }
   }, [selected?.id])
@@ -1164,6 +1178,107 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                     </div>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {/* What this employer actually received. The row above is the
+                current state and can change; these are frozen. */}
+            {snapshots.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ marginBottom: 8 }}>Version History</label>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {snapshots.map(s => (
+                    <div key={s.id} style={{
+                      display: 'flex', alignItems: 'center', gap: 10,
+                      background: 'var(--surface2)', borderRadius: 8, padding: '8px 10px',
+                    }}>
+                      <span className="badge badge-gray" style={{ minWidth: 78, textAlign: 'center' }}>
+                        {SNAPSHOT_LABEL[s.reason] || s.reason}
+                      </span>
+                      <span style={{ fontSize: 12, color: 'var(--text-muted)', flex: 1 }}>
+                        {new Date(String(s.taken_at).replace(' ', 'T') + 'Z').toLocaleString()}
+                      </span>
+                      <button
+                        className="btn btn-ghost"
+                        style={{ padding: '2px 10px', fontSize: 12 }}
+                        onClick={async () => {
+                          if (openSnapshot?.snapshot?.id === s.id) return setOpenSnapshot(null)
+                          const [snapshot, diff] = await Promise.all([
+                            window.api.getSnapshot?.(s.id),
+                            window.api.getSnapshotDiff?.(s.id),
+                          ])
+                          if (snapshot) setOpenSnapshot({ snapshot, diff })
+                        }}
+                      >{openSnapshot?.snapshot?.id === s.id ? 'Hide' : 'View'}</button>
+                    </div>
+                  ))}
+                </div>
+
+                {openSnapshot && (
+                  <div style={{ marginTop: 10, background: 'var(--surface2)', borderRadius: 8, padding: 12 }}>
+                    {/* Answers exist only on submission snapshots — they are
+                        written by the form filler as the application is sent. */}
+                    {openSnapshot.snapshot.screening_qa?.length > 0 && (
+                      <div style={{ marginBottom: 14 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Answers submitted</div>
+                        {openSnapshot.snapshot.screening_qa.map((qa, i) => (
+                          <div key={i} style={{ fontSize: 12, marginBottom: 6 }}>
+                            <div style={{ color: 'var(--text-muted)' }}>{qa.question}</div>
+                            <div>
+                              {qa.answer}
+                              <span style={{ color: 'var(--text-muted)' }}> · {qa.source}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {openSnapshot.diff?.diff?.length > 0 && (
+                      <div>
+                        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+                          Tailoring changes
+                          <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>
+                            {' '}· {openSnapshot.diff.summary.added} added, {openSnapshot.diff.summary.removed} removed
+                          </span>
+                        </div>
+                        <pre style={{
+                          margin: 0, fontSize: 11, lineHeight: 1.5, maxHeight: 260,
+                          overflowY: 'auto', whiteSpace: 'pre-wrap',
+                        }}>
+                          {openSnapshot.diff.diff.map((part, i) => (
+                            <div key={i} style={{
+                              color: part.type === 'added' ? 'var(--success, #4ade80)'
+                                : part.type === 'removed' ? 'var(--danger, #f87171)'
+                                : 'var(--text-muted)',
+                            }}>
+                              {part.type === 'added' ? '+ ' : part.type === 'removed' ? '− ' : '  '}{part.line}
+                            </div>
+                          ))}
+                        </pre>
+                      </div>
+                    )}
+
+                    <button
+                      className="btn btn-ghost"
+                      style={{ marginTop: 12, fontSize: 12 }}
+                      onClick={async () => {
+                        const res = await window.api.restoreSnapshot?.(openSnapshot.snapshot.id)
+                        if (res?.success) {
+                          showToast?.('Restored — the previous version was saved first, so this is reversible', 'success')
+                          const [row, list] = await Promise.all([
+                            window.api.getApplication?.(selected.id),
+                            window.api.getSnapshots?.(selected.id),
+                          ])
+                          if (row) setSelected(row)
+                          setSnapshots(list || [])
+                          setOpenSnapshot(null)
+                        } else {
+                          showToast?.(`Could not restore: ${res?.reason || 'unknown error'}`, 'error')
+                        }
+                      }}
+                    >Restore this version</button>
+                  </div>
+                )}
               </div>
             )}
 

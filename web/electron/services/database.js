@@ -166,6 +166,31 @@ function createTables() {
       local_id INTEGER PRIMARY KEY,
       deleted_at TEXT DEFAULT (datetime('now'))
     );
+
+    -- What was actually sent, frozen at the moment it was sent.
+    --
+    -- The applications row is mutable: approving a held draft overwrites
+    -- screening_qa, a re-tailor overwrites tailored_resume, and editing the
+    -- master resume changes the base out from under every past application. So
+    -- the row answers "what does this look like now", never "what did this
+    -- employer receive". After a bad tailoring pass reaches an employer, that
+    -- second question is the only one that matters, and it was unanswerable.
+    --
+    -- base_resume is stored in full rather than referenced: the whole point is
+    -- that it survives the master resume being edited afterwards.
+    CREATE TABLE IF NOT EXISTS application_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      application_id INTEGER NOT NULL,
+      reason TEXT NOT NULL,
+      taken_at TEXT DEFAULT (datetime('now')),
+      base_resume TEXT,
+      resume_name TEXT,
+      tailored_resume TEXT,
+      cover_letter TEXT,
+      screening_qa TEXT,
+      match_score INTEGER,
+      status TEXT
+    );
   `)
   persist()
 }
@@ -218,6 +243,7 @@ function migrate() {
   try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_company ON applications(company)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_attention_dismissed ON attention_jobs(dismissed)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_history_app ON status_history(application_id)') } catch {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_snapshots_app ON application_snapshots(application_id, taken_at)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_interview_app ON interview_events(application_id)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_interview_at ON interview_events(scheduled_at)') } catch {}
 }
@@ -379,6 +405,20 @@ function insertApplication(data) {
   // Read the new row id BEFORE persist(): db.export() resets last_insert_rowid.
   const newId = queryOne('SELECT last_insert_rowid() as id')?.id
   if (newId) db.run('INSERT INTO status_history (application_id, status) VALUES (?, ?)', [newId, status])
+  // Freeze what was drafted. Only when something was actually generated —
+  // rows created for skipped or unscored jobs carry no documents and a
+  // snapshot of two empty strings is noise in the trail.
+  if (newId && (data.tailored_resume || data.cover_letter)) {
+    recordSnapshot(newId, status === 'held' ? 'drafted' : 'submitted', {
+      base_resume: data.base_resume || '',
+      resume_name: data.resume_name,
+      tailored_resume: data.tailored_resume,
+      cover_letter: data.cover_letter,
+      screening_qa: data.screening_qa,
+      match_score: data.match_score,
+      status,
+    })
+  }
   persist()
   return { success: true, id: newId }
 }
@@ -402,6 +442,21 @@ function markHeldApplied(id, screeningQa) {
            screening_qa = ?, updated_at = datetime('now'), cloud_dirty = 1
        WHERE id = ?`, [JSON.stringify(screeningQa || []), id])
   if (current && current.status !== 'applied') recordStatusChange(id, 'applied')
+  // The submission snapshot is the one that matters: it is the only record of
+  // the screening answers, which are written during the submit itself and
+  // overwrite whatever the held row carried.
+  const row = queryOne('SELECT * FROM applications WHERE id = ?', [id])
+  if (row) {
+    recordSnapshot(id, 'submitted', {
+      base_resume: '',
+      resume_name: row.resume_name,
+      tailored_resume: row.tailored_resume,
+      cover_letter: row.cover_letter,
+      screening_qa: screeningQa || [],
+      match_score: row.match_score,
+      status: 'applied',
+    })
+  }
   return { success: true }
 }
 
@@ -413,6 +468,87 @@ function rejectHeldApplication(id) {
        updated_at = datetime('now'), cloud_dirty = 1 WHERE id = ?`, [id])
   if (current && current.status !== 'skipped') recordStatusChange(id, 'skipped')
   return { success: true }
+}
+
+// ─── Audit / version history ─────────────────────────────────────
+// Snapshots are append-only. Nothing in here is ever updated in place —
+// a record that can be rewritten after the fact is not an audit trail.
+
+function recordSnapshot(applicationId, reason, data = {}) {
+  if (!applicationId || !reason) return { success: false, reason: 'applicationId and reason are required' }
+  run(`
+    INSERT INTO application_snapshots
+      (application_id, reason, base_resume, resume_name, tailored_resume, cover_letter, screening_qa, match_score, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, [
+    applicationId, reason,
+    data.base_resume || '', data.resume_name || null,
+    data.tailored_resume || '', data.cover_letter || '',
+    JSON.stringify(data.screening_qa || []),
+    data.match_score ?? null, data.status || null,
+  ])
+  return { success: true, id: queryOne('SELECT last_insert_rowid() as id')?.id }
+}
+
+// Slim list for the history trail. The documents are deliberately left out —
+// a row with three full resumes on it makes the panel crawl.
+function getSnapshots(applicationId) {
+  return query(`
+    SELECT id, application_id, reason, taken_at, match_score, status,
+           LENGTH(tailored_resume) as tailored_length,
+           LENGTH(cover_letter) as cover_letter_length
+    FROM application_snapshots
+    WHERE application_id = ?
+    ORDER BY taken_at DESC, id DESC
+  `, [applicationId])
+}
+
+function getSnapshot(id) {
+  const row = queryOne('SELECT * FROM application_snapshots WHERE id = ?', [id])
+  if (!row) return null
+  let screeningQa = []
+  try { screeningQa = JSON.parse(row.screening_qa || '[]') } catch { screeningQa = [] }
+  return { ...row, screening_qa: screeningQa }
+}
+
+// What the tailoring pass changed, for one snapshot.
+function getSnapshotDiff(id) {
+  const snap = getSnapshot(id)
+  if (!snap) return null
+  const { diffLines, diffSummary } = require('./textDiff')
+  const diff = diffLines(snap.base_resume || '', snap.tailored_resume || '')
+  return { id: snap.id, taken_at: snap.taken_at, reason: snap.reason, diff, summary: diffSummary(diff) }
+}
+
+// Undo: put a previous version's documents back on the live row.
+//
+// Takes its own snapshot of the current state first, so restoring is itself
+// reversible — otherwise "undo" is a one-way door that can destroy the very
+// version someone was trying to compare against.
+function restoreSnapshot(id) {
+  const snap = getSnapshot(id)
+  if (!snap) return { success: false, reason: 'Snapshot not found' }
+  const current = queryOne('SELECT * FROM applications WHERE id = ?', [snap.application_id])
+  if (!current) return { success: false, reason: 'This application no longer exists' }
+
+  recordSnapshot(snap.application_id, 'before-restore', {
+    base_resume: '',
+    resume_name: current.resume_name,
+    tailored_resume: current.tailored_resume,
+    cover_letter: current.cover_letter,
+    screening_qa: safeParseQa(current.screening_qa),
+    match_score: current.match_score,
+    status: current.status,
+  })
+
+  run(`UPDATE applications
+       SET tailored_resume = ?, cover_letter = ?, updated_at = datetime('now'), cloud_dirty = 1
+       WHERE id = ?`, [snap.tailored_resume || '', snap.cover_letter || '', snap.application_id])
+  return { success: true, applicationId: snap.application_id }
+}
+
+function safeParseQa(raw) {
+  try { return JSON.parse(raw || '[]') } catch { return [] }
 }
 
 // Append to the per-application status timeline (only on real changes).
@@ -1277,6 +1413,7 @@ module.exports = {
   getApplications, getApplicationsList, getApplication, hasJobUrl, hasAttentionJobUrl, hasSeenJobUrl,
   findRecentApplicationToCompany, insertApplication, updateApplicationStatus,
   getHeldApplications, markHeldApplied, rejectHeldApplication,
+  recordSnapshot, getSnapshots, getSnapshot, getSnapshotDiff, restoreSnapshot,
   getResumeConversion, recordAiUsage, getAiUsageSummary, getMonthlyAiSpend, pruneAiUsage, clearAiUsage,
   UNSENT_STATUSES,
   updateApplicationAfterApply, updateApplicationComment, updateRecruiterEmail, deleteApplication, clearAllApplications,
