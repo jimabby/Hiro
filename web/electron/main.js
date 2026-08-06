@@ -32,6 +32,9 @@ const logger = require('./services/logger')
 const configTransfer = require('./services/configTransfer')
 const tray = require('./services/tray')
 const updater = require('./services/updater')
+const entryUrl = require('./services/entryUrl')
+const push = require('./services/push')
+const calendarSync = require('./services/calendarSync')
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
@@ -139,21 +142,13 @@ function createWindow() {
 }
 
 // The single URL the main window may occupy. In dev that's the Vite server; in
-// production it's the packaged entry file and nothing else. Compared as a
-// resolved path so `..` traversal can't smuggle in another file.
+// production it's the packaged entry file and nothing else. The comparison
+// itself lives in services/entryUrl.js so it can be regression-tested per
+// platform — see test/entry-url.test.js.
 const ENTRY_FILE = path.join(__dirname, '..', 'dist', 'index.html')
 
 function isEntryPointUrl(url) {
-  let parsed
-  try { parsed = new URL(url) } catch { return false }
-
-  if (isDev) {
-    return parsed.origin === 'http://localhost:5173'
-  }
-  if (parsed.protocol !== 'file:') return false
-  try {
-    return path.resolve(decodeURIComponent(parsed.pathname)) === path.resolve(ENTRY_FILE)
-  } catch { return false }
+  return entryUrl.isEntryPointUrl(url, { isDev, entryFile: ENTRY_FILE })
 }
 
 // Blanket guard for every webContents the app ever creates, not just the main
@@ -167,8 +162,39 @@ app.on('web-contents-created', (_e, contents) => {
   })
 })
 
+// An encrypted database that will not open is the one startup failure the user
+// cannot diagnose and must not be left to guess at. Continuing would present an
+// empty dashboard, which is indistinguishable from having lost everything, so say
+// exactly what happened, point at the backups, and stop.
+async function openDatabaseOrExplain() {
+  try {
+    await database.init()
+    return true
+  } catch (err) {
+    logger.append(`Database could not be opened: ${err.message}`)
+    const encryptionRelated = err.name === 'DbCryptoError'
+    await dialog.showMessageBox({
+      type: 'error',
+      title: 'Hiro could not open its database',
+      message: encryptionRelated
+        ? 'The encrypted database could not be unlocked.'
+        : 'The database could not be opened.',
+      detail: `${err.message}\n\nYour data has not been changed. Daily backups are in the "backups" folder `
+        + 'inside your Hiro profile directory, and Hiro will not overwrite anything until it can open the '
+        + 'database successfully.',
+      buttons: ['Open the profile folder', 'Quit'],
+      defaultId: 0,
+      cancelId: 1,
+    }).then(({ response }) => {
+      if (response === 0) shell.openPath(configService.CONFIG_DIR)
+    }).catch(() => {})
+    app.quit()
+    return false
+  }
+}
+
 app.whenReady().then(async () => {
-  await database.init()
+  if (!await openDatabaseOrExplain()) return
   // Sweep rows orphaned by older versions, which deleted an application
   // without its interview prep / status history.
   database.pruneOrphanedRows()
@@ -181,6 +207,9 @@ app.whenReady().then(async () => {
   setInterval(() => database.maybeBackup(), 6 * 60 * 60 * 1000)
   // Usage rows are diagnostic; six months is plenty and keeps the file small.
   database.pruneAiUsage(180)
+  // The notification ledger is a dedupe mechanism, not history — nothing needs a
+  // reminder key from six months ago.
+  database.prunePushLog(90)
   createWindow()
 
   // Tray first: createWindow's close handler asks whether a tray exists.
@@ -204,7 +233,18 @@ app.whenReady().then(async () => {
 
   scheduler.init(mainWindow)
   if (cfg.mobileApiEnabled) mobileApi.start()
-  cloudSync.init().catch(() => {})
+  cloudSync.init({
+    // A device attaching itself to the account is a security event, so it is
+    // raised in the app rather than left in the log — the phone gets a push at
+    // the same time (see push.notifyNewDevice).
+    onNewDevice: (device) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('notification', { type: 'new-device', device })
+      }
+    },
+  }).catch(() => {})
+  // Interviews may have been created or moved while the desktop was closed.
+  calendarSync.syncNow().catch(() => {})
   updater.init({
     onStatus: (status) => {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update:status', status)
@@ -279,6 +319,14 @@ ipcMain.handle('cloud:listDevices', async () => {
 })
 ipcMain.handle('cloud:revokeDevice', async (_, deviceId) => {
   try { return await cloudSync.revokeDevice(deviceId) } catch (err) { return { success: false, reason: err.message } }
+})
+ipcMain.handle('cloud:forgetDevice', async (_, deviceId) => {
+  try { return await cloudSync.forgetDevice(deviceId) } catch (err) { return { success: false, reason: err.message } }
+})
+// The authoritative revocation: invalidates every refresh token on the account,
+// this desktop's included. See cloudSync.signOutEverywhere.
+ipcMain.handle('cloud:signOutEverywhere', async () => {
+  try { return await cloudSync.signOutEverywhere() } catch (err) { return { success: false, reason: err.message } }
 })
 ipcMain.handle('cloud:conflicts', () => database.getSyncConflicts())
 ipcMain.handle('cloud:clearConflicts', () => database.clearSyncConflicts())
@@ -835,6 +883,50 @@ ipcMain.handle('calendar:exportICS', async (_, eventId) => {
   } catch (err) {
     return { success: false, error: err.message }
   }
+})
+
+// ─── IPC: Two-way calendar sync (Google / Outlook) ───────────────
+// Distinct from the .ics export above, which stays available for anyone who does
+// not want to grant an OAuth scope.
+ipcMain.handle('calendarSync:status', () => calendarSync.getStatus())
+ipcMain.handle('calendarSync:connect', async (_, payload) => {
+  try { return await calendarSync.connect(payload) } catch (err) { return { success: false, error: err.message } }
+})
+ipcMain.handle('calendarSync:disconnect', () => calendarSync.disconnect())
+ipcMain.handle('calendarSync:listCalendars', async () => {
+  try { return { success: true, calendars: await calendarSync.listCalendars() } } catch (err) { return { success: false, error: err.message } }
+})
+ipcMain.handle('calendarSync:syncNow', async () => {
+  try { return await calendarSync.syncNow({ force: true }) } catch (err) { return { error: err.message } }
+})
+
+// ─── IPC: Push notifications ─────────────────────────────────────
+ipcMain.handle('push:sendTest', async () => {
+  try { return await push.sendTest() } catch (err) { return { success: false, reason: err.message } }
+})
+ipcMain.handle('push:log', () => database.getPushLog(50))
+
+// ─── IPC: Pipeline ───────────────────────────────────────────────
+ipcMain.handle('pipeline:get', () => database.getPipeline())
+ipcMain.handle('pipeline:setNextAction', (_, id, payload) => {
+  try { return database.setNextAction(id, payload || {}) } catch (err) { return { success: false, reason: err.message } }
+})
+ipcMain.handle('pipeline:completeNextAction', (_, id) => {
+  try { return database.completeNextAction(id) } catch (err) { return { success: false, reason: err.message } }
+})
+
+// ─── IPC: Database encryption ────────────────────────────────────
+ipcMain.handle('db:encryptionStatus', () => database.getEncryptionStatus())
+ipcMain.handle('db:setEncryption', (_, enabled) => {
+  try { return database.setEncryption(enabled) } catch (err) { return { success: false, error: err.message } }
+})
+// Returned once, to be written down somewhere the machine is not — it is the only
+// thing that can recover an encrypted profile whose keychain entry is gone.
+ipcMain.handle('db:exportRecoveryKey', () => {
+  try { return { success: true, ...database.exportRecoveryKey() } } catch (err) { return { success: false, error: err.message } }
+})
+ipcMain.handle('db:importRecoveryKey', (_, text) => {
+  try { return database.importRecoveryKey(text) } catch (err) { return { success: false, reason: err.message } }
 })
 
 // ─── IPC: Salary analytics ───────────────────────────────────────

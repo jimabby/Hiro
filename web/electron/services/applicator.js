@@ -359,6 +359,11 @@ async function doRun(cfg, { log, notifyAttention }) {
       // and reporting a failure that was never going to be a success.
       if (scraper.supportsAutoApply === false) {
         job.reason = 'Company career board — submit on the site; your tailored documents are ready'
+        // The description was already fetched above and is what the Needs
+        // Attention page shows. Nothing set it on the job object, so every ATS
+        // match reached the insert with job_description undefined — see the note
+        // in database.insertAttentionJob.
+        job.job_description = jobDescription || job.job_description || ''
         job.tailored_resume = tailoredResume
         job.cover_letter = coverLetter
         job.recruiter_email = recruiterEmail

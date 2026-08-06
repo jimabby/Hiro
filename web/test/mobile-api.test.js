@@ -6,6 +6,8 @@ const { stub, service, createChecker } = require('./helpers')
 
 const statusWrites = []
 const rejects = []
+const nextActions = []
+const completed = []
 const TOKEN = 'a'.repeat(32)
 const PORT = 48231
 const cfg = { mobileApiEnabled: true, mobileApiPort: PORT, mobileApiToken: TOKEN }
@@ -27,6 +29,18 @@ stub({
     rejectHeldApplication: (id) => { rejects.push(id); return { success: true } },
     getAiUsageSummary: () => ({ month: { calls: 12, cost: 0.42 }, today: { calls: 3, cost: 0.1 } }),
     getApplicationsList: () => [],
+    // Mirrors the real setNextAction, which validates the date rather than
+    // storing whatever it is handed — the route has to pass that refusal on as a
+    // 400 rather than reporting success.
+    setNextAction: (id, { date, note }) => {
+      if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return { success: false, reason: 'Date must be YYYY-MM-DD.' }
+      }
+      nextActions.push({ id, date, note })
+      return { success: true }
+    },
+    completeNextAction: (id) => { completed.push(id); return { success: true } },
+    getDueNextActions: () => [{ id: 1, job_title: 'Dev', company: 'Acme', next_action_at: '2026-08-01', next_action_note: 'Chase the recruiter' }],
   },
   './scheduler': { getScanInfo: () => ({ running: false }), requestScan: () => ({ id: 'x' }), cancelScan: () => {} },
   './logger': { append: () => {}, tail: () => [] },
@@ -106,6 +120,31 @@ const post = async (path, body) => {
   check('the rejection reached the database', rejects, [4])
 
   check('ai usage is served', (await get('/api/ai-usage')).body.month.cost, 0.42)
+
+  // ── Follow-up dates over the LAN ────────────────────────────────
+  // Deciding "chase them Thursday" is exactly the sort of thing done away from
+  // the desk, and it needs no browser session — so the phone can write it.
+  check('a next action can be set from the phone',
+    (await post('/api/applications/1/next-action', { date: '2026-08-14', note: 'Chase' })).status, 200)
+  check('the write reached the database', nextActions, [{ id: 1, date: '2026-08-14', note: 'Chase' }])
+
+  // setNextAction refuses a malformed date rather than storing it; that has to
+  // surface as a 400, not a silent success the phone reports as saved.
+  const badDate = await post('/api/applications/1/next-action', { date: 'next thursday' })
+  check('a malformed date is a 400', badDate.status, 400)
+  check('with the reason from the database layer', /YYYY-MM-DD/.test(badDate.body.reason), true)
+
+  // Clearing is a null date, which must be allowed through.
+  check('a next action can be cleared',
+    (await post('/api/applications/1/next-action', { date: null })).status, 200)
+
+  check('an action can be marked done',
+    (await post('/api/applications/2/next-action/done', {})).status, 200)
+  check('completion reached the database', completed, [2])
+
+  const dueRes = await get('/api/next-actions')
+  check('due follow-ups are served', dueRes.status, 200)
+  check('and carry their note', dueRes.body[0].next_action_note, 'Chase the recruiter')
 
   check('unknown route still 404s', (await get('/api/nope')).status, 404)
 

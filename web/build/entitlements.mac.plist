@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened Runtime entitlements for the signed/notarized macOS build.
+
+  Hardened Runtime is required for notarization, and it blocks the things a
+  bundled Chromium needs by default. Every entitlement here is present because
+  removing it breaks the app, not as a precaution:
+
+  - allow-jit / allow-unsigned-executable-memory: V8 compiles JavaScript to
+    machine code at runtime, in both Electron and the Playwright Chromium that
+    ships in Resources/browsers.
+  - disable-library-validation: the bundled Chromium loads its own frameworks,
+    which are not signed by the same Team ID as the outer app bundle.
+  - allow-dyld-environment-variables: Chromium's own launcher sets DYLD_* when
+    starting helper processes.
+
+  Deliberately absent: camera, microphone, location, address book, and the App
+  Sandbox. Hiro's renderer refuses every permission request (see main.js), and
+  requesting an entitlement the app never uses is a privacy-review liability.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+</dict>
+</plist>

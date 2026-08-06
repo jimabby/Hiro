@@ -58,7 +58,70 @@ Your phone and computer must be on the same network.
 - **Live scan progress** — while a scan runs on the desktop, the Dashboard shows "scanning now…" and (over Wi-Fi) a live feed of the desktop's activity log, updating every few seconds; a **Cancel scan** button stops it remotely. Over the cloud the running indicator works from anywhere via the `scan_status` table.
 - **Applications** — searchable, filterable list of every application
 - **Detail view** — match score and explanation, status updates (applied / interview / offer / rejected / skipped), notes, cover letter, screening Q&A, full job description, link to the posting
-- **Settings** — connection test, re-pairing, and (cloud mode) permanent account deletion
+- **Follow-ups** — book or clear a next action on any submitted application, with a note. One tap for "tomorrow", "3 days", "1 week", "2 weeks". Overdue ones lead the Dashboard and show in red on the list
+- **Push notifications** (cloud mode) — recruiter replies, interview reminders, follow-ups coming due, closing dates, review-queue items, failed scans and new sign-ins. Tapping one opens the application it was about
+- **Settings** — connection test, re-pairing, notification toggle, and (cloud mode) permanent account deletion
+
+## Notifications
+
+Cloud mode only, because the delivery path runs through the shared account:
+
+```
+this phone registers an Expo push token  →  devices.push_token (Supabase)
+the desktop reads the tokens             →  POST exp.host/--/api/v2/push/send
+Expo forwards to APNs / FCM              →  this phone
+```
+
+There is no Hiro server anywhere in that path. **Which kinds** of notification get
+sent is chosen on the desktop (Settings → Notifications); this app only decides
+whether this phone receives them at all.
+
+Permission is requested lazily — when you turn notifications on, not on first
+launch. iOS shows that prompt exactly once ever, and asking before the user has
+seen what the app does is how apps get denied permanently.
+
+For a standalone build, `getExpoPushTokenAsync` needs an EAS project id. Add it
+under `expo.extra.eas.projectId` in `app.json` (`eas init` writes it for you). In
+Expo Go during development it is inferred.
+
+## This phone on your account
+
+The phone registers itself in the shared `devices` table on sign-in, so the
+desktop's device list shows it with its session age and last contact — and can act
+on it. It re-checks its own standing on **every foreground**, not just at launch:
+Supabase gives a client no way to invalidate another client's session, so honouring
+a revocation promptly is this side's responsibility. If the desktop has marked this
+phone as signed out, it signs itself out and clears its stored session.
+
+Signing out on purpose clears the push token first — otherwise notifications would
+keep arriving on a phone that is no longer signed in.
+
+## Permissions
+
+Hiro asks for the camera (to scan the desktop's pairing QR code) and, if you enable
+them, notifications. Nothing else.
+
+`npm run check:permissions` asserts that against the **resolved** Expo config, not
+`app.json`, because config plugins add permissions of their own — `expo-camera`
+adds `RECORD_AUDIO` by default, which is how this app once requested a microphone
+it never touches. CI runs the same check, so a dependency bump that reintroduces
+one fails the build instead of shipping.
+
+## Testing
+
+```bash
+npm test                    # unit suites
+npm run check:permissions   # resolved-config permission audit
+npx expo export --platform ios --platform android   # Metro over every module
+```
+
+The unit suites cover `src/stats.js` and `src/dates.js` — the stats/chart
+derivations that must agree with the desktop, and the local-date handling. Those
+two modules are CommonJS on purpose: there is no mobile test framework here, and
+extracting the logic that had silently drifted from the desktop was worth more than
+adding one. Anything importing `react-native` or `expo-*` needs a native runtime;
+`expo export` is the closest thing to coverage for it, and it does run Metro over
+every module.
 
 ## Tech
 

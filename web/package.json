@@ -13,7 +13,10 @@
     "build:publish": "vite build && electron-builder --publish always",
     "preview": "vite preview",
     "lint": "eslint .",
-    "test": "node test/run.js"
+    "test": "node test/run.js",
+    "smoke": "node test/smoke/run.js",
+    "verify:signature": "node scripts/verify-signature.js",
+    "test:contract": "node test/contract/run.js"
   },
   "build": {
     "appId": "com.hiro.app",
@@ -39,11 +42,22 @@
     "icon": "public/logo.png",
     "win": {
       "target": "nsis",
-      "icon": "public/logo.png"
+      "icon": "public/logo.png",
+      "signtoolOptions": {
+        "signingHashAlgorithms": [
+          "sha256"
+        ],
+        "rfc3161TimeStampServer": "http://timestamp.digicert.com"
+      }
     },
     "mac": {
       "target": "dmg",
-      "icon": "public/logo.png"
+      "icon": "public/logo.png",
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "gatekeeperAssess": false
     },
     "linux": {
       "target": "AppImage",

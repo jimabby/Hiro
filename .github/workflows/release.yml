@@ -58,10 +58,9 @@ jobs:
         os: [macos-latest, windows-latest, ubuntu-latest]
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      # No Apple Developer certificate is configured, so builds are unsigned.
-      # Without this, electron-builder searches the keychain and fails the mac
-      # job rather than producing an unsigned DMG.
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      # True for a real tagged release; a dry run neither publishes nor insists
+      # on signing, so signing can be developed without cutting a tag.
+      PUBLISHING: ${{ startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true }}
     steps:
       - uses: actions/checkout@v5
 
@@ -71,17 +70,114 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      # Signing material is injected here rather than in the job-level `env:` so
+      # the secrets never reach the shell as interpolated text, and so the mac
+      # job can distinguish "no certificate configured" (build unsigned, don't
+      # fail) from "certificate configured" (sign and notarize).
+      #
+      # See RELEASING.md for how to produce each of these values.
+      - name: Configure code signing
+        shell: bash
+        env:
+          WIN_CERT_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WIN_CERT_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          MAC_CERT_BASE64: ${{ secrets.MAC_CERTIFICATE_BASE64 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          case "$RUNNER_OS" in
+            Windows)
+              if [ -n "$WIN_CERT_BASE64" ]; then
+                # electron-builder reads a base64 PFX straight out of CSC_LINK.
+                echo "::add-mask::$WIN_CERT_BASE64"
+                echo "CSC_LINK=$WIN_CERT_BASE64" >> "$GITHUB_ENV"
+                echo "CSC_KEY_PASSWORD=$WIN_CERT_PASSWORD" >> "$GITHUB_ENV"
+                echo "Windows Authenticode signing: enabled"
+              else
+                echo "Windows Authenticode signing: NO CERTIFICATE CONFIGURED — build will be unsigned"
+              fi
+              ;;
+            macOS)
+              if [ -n "$MAC_CERT_BASE64" ]; then
+                echo "::add-mask::$MAC_CERT_BASE64"
+                echo "CSC_LINK=$MAC_CERT_BASE64" >> "$GITHUB_ENV"
+                echo "CSC_KEY_PASSWORD=$MAC_CERT_PASSWORD" >> "$GITHUB_ENV"
+                echo "CSC_IDENTITY_AUTO_DISCOVERY=true" >> "$GITHUB_ENV"
+                echo "APPLE_TEAM_ID=$APPLE_TEAM_ID" >> "$GITHUB_ENV"
+                echo "Developer ID signing: enabled"
+
+                # Notarization. electron-builder runs @electron/notarize
+                # automatically once these are present; an App Store Connect API
+                # key is preferred over APPLE_ID because it is scoped and
+                # revocable. The .p8 must be a real file on disk.
+                if [ -n "$APPLE_API_KEY_P8" ]; then
+                  mkdir -p "$RUNNER_TEMP/private_keys"
+                  key_path="$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY_ID}.p8"
+                  printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$key_path"
+                  echo "APPLE_API_KEY=$key_path" >> "$GITHUB_ENV"
+                  echo "APPLE_API_KEY_ID=$APPLE_API_KEY_ID" >> "$GITHUB_ENV"
+                  echo "APPLE_API_ISSUER=$APPLE_API_ISSUER" >> "$GITHUB_ENV"
+                  echo "Notarization: enabled"
+                else
+                  # Signed but un-notarized still trips Gatekeeper on first open,
+                  # so this is a warning, not a clean state.
+                  echo "Notarization: NO API KEY CONFIGURED — Gatekeeper will warn on first open"
+                fi
+              else
+                # Without this electron-builder searches the (empty) keychain and
+                # fails the job instead of producing an unsigned DMG.
+                echo "CSC_IDENTITY_AUTO_DISCOVERY=false" >> "$GITHUB_ENV"
+                echo "Developer ID signing: NO CERTIFICATE CONFIGURED — build will be unsigned"
+              fi
+              ;;
+            *)
+              echo "Linux AppImages are not code-signed."
+              ;;
+          esac
+
       # Chromium is NOT skipped here — each runner downloads its own platform
       # build so electron-builder can bundle it into that platform's installer.
       - run: npm ci --prefix web
 
       - name: Build and publish
-        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        if: env.PUBLISHING == 'true'
         run: npm run build:publish --prefix web
 
       - name: Build only
-        if: "!(startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true)"
+        if: env.PUBLISHING != 'true'
         run: npm run build:dry --prefix web
+
+      # Runs after the build so it inspects the artifacts that would actually
+      # ship. On a real tagged release an unsigned Windows or macOS installer
+      # fails the job, unless the repo owner has deliberately opted in to
+      # shipping unsigned by setting the ALLOW_UNSIGNED_RELEASE variable.
+      - name: Verify installer signatures
+        shell: bash
+        run: |
+          flags=""
+          if [ "$PUBLISHING" = "true" ] && [ "${{ vars.ALLOW_UNSIGNED_RELEASE }}" != "1" ]; then
+            flags="--require-signed"
+          fi
+          node web/scripts/verify-signature.js $flags
+
+      # Installs the artifact a user would download, launches it, and drives the
+      # real renderer. This is the layer the unit suites cannot reach — the
+      # packaged Windows navigation check that broke reload was invisible to all
+      # 26 of them. See web/test/smoke/README.md.
+      #
+      # It runs in this job rather than a downstream one so it tests the binary
+      # that was just built, with no artifact round trip. electron-builder
+      # publishes GitHub releases as DRAFTS, so a failure here means the draft is
+      # never promoted and no user ever sees the build.
+      - name: Install xvfb (Linux only — Electron needs a display)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Packaged smoke test
+        run: npm run smoke --prefix web
 
       - uses: actions/upload-artifact@v4
         with:
@@ -91,5 +187,6 @@ jobs:
             web/dist-electron/*.dmg
             web/dist-electron/*.exe
             web/dist-electron/*.AppImage
+            web/dist-electron/*.blockmap
             web/dist-electron/*.yml
           if-no-files-found: error

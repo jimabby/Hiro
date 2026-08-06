@@ -25,20 +25,28 @@ check('greenhouse location is kept', greenhouse[0].location, 'Sydney, NSW')
 
 const lever = ats.PROVIDERS.lever.parse([{
   id: 'abc', text: 'Platform Engineer', hostedUrl: 'https://jobs.lever.co/acme/abc',
-  descriptionPlain: 'Run the platform', categories: { location: 'Remote' },
+  // Lever's "plain" description is stripped of TAGS but keeps entities.
+  descriptionPlain: 'Run the platform &amp; keep it up&nbsp;always',
+  categories: { location: 'Remote' },
   salaryRange: { currency: 'AUD', min: 150000, max: 190000, interval: 'per-year-salary' },
 }], 'acme')
 check('lever title is parsed', lever[0].job_title, 'Platform Engineer')
 check('lever salary range is carried through', /150000-190000/.test(lever[0].salary), true)
+// Only Greenhouse used to be decoded, so every Lever description reached the
+// model — and the Needs Attention page — full of "&amp;" and "&nbsp;".
+// test/contract/ats-boards.contract.js found this against the real API.
+check('lever entities are decoded', lever[0].job_description, 'Run the platform & keep it up always')
 
 const ashby = ats.PROVIDERS.ashby.parse({
   name: 'Acme', jobs: [{
     id: 'x1', title: 'Data Engineer', jobUrl: 'https://jobs.ashbyhq.com/acme/x1',
-    descriptionHtml: '<p>Pipelines</p>', location: 'Melbourne',
+    descriptionHtml: '<p>Pipelines &amp; dashboards</p>', location: 'Melbourne',
     compensation: { compensationTierSummary: 'A$160K – A$200K' },
   }],
 }, 'acme')
 check('ashby title is parsed', ashby[0].job_title, 'Data Engineer')
+// descriptionHtml is real HTML, so stripping tags leaves entities behind.
+check('ashby entities are decoded', ashby[0].job_description, 'Pipelines & dashboards')
 check('ashby compensation summary is used as the salary', ashby[0].salary, 'A$160K – A$200K')
 check('ashby company name comes from the board', ashby[0].company, 'Acme')
 

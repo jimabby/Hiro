@@ -87,8 +87,32 @@ export class HiroClient {
     })
   }
 
+  // The follow-up date and note from the desktop's Pipeline board. Editable from
+  // the phone: deciding "chase them Thursday" is exactly the kind of thing done
+  // away from the desk. `date` is a local YYYY-MM-DD, or null to clear.
+  setNextAction(id, { date, note } = {}) {
+    return this.request(`/api/applications/${id}/next-action`, {
+      method: 'POST',
+      body: JSON.stringify({ date: date ?? null, note: note ?? '' }),
+    })
+  }
+
+  completeNextAction(id) {
+    return this.request(`/api/applications/${id}/next-action/done`, { method: 'POST' })
+  }
+
   getAttention() { return this.request('/api/attention') }
   getPerDay(days = 7) { return this.request(`/api/perday?days=${days}`) }
+
+  // Follow-ups due today or overdue. An older desktop build has no such route,
+  // so a 404 resolves to an empty list rather than breaking the dashboard.
+  async getDueActions() {
+    try {
+      return await this.request('/api/next-actions')
+    } catch {
+      return []
+    }
+  }
 
   // Upcoming interviews — same panel the desktop shows. An older desktop build
   // has no such route, so a 404 resolves to an empty list rather than an error.

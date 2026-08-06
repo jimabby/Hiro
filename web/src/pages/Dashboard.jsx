@@ -178,7 +178,7 @@ function InterviewPrepPanel({ questions, applicationId, jobDescription }) {
   )
 }
 
-export default function Dashboard({ active = true, logs, scanRunning, onScanStart, onDryRun, onClearLogs, showToast }) {
+export default function Dashboard({ active = true, logs, scanRunning, onScanStart, onDryRun, onClearLogs, showToast, focusApplicationId, onFocusHandled }) {
   const [stats, setStats] = useState(null)
   const [apps, setApps] = useState([])
   const [selected, setSelected] = useState(null)
@@ -282,6 +282,15 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
       window.api.getInterviewEvents?.(selected.id).then(e => setAppInterviews(e || [])).catch(() => {})
     }
   }, [selected?.id])
+
+  // Opened from another page (the Pipeline board). A bare { id } is enough: the
+  // effect above sees job_description === undefined and fetches the full row,
+  // which is the same path a click in the table takes.
+  useEffect(() => {
+    if (focusApplicationId == null) return
+    setSelected({ id: focusApplicationId })
+    onFocusHandled?.()
+  }, [focusApplicationId, onFocusHandled])
 
   async function viewPDF(text, title, isCoverLetter = false) {
     setPdfLoading(true)
@@ -630,7 +639,16 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
       {stats && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 16, marginBottom: 24 }}>
           {[
-            { label: 'Today', value: stats.totalToday },
+            {
+              label: 'Today',
+              value: stats.totalToday,
+              // These tiles count SUBMITTED applications, so a scan that skipped
+              // everything below the threshold or held it for review reads as 0.
+              // Say where those rows went rather than leaving it a mystery.
+              ...(stats.unsentToday > 0 ? {
+                sub: `+${stats.unsentToday} skipped or held`,
+              } : {}),
+            },
             {
               label: 'This Week',
               value: stats.totalThisWeek,

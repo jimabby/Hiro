@@ -294,6 +294,30 @@ async function handle(req, res) {
       return json(res, 200, { success: true })
     }
 
+    // The follow-up date and note behind the desktop's Pipeline board. Writable
+    // from the phone: deciding "chase them Thursday" is exactly the sort of thing
+    // done away from the desk, and it needs no browser session.
+    const nextActionMatch = path.match(/^\/api\/applications\/(\d+)\/next-action$/)
+    if (req.method === 'POST' && nextActionMatch) {
+      const body = await readBody(req)
+      const result = database.setNextAction(Number(nextActionMatch[1]), {
+        date: body.date ?? null,
+        note: typeof body.note === 'string' ? body.note : '',
+      })
+      // setNextAction rejects a malformed date rather than storing it; report
+      // that as a 400 instead of a silent success.
+      return json(res, result.success ? 200 : 400, result)
+    }
+
+    const nextActionDoneMatch = path.match(/^\/api\/applications\/(\d+)\/next-action\/done$/)
+    if (req.method === 'POST' && nextActionDoneMatch) {
+      return json(res, 200, database.completeNextAction(Number(nextActionDoneMatch[1])))
+    }
+
+    if (req.method === 'GET' && path === '/api/next-actions') {
+      return json(res, 200, database.getDueNextActions())
+    }
+
     // Queue a scan to run on the desktop. Runs immediately if idle, otherwise
     // as soon as the desktop is free (or on next launch if it's restarted).
     if (req.method === 'POST' && path === '/api/scan') {

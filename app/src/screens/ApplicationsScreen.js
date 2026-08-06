@@ -5,10 +5,11 @@ import {
 } from 'react-native'
 import { colors, radius, statusColors, statusLabel } from '../theme'
 import ApplicationDetailScreen from './ApplicationDetailScreen'
+import { describeDue, isOverdue } from '../components/NextAction'
 
 const STATUS_FILTERS = ['all', 'applied', 'held', 'interview', 'offer', 'rejected', 'pending', 'no_response', 'skipped']
 
-export default function ApplicationsScreen({ client }) {
+export default function ApplicationsScreen({ client, openApplicationId, onOpened }) {
   const [apps, setApps] = useState([])
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
@@ -38,6 +39,15 @@ export default function ApplicationsScreen({ client }) {
     await load()
     setRefreshing(false)
   }
+
+  // A notification tap names the application it was about. Landing on the list
+  // and making the user find it again would waste the one thing a notification is
+  // good for.
+  useEffect(() => {
+    if (openApplicationId == null) return
+    setSelectedId(openApplicationId)
+    onOpened?.()
+  }, [openApplicationId, onOpened])
 
   if (selectedId) {
     return (
@@ -89,6 +99,14 @@ export default function ApplicationsScreen({ client }) {
                 {item.company} · {item.platform}
               </Text>
               <Text style={styles.itemDate}>{(item.applied_at || '').slice(0, 16)}</Text>
+              {/* The follow-up, where the eye already is. A date buried one tap
+                  deeper is a date nobody acts on. */}
+              {!!item.next_action_at && (
+                <Text style={[styles.itemDate, isOverdue(item.next_action_at) && styles.itemOverdue]}>
+                  {isOverdue(item.next_action_at) ? '⚑ ' : ''}
+                  {item.next_action_note || 'Follow up'} · {describeDue(item.next_action_at)}
+                </Text>
+              )}
             </View>
             <View style={styles.itemRight}>
               {item.match_score != null && (
@@ -132,6 +150,7 @@ const styles = StyleSheet.create({
   },
   itemTitle: { color: colors.text, fontSize: 14, fontWeight: '600' },
   itemCompany: { color: colors.textMuted, fontSize: 12, marginTop: 2 },
+  itemOverdue: { color: colors.red },
   itemDate: { color: colors.textMuted, fontSize: 11, marginTop: 2 },
   itemRight: { alignItems: 'flex-end', gap: 6 },
   itemScore: { color: colors.accent, fontSize: 13, fontWeight: '700' },

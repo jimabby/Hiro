@@ -43,20 +43,23 @@ export async function deleteAccount() {
   try { await supabase.auth.signOut() } catch { /* session already invalid */ }
 }
 
-// Statuses that mean the employer replied. Mirrors RESPONDED_STATUSES in
-// web/electron/services/database.js — keep the two in sync.
-const RESPONDED_STATUSES = ['interview', 'offer', 'rejected', 'pending']
-
-function startOfDay(d) {
-  const x = new Date(d)
-  x.setHours(0, 0, 0, 0)
-  return x
-}
+// The stats/chart derivations live in src/stats.js as pure functions. They used
+// to be inline here, which is how they drifted from the desktop's getStats() —
+// the phone went on counting skipped and held rows as applications long after the
+// desktop stopped. Extracted so a test can pin the two together.
+import { deriveStats, derivePerDay, isUnsent } from './stats'
+import { isDueOrOverdue } from './dates'
 
 // Columns the list/stats screens actually need. Selecting * pulled every
 // cover letter, tailored resume, and job description over cellular on each
 // refresh (the LAN API slims list responses the same way).
-const SLIM_COLUMNS = 'id, local_id, job_title, company, platform, salary, match_score, match_explanation, status, applied_at, updated_at, comment'
+const BASE_COLUMNS = 'id, local_id, job_title, company, platform, salary, match_score, match_explanation, status, applied_at, updated_at, comment'
+// Added later than the rest. A project that has not re-run schema.sql does not
+// have them, and naming a missing column fails the WHOLE select — which would
+// take the applications list down rather than degrade the follow-up feature. So
+// they are requested separately and dropped on the first failure.
+const PIPELINE_COLUMNS = 'next_action_at, next_action_note'
+const SLIM_COLUMNS = `${BASE_COLUMNS}, ${PIPELINE_COLUMNS}`
 
 // Reads/writes the shared `applications` table. Exposes the same methods the
 // screens already call on HiroClient (getStats, getApplications, getApplication,
@@ -69,6 +72,9 @@ export class CloudClient {
     // next sync cycle (~2 minutes).
     this.canScan = true
     this._cache = null // short-lived shared fetch: stats + chart + list reuse one download
+    // Narrowed to BASE_COLUMNS once if this project's schema predates the
+    // pipeline columns; see _fetchAll.
+    this._columns = null
   }
 
   // Screens key off `id`; the cloud row's stable per-user key is `local_id`.
@@ -77,11 +83,19 @@ export class CloudClient {
   }
 
   async _fetchAll() {
-    const { data, error } = await supabase
+    const fetch = (columns) => supabase
       .from('applications')
-      .select(SLIM_COLUMNS)
+      .select(columns)
       .eq('user_id', this.userId)
       .order('applied_at', { ascending: false })
+
+    let { data, error } = await fetch(this._columns || SLIM_COLUMNS)
+    // PostgREST reports an unknown column as PGRST204 / 42703. Remember the
+    // narrower set so every later read does not pay for the same failure.
+    if (error && (error.code === 'PGRST204' || error.code === '42703' || /next_action/.test(error.message || ''))) {
+      this._columns = BASE_COLUMNS
+      ;({ data, error } = await fetch(BASE_COLUMNS))
+    }
     if (error) throw new Error(error.message)
     return (data || []).map(r => this._map(r))
   }
@@ -147,6 +161,43 @@ export class CloudClient {
     return { success: true }
   }
 
+  // ── Follow-up pipeline ─────────────────────────────────────────
+  // The next-action date and note the desktop's Pipeline board runs on. Writable
+  // from here because deciding "chase them Thursday" is exactly the sort of thing
+  // done away from the desk. `date` is a local YYYY-MM-DD, or null to clear.
+  async setNextAction(id, { date, note } = {}) {
+    const { error } = await supabase
+      .from('applications')
+      .update({
+        next_action_at: date || null,
+        next_action_note: note || '',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('user_id', this.userId)
+      .eq('local_id', id)
+    if (error) {
+      if (/next_action/.test(error.message)) {
+        throw new Error('Follow-up dates need the next_action columns — re-run supabase/schema.sql in your project.')
+      }
+      throw new Error(error.message)
+    }
+    this._cache = null
+    return { success: true }
+  }
+
+  async completeNextAction(id) {
+    return this.setNextAction(id, { date: null, note: '' })
+  }
+
+  // Follow-ups due today or overdue, derived from the list already downloaded.
+  // isDueOrOverdue compares local date strings rather than instants, so "due
+  // today" means the user's today, not UTC's.
+  async getDueActions() {
+    return (await this._all())
+      .filter(a => !isUnsent(a) && isDueOrOverdue(a.next_action_at))
+      .sort((a, b) => String(a.next_action_at).localeCompare(String(b.next_action_at)))
+  }
+
   // Count of mirrored attention jobs, or null when the table isn't there yet —
   // null tells the UI to hide the tile rather than show a misleading 0.
   async _attentionCount() {
@@ -162,63 +213,23 @@ export class CloudClient {
     }
   }
 
-  // Stats and per-day are derived client-side from the application list.
+  // Stats and per-day are derived client-side from the application list, by the
+  // same pure functions the tests pin against the desktop's definitions.
   async getStats() {
-    const apps = await this._all()
-    const now = new Date()
-    const today = startOfDay(now).getTime()
-    const weekAgo = today - 6 * 86400000
-    // 'held' is drafted-but-not-sent, same as 'skipped' for any rate: counting
-    // it would make holding a job for review look like an application that
-    // never got a reply. Mirrors UNSENT_STATUSES on the desktop.
-    const counted = apps.filter(a => a.status !== 'skipped' && a.status !== 'held')
-    // Keep these definitions identical to the desktop's getStats(): an offer
-    // implies the interview stage was reached, and a rejection is still a reply.
-    const interviews = apps.filter(a => a.status === 'interview' || a.status === 'offer').length
-    const responded = apps.filter(a => RESPONDED_STATUSES.includes(a.status)).length
-
-    const byStatus = {}
-    const byPlatform = {}
-    for (const a of apps) {
-      byStatus[a.status] = (byStatus[a.status] || 0) + 1
-      byPlatform[a.platform] = (byPlatform[a.platform] || 0) + 1
-    }
-    const appliedTime = a => new Date(a.applied_at || a.updated_at || 0).getTime()
-
     return {
-      totalToday: apps.filter(a => appliedTime(a) >= today).length,
-      totalThisWeek: apps.filter(a => appliedTime(a) >= weekAgo).length,
-      totalAllTime: apps.length,
-      interviews,
-      // Match the desktop's definitions so both agree.
-      responseRate: counted.length ? Math.round((responded / counted.length) * 100) : 0,
-      interviewRate: counted.length ? Math.round((interviews / counted.length) * 100) : 0,
-      // Mirrored from the desktop. Still null when the table doesn't exist yet
-      // (older schema, or a desktop that hasn't pushed) so the UI hides the tile
-      // rather than showing a misleading 0.
+      ...deriveStats(await this._all()),
+      // Mirrored from the desktop. Null when the table doesn't exist yet (older
+      // schema, or a desktop that hasn't pushed) so the UI hides the tile rather
+      // than showing a misleading 0. Not derivable from the list, so it is not
+      // part of deriveStats.
       attentionCount: await this._attentionCount(),
-      byStatus: Object.entries(byStatus).map(([status, count]) => ({ status, count })),
-      byPlatform: Object.entries(byPlatform).map(([platform, count]) => ({ platform, count })),
     }
   }
 
+  // Submitted applications per day, matching the desktop's getApplicationsPerDay
+  // and the "Today" tile — a held row must not draw a bar.
   async getPerDay(days = 7) {
-    const apps = await this._all()
-    const out = []
-    const today = startOfDay(new Date())
-    for (let i = days - 1; i >= 0; i--) {
-      const d = new Date(today.getTime() - i * 86400000)
-      const next = new Date(d.getTime() + 86400000)
-      // Label with the LOCAL date — toISOString() is UTC and shifts the label
-      // to the previous day in UTC+ timezones.
-      const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-      const count = apps.filter(a => {
-        const t = new Date(a.applied_at || a.updated_at || 0).getTime()
-        return t >= d.getTime() && t < next.getTime()
-      }).length
-      out.push({ date, count })
-    }
-    return out
+    return derivePerDay(await this._all(), days)
   }
 
   // Attention jobs are mirrored from the desktop (read-only here). The table is

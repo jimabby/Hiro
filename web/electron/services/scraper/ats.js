@@ -45,7 +45,11 @@ const PROVIDERS = {
         ? `${j.salaryRange.currency || ''} ${j.salaryRange.min || ''}-${j.salaryRange.max || ''} ${j.salaryRange.interval || ''}`.trim()
         : '',
       job_url: j.hostedUrl || j.applyUrl || '',
-      job_description: stripTags(j.descriptionPlain || j.description || ''),
+      // decodeHtml, not just stripTags. Lever's `descriptionPlain` is stripped of
+      // tags but NOT of entities, so descriptions arrived full of "&amp;" and
+      // "&nbsp;" — which the model then scores against and the Needs Attention
+      // page shows literally. Only Greenhouse was being decoded.
+      job_description: decodeHtml(stripTags(j.descriptionPlain || j.description || '')),
       location: j.categories?.location || '',
       external_id: String(j.id || ''),
     })),
@@ -58,7 +62,9 @@ const PROVIDERS = {
       company: data.name || slug,
       salary: j.compensation?.compensationTierSummary || '',
       job_url: j.jobUrl || j.applyUrl || '',
-      job_description: stripTags(j.descriptionHtml || j.descriptionPlain || ''),
+      // Ashby's descriptionHtml is real HTML, so stripping tags leaves entities
+      // behind — see the note on the Lever adapter above.
+      job_description: decodeHtml(stripTags(j.descriptionHtml || j.descriptionPlain || '')),
       location: j.location || '',
       external_id: String(j.id || ''),
     })),

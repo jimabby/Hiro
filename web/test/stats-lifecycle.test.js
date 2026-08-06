@@ -68,7 +68,33 @@ async function main() {
   add('skipped')
 
   let stats = db.getStats()
-  check('skipped rows excluded from the denominator', stats.totalAllTime, 6)
+  // Never-submitted rows are out of every application COUNT, not just the rate
+  // denominators — the bug was "Today"/"This Week"/"All Time" running plain
+  // COUNT(*), so a review-heavy scan reported applications no employer received.
+  check('all-time counts submitted applications only', stats.totalAllTime, 5)
+  check('today counts submitted applications only', stats.totalToday, 5)
+  check('this week counts submitted applications only', stats.totalThisWeek, 5)
+  check('unsent rows are reported separately, not hidden', stats.unsentToday, 1)
+  check('row count still reflects the whole table', stats.rowsAllTime, 6)
+  // The per-platform chart must agree with the tiles.
+  check('platform chart counts submitted applications only',
+    stats.byPlatform.reduce((n, p) => n + p.count, 0), 5)
+  // …while the status breakdown still shows the skipped row, since naming the
+  // status is the entire point of that chart.
+  check('status chart still lists skipped rows',
+    stats.byStatus.find(s => s.status === 'skipped')?.count, 1)
+  check('today job list excludes unsent rows', stats.todayJobs.length, 5)
+  // Charts share the tiles' definition.
+  check('per-day chart counts submitted applications only',
+    db.getApplicationsPerDay(7).reduce((n, d) => n + d.count, 0), 5)
+  check('by-date chart counts submitted applications only',
+    db.getApplicationsByDate().reduce((n, d) => n + d.count, 0), 5)
+  // …and so does the weekly report.
+  const weekly = db.getWeeklyReportData()
+  check('weekly report counts submitted applications only', weekly.totalApps, 5)
+  check('weekly report reports the unsent rows', weekly.unsentApps, 1)
+  check('weekly report per-day excludes unsent rows',
+    weekly.perDay.reduce((n, d) => n + d.count, 0), 5)
   // 4 of the 5 submitted got some reply back.
   check('response rate counts every kind of reply', stats.responseRate, 80)
   // Interview + offer = 2 of 5. An offer implies the interview stage was

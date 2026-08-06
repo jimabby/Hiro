@@ -568,6 +568,20 @@ export default function Settings({ showToast, active }) {
   const [cloudPassword, setCloudPassword] = useState('')
   const [cloudBusy, setCloudBusy] = useState(false)
   const [cloudMsg, setCloudMsg] = useState('')
+  const [pushBusy, setPushBusy] = useState(false)
+  // Calendar sync. `calSync` is the live service status; the rest is the connect
+  // form, which only exists until a provider is connected.
+  const [calSync, setCalSync] = useState(null)
+  const [calProvider, setCalProvider] = useState('')
+  const [calClientId, setCalClientId] = useState('')
+  const [calClientSecret, setCalClientSecret] = useState('')
+  const [calCalendars, setCalCalendars] = useState(null)
+  const [calBusy, setCalBusy] = useState(false)
+  // Encryption at rest. null = not loaded yet.
+  const [encryption, setEncryption] = useState(null)
+  const [encBusy, setEncBusy] = useState(false)
+  const [recoveryKey, setRecoveryKey] = useState(null)
+  const [recoveryInput, setRecoveryInput] = useState('')
 
   // Every page stays mounted for the app's lifetime, so this form is a snapshot
   // that would otherwise go stale: blacklisting a company from the Dashboard,
@@ -596,6 +610,11 @@ export default function Settings({ showToast, active }) {
       setCloudStatus(s)
       if (s?.email) setCloudEmail(s.email)
     })
+    window.api.calendarSyncStatus?.().then(s => {
+      setCalSync(s)
+      if (s?.provider) setCalProvider(s.provider)
+    })
+    window.api.getEncryptionStatus?.().then(setEncryption)
     window.api.getConfig().then(cfg => {
       setCloudUrl(cfg.supabaseUrl || '')
       setCloudKey(cfg.supabaseAnonKey || '')
@@ -991,6 +1010,248 @@ export default function Settings({ showToast, active }) {
       </div>} {/* end accounts tab */}
 
       {settingsTab === 'notifications' && <div>
+
+      {/* Push notifications to the phone.
+          The point of this feature: everything Hiro learns while nobody is
+          looking at the window — a recruiter reply, an interview tomorrow, a
+          blocked scan — used to be discoverable only by opening the app. */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <h3 style={{ marginBottom: 8, fontSize: 15 }}>Phone Notifications</h3>
+        <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 14 }}>
+          Push notifications to the Hiro app on your phone. Sent through Expo’s push service
+          straight from this desktop — there is no Hiro server in between. Needs cloud sync
+          signed in on both devices, because that is where the phone registers itself.
+        </p>
+
+        {!cloudStatus?.signedIn && (
+          <p style={{ fontSize: 12, color: 'var(--amber, var(--text-muted))', marginBottom: 12 }}>
+            Cloud sync is not signed in, so there is nowhere for your phone to register.
+            Set it up under <strong>Accounts &amp; Schedule → Cloud Sync</strong> first.
+          </p>
+        )}
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 12, fontSize: 13 }}>
+          <input type="checkbox" style={{ width: 'auto' }}
+            checked={!!form.pushEnabled}
+            onChange={e => set('pushEnabled', e.target.checked)} />
+          Send notifications to my phone
+        </label>
+
+        {form.pushEnabled && (
+          <>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
+                What to send
+              </label>
+              {[
+                ['reply', 'A recruiter replied', 'The one you most want off the desktop.'],
+                ['interview', 'Interview reminders', 'A day ahead and again an hour before.'],
+                ['expiring', 'Application closing soon', 'Only for jobs still waiting on you.'],
+                ['followUp', 'A follow-up is due', 'From the next-action dates on the Pipeline board.'],
+                ['review', 'Drafts waiting for review', 'At most one reminder a day.'],
+                ['scanFailed', 'A scan failed or was blocked', 'The one scan outcome you have to act on.'],
+                ['newDevice', 'A new device signed in', 'A security event, not a status update.'],
+              ].map(([key, label, hint]) => (
+                <label key={key} style={{
+                  display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer',
+                  marginBottom: 6, fontSize: 13,
+                }}>
+                  <input type="checkbox" style={{ width: 'auto', marginTop: 3 }}
+                    // Absent means on: a config written before a kind existed must
+                    // not read as "the user switched this off".
+                    checked={form.pushKinds?.[key] !== false}
+                    onChange={e => set('pushKinds', { ...(form.pushKinds || {}), [key]: e.target.checked })} />
+                  <span>
+                    {label}
+                    <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>{hint}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label>Warn about a closing date this many days ahead</label>
+                <input type="number" min="0" max="30" value={form.closingSoonDays ?? 3}
+                  onChange={e => set('closingSoonDays', Number(e.target.value))} />
+              </div>
+              <div className="form-group">
+                <label>Review reminders, at most one every (hours)</label>
+                <input type="number" min="1" max="168" value={form.reviewReminderHours ?? 24}
+                  onChange={e => set('reviewReminderHours', Number(e.target.value))} />
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
+              {/* Proves the whole path — token registry, Expo, APNs/FCM — instead
+                  of leaving the user to wonder whether silence means "working" or
+                  "misconfigured". */}
+              <button className="btn btn-ghost" style={{ fontSize: 12 }} disabled={pushBusy}
+                onClick={async () => {
+                  setPushBusy(true)
+                  const r = await window.api.sendTestPush?.()
+                  setPushBusy(false)
+                  showToast?.(
+                    r?.success
+                      ? `Sent to ${r.sent} of ${r.total} device(s) — check your phone.`
+                      : `Not sent: ${r?.reason}`,
+                    r?.success ? 'success' : 'error')
+                }}>{pushBusy ? 'Sending...' : 'Send a test notification'}</button>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                Save your changes first — the test uses the saved settings.
+              </span>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Two-way calendar sync.
+          The .ics export it supplements is one-way and one-shot: moving an
+          interview in Google Calendar left Hiro reminding you about the old time,
+          and correcting it in Hiro left the calendar wrong. */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <h3 style={{ marginBottom: 8, fontSize: 15 }}>Calendar Sync</h3>
+        <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 14 }}>
+          Keep interviews in step with Google Calendar or Outlook, both ways. Reschedule in
+          either place and the other follows. The one-off <strong>.ics export</strong> on the
+          Dashboard still works and needs none of this.
+        </p>
+
+        {!calSync?.connected ? (
+          <>
+            <div className="form-group">
+              <label>Provider</label>
+              <select value={calProvider} onChange={e => setCalProvider(e.target.value)}>
+                <option value="">Choose…</option>
+                {(calSync?.providers || []).map(p => (
+                  <option key={p.id} value={p.id}>{p.label}</option>
+                ))}
+              </select>
+            </div>
+
+            {!!calProvider && (() => {
+              const provider = (calSync?.providers || []).find(p => p.id === calProvider)
+              return (
+                <>
+                  {/* Hiro ships no OAuth client of its own on purpose: a client
+                      secret inside a downloadable binary is not a secret, and one
+                      shared client id would put every user's calendar access
+                      behind a single credential controlled by someone else. */}
+                  <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+                    Register your own OAuth client at{' '}
+                    <a href={provider?.consoleUrl} target="_blank" rel="noreferrer"
+                      style={{ color: 'var(--accent)' }}>{provider?.consoleUrl}</a>{' '}
+                    as a <strong>desktop / native</strong> app, with{' '}
+                    <code>http://127.0.0.1</code> as an allowed redirect. Hiro deliberately does not
+                    ship its own client credentials — a secret inside a downloadable app is not a secret.
+                  </p>
+                  <div className="form-group">
+                    <label>OAuth client ID</label>
+                    <input value={calClientId} onChange={e => setCalClientId(e.target.value)}
+                      placeholder="xxxxx.apps.googleusercontent.com" />
+                  </div>
+                  {provider?.needsSecret && (
+                    <div className="form-group">
+                      <label>OAuth client secret</label>
+                      <input type="password" value={calClientSecret}
+                        onChange={e => setCalClientSecret(e.target.value)} />
+                      <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                        Google issues one even for desktop clients and requires it on the token exchange.
+                      </span>
+                    </div>
+                  )}
+                  <button className="btn" disabled={calBusy || !calClientId.trim()} onClick={async () => {
+                    setCalBusy(true)
+                    const r = await window.api.calendarSyncConnect?.({
+                      provider: calProvider,
+                      clientId: calClientId,
+                      clientSecret: calClientSecret,
+                    })
+                    setCalBusy(false)
+                    if (r?.success) {
+                      showToast?.(`Connected to ${r.label}.`, 'success')
+                      setCalSync(await window.api.calendarSyncStatus?.())
+                    } else {
+                      showToast?.(r?.error || 'Could not connect.', 'error')
+                    }
+                  }}>{calBusy ? 'Waiting for your browser…' : 'Connect'}</button>
+                </>
+              )
+            })()}
+          </>
+        ) : (
+          <>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 10, background: 'var(--surface2)',
+              borderRadius: 8, padding: '10px 12px', marginBottom: 14, fontSize: 13,
+            }}>
+              <span style={{ color: 'var(--green)' }}>●</span>
+              <div style={{ flex: 1 }}>
+                <strong>{calSync.label}</strong>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  {calSync.linkedCount} interview{calSync.linkedCount === 1 ? '' : 's'} mirrored
+                  {calSync.lastSyncAt ? ` · last synced ${new Date(calSync.lastSyncAt).toLocaleString()}` : ' · not synced yet'}
+                  {calSync.error ? ` · ${calSync.error}` : ''}
+                </div>
+              </div>
+              <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={async () => {
+                setCalBusy(true)
+                const r = await window.api.calendarSyncNow?.()
+                setCalBusy(false)
+                showToast?.(r?.error ? `Sync failed: ${r.error}` : 'Calendar synced.', r?.error ? 'error' : 'success')
+                setCalSync(await window.api.calendarSyncStatus?.())
+              }} disabled={calBusy}>{calBusy ? 'Syncing…' : 'Sync now'}</button>
+            </div>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 12, fontSize: 13 }}>
+              <input type="checkbox" style={{ width: 'auto' }}
+                checked={!!form.calendarSyncEnabled}
+                onChange={e => set('calendarSyncEnabled', e.target.checked)} />
+              Keep interviews in sync automatically (every 15 minutes)
+            </label>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label>Calendar</label>
+                <select value={form.calendarId || ''} onChange={e => set('calendarId', e.target.value)}>
+                  <option value="">Default calendar</option>
+                  {(calCalendars || []).map(c => (
+                    <option key={c.id} value={c.id}>{c.label}{c.primary ? ' (primary)' : ''}</option>
+                  ))}
+                </select>
+                <button className="btn btn-ghost" style={{ fontSize: 11, marginTop: 6, alignSelf: 'flex-start' }}
+                  onClick={async () => {
+                    const r = await window.api.calendarSyncListCalendars?.()
+                    if (r?.success) setCalCalendars(r.calendars)
+                    else showToast?.(r?.error || 'Could not list calendars.', 'error')
+                  }}>Load my calendars</button>
+              </div>
+              <div className="form-group">
+                <label>Remind me this many minutes before</label>
+                <input type="number" min="0" max="1440" value={form.calendarReminderMinutes ?? 60}
+                  onChange={e => set('calendarReminderMinutes', Number(e.target.value))} />
+              </div>
+            </div>
+
+            {/* Both of these are decisions a user would otherwise have to
+                discover by experiment. */}
+            <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 10 }}>
+              Events you created yourself are never touched, in either direction — Hiro has no
+              application to attach them to. Disconnecting leaves the interviews already in your
+              calendar exactly where they are.
+            </p>
+
+            <button className="btn btn-ghost" style={{ fontSize: 12, color: 'var(--red)' }}
+              onClick={async () => {
+                await window.api.calendarSyncDisconnect?.()
+                setCalSync(await window.api.calendarSyncStatus?.())
+                setCalCalendars(null)
+                showToast?.('Calendar disconnected. Existing events were left in place.', 'success')
+              }}>Disconnect</button>
+          </>
+        )}
+      </div>
+
       {/* Webhook Notifications */}
       <div className="card" style={{ marginBottom: 16 }}>
         <h3 style={{ marginBottom: 8, fontSize: 15 }}>Webhook Notifications</h3>
@@ -1381,7 +1642,10 @@ export default function Settings({ showToast, active }) {
               </div>
             )}
 
-            {/* Trusted devices. A device you cannot see is one you cannot revoke. */}
+            {/* Devices on the account. A device you cannot see is one you cannot
+                cut off — and the three actions here have genuinely different
+                strengths, so each is labelled with what it actually does rather
+                than all three being called "revoke". */}
             <div style={{ marginTop: 14 }}>
               <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={async () => {
                 if (devices) return setDevices(null)
@@ -1399,30 +1663,79 @@ export default function Settings({ showToast, active }) {
                     <div key={d.device_id} style={{
                       display: 'flex', alignItems: 'center', gap: 10, background: 'var(--surface2)',
                       borderRadius: 8, padding: '8px 10px', marginBottom: 6, fontSize: 12,
+                      opacity: d.revokePending ? 0.6 : 1,
                     }}>
                       <div style={{ flex: 1 }}>
                         <strong>{d.name || d.device_id}</strong>
                         {d.isThisDevice && <span style={{ color: 'var(--accent)' }}> · this device</span>}
+                        {d.pushRegistered && <span style={{ color: 'var(--text-muted)' }}> · notifications on</span>}
+                        {d.revokePending && <span style={{ color: 'var(--red)' }}> · sign-out pending</span>}
                         <div style={{ color: 'var(--text-muted)' }}>
-                          {d.platform} · {d.kind} · last seen {new Date(d.last_seen_at).toLocaleString()}
+                          {d.platform} · {d.kind}
+                          {d.app_version ? ` · v${d.app_version}` : ''}
+                          {d.sessionAgeDays != null && ` · signed in ${d.sessionAgeDays === 0 ? 'today' : `${d.sessionAgeDays}d ago`}`}
+                          {' · '}
+                          {/* Time since last contact is the number that reveals a
+                              device nobody is using any more. */}
+                          {d.lastSeenDaysAgo === 0
+                            ? `last seen ${new Date(d.last_seen_at).toLocaleTimeString()}`
+                            : `last seen ${d.lastSeenDaysAgo}d ago`}
                         </div>
                       </div>
-                      {!d.isThisDevice && (
+                      {!d.isThisDevice && !d.revokePending && (
                         <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }}
+                          title="Ask this device to sign itself out the next time it connects, and stop its notifications now"
                           onClick={async () => {
                             const r = await window.api.cloudRevokeDevice?.(d.device_id)
-                            showToast?.(r?.success ? 'Device revoked' : `Could not revoke: ${r?.reason}`,
+                            showToast?.(
+                              r?.success
+                                ? 'Device will sign itself out on next contact; its notifications stopped now.'
+                                : `Could not revoke: ${r?.reason}`,
                               r?.success ? 'success' : 'error')
                             setDevices(await window.api.cloudListDevices?.() || [])
-                          }}>Revoke</button>
+                          }}>Sign out</button>
+                      )}
+                      {!d.isThisDevice && (
+                        <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }}
+                          title="Remove from this list only. A device that is still signed in will reappear."
+                          onClick={async () => {
+                            const r = await window.api.cloudForgetDevice?.(d.device_id)
+                            if (!r?.success) showToast?.(`Could not remove: ${r?.reason}`, 'error')
+                            setDevices(await window.api.cloudListDevices?.() || [])
+                          }}>Remove from list</button>
                       )}
                     </div>
                   ))}
-                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
-                    Revoking removes a device’s standing on the account. It does not by itself end that
-                    device’s existing session — change your account password to force every device to
-                    sign in again.
+
+                  {/* Said plainly, because the difference matters when a phone
+                      has actually been lost. */}
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6, lineHeight: 1.5 }}>
+                    <strong>Sign out</strong> stops that device’s notifications immediately and asks it to
+                    sign itself out and forget its saved session the next time it connects. It cannot reach
+                    a device that is switched off.<br />
+                    <strong>Remove from list</strong> is bookkeeping only — a device that is still signed in
+                    will register itself again.<br />
+                    For a phone you have actually lost, use <strong>Sign out everywhere</strong> below: that
+                    invalidates every saved session on the account server-side, including this desktop’s.
                   </p>
+
+                  <button className="btn btn-ghost" style={{ fontSize: 12, color: 'var(--red)', marginTop: 4 }}
+                    onClick={async () => {
+                      // Not a toast: this is a decision that cannot be undone, so it must block.
+                      if (!window.confirm(
+                        'Sign every device out of this Hiro account, including this desktop?\n\n'
+                        + 'This invalidates every saved session server-side. You will need to sign in again '
+                        + 'here and on your phone. Nothing is deleted.'
+                      )) return
+                      const r = await window.api.cloudSignOutEverywhere?.()
+                      showToast?.(
+                        r?.success
+                          ? 'Every device has been signed out. Sign in again to resume syncing.'
+                          : `Could not sign out everywhere: ${r?.reason}`,
+                        r?.success ? 'success' : 'error')
+                      setDevices(null)
+                      window.api.cloudStatus?.().then(setCloudStatus)
+                    }}>Sign out everywhere</button>
                 </div>
               )}
             </div>
@@ -1918,6 +2231,141 @@ export default function Settings({ showToast, active }) {
       {settingsTab === 'data' && <div>
         {/* Storage Info */}
         <StorageCard />
+
+        {/* Encryption at rest.
+            What is in that database: every job description, tailored resume,
+            cover letter, screening answer and recruiter address. A job search is
+            often the one thing a person most wants kept from their current
+            employer, and all of it sat in plaintext in the profile directory. */}
+        <div className="card" style={{ marginBottom: 16 }}>
+          <h3 style={{ marginBottom: 8, fontSize: 15 }}>Encrypt Local Data</h3>
+          <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 14, lineHeight: 1.5 }}>
+            Encrypts the database <em>and every backup</em> with AES-256-GCM. The key is held by
+            this computer’s keychain ({encryption?.keychainAvailable ? 'available' : 'unavailable on this system'}),
+            so Hiro unlocks it without asking you for a passphrase. Your resumes, cover letters,
+            job descriptions and screening answers are all in that file.
+          </p>
+
+          {encryption && !encryption.keychainAvailable && (
+            <p style={{ fontSize: 12, color: 'var(--red)', marginBottom: 12 }}>
+              This system has no usable keychain, so a key cannot be stored safely.
+              On Linux this needs a secret service such as gnome-keyring or kwallet.
+            </p>
+          )}
+
+          {encryption?.keyError && (
+            <p style={{ fontSize: 12, color: 'var(--red)', marginBottom: 12 }}>{encryption.keyError}</p>
+          )}
+
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 10, background: 'var(--surface2)',
+            borderRadius: 8, padding: '10px 12px', marginBottom: 14, fontSize: 13,
+          }}>
+            <span style={{ color: encryption?.databaseEncrypted ? 'var(--green)' : 'var(--text-muted)' }}>
+              {encryption?.databaseEncrypted ? '🔒' : '○'}
+            </span>
+            <div style={{ flex: 1 }}>
+              <strong>{encryption?.databaseEncrypted ? 'Database is encrypted' : 'Database is not encrypted'}</strong>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                {encryption?.backupCount ?? 0} backup{encryption?.backupCount === 1 ? '' : 's'}
+                {/* "Enabled" is not the same as "everything is encrypted": a
+                    backup that failed to convert is still readable plaintext. */}
+                {encryption?.plaintextBackups?.length
+                  ? ` · ${encryption.plaintextBackups.length} still in plaintext`
+                  : (encryption?.backupCount ? ' · all encrypted' : '')}
+              </div>
+            </div>
+            <button className="btn btn-ghost" style={{ fontSize: 11 }} disabled={encBusy || !encryption?.keychainAvailable}
+              onClick={async () => {
+                const turningOn = !encryption?.enabled
+                if (turningOn) {
+                  // The one-way door has to be said out loud BEFORE it is walked
+                  // through, not discovered afterwards.
+                  // Not a toast: this is a decision that cannot be undone, so it must block.
+                  if (!window.confirm(
+                    'Encrypt the database and all backups?\n\n'
+                    + 'The key is stored in this computer\'s keychain. If that keychain is lost — a wiped '
+                    + 'machine, a reset user profile — the only way back in is the recovery key, which '
+                    + 'Hiro will show you next. Save it somewhere that is not this computer.'
+                  )) return
+                }
+                setEncBusy(true)
+                const r = await window.api.setEncryption?.(turningOn)
+                if (r?.success && turningOn) {
+                  const key = await window.api.exportRecoveryKey?.()
+                  if (key?.success) setRecoveryKey(key)
+                }
+                setEncryption(await window.api.getEncryptionStatus?.())
+                setEncBusy(false)
+                if (!r?.success) {
+                  showToast?.(r?.error || 'Could not change encryption.', 'error')
+                } else if (r.failed?.length) {
+                  showToast?.(`${r.failed.length} backup(s) could not be converted — see the log.`, 'error')
+                } else {
+                  showToast?.(turningOn ? 'Database and backups encrypted.' : 'Encryption removed.', 'success')
+                }
+              }}>
+              {encBusy ? 'Working…' : (encryption?.enabled ? 'Turn off' : 'Turn on')}
+            </button>
+          </div>
+
+          {recoveryKey && (
+            <div style={{
+              border: '1px solid var(--accent)', borderRadius: 8, padding: 12, marginBottom: 14,
+            }}>
+              <strong style={{ fontSize: 13 }}>Your recovery key — save this now</strong>
+              <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '6px 0 8px' }}>
+                This is the only thing that can open your database on a machine whose keychain no
+                longer has the key. Hiro will not show it again unless you ask.
+              </p>
+              <code style={{
+                display: 'block', background: 'var(--surface2)', padding: '8px 10px', borderRadius: 6,
+                fontSize: 12, wordBreak: 'break-all', userSelect: 'all', marginBottom: 8,
+              }}>{recoveryKey.key}</code>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={() => {
+                  navigator.clipboard?.writeText(recoveryKey.key)
+                  showToast?.('Recovery key copied.', 'success')
+                }}>Copy</button>
+                <button className="btn btn-ghost" style={{ fontSize: 11 }}
+                  onClick={() => setRecoveryKey(null)}>I have saved it</button>
+              </div>
+            </div>
+          )}
+
+          {encryption?.enabled && !recoveryKey && (
+            <button className="btn btn-ghost" style={{ fontSize: 11, marginBottom: 12 }} onClick={async () => {
+              const key = await window.api.exportRecoveryKey?.()
+              if (key?.success) setRecoveryKey(key)
+              else showToast?.(key?.error || 'Could not read the key.', 'error')
+            }}>Show my recovery key again</button>
+          )}
+
+          {/* The other half: a profile copied from another machine has an
+              encrypted database and a key this keychain cannot unwrap. */}
+          <details>
+            <summary style={{ fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
+              Restore from a recovery key
+            </summary>
+            <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '8px 0' }}>
+              Use this when the profile came from another machine or user account, so this
+              computer’s keychain cannot unwrap the stored key.
+            </p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input value={recoveryInput} onChange={e => setRecoveryInput(e.target.value)}
+                placeholder="HIRO-RECOVERY-1:…" style={{ fontSize: 12 }} />
+              <button className="btn btn-ghost" style={{ fontSize: 11, flexShrink: 0 }}
+                disabled={!recoveryInput.trim()} onClick={async () => {
+                  const r = await window.api.importRecoveryKey?.(recoveryInput)
+                  showToast?.(
+                    r?.success ? 'Key restored — restart Hiro to open the database.' : (r?.reason || 'Could not import that key.'),
+                    r?.success ? 'success' : 'error')
+                  if (r?.success) setRecoveryInput('')
+                  setEncryption(await window.api.getEncryptionStatus?.())
+                }}>Restore</button>
+            </div>
+          </details>
+        </div>
 
         {/* Rotating database backups */}
         <BackupsCard showToast={showToast} />

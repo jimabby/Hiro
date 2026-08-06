@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  # Weekly, for the provider contract job below: an upstream API changes on the
+  # provider's timetable, so there is nothing in this repo whose change would
+  # otherwise trigger the check.
+  schedule:
+    - cron: '17 4 * * 1'
 
 # A newer push to the same branch makes the in-flight run irrelevant.
 concurrency:
@@ -35,6 +40,33 @@ jobs:
 
       - run: npm test --prefix web
 
+  # The packaged app, installed and driven. Slow (it downloads Chromium and runs
+  # electron-builder), so it is limited to pushes on main rather than every PR —
+  # the release workflow runs it again as a hard gate before publishing.
+  packaged:
+    name: Packaged smoke test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci --prefix web
+
+      - name: Install xvfb (Electron needs a display)
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - run: npm run build:dry --prefix web
+
+      - run: npm run verify:signature --prefix web
+
+      - run: npm run smoke --prefix web
+
   mobile:
     name: Mobile install
     runs-on: ubuntu-latest
@@ -47,18 +79,30 @@ jobs:
           cache: npm
           cache-dependency-path: app/package-lock.json
 
-      # There is no mobile test suite yet. This at least proves the lockfile
-      # resolves and the Expo config parses against the installed SDK, which is
-      # what silently breaks on a dependency bump.
       - run: npm ci --prefix app
 
+      # Proves the lockfile resolves and the Expo config parses against the
+      # installed SDK, which is what silently breaks on a dependency bump.
       - run: npx expo config --type public
         working-directory: app
 
-      # The real check. `expo config` only proves app.json parses; an export
-      # actually runs Metro over every module, which is what catches a bad
-      # import or a syntax error after a dependency bump. There is still no
-      # mobile test suite, so this is the closest thing to one.
+      # The permissions the resolved config actually asks for. Hiro only scans QR
+      # codes, so RECORD_AUDIO appearing here means a dependency re-introduced it
+      # — an unexplained microphone permission is a store-review problem and a
+      # trust problem, and it is invisible in app.json because the camera plugin
+      # adds it.
+      - name: Assert no unnecessary permissions
+        run: node scripts/check-permissions.js
+        working-directory: app
+
+      # Unit tests for the logic the screens depend on: the stats/chart
+      # derivations that must agree with the desktop, and the offline scan queue.
+      - name: Mobile unit tests
+        run: npm test --prefix app
+
+      # `expo config` only proves app.json parses; an export runs Metro over
+      # every module, which is what catches a bad import or a syntax error after
+      # a dependency bump.
       - name: Bundle the mobile app
         run: npx expo export --platform ios --platform android
         working-directory: app
@@ -86,11 +130,42 @@ jobs:
       - name: Audit desktop production dependencies
         run: npm audit --omit=dev --audit-level=high --prefix web
 
-      # Lower bar than desktop, deliberately. `expo` depends on `@expo/cli` as a
-      # regular dependency, so --omit=dev cannot separate the build toolchain
-      # from what actually ships in the binary; on SDK 54 the residual highs are
-      # all inside that CLI (postcss, via Metro's web CSS path) and clear only
-      # on a major SDK bump. Gating at high would block every PR on something no
-      # release can act on.
+      # Same bar as desktop since the SDK 54 → 57 upgrade. The highs that used to
+      # sit here were postcss file-disclosure advisories reaching in through
+      # Metro's web CSS path, and they only cleared on a major SDK bump — which
+      # is why this gate was previously set to `critical`.
+      #
+      # What remains is a set of moderates inside @expo/cli with no forward fix
+      # (npm's suggested "fix" is a downgrade to SDK 46). `expo` depends on
+      # @expo/cli as a regular dependency, so --omit=dev cannot separate the
+      # build toolchain from what ships in the binary; gating at moderate would
+      # block every PR on something no release can act on. Run
+      # `npm audit --prefix app` to see them deliberately.
       - name: Audit mobile production dependencies
-        run: npm audit --omit=dev --audit-level=critical --prefix app
+        run: npm audit --omit=dev --audit-level=high --prefix app
+
+  # Do the external services still behave the way Hiro assumes? Not on PRs: these
+  # make real network calls, and a blip must never fail somebody's branch. On a
+  # schedule, because the thing they detect — Greenhouse renaming a field, Expo
+  # changing an error code — happens on the provider's timetable, not ours.
+  #
+  # The AI provider suites skip themselves without keys, so this job covers the
+  # job-board and push contracts only. See web/test/contract/README.md.
+  contract:
+    name: Provider contracts
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      HIRO_SKIP_BROWSER_INSTALL: '1'
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci --prefix web
+
+      - run: npm run test:contract --prefix web

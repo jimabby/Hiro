@@ -27,6 +27,12 @@ let lastRestore = null
 // Set when a sync stopped because this device and the account both hold data
 // and nobody has said how to combine them. Sync stays paused until they do.
 let pendingFirstSync = null
+// When THIS process authenticated, which is what the device list means by
+// "session age" — not when the device first appeared on the account.
+let sessionStartedAt = null
+// Called when a device the account has never had before shows up, so the
+// renderer can raise it rather than leaving it in the log.
+let onNewDevice = null
 
 function getClient() {
   if (!createClient) return null
@@ -473,10 +479,20 @@ async function resolveFirstSync(choice) {
 }
 
 // Announce this device on the account so the user can see what is attached and
-// revoke anything they no longer control. Best-effort: an older project without
+// cut off anything they no longer control. Best-effort: an older project without
 // the table must not fail the whole sync.
+//
+// Also the point at which a NEW device on the account becomes visible. A phone
+// that signs in registers itself here, and the account owner should hear about
+// that from Hiro rather than find out later — so the first time this desktop
+// sees a device id it has never seen, it says so.
 async function registerDevice(c) {
   const cfg = deviceIdentity.ensureDeviceIdentity(configService)
+  // sessionStartedAt is when THIS process authenticated, which is what the
+  // device list means by "session age". It is not created_at (when the device
+  // first appeared) and not last_seen_at (a heartbeat).
+  if (!sessionStartedAt) sessionStartedAt = new Date().toISOString()
+
   // An array, like every other upsert here. A bare object works against real
   // PostgREST and breaks anything that treats the payload as a list.
   const { error } = await c.from('devices').upsert([{
@@ -485,9 +501,78 @@ async function registerDevice(c) {
     name: cfg.deviceName,
     platform: process.platform,
     kind: 'desktop',
+    app_version: appVersion(),
+    session_started_at: sessionStartedAt,
     last_seen_at: new Date().toISOString(),
   }], { onConflict: 'user_id,device_id' })
-  if (error && !isMissingTable(error, 'devices')) throw new Error(error.message)
+  if (error) {
+    // A project that predates the app_version/session_started_at columns must
+    // still be able to register — re-running schema.sql is the fix, and until
+    // then the device list is merely less detailed rather than empty.
+    if (isMissingTable(error, 'devices')) return
+    if (isMissingColumn(error)) {
+      const { error: retry } = await c.from('devices').upsert([{
+        user_id: user.id,
+        device_id: cfg.deviceId,
+        name: cfg.deviceName,
+        platform: process.platform,
+        kind: 'desktop',
+        last_seen_at: new Date().toISOString(),
+      }], { onConflict: 'user_id,device_id' })
+      if (retry && !isMissingTable(retry, 'devices')) throw new Error(retry.message)
+      return
+    }
+    throw new Error(error.message)
+  }
+}
+
+function appVersion() {
+  try { return require('electron').app.getVersion() } catch { return '' }
+}
+
+// PostgREST reports an unknown column as PGRST204, or 42703 from Postgres.
+function isMissingColumn(error) {
+  if (!error) return false
+  if (error.code === 'PGRST204' || error.code === '42703') return true
+  return /could not find the '.*' column|column .* does not exist/i.test(String(error.message || ''))
+}
+
+// Cooperative revocation, the receiving half.
+//
+// Supabase gives a signed-in client no way to invalidate ANOTHER client's
+// refresh token — that needs the service-role admin API, which must never ship
+// inside a desktop app. So "revoke" sets a flag on the device row and every
+// device is responsible for honouring its own: when this desktop finds its row
+// stamped revoked, it signs itself out and wipes the stored refresh token.
+//
+// The limitation is real and is stated in the UI: it works on a device that is
+// still running and online, and does nothing for one that is switched off. For a
+// lost phone, signOutEverywhere() below is the authoritative answer.
+async function checkRevocation(c) {
+  const cfg = configService.load()
+  if (!cfg.deviceId) return false
+  const { data, error } = await c
+    .from('devices')
+    .select('revoked_at')
+    .eq('user_id', user.id)
+    .eq('device_id', cfg.deviceId)
+    .maybeSingle()
+  // A missing table or column means the project has not been upgraded; a missing
+  // ROW means this device was hard-removed from the list, which is not by itself
+  // a revocation (registerDevice will recreate it).
+  if (error) return false
+  if (!data?.revoked_at) return false
+
+  logger.append('Cloud sync: this device was revoked from the account — signing out and clearing the stored session.')
+  // Clear the flag on the way out so the row does not sit revoked forever if the
+  // user signs back in on purpose.
+  try {
+    await c.from('devices').update({ revoked_at: null, push_token: null })
+      .eq('user_id', user.id).eq('device_id', cfg.deviceId)
+  } catch { /* the sign-out matters more */ }
+  await signOut()
+  lastError = 'This device was revoked from the account. Sign in again to resume syncing.'
+  return true
 }
 
 async function listDevices() {
@@ -504,11 +589,24 @@ async function listDevices() {
     throw new Error(error.message)
   }
   const cfg = configService.load()
-  return (data || []).map(d => ({ ...d, isThisDevice: d.device_id === cfg.deviceId }))
+  const now = Date.now()
+  const ageDays = (t) => (t ? Math.floor((now - new Date(t).getTime()) / 86400000) : null)
+  return (data || []).map(d => ({
+    ...d,
+    isThisDevice: d.device_id === cfg.deviceId,
+    // How long this device's session has been alive, and how long since it last
+    // checked in. A device that stopped checking in weeks ago is the one worth
+    // asking about.
+    sessionAgeDays: ageDays(d.session_started_at || d.created_at),
+    lastSeenDaysAgo: ageDays(d.last_seen_at),
+    // Revoked but still listed: the flag is set and the device has not yet come
+    // online to honour it.
+    revokePending: !!d.revoked_at,
+    pushRegistered: !!d.push_token,
+  }))
 }
 
-// Remove a device from the account. Revoking the device you are sitting at is
-// refused: it would strand this desktop while looking like it worked.
+// Cooperative revocation, the sending half. See checkRevocation.
 async function revokeDevice(deviceId) {
   const cfg = configService.load()
   if (deviceId === cfg.deviceId) {
@@ -517,10 +615,128 @@ async function revokeDevice(deviceId) {
   const c = getClient()
   if (!c) return { success: false, reason: 'Supabase is not configured.' }
   if (!user && !(await restoreSession())) return { success: false, reason: 'Not signed in.' }
+  // The push token goes immediately: that part IS enforceable from here, so a
+  // revoked phone stops receiving notifications straight away even if it never
+  // comes online to sign itself out.
+  const { error } = await c.from('devices')
+    .update({ revoked_at: new Date().toISOString(), push_token: null })
+    .eq('user_id', user.id)
+    .eq('device_id', deviceId)
+  if (error) {
+    if (isMissingColumn(error)) {
+      return { success: false, reason: 'This needs the revoked_at column — re-run supabase/schema.sql in your project.' }
+    }
+    return { success: false, reason: error.message }
+  }
+  logger.append(`Cloud sync: marked device ${deviceId} revoked; it will sign itself out on next contact.`)
+  return { success: true, pending: true }
+}
+
+// Drop a device from the list entirely. This is bookkeeping, not security: it
+// says "I do not expect to see this device again". A device that is still signed
+// in will simply re-register itself, which is why revokeDevice exists separately.
+async function forgetDevice(deviceId) {
+  const c = getClient()
+  if (!c) return { success: false, reason: 'Supabase is not configured.' }
+  if (!user && !(await restoreSession())) return { success: false, reason: 'Not signed in.' }
   const { error } = await c.from('devices').delete().eq('user_id', user.id).eq('device_id', deviceId)
   if (error) return { success: false, reason: error.message }
-  logger.append(`Cloud sync: revoked device ${deviceId}`)
+  // Forget it locally too, or the next sync would announce it as a new device.
+  const known = (configService.load().knownDeviceIds || []).filter(id => id !== deviceId)
+  configService.update({ knownDeviceIds: known })
+  logger.append(`Cloud sync: removed device ${deviceId} from the list.`)
   return { success: true }
+}
+
+// The authoritative one. Supabase honours a global sign-out server-side by
+// invalidating every refresh token on the account — including this desktop's —
+// so it is the only action here that genuinely stops a device that is switched
+// off, wiped, or in someone else's hands.
+//
+// It signs this desktop out too. That is not a shortcoming to work around; a
+// scope that spared the caller would leave the account's most privileged session
+// alive, and the user has this desktop in front of them to sign back in with.
+async function signOutEverywhere() {
+  const c = getClient()
+  if (!c) return { success: false, reason: 'Supabase is not configured.' }
+  if (!user && !(await restoreSession())) return { success: false, reason: 'Not signed in.' }
+  try {
+    // Clear the registry and every push token first: after the sign-out this
+    // client has no authority to write to those rows.
+    try {
+      await c.from('devices').delete().eq('user_id', user.id)
+    } catch { /* the sign-out is what matters */ }
+    const { error } = await c.auth.signOut({ scope: 'global' })
+    if (error) throw new Error(error.message)
+  } catch (err) {
+    return { success: false, reason: err.message }
+  }
+  user = null
+  stopAuto()
+  configService.update({ cloudSyncEnabled: false, supabaseRefreshToken: '', knownDeviceIds: [] })
+  logger.append('Cloud sync: signed out every device on the account (all refresh tokens invalidated).')
+  return { success: true }
+}
+
+// Tell the user when something new attaches itself to their account. Compared
+// against a locally-remembered set rather than created_at, so a desktop that was
+// switched off for a week still reports the phone that signed in on Tuesday
+// exactly once.
+async function announceNewDevices(devices) {
+  const cfg = configService.load()
+  const known = new Set(cfg.knownDeviceIds || [])
+  const seen = devices.map(d => d.device_id)
+
+  // First run has nothing to compare against: every device would be "new",
+  // including this one. Record and stay quiet.
+  if (!Array.isArray(cfg.knownDeviceIds)) {
+    configService.update({ knownDeviceIds: seen })
+    return
+  }
+
+  const fresh = devices.filter(d => !known.has(d.device_id) && d.device_id !== cfg.deviceId)
+  if (fresh.length === 0) {
+    if (seen.length !== known.size || seen.some(id => !known.has(id))) {
+      configService.update({ knownDeviceIds: seen })
+    }
+    return
+  }
+
+  configService.update({ knownDeviceIds: seen })
+  for (const d of fresh) {
+    logger.append(`Cloud sync: new device on the account — ${d.name || d.device_id} (${d.platform || d.kind || 'unknown'})`)
+    try { await require('./push').notifyNewDevice(d) } catch { /* best-effort */ }
+    onNewDevice?.(d)
+  }
+}
+
+// ─── Push token registry ─────────────────────────────────────────
+// Phones register an Expo push token on their own device row; the desktop reads
+// them to send notifications. Keeping the tokens on the device row rather than in
+// a table of their own means revoking a device revokes its notifications too,
+// with no second place to remember.
+
+async function getPushTargets() {
+  const c = getClient()
+  if (!c) return []
+  if (!user && !(await restoreSession())) return []
+  const { data, error } = await c
+    .from('devices')
+    .select('device_id, push_token, push_enabled, revoked_at')
+    .eq('user_id', user.id)
+  if (error) return []
+  return (data || [])
+    .filter(d => d.push_token && d.push_enabled !== false && !d.revoked_at)
+    .map(d => ({ deviceId: d.device_id, token: d.push_token }))
+}
+
+async function clearPushToken(deviceId) {
+  const c = getClient()
+  if (!c) return { success: false }
+  if (!user && !(await restoreSession())) return { success: false }
+  const { error } = await c.from('devices').update({ push_token: null })
+    .eq('user_id', user.id).eq('device_id', deviceId)
+  return { success: !error }
 }
 
 async function sync() {
@@ -530,6 +746,11 @@ async function sync() {
     const c = getClient()
     if (!c) return getStatus()
     if (!user && !(await restoreSession())) return getStatus()
+
+    // Before anything is read or written: has this device been cut off? Syncing
+    // first and checking afterwards would push a revoked device's data up one
+    // last time, which is precisely what revoking it was meant to stop.
+    if (await checkRevocation(c)) return getStatus()
 
     // First contact with an account that already holds data. Stop before
     // touching anything in either direction — merging is only one of three
@@ -556,6 +777,13 @@ async function sync() {
     await pushAttentionJobs(c)
     await pollScanRequests(c)
     await registerDevice(c)
+    // Reading the list back is also how a new device on the account is noticed;
+    // never let that reporting break a sync that otherwise succeeded.
+    try { await announceNewDevices(await listDevices()) } catch { /* best-effort */ }
+    // Clock-driven notifications (interview reminders, closing dates, the review
+    // queue) piggyback on the sync timer rather than owning one — the dedupe
+    // ledger makes running them often free.
+    try { await require('./push').runDueChecks() } catch { /* best-effort */ }
     lastError = null
     configService.update({ lastCloudSyncAt: new Date().toISOString() })
   } catch (err) {
@@ -576,7 +804,8 @@ function stopAuto() {
 }
 
 // Called on app launch: restore the session and start periodic sync.
-async function init() {
+async function init(hooks = {}) {
+  onNewDevice = hooks.onNewDevice || null
   const cfg = configService.load()
   if (!cfg.cloudSyncEnabled) return
   if (await restoreSession()) {
@@ -587,5 +816,7 @@ async function init() {
 
 module.exports = {
   init, signIn, signOut, sync, getStatus, updateScanStatus,
-  resolveFirstSync, listDevices, revokeDevice,
+  resolveFirstSync,
+  listDevices, revokeDevice, forgetDevice, signOutEverywhere,
+  getPushTargets, clearPushToken,
 }

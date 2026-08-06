@@ -79,6 +79,17 @@ module.exports = [
     },
   },
 
+  // ─── Code that runs inside the app's own renderer ──────────────
+  // The smoke test drives the packaged app through page.evaluate(), so its
+  // callbacks execute in Chromium with `window.api` attached. Same reasoning as
+  // the scraper block above: Node file, browser callbacks.
+  {
+    files: ['test/smoke/**/*.js'],
+    languageOptions: {
+      globals: { ...globals.node, ...globals.browser },
+    },
+  },
+
   // ─── Renderer: ES modules in a browser ─────────────────────────
   {
     files: ['src/**/*.js', 'src/**/*.jsx'],

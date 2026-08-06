@@ -5,6 +5,8 @@ const emailService = require('./email')
 const applicator = require('./applicator')
 const webhooks = require('./webhooks')
 const cloudSync = require('./cloudSync')
+const push = require('./push')
+const calendarSync = require('./calendarSync')
 const logger = require('./logger')
 
 let scanTask = null
@@ -13,6 +15,8 @@ let followUpTask = null
 let inboxTask = null
 let weeklyReportTask = null
 let staleTask = null
+let calendarTask = null
+let pushTask = null
 let batchTimeouts = []
 let running = false
 let win = null
@@ -107,6 +111,29 @@ function startTasks() {
   if (cfg.enableWeeklyReport) {
     // Monday at 9am
     weeklyReportTask = cron.schedule('0 9 * * 1', async () => { await runWeeklyReport() })
+  }
+
+  // Two-way calendar sync. Every 15 minutes rather than on every change: the
+  // incoming half is a poll, and an interview moved in Google Calendar is not
+  // urgent to the minute — but it must not wait for the next scan either, or a
+  // reschedule made at 9pm would be invisible until the following morning.
+  if (cfg.calendarSyncEnabled && cfg.calendarProvider) {
+    try {
+      calendarTask = cron.schedule('*/15 * * * *', () => { calendarSync.syncNow().catch(() => {}) })
+    } catch (err) {
+      log(`Could not schedule calendar sync: ${err.message}`)
+    }
+  }
+
+  // Clock-driven push notifications. cloudSync's own loop already runs these
+  // every couple of minutes, but only while cloud sync is actively syncing —
+  // this makes interview reminders independent of that.
+  if (cfg.pushEnabled) {
+    try {
+      pushTask = cron.schedule('*/10 * * * *', () => { push.runDueChecks().catch(() => {}) })
+    } catch (err) {
+      log(`Could not schedule notification checks: ${err.message}`)
+    }
   }
 }
 
@@ -253,6 +280,8 @@ function stop({ abortRun = true } = {}) {
   inboxTask = disposeTask(inboxTask)
   weeklyReportTask = disposeTask(weeklyReportTask)
   staleTask = disposeTask(staleTask)
+  calendarTask = disposeTask(calendarTask)
+  pushTask = disposeTask(pushTask)
   for (const t of batchTimeouts) clearTimeout(t)
   batchTimeouts = []
   batchSchedule = []
@@ -376,8 +405,12 @@ async function runScan(overrides = {}) {
     if (result?.budgetStopped) scanError = 'AI monthly budget reached — scan stopped early'
     if (dryRun && result) lastDryRun = { at: new Date().toISOString(), ...result }
   } catch (err) {
-    scanError = err.message
-    log(`Scan error: ${err.message}`)
+    // NOT err.message. sql.js throws bare strings, so a database refusal
+    // ("Wrong API use : tried to bind a value of an unknown type") arrived here
+    // as `undefined` — which is how a bug that silently dropped every ATS-board
+    // match managed to report itself as "Scan error: undefined" for months.
+    scanError = describeError(err)
+    log(`Scan error: ${scanError}`)
   } finally {
     running = false
     cloudSync.updateScanStatus(false).catch(() => {})
@@ -420,6 +453,15 @@ async function runScan(overrides = {}) {
         ok: !scanError,
         blocked: scanBlocked,
       }).catch(() => {})
+      // A scan that failed or was blocked is the one scan outcome the user has
+      // to act on, and the one they will not notice from a minimised window.
+      if (scanError || scanBlocked.length) {
+        push.notifyScanFailed({ error: scanError, blocked: scanBlocked }).catch(() => {})
+      }
+      // A scan can create interviews (an inbox-detected time) and definitely
+      // creates review-queue work; push both to the calendar and the phone now
+      // rather than waiting up to two minutes for the sync timer.
+      calendarSync.syncNow().catch(() => {})
       cloudSync.sync().catch(() => {})
       // Drain scans queued (e.g. from the phone) while this scan was running.
       // Queue-initiated runs skip this: processQueue continues itself after
@@ -585,6 +627,10 @@ async function runInboxCheck() {
         notify({ type: 'inbox-reply', item })
         nativeNotify('Recruiter reply', `${item.company} replied — status updated to ${item.newStatus}${when}`)
         webhooks.send('inbox-reply', item).catch(() => {})
+        // The phone is the point of this one: a reply that arrives while the
+        // desktop is minimised in another room is exactly what the user wants
+        // to know about immediately.
+        push.notifyReply(item, item.newStatus).catch(() => {})
       }
     } else {
       log(`Inbox checked: ${result.checked} emails scanned, no new replies.`)
@@ -614,6 +660,16 @@ function nativeNotify(title, body) {
     if (!Notification.isSupported()) return
     new Notification({ title, body }).show()
   } catch { /* notifications are best-effort */ }
+}
+
+// Anything can be thrown in JavaScript, and the things that actually get thrown
+// in this codebase include bare strings from sql.js. A log line reading
+// "undefined" is worse than no log line, because it looks like a missing value
+// rather than a swallowed error.
+function describeError(err) {
+  if (err instanceof Error) return err.message || String(err)
+  if (typeof err === 'string') return err
+  try { return JSON.stringify(err) } catch { return String(err) }
 }
 
 function log(msg) {

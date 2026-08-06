@@ -203,7 +203,7 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
   const KNOWN_SECTIONS = /^(summary|experience|professional experience|work experience|education|skills|technical skills|certifications|qualifications|awards|achievements|languages|interests|reference|references|honors|publications|volunteer|activities|projects|training|courses|objective|profile)$/i
 
   function isSectionHeader(t) {
-    if (t.length >= 3 && /^[A-Z][A-Z\s\/&\-]{2,}$/.test(t)) return true
+    if (t.length >= 3 && /^[A-Z][A-Z\s/&-]{2,}$/.test(t)) return true
     if (KNOWN_SECTIONS.test(t.trim())) return true
     return false
   }
@@ -514,7 +514,7 @@ async function buildResumeDocx(text) {
   const KNOWN_SECTIONS_DOCX = /^(summary|experience|professional experience|work experience|education|skills|technical skills|certifications|qualifications|awards|achievements|languages|interests|reference|references|honors|publications|volunteer|activities|projects|training|courses|objective|profile)$/i
 
   function isSectionHeader(t) {
-    if (t.length >= 3 && /^[A-Z][A-Z\s\/&\-]{2,}$/.test(t)) return true
+    if (t.length >= 3 && /^[A-Z][A-Z\s/&-]{2,}$/.test(t)) return true
     if (KNOWN_SECTIONS_DOCX.test(t.trim())) return true
     return false
   }
@@ -696,7 +696,7 @@ async function tailorDocx(originalPath, tailoredText, candidateName) {
     let coreXml = coreEntry.getData().toString('utf8')
     const escapedName = escXml(safeName)
     if (/<dc:title>/.test(coreXml)) {
-      coreXml = coreXml.replace(/<dc:title>[^<]*<\/dc:title>/, `<dc:title>${escapedName}<\/dc:title>`)
+      coreXml = coreXml.replace(/<dc:title>[^<]*<\/dc:title>/, `<dc:title>${escapedName}</dc:title>`)
     } else {
       coreXml = coreXml.replace(/<\/cp:coreProperties>/, `<dc:title>${escapedName}</dc:title></cp:coreProperties>`)
     }

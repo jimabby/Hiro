@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native'
+import { View, Text, TouchableOpacity, StyleSheet, Alert, AppState } from 'react-native'
 // React Native's own SafeAreaView is iOS-only and deprecated as of 0.80, and
 // SDK 54 draws Android edge-to-edge by default — so the old hardcoded 32px
 // Android padding would sit the header under some status bars and the tab bar
@@ -12,6 +12,8 @@ import secureStore from './src/secureStore'
 import { HiroClient } from './src/api'
 import { supabase, CloudClient } from './src/supabase'
 import { colors } from './src/theme'
+import { registerDevice, checkRevoked, clearPushToken } from './src/deviceRegistry'
+import { subscribeToTaps } from './src/push'
 import ConnectScreen from './src/screens/ConnectScreen'
 import DashboardScreen from './src/screens/DashboardScreen'
 import ApplicationsScreen from './src/screens/ApplicationsScreen'
@@ -36,6 +38,8 @@ export default function App() {
 function AppContent() {
   const [connection, setConnection] = useState(undefined) // undefined = loading
   const [tab, setTab] = useState('dashboard')
+  // Set when a notification tap names a specific application to open.
+  const [deepLinkedApplication, setDeepLinkedApplication] = useState(null)
 
   useEffect(() => {
     (async () => {
@@ -75,11 +79,57 @@ function AppContent() {
 
   const handleDisconnect = useCallback(async () => {
     if (connection?.mode === 'cloud' && supabase) {
+      // Drop the push token before the session goes: afterwards this client has
+      // no authority to write to its own device row, and a stale token means
+      // notifications keep arriving on a phone that has signed out.
+      await clearPushToken(connection.userId)
       await supabase.auth.signOut()
     }
     await secureStore.removeItem(STORAGE_KEY)
     setConnection(null)
   }, [connection])
+
+  // ── This phone's standing on the account ─────────────────────────
+  // Only the desktop used to register itself, so a phone holding a refresh token
+  // with full access to every application was invisible in the desktop's device
+  // list and there was nothing to revoke. Register on sign-in, and re-check on
+  // every foreground: revocation is cooperative (Supabase gives a client no way
+  // to invalidate another client's token), so honouring it promptly is this
+  // side's whole responsibility.
+  const userId = connection?.mode === 'cloud' ? connection.userId : null
+
+  const verifyStanding = useCallback(async () => {
+    if (!userId) return
+    if (await checkRevoked(userId)) {
+      setConnection(null)
+      Alert.alert(
+        'Signed out',
+        'This phone was signed out of your Hiro account from another device. Sign in again to resume.'
+      )
+      return
+    }
+    await registerDevice(userId)
+  }, [userId])
+
+  useEffect(() => { verifyStanding() }, [verifyStanding])
+
+  useEffect(() => {
+    if (!userId) return
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') verifyStanding()
+    })
+    return () => sub.remove()
+  }, [userId, verifyStanding])
+
+  // Tapping a notification should land on what it was about, not just open the
+  // app on whatever tab was last used.
+  useEffect(() => {
+    if (!userId) return
+    return subscribeToTaps((route) => {
+      if (route.tab) setTab(route.tab)
+      if (route.applicationId != null) setDeepLinkedApplication(route.applicationId)
+    })
+  }, [userId])
 
   if (connection === undefined) {
     return <View style={styles.root} />
@@ -99,7 +149,13 @@ function AppContent() {
       <StatusBar style="light" />
       <View style={styles.content}>
         {tab === 'dashboard' && <DashboardScreen client={client} />}
-        {tab === 'applications' && <ApplicationsScreen client={client} />}
+        {tab === 'applications' && (
+          <ApplicationsScreen
+            client={client}
+            openApplicationId={deepLinkedApplication}
+            onOpened={() => setDeepLinkedApplication(null)}
+          />
+        )}
         {tab === 'settings' && (
           <SettingsScreen client={client} connection={connection} onDisconnect={handleDisconnect} />
         )}

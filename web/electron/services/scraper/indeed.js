@@ -40,7 +40,7 @@ function extractRecentJob(resumeText) {
       if (atMatch) return { title: atMatch[1].trim(), company: atMatch[2].trim() }
       const commaMatch = jobLine.match(/^(.+?),\s+(.+?)(?:,.*)?$/)
       if (commaMatch) return { title: commaMatch[1].trim(), company: commaMatch[2].trim() }
-      const pipeMatch = jobLine.match(/^(.+?)\s*[|–\-]\s*(.+?)(?:,.*)?$/)
+      const pipeMatch = jobLine.match(/^(.+?)\s*[-|–]\s*(.+?)(?:,.*)?$/)
       if (pipeMatch) return { title: pipeMatch[1].trim(), company: pipeMatch[2].trim() }
     }
   }

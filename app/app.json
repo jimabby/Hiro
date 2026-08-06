@@ -24,7 +24,15 @@
     },
     "android": {
       "package": "com.cessleigh.hiro",
-      "versionCode": 1
+      "versionCode": 1,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.INTERNET"
+      ],
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ]
     },
     "plugins": [
       "expo-asset",
@@ -40,7 +48,16 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Hiro uses the camera only to scan the pairing code shown by the Hiro desktop app."
+          "cameraPermission": "Hiro uses the camera only to scan the pairing code shown by the Hiro desktop app.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
+        }
+      ],
+      "expo-status-bar",
+      [
+        "expo-notifications",
+        {
+          "color": "#0f1117"
         }
       ]
     ]

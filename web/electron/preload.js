@@ -123,6 +123,29 @@ contextBridge.exposeInMainWorld('api', {
   // Interview calendar export. Pass an eventId for one interview, omit for all.
   exportInterviewsICS: (eventId) => ipcRenderer.invoke('calendar:exportICS', eventId),
 
+  // Two-way calendar sync (Google / Outlook). The .ics export above stays for
+  // anyone who would rather not grant an OAuth scope.
+  calendarSyncStatus: () => ipcRenderer.invoke('calendarSync:status'),
+  calendarSyncConnect: (payload) => ipcRenderer.invoke('calendarSync:connect', payload),
+  calendarSyncDisconnect: () => ipcRenderer.invoke('calendarSync:disconnect'),
+  calendarSyncListCalendars: () => ipcRenderer.invoke('calendarSync:listCalendars'),
+  calendarSyncNow: () => ipcRenderer.invoke('calendarSync:syncNow'),
+
+  // Push notifications to paired phones
+  sendTestPush: () => ipcRenderer.invoke('push:sendTest'),
+  getPushLog: () => ipcRenderer.invoke('push:log'),
+
+  // Pipeline board: what is owed on each application, and when
+  getPipeline: () => ipcRenderer.invoke('pipeline:get'),
+  setNextAction: (id, payload) => ipcRenderer.invoke('pipeline:setNextAction', id, payload),
+  completeNextAction: (id) => ipcRenderer.invoke('pipeline:completeNextAction', id),
+
+  // Database encryption at rest
+  getEncryptionStatus: () => ipcRenderer.invoke('db:encryptionStatus'),
+  setEncryption: (enabled) => ipcRenderer.invoke('db:setEncryption', enabled),
+  exportRecoveryKey: () => ipcRenderer.invoke('db:exportRecoveryKey'),
+  importRecoveryKey: (text) => ipcRenderer.invoke('db:importRecoveryKey', text),
+
   // Score-band conversion analytics
   getScoreBandConversion: () => ipcRenderer.invoke('analytics:scoreBandConversion'),
   getSalaryStats: () => ipcRenderer.invoke('analytics:salaryStats'),
@@ -168,7 +191,12 @@ contextBridge.exposeInMainWorld('api', {
   cloudStatus: () => ipcRenderer.invoke('cloud:status'),
   cloudResolveFirstSync: (choice) => ipcRenderer.invoke('cloud:resolveFirstSync', choice),
   cloudListDevices: () => ipcRenderer.invoke('cloud:listDevices'),
+  // Three different strengths, deliberately named for what they actually do:
+  // revoke asks a device to sign itself out, forget only removes it from the
+  // list, and signOutEverywhere invalidates every refresh token on the account.
   cloudRevokeDevice: (deviceId) => ipcRenderer.invoke('cloud:revokeDevice', deviceId),
+  cloudForgetDevice: (deviceId) => ipcRenderer.invoke('cloud:forgetDevice', deviceId),
+  cloudSignOutEverywhere: () => ipcRenderer.invoke('cloud:signOutEverywhere'),
   cloudConflicts: () => ipcRenderer.invoke('cloud:conflicts'),
   cloudClearConflicts: () => ipcRenderer.invoke('cloud:clearConflicts'),
   cloudApplyConflict: (id) => ipcRenderer.invoke('cloud:applyConflict', id),

@@ -173,16 +173,29 @@ $$;
 revoke execute on function public.delete_account() from public, anon;
 grant execute on function public.delete_account() to authenticated;
 
--- Devices attached to this account, so the user can see what is syncing and
--- revoke anything they no longer control — a laptop that was sold, a phone that
--- was lost. Without a registry, a leaked refresh token is invisible and there is
--- nothing to revoke it from.
+-- Devices attached to this account, so the user can see what is syncing and cut
+-- off anything they no longer control — a laptop that was sold, a phone that was
+-- lost. Every device registers itself here on sign-in: the desktop from
+-- cloudSync.registerDevice, the phone from src/deviceRegistry.js.
 --
 -- Keyed by (user_id, device_id) where device_id is generated once on the device
--- and never regenerated. Deleting a row here does not by itself invalidate that
--- device's Supabase session; it removes the device's standing on the account and
--- is what the desktop's trusted-device list reads. Rotate the account password
--- to force every session to re-authenticate.
+-- and never regenerated.
+--
+-- How revocation actually works. Supabase gives a signed-in client no way to
+-- invalidate ANOTHER client's refresh token — that needs the service-role admin
+-- API, which must never ship inside a desktop or mobile app. So there are two
+-- mechanisms, and the UI is explicit about which one it is offering:
+--
+--   1. Revoke one device (cooperative). `revoked_at` is stamped here. Every
+--      client checks its own row on each sync and, when it finds the stamp,
+--      signs itself out and wipes its stored session. Effective for a device
+--      that is still running and online; it does nothing for one that is
+--      switched off or has been wiped of network access.
+--   2. Sign out everywhere (authoritative). The signed-in client calls
+--      auth.signOut({ scope: 'global' }), which Supabase honours server-side by
+--      invalidating every refresh token on the account, including its own. This
+--      is the one to use for a lost phone, and it is what the desktop offers
+--      alongside per-device revocation.
 create table if not exists public.devices (
   id            uuid primary key default gen_random_uuid(),
   user_id       uuid not null references auth.users (id) on delete cascade,
@@ -197,6 +210,11 @@ create table if not exists public.devices (
 
 alter table public.devices enable row level security;
 
+-- Every other policy in this file is dropped before being created so the script
+-- can be re-run against an existing project. This one was not, so re-running the
+-- documented upgrade failed with "policy already exists" and stopped before the
+-- statements below it.
+drop policy if exists "own devices" on public.devices;
 create policy "own devices" on public.devices
   for all
   using (auth.uid() = user_id)
@@ -204,3 +222,52 @@ create policy "own devices" on public.devices
 
 create index if not exists idx_devices_user_seen
   on public.devices (user_id, last_seen_at desc);
+
+-- Cooperative revocation (mechanism 1 above). Set by whichever device the user
+-- clicked "Revoke" on; cleared by the revoked device as it signs itself out.
+alter table public.devices add column if not exists revoked_at timestamptz;
+
+-- App version and the client's own idea of when it signed in, so the device list
+-- can show session age and spot a client that stopped checking in.
+alter table public.devices add column if not exists app_version text;
+alter table public.devices add column if not exists session_started_at timestamptz;
+
+-- Expo push token, registered by the phone. The desktop reads these to send
+-- notifications directly through Expo's push service — there is no Hiro server
+-- in the path. A token is device-scoped, so revoking a device removes its
+-- ability to receive notifications along with everything else.
+alter table public.devices add column if not exists push_token text;
+alter table public.devices add column if not exists push_enabled boolean default true;
+
+-- ─── Follow-up pipeline ───────────────────────────────────────────
+-- The next thing the user has to DO about an application, and when. Mirrored so
+-- the phone's pipeline and the desktop's board agree, and so an overdue
+-- follow-up can be pushed to the phone.
+alter table public.applications add column if not exists next_action_at timestamptz;
+alter table public.applications add column if not exists next_action_note text;
+
+-- ─── Push notification ledger ─────────────────────────────────────
+-- One row per notification actually delivered, so a reminder is sent once rather
+-- than on every sync cycle, and so the phone can show a history. The desktop is
+-- the only writer.
+create table if not exists public.push_log (
+  id            uuid primary key default gen_random_uuid(),
+  user_id       uuid not null references auth.users (id) on delete cascade,
+  kind          text not null,      -- 'reply' | 'interview' | 'expiring' | 'scan-failed' | 'review' | 'new-device'
+  dedupe_key    text not null,      -- e.g. 'interview:41:2026-08-09' — unique per user
+  title         text,
+  body          text,
+  sent_at       timestamptz not null default now(),
+  unique (user_id, dedupe_key)
+);
+
+alter table public.push_log enable row level security;
+
+drop policy if exists "own push log" on public.push_log;
+create policy "own push log" on public.push_log
+  for all
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+create index if not exists idx_push_log_user_sent
+  on public.push_log (user_id, sent_at desc);

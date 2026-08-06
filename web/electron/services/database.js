@@ -1,6 +1,8 @@
 const fs = require('fs')
 const path = require('path')
-const { CONFIG_DIR } = require('./config')
+const configService = require('./config')
+const dbCrypto = require('./dbCrypto')
+const { CONFIG_DIR } = configService
 const { parseSalaryColumns } = require('./salaryParser')
 
 const DB_PATH = path.join(CONFIG_DIR, 'autoapply.db')
@@ -14,8 +16,13 @@ async function init() {
   SQL = await require('sql.js')()
 
   if (fs.existsSync(DB_PATH)) {
-    const buf = fs.readFileSync(DB_PATH)
-    db = new SQL.Database(buf)
+    // readFile handles both states, so an encrypted profile and a plaintext one
+    // load through the same path. A decryption failure is deliberately NOT
+    // caught: falling through to `new SQL.Database()` would present an empty
+    // database, which is indistinguishable from having lost every application
+    // ever recorded. main.js turns this into a dialog that says what happened.
+    const { data } = dbCrypto.readFile(DB_PATH)
+    db = new SQL.Database(data)
   } else {
     db = new SQL.Database()
   }
@@ -53,7 +60,12 @@ function fsyncFile(file, flags) {
 
 function persist() {
   if (!db || persistDepth > 0) return
-  const data = Buffer.from(db.export())
+  // Encryption rides on the existing atomic write rather than replacing it: the
+  // bytes are encrypted, then written to a temp file, fsynced, and renamed
+  // exactly as before. An encrypted database that could be truncated by a power
+  // cut would be worse than a plaintext one, since GCM refuses a truncated file
+  // outright.
+  const data = dbCrypto.encodeForWrite(Buffer.from(db.export()), dbCrypto.shouldEncrypt())
   const tmp = DB_PATH + '.tmp'
   try {
     fs.writeFileSync(tmp, data)
@@ -227,6 +239,42 @@ function createTables() {
       provider TEXT,
       model TEXT
     );
+
+    -- Notifications already sent, so a reminder that is recomputed on a
+    -- two-minute sync loop arrives once rather than thirty times an hour.
+    --
+    -- The key is the EVENT ("the 24-hour reminder for interview 41"), not the
+    -- send, and the row is written BEFORE the request goes out: claiming after a
+    -- successful send would double-send whenever the response is lost, which is
+    -- the common case on a laptop that just woke up. This has to survive a
+    -- restart, so it is a table rather than a Set in memory.
+    CREATE TABLE IF NOT EXISTS push_log (
+      dedupe_key TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      title TEXT,
+      body TEXT,
+      sent_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Interviews mirrored into an external calendar, and what we last wrote
+    -- there. Two-way sync needs three things this table holds and the
+    -- interview_events row cannot: the provider's own id for the event, a hash
+    -- of what we last pushed (so an unchanged event is not rewritten on every
+    -- pass), and the direction of the last change (so an edit made in Google
+    -- Calendar is not immediately overwritten by the local copy).
+    CREATE TABLE IF NOT EXISTS calendar_links (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      interview_id INTEGER,
+      provider TEXT NOT NULL,
+      external_id TEXT NOT NULL,
+      -- Set when the event came FROM the calendar rather than from Hiro, so a
+      -- deletion here does not delete an event the user created themselves.
+      origin TEXT DEFAULT 'hiro',
+      local_hash TEXT,
+      remote_updated_at TEXT,
+      synced_at TEXT DEFAULT (datetime('now')),
+      UNIQUE (provider, external_id)
+    );
   `)
   persist()
 }
@@ -286,6 +334,20 @@ function migrate() {
   try { db.run('ALTER TABLE application_snapshots ADD COLUMN model TEXT') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_interview_app ON interview_events(application_id)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_interview_at ON interview_events(scheduled_at)') } catch {}
+
+  // ─── Pipeline ────────────────────────────────────────────────
+  // The next thing the user has to DO about an application, and when. Status
+  // says where the application got to; this says what is owed and by when, which
+  // is the difference between a list of past events and a working pipeline.
+  // Stored as local "YYYY-MM-DD" (a follow-up is a day, not an instant).
+  try { db.run('ALTER TABLE applications ADD COLUMN next_action_at TEXT') } catch {}
+  try { db.run('ALTER TABLE applications ADD COLUMN next_action_note TEXT DEFAULT ""') } catch {}
+  // Set when a next action is completed, so a cleared reminder is not silently
+  // indistinguishable from one that was never set.
+  try { db.run('ALTER TABLE applications ADD COLUMN next_action_done_at TEXT') } catch {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_next_action ON applications(next_action_at)') } catch {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_push_log_at ON push_log(sent_at DESC)') } catch {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_calendar_interview ON calendar_links(interview_id)') } catch {}
 }
 
 // Convert sql.js result to array of objects
@@ -322,7 +384,8 @@ function queryOne(sql, params = []) {
 // getApplicationsList, which omits them and fetches detail on selection.
 const LIST_COLUMNS = `id, job_title, company, platform, salary, salary_min, salary_max, job_url,
   match_score, match_explanation, status, comment, recruiter_email, applied_at, updated_at,
-  closing_date, follow_up_sent, resume_id, resume_name`
+  closing_date, follow_up_sent, resume_id, resume_name,
+  next_action_at, next_action_note`
 
 function getApplications(filters = {}) {
   return runApplicationQuery('*', filters)
@@ -942,10 +1005,25 @@ function applyCloudEdit(id, { status, comment }, cloudUpdatedAt) {
 function getAllInterviewEventsForSync() {
   return query(`
     SELECT e.id, e.application_id, e.scheduled_at, e.has_time, e.source, e.note,
-           a.job_title, a.company, a.platform
+           a.job_title, a.company, a.platform, a.job_url
     FROM interview_events e
     JOIN applications a ON a.id = e.application_id
   `)
+}
+
+// Move an interview. Used by calendar sync when the user rescheduled the event in
+// their own calendar: the time changes and so does `source`, because it is no
+// longer the time Hiro parsed out of an email and pretending otherwise would
+// mislabel it as auto-detected forever.
+function updateInterviewEventTime(id, { scheduledAt, hasTime = true, source = null }) {
+  if (source) {
+    run('UPDATE interview_events SET scheduled_at = ?, has_time = ?, source = ? WHERE id = ?',
+      [scheduledAt, hasTime ? 1 : 0, source, id])
+  } else {
+    run('UPDATE interview_events SET scheduled_at = ?, has_time = ? WHERE id = ?',
+      [scheduledAt, hasTime ? 1 : 0, id])
+  }
+  return { success: true }
 }
 
 // ─── Attention Jobs ──────────────────────────────────────────────
@@ -978,16 +1056,22 @@ function insertAttentionJob(data) {
     ? parseSalaryColumns(data.salary || '')
     : { salary_min: data.salary_min ?? null, salary_max: data.salary_max ?? null }
 
+  // Every nullable binding is coerced, because sql.js refuses `undefined` — and
+  // it refuses it by throwing a bare STRING, not an Error. The applicator's
+  // catch logged `err.message`, so a caller that omitted one optional field
+  // produced "Scan error: undefined" and lost the job. That is exactly what
+  // happened to every ATS-board match: nothing set job_description on the job
+  // object, so the insert threw and the whole feature silently saved nothing.
   run(`
     INSERT INTO attention_jobs
       (job_title, company, platform, salary, job_url, job_description, match_score, talking_points, reason, closing_date, salary_min, salary_max)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
-    data.job_title, data.company, data.platform, data.salary || '',
-    data.job_url, data.job_description, data.match_score,
+    data.job_title ?? '', data.company ?? '', data.platform ?? '', data.salary || '',
+    data.job_url ?? '', data.job_description ?? '', data.match_score ?? null,
     JSON.stringify(data.talking_points || []), data.reason || '',
     data.closing_date || null,
-    parsed.salary_min, parsed.salary_max,
+    parsed.salary_min ?? null, parsed.salary_max ?? null,
   ])
   return { success: true }
 }
@@ -1063,6 +1147,7 @@ const RESPONDED_SQL = RESPONDED_STATUSES.map(s => `'${s}'`).join(', ')
 const UNSENT_STATUSES = ['skipped', 'held']
 const UNSENT_SQL = UNSENT_STATUSES.map(s => `'${s}'`).join(', ')
 const SENT_ONLY = `status NOT IN (${UNSENT_SQL})`
+const UNSENT_ONLY = `status IN (${UNSENT_SQL})`
 
 function getStats() {
   const interviews = queryOne("SELECT COUNT(*) as c FROM applications WHERE status IN ('interview', 'offer')")?.c || 0
@@ -1070,17 +1155,30 @@ function getStats() {
   const appliedCount = queryOne(`SELECT COUNT(*) as c FROM applications WHERE ${SENT_ONLY}`)?.c || 0
 
   return {
-    totalAllTime: queryOne('SELECT COUNT(*) as c FROM applications')?.c || 0,
-    totalToday: queryOne(`SELECT COUNT(*) as c FROM applications WHERE applied_at >= ${TODAY_START}`)?.c || 0,
-    totalThisWeek: queryOne(`SELECT COUNT(*) as c FROM applications WHERE applied_at >= ${WEEK_START}`)?.c || 0,
-    totalLastWeek: queryOne(`SELECT COUNT(*) as c FROM applications WHERE applied_at >= ${LAST_WEEK_START} AND applied_at < ${WEEK_START}`)?.c || 0,
+    // Every "applied" count is SENT_ONLY. They used to be plain COUNT(*), so a
+    // dry run that skipped everything below the threshold — or a review-mode
+    // scan that held ten jobs — reported ten applications the employer never
+    // received. The unsent rows are still surfaced, as unsentToday/heldCount
+    // and in byStatus, rather than hidden.
+    totalAllTime: queryOne(`SELECT COUNT(*) as c FROM applications WHERE ${SENT_ONLY}`)?.c || 0,
+    totalToday: queryOne(`SELECT COUNT(*) as c FROM applications WHERE ${SENT_ONLY} AND applied_at >= ${TODAY_START}`)?.c || 0,
+    totalThisWeek: queryOne(`SELECT COUNT(*) as c FROM applications WHERE ${SENT_ONLY} AND applied_at >= ${WEEK_START}`)?.c || 0,
+    totalLastWeek: queryOne(`SELECT COUNT(*) as c FROM applications WHERE ${SENT_ONLY} AND applied_at >= ${LAST_WEEK_START} AND applied_at < ${WEEK_START}`)?.c || 0,
+    // Scored-and-skipped or held today. Lets the UI say "3 applied · 12 skipped"
+    // instead of leaving the user wondering where a busy scan went.
+    unsentToday: queryOne(`SELECT COUNT(*) as c FROM applications WHERE ${UNSENT_ONLY} AND applied_at >= ${TODAY_START}`)?.c || 0,
+    // Rows of every kind, including never-submitted ones — the size of the
+    // local database rather than a count of applications.
+    rowsAllTime: queryOne('SELECT COUNT(*) as c FROM applications')?.c || 0,
     interviews,
     attentionCount: queryOne('SELECT COUNT(*) as c FROM attention_jobs WHERE dismissed = 0')?.c || 0,
     // Jobs parked by review mode, waiting for the user to approve or reject.
     heldCount: queryOne("SELECT COUNT(*) as c FROM applications WHERE status = 'held'")?.c || 0,
-    byPlatform: query("SELECT platform, COUNT(*) as count FROM applications GROUP BY platform"),
+    byPlatform: query(`SELECT platform, COUNT(*) as count FROM applications WHERE ${SENT_ONLY} GROUP BY platform`),
+    // byStatus deliberately keeps every row: it is a breakdown BY status, so
+    // 'skipped' and 'held' are the point rather than a distortion.
     byStatus: query("SELECT status, COUNT(*) as count FROM applications GROUP BY status"),
-    todayJobs: query(`SELECT job_title, company, platform, match_score, status FROM applications WHERE applied_at >= ${TODAY_START} ORDER BY applied_at DESC`),
+    todayJobs: query(`SELECT job_title, company, platform, match_score, status FROM applications WHERE ${SENT_ONLY} AND applied_at >= ${TODAY_START} ORDER BY applied_at DESC`),
     // Any reply at all, over everything submitted.
     responseRate: appliedCount > 0 ? Math.round((responded / appliedCount) * 100) : 0,
     // Reached interview or offer — the number most people actually mean when
@@ -1110,14 +1208,18 @@ function findDuplicateAcrossPlatforms(jobTitle, company, currentPlatform) {
   )
 }
 
+// Both chart series count SUBMITTED applications only, matching the "Today" and
+// "This Week" tiles. A skipped or held row on the same day would otherwise draw
+// a spike that no employer ever saw.
 function getApplicationsByDate() {
-  return query("SELECT DATE(applied_at,'localtime') as date, platform, COUNT(*) as count FROM applications GROUP BY DATE(applied_at,'localtime'), platform ORDER BY date DESC")
+  return query(`SELECT DATE(applied_at,'localtime') as date, platform, COUNT(*) as count FROM applications WHERE ${SENT_ONLY} GROUP BY DATE(applied_at,'localtime'), platform ORDER BY date DESC`)
 }
 
 function getApplicationsPerDay(days) {
   const rows = query(
     `SELECT DATE(applied_at,'localtime') as date, COUNT(*) as count FROM applications
-     WHERE applied_at >= datetime('now','localtime','start of day','-' || ? || ' days','utc')
+     WHERE ${SENT_ONLY}
+       AND applied_at >= datetime('now','localtime','start of day','-' || ? || ' days','utc')
      GROUP BY DATE(applied_at,'localtime') ORDER BY date ASC`,
     [days - 1]
   )
@@ -1262,6 +1364,224 @@ function getUpcomingInterviews(limit = 25) {
 function deleteInterviewEvent(id) {
   run('DELETE FROM interview_events WHERE id = ?', [id])
   return { success: true }
+}
+
+// ─── Pipeline: next actions ──────────────────────────────────────
+// `status` records where an application GOT TO. It cannot record what the user
+// still owes it — chase the recruiter on Thursday, send the take-home by Friday
+// — which is why applications quietly died of neglect while the board looked
+// healthy. next_action_at/note is that missing half.
+//
+// Dates are local "YYYY-MM-DD": a follow-up is a day, not an instant, and
+// storing it as UTC would move it across midnight for half the world.
+
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/
+
+function setNextAction(id, { date, note }) {
+  const clean = date && DATE_ONLY.test(String(date).trim()) ? String(date).trim() : null
+  if (date && !clean) return { success: false, reason: 'Date must be YYYY-MM-DD.' }
+  run(
+    `UPDATE applications
+     SET next_action_at = ?, next_action_note = ?, next_action_done_at = NULL,
+         updated_at = datetime('now'), cloud_dirty = 1
+     WHERE id = ?`,
+    [clean, note || '', id]
+  )
+  return { success: true }
+}
+
+// Completing an action is not the same as never having had one: the date is
+// cleared so it stops being due, but next_action_done_at records that it was
+// dealt with, which is what stops the pipeline nudge re-flagging the row
+// immediately.
+function completeNextAction(id) {
+  run(
+    `UPDATE applications
+     SET next_action_at = NULL, next_action_done_at = datetime('now'),
+         updated_at = datetime('now'), cloud_dirty = 1
+     WHERE id = ?`,
+    [id]
+  )
+  return { success: true }
+}
+
+// Actions due today or overdue. Drives the pipeline's "Overdue" column and the
+// follow-up push notification.
+function getDueNextActions() {
+  return query(`
+    SELECT id, job_title, company, status, next_action_at, next_action_note
+    FROM applications
+    WHERE next_action_at IS NOT NULL
+      AND next_action_at <= date('now','localtime')
+      AND ${SENT_ONLY}
+    ORDER BY next_action_at ASC
+  `)
+}
+
+// Which pipeline column a row belongs to. Derived from status rather than stored
+// so an existing database needs no backfill and the board can never disagree
+// with the status shown everywhere else.
+const PIPELINE_STAGES = [
+  { id: 'applied', label: 'Applied', statuses: ['applied'] },
+  { id: 'waiting', label: 'No reply yet', statuses: ['no_response', 'pending'] },
+  { id: 'interview', label: 'Interviewing', statuses: ['interview'] },
+  { id: 'offer', label: 'Offer', statuses: ['offer'] },
+  { id: 'closed', label: 'Closed', statuses: ['rejected'] },
+]
+
+// Everything the pipeline board needs in one read: the rows, their stage, and
+// how overdue each one is. Held and skipped rows are excluded — they were never
+// sent, so there is nothing to chase.
+function getPipeline() {
+  const rows = query(`
+    SELECT id, job_title, company, platform, status, match_score, salary,
+           applied_at, updated_at, next_action_at, next_action_note, next_action_done_at,
+           recruiter_email, closing_date, job_url
+    FROM applications
+    WHERE ${SENT_ONLY}
+    ORDER BY
+      CASE WHEN next_action_at IS NULL THEN 1 ELSE 0 END,
+      next_action_at ASC,
+      applied_at DESC
+  `)
+
+  const today = queryOne("SELECT date('now','localtime') as d")?.d || ''
+  const stageOf = (status) => PIPELINE_STAGES.find(s => s.statuses.includes(status))?.id || 'applied'
+
+  // A row nobody has looked at in this long, with no action booked, is the thing
+  // that actually goes missing — no status change, no reply, no reminder.
+  const nudgeDays = Number(configService.load().pipelineNudgeDays) || 0
+  const staleBefore = nudgeDays > 0
+    ? queryOne("SELECT date('now','localtime','-' || ? || ' days') as d", [nudgeDays])?.d
+    : null
+
+  const upcomingByApp = new Map()
+  for (const ev of getUpcomingInterviews(200)) {
+    if (!upcomingByApp.has(ev.application_id)) upcomingByApp.set(ev.application_id, ev)
+  }
+
+  return {
+    stages: PIPELINE_STAGES.map(({ id, label }) => ({ id, label })),
+    today,
+    items: rows.map(r => {
+      const due = r.next_action_at || null
+      const lastTouched = (r.updated_at || r.applied_at || '').slice(0, 10)
+      return {
+        ...r,
+        stage: stageOf(r.status),
+        overdue: !!(due && due < today),
+        dueToday: !!(due && due === today),
+        // Only for rows that are still live: a rejection needs no nudge.
+        needsAction: !due
+          && !!staleBefore
+          && lastTouched !== '' && lastTouched < staleBefore
+          && !['rejected', 'offer'].includes(r.status),
+        nextInterview: upcomingByApp.get(r.id)
+          ? {
+            scheduled_at: upcomingByApp.get(r.id).scheduled_at,
+            has_time: upcomingByApp.get(r.id).has_time,
+          }
+          : null,
+      }
+    }),
+  }
+}
+
+// Applications and Needs Attention jobs whose listing closes within `days` and
+// which have NOT been submitted — the only ones where the deadline still means
+// something. `source` tells the caller which table a row came from, since the
+// two have separate id spaces.
+function getClosingSoon(days) {
+  const n = Number(days)
+  if (!Number.isFinite(n) || n <= 0) return []
+  const bound = "date('now','localtime','+' || ? || ' days')"
+  const held = query(`
+    SELECT id, job_title, company, closing_date, 'application' as source
+    FROM applications
+    WHERE status = 'held' AND closing_date IS NOT NULL AND closing_date != ''
+      AND closing_date >= date('now','localtime') AND closing_date <= ${bound}
+  `, [n])
+  const attention = query(`
+    SELECT id, job_title, company, closing_date, 'attention' as source
+    FROM attention_jobs
+    WHERE dismissed = 0 AND closing_date IS NOT NULL AND closing_date != ''
+      AND closing_date >= date('now','localtime') AND closing_date <= ${bound}
+  `, [n])
+  return [...held, ...attention].sort((a, b) => a.closing_date.localeCompare(b.closing_date))
+}
+
+// ─── Push notification ledger ────────────────────────────────────
+// Claim a dedupe key. Returns false when this event has already been notified —
+// the INSERT is the claim, so two callers racing cannot both win.
+function claimPushKey(dedupeKey, kind, title, body) {
+  try {
+    run('INSERT INTO push_log (dedupe_key, kind, title, body) VALUES (?, ?, ?, ?)',
+      [dedupeKey, kind, title || '', body || ''])
+    return true
+  } catch {
+    // PRIMARY KEY violation: already claimed.
+    return false
+  }
+}
+
+function getPushLog(limit = 50) {
+  return query('SELECT * FROM push_log ORDER BY sent_at DESC LIMIT ?', [limit])
+}
+
+// The ledger is a dedupe mechanism, not history — nothing needs a reminder key
+// from six months ago, and interview keys embed a date that can never recur.
+function prunePushLog(days = 90) {
+  run("DELETE FROM push_log WHERE sent_at < datetime('now', '-' || ? || ' days')", [days])
+  return { success: true }
+}
+
+// ─── Calendar links ──────────────────────────────────────────────
+// See the calendar_links CREATE TABLE for why two-way sync needs its own table.
+
+function getCalendarLink({ interviewId, provider, externalId }) {
+  if (externalId) {
+    return queryOne('SELECT * FROM calendar_links WHERE provider = ? AND external_id = ?', [provider, externalId])
+  }
+  return queryOne('SELECT * FROM calendar_links WHERE provider = ? AND interview_id = ?', [provider, interviewId])
+}
+
+function saveCalendarLink({ interviewId, provider, externalId, origin = 'hiro', localHash = null, remoteUpdatedAt = null }) {
+  const existing = getCalendarLink({ provider, externalId })
+  if (existing) {
+    run(
+      `UPDATE calendar_links
+       SET interview_id = ?, local_hash = ?, remote_updated_at = ?, synced_at = datetime('now')
+       WHERE id = ?`,
+      [interviewId ?? null, localHash, remoteUpdatedAt, existing.id]
+    )
+    return { success: true, id: existing.id }
+  }
+  run(
+    `INSERT INTO calendar_links (interview_id, provider, external_id, origin, local_hash, remote_updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [interviewId ?? null, provider, externalId, origin, localHash, remoteUpdatedAt]
+  )
+  return { success: true }
+}
+
+function getCalendarLinks(provider) {
+  return query('SELECT * FROM calendar_links WHERE provider = ?', [provider])
+}
+
+function deleteCalendarLink(id) {
+  run('DELETE FROM calendar_links WHERE id = ?', [id])
+  return { success: true }
+}
+
+// Links whose interview no longer exists locally. The calendar event they point
+// at has to be removed too, but only when Hiro created it — an event the user
+// made in their own calendar is theirs.
+function getOrphanedCalendarLinks(provider) {
+  return query(`
+    SELECT c.* FROM calendar_links c
+    LEFT JOIN interview_events e ON e.id = c.interview_id
+    WHERE c.provider = ? AND (c.interview_id IS NULL OR e.id IS NULL)
+  `, [provider])
 }
 
 // A single interview joined to its application, for one-off calendar export.
@@ -1433,19 +1753,24 @@ function getWeeklyReportData() {
   const dateFrom = utcStr(monday)
   const dateTo = utcStr(new Date(monday.getTime() + 7 * 86400000))
 
-  const apps = query('SELECT * FROM applications WHERE applied_at >= ? AND applied_at < ?', [dateFrom, dateTo])
+  // Every row in the window, so byStatus can report what was held or skipped.
+  // Each headline number below is then derived from the SUBMITTED subset — a
+  // weekly report that counts held jobs as applications is worse than no report.
+  const rows = query('SELECT * FROM applications WHERE applied_at >= ? AND applied_at < ?', [dateFrom, dateTo])
+  const byStatus = {}
+  for (const a of rows) byStatus[a.status] = (byStatus[a.status] || 0) + 1
+
+  const apps = rows.filter(a => !UNSENT_STATUSES.includes(a.status))
   const totalApps = apps.length
   const byPlatform = {}
-  const byStatus = {}
   let matchSum = 0
   for (const a of apps) {
     byPlatform[a.platform] = (byPlatform[a.platform] || 0) + 1
-    byStatus[a.status] = (byStatus[a.status] || 0) + 1
     matchSum += a.match_score || 0
   }
   const interviews = (byStatus.interview || 0) + (byStatus.offer || 0)
   const responded = RESPONDED_STATUSES.reduce((n, s) => n + (byStatus[s] || 0), 0)
-  const applied = totalApps - UNSENT_STATUSES.reduce((n, s) => n + (byStatus[s] || 0), 0)
+  const unsent = rows.length - totalApps
 
   return {
     // Labels stay in local time — toISOString() is UTC and would shift the
@@ -1453,13 +1778,15 @@ function getWeeklyReportData() {
     dateFrom: localDate(monday),
     dateTo: localDate(sunday),
     totalApps,
+    // Drafted but never sent this week, reported alongside rather than folded in.
+    unsentApps: unsent,
     byPlatform,
     byStatus,
     avgMatchScore: totalApps > 0 ? Math.round(matchSum / totalApps) : 0,
-    responseRate: applied > 0 ? Math.round((responded / applied) * 100) : 0,
-    interviewRate: applied > 0 ? Math.round((interviews / applied) * 100) : 0,
-    perDay: query("SELECT DATE(applied_at,'localtime') as date, COUNT(*) as count FROM applications WHERE applied_at >= ? AND applied_at < ? GROUP BY DATE(applied_at,'localtime') ORDER BY date", [dateFrom, dateTo]),
-    topCompanies: query('SELECT company, COUNT(*) as count FROM applications WHERE applied_at >= ? AND applied_at < ? GROUP BY company ORDER BY count DESC LIMIT 5', [dateFrom, dateTo]),
+    responseRate: totalApps > 0 ? Math.round((responded / totalApps) * 100) : 0,
+    interviewRate: totalApps > 0 ? Math.round((interviews / totalApps) * 100) : 0,
+    perDay: query(`SELECT DATE(applied_at,'localtime') as date, COUNT(*) as count FROM applications WHERE ${SENT_ONLY} AND applied_at >= ? AND applied_at < ? GROUP BY DATE(applied_at,'localtime') ORDER BY date`, [dateFrom, dateTo]),
+    topCompanies: query(`SELECT company, COUNT(*) as count FROM applications WHERE ${SENT_ONLY} AND applied_at >= ? AND applied_at < ? GROUP BY company ORDER BY count DESC LIMIT 5`, [dateFrom, dateTo]),
   }
 }
 
@@ -1518,15 +1845,30 @@ function maybeBackup() {
   }
 }
 
+function backupFileNames() {
+  if (!fs.existsSync(BACKUP_DIR)) return []
+  return fs.readdirSync(BACKUP_DIR).filter(f => /^autoapply-[\w.-]+\.db$/.test(f))
+}
+
 function listBackups() {
   try {
-    if (!fs.existsSync(BACKUP_DIR)) return []
-    return fs.readdirSync(BACKUP_DIR)
-      .filter(f => /^autoapply-[\w.-]+\.db$/.test(f))
+    return backupFileNames()
       .sort().reverse()
       .map(name => {
-        const st = fs.statSync(path.join(BACKUP_DIR, name))
-        return { name, size: st.size, mtime: st.mtime.toISOString() }
+        const file = path.join(BACKUP_DIR, name)
+        const st = fs.statSync(file)
+        let encrypted = false
+        try {
+          // Only the header is needed to classify a file; reading a 40 MB backup
+          // to answer "is this encrypted" would make opening Settings slow.
+          const fd = fs.openSync(file, 'r')
+          try {
+            const head = Buffer.alloc(dbCrypto.HEADER_BYTES)
+            fs.readSync(fd, head, 0, head.length, 0)
+            encrypted = dbCrypto.isEncrypted(head)
+          } finally { fs.closeSync(fd) }
+        } catch { /* report it as plaintext rather than failing the list */ }
+        return { name, size: st.size, mtime: st.mtime.toISOString(), encrypted }
       })
   } catch {
     return []
@@ -1546,12 +1888,87 @@ function restoreBackup(name) {
     snapshot = `autoapply-pre-restore-${stamp}.db`
     fs.copyFileSync(DB_PATH, path.join(BACKUP_DIR, snapshot))
   } catch { snapshot = null }
-  db = new SQL.Database(fs.readFileSync(file))
+  // A backup made before encryption was turned on is plaintext, and one made
+  // after is not — readFile accepts either, so a restore never depends on which
+  // era the file came from. It can still fail (a backup from a profile whose key
+  // is gone), and that has to be reported rather than leaving an empty database.
+  let data
+  try {
+    ({ data } = dbCrypto.readFile(file))
+  } catch (err) {
+    return { success: false, error: err.message, snapshot }
+  }
+  db = new SQL.Database(data)
   createTables()
   migrate()
   persist()
   prunePreRestoreSnapshots()
   return { success: true, snapshot }
+}
+
+// ─── Encryption at rest ──────────────────────────────────────────
+// See services/dbCrypto.js for the scheme and its one unavoidable cost.
+
+// Every file whose contents are the database: the live one and every backup.
+// Turning encryption on has to cover all of them — an encrypted database beside
+// seven plaintext daily backups protects nothing.
+function encryptedFileSet() {
+  return [DB_PATH, ...backupFileNames().map(n => path.join(BACKUP_DIR, n))]
+}
+
+function setEncryption(enabled) {
+  const want = !!enabled
+  if (want === !!configService.load().encryptDatabase) {
+    return { success: true, unchanged: true }
+  }
+  // Flush first: the in-memory database is the truth, and converting a stale file
+  // would lose whatever has not been written yet.
+  persist()
+
+  let result
+  try {
+    result = dbCrypto.convertAll(encryptedFileSet(), want)
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+  // The setting flips only after the files are already in the target state, so an
+  // interrupted switch leaves files the CURRENT setting can still read.
+  configService.update({ encryptDatabase: want })
+  logger().append(
+    `Database encryption ${want ? 'enabled' : 'disabled'} — converted ${result.converted.length} file(s)`
+    + (result.failed.length ? `, ${result.failed.length} could not be converted` : '')
+  )
+  return { success: true, ...result, enabled: want }
+}
+
+// Lazy: logger requires config, and requiring it at the top of database.js would
+// add a second edge to a module graph that is already circular through config.
+function logger() {
+  return require('./logger')
+}
+
+function getEncryptionStatus() {
+  const status = dbCrypto.getStatus()
+  const backups = listBackups()
+  return {
+    ...status,
+    // "Enabled" is not the same as "everything is actually encrypted": a backup
+    // that could not be converted is still readable plaintext, and the UI has to
+    // be able to say so.
+    databaseEncrypted: (() => {
+      try {
+        if (!fs.existsSync(DB_PATH)) return false
+        const fd = fs.openSync(DB_PATH, 'r')
+        try {
+          const head = Buffer.alloc(dbCrypto.HEADER_BYTES)
+          fs.readSync(fd, head, 0, head.length, 0)
+          return dbCrypto.isEncrypted(head)
+        } finally { fs.closeSync(fd) }
+      } catch { return false }
+    })(),
+    backupCount: backups.length,
+    plaintextBackups: backups.filter(b => !b.encrypted).map(b => b.name),
+  }
 }
 
 function getStorageInfo() {
@@ -1563,7 +1980,7 @@ function getStorageInfo() {
     interviewPreps: queryOne('SELECT COUNT(*) as c FROM interview_prep')?.c || 0,
     interviewEvents: queryOne('SELECT COUNT(*) as c FROM interview_events')?.c || 0,
   }
-  return { dbSize, counts }
+  return { dbSize, counts, encryption: getEncryptionStatus() }
 }
 
 module.exports = {
@@ -1588,8 +2005,15 @@ module.exports = {
   getApplicationsAwaitingReply, setLastReplyUid, markStaleApplications, OPEN_STATUSES,
   saveInterviewPrep, getInterviewPrep, deleteInterviewPrep,
   addInterviewEvent, upsertDetectedInterview, getInterviewEvents, getUpcomingInterviews, getInterviewEvent, deleteInterviewEvent,
+  updateInterviewEventTime,
   updateClosingDate, getScoreBandConversion,
+  setNextAction, completeNextAction, getDueNextActions, getPipeline, getClosingSoon, PIPELINE_STAGES,
+  claimPushKey, getPushLog, prunePushLog,
+  getCalendarLink, getCalendarLinks, saveCalendarLink, deleteCalendarLink, getOrphanedCalendarLinks,
   getWeeklyReportData, getStorageInfo,
   getStatusHistory,
   backupNow, maybeBackup, listBackups, restoreBackup,
+  setEncryption, getEncryptionStatus,
+  exportRecoveryKey: () => dbCrypto.exportRecoveryKey(),
+  importRecoveryKey: (text) => dbCrypto.importRecoveryKey(text),
 }

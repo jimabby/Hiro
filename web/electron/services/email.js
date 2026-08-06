@@ -101,6 +101,7 @@ async function sendDailyReport(stats) {
       <tr><td><b>Applied Today</b></td><td>${stats.totalToday}</td></tr>
       <tr><td><b>Applied This Week</b></td><td>${stats.totalThisWeek}</td></tr>
       <tr><td><b>Applied All Time</b></td><td>${stats.totalAllTime}</td></tr>
+      ${stats.unsentToday ? `<tr><td><b>Skipped or held today</b></td><td>${stats.unsentToday}</td></tr>` : ''}
       <tr><td><b>Interviews</b></td><td>${stats.interviews}</td></tr>
       <tr><td><b>Response Rate</b></td><td>${responseRate}%</td></tr>
       <tr><td><b>Interview Rate</b></td><td>${interviewRate}%</td></tr>

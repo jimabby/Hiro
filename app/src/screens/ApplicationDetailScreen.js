@@ -4,8 +4,13 @@ import {
   Linking, StyleSheet,
 } from 'react-native'
 import { colors, radius, statusColors, statusLabel } from '../theme'
+import NextAction from '../components/NextAction'
 
 const STATUSES = ['applied', 'interview', 'offer', 'rejected', 'pending', 'no_response', 'skipped']
+
+// Rows that were never submitted have nothing to chase — there is no recruiter on
+// the other end of a held draft. Mirrors UNSENT_STATUSES on the desktop.
+const UNSENT = ['skipped', 'held']
 
 export default function ApplicationDetailScreen({ client, id, onBack }) {
   const [app, setApp] = useState(null)
@@ -72,6 +77,25 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
           <Text style={styles.company}>{app.company} · {app.platform}</Text>
           {!!app.salary && <Text style={styles.muted}>{app.salary}</Text>}
           <Text style={styles.muted}>Applied {(app.applied_at || '').slice(0, 16)}</Text>
+
+          {/* Only offered when there is genuinely something to follow up on, and
+              only when this build of the desktop/schema supports it — the client
+              throws a clear message rather than failing silently, but hiding the
+              control entirely for unsent rows is the honest thing. */}
+          {!UNSENT.includes(app.status) && client.setNextAction && (
+            <NextAction
+              app={app}
+              onSave={async ({ date, note }) => {
+                const res = await client.setNextAction(id, { date, note })
+                if (res?.success === false) throw new Error(res.reason || 'Could not save.')
+                setApp(a => ({ ...a, next_action_at: date, next_action_note: note }))
+              }}
+              onComplete={async () => {
+                await client.completeNextAction(id)
+                setApp(a => ({ ...a, next_action_at: null, next_action_note: '' }))
+              }}
+            />
+          )}
 
           {app.match_score != null && (
             <View style={styles.card}>

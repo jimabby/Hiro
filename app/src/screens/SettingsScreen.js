@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { View, Text, TouchableOpacity, StyleSheet, Alert, Linking } from 'react-native'
 import { colors, radius } from '../theme'
 import { deleteAccount } from '../supabase'
+import { enablePush, disablePush, getPermissionStatus } from '../push'
 
 const LEGAL_BASE = 'https://jimabby.github.io/card-assets/legal/hiro'
 export const PRIVACY_POLICY_URL = `${LEGAL_BASE}/privacy-policy.html`
@@ -12,7 +13,17 @@ export default function SettingsScreen({ client, connection, onDisconnect }) {
   const [pinging, setPinging] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
+  // 'unknown' until the OS has been asked; the toggle must not claim "off" while
+  // permission is actually granted.
+  const [pushState, setPushState] = useState('unknown')
+  const [pushBusy, setPushBusy] = useState(false)
+  const [pushError, setPushError] = useState('')
   const isCloud = connection.mode === 'cloud'
+
+  useEffect(() => {
+    if (!isCloud) return
+    getPermissionStatus().then(status => setPushState(status === 'granted' ? 'on' : 'off'))
+  }, [isCloud])
 
   // In-app account deletion — required by App Store guideline 5.1.1(v) for any
   // app with account sign-in. Deletes the cloud account and every synced row;
@@ -82,6 +93,46 @@ export default function SettingsScreen({ client, connection, onDisconnect }) {
         </View>
       )}
 
+      {/* Notifications are cloud-only: the desktop addresses them to the push
+          token on this phone's row in the shared `devices` table, and a LAN-only
+          connection has no such row. Saying that is better than showing a toggle
+          that quietly does nothing. */}
+      {isCloud && (
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Notifications</Text>
+          <Text style={styles.hint}>
+            Recruiter replies, interview reminders, follow-ups that come due, and scans that
+            failed — sent by your desktop while you are away from it. Choose which kinds in
+            Hiro on the desktop, under Settings → Notifications.
+          </Text>
+
+          <Row label="On this phone" value={
+            pushState === 'on' ? 'Enabled'
+              : pushState === 'off' ? 'Off'
+                : 'Checking…'
+          } />
+
+          <TouchableOpacity style={styles.btnGhost} disabled={pushBusy} onPress={async () => {
+            setPushBusy(true)
+            setPushError('')
+            if (pushState === 'on') {
+              await disablePush(connection.userId)
+              setPushState('off')
+            } else {
+              const res = await enablePush(connection.userId)
+              if (res.success) setPushState('on')
+              else setPushError(res.reason || 'Could not enable notifications.')
+            }
+            setPushBusy(false)
+          }}>
+            <Text style={styles.btnGhostText}>
+              {pushBusy ? 'Working…' : (pushState === 'on' ? 'Turn off notifications' : 'Turn on notifications')}
+            </Text>
+          </TouchableOpacity>
+          {!!pushError && <Text style={{ color: colors.red, fontSize: 12, marginTop: 8 }}>{pushError}</Text>}
+        </View>
+      )}
+
       <TouchableOpacity style={styles.btnDanger} onPress={onDisconnect}>
         <Text style={styles.btnDangerText}>{isCloud ? 'Sign out' : 'Disconnect'}</Text>
       </TouchableOpacity>
@@ -137,6 +188,7 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 5 },
   rowLabel: { color: colors.textMuted, fontSize: 13 },
   rowValue: { color: colors.text, fontSize: 13, fontWeight: '500' },
+  hint: { color: colors.textMuted, fontSize: 12, lineHeight: 17, marginBottom: 10 },
   btnGhost: {
     borderWidth: 1, borderColor: colors.border, borderRadius: radius,
     paddingVertical: 9, alignItems: 'center', marginTop: 10,

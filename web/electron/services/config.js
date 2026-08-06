@@ -2,7 +2,14 @@ const fs = require('fs')
 const path = require('path')
 const os = require('os')
 
-const CONFIG_DIR = path.join(os.homedir(), '.hiro')
+// Everything Hiro owns — config, the SQLite database, backups, logs — lives in
+// one directory so a profile can be moved, backed up or thrown away as a unit.
+// HIRO_CONFIG_DIR relocates it: a second profile for a different job search, a
+// portable install on a USB stick, and the release smoke test, which must drive
+// the packaged app without touching the real profile on the machine.
+const CONFIG_DIR = process.env.HIRO_CONFIG_DIR
+  ? path.resolve(process.env.HIRO_CONFIG_DIR)
+  : path.join(os.homedir(), '.hiro')
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json')
 
 // ─── Secret encryption (Electron safeStorage, OS keychain-backed) ──────────
@@ -118,6 +125,13 @@ const DEFAULTS = {
   deviceId: '',
   deviceName: '',
 
+  // Device ids this desktop has already seen on the account, so a phone signing
+  // in is announced exactly once. Compared against this rather than against
+  // created_at, so a desktop that was switched off for a week still reports
+  // Tuesday's sign-in when it comes back. null (not []) means "never looked",
+  // which is what stops the first run announcing every existing device.
+  knownDeviceIds: null,
+
   // How this device combined its data with the account's the first time the two
   // met, once both held rows. Empty means the question has not been asked yet;
   // sync pauses rather than guessing, because the three reasonable answers
@@ -198,6 +212,63 @@ const DEFAULTS = {
   // auto follow-up has somewhere to send. Without it, follow-up skipped every
   // application, because nothing ever populated recruiter_email.
   extractRecruiterEmail: true,
+
+  // ─── Push notifications to the phone ───────────────────────────
+  // Sent through Expo's push service to the tokens registered by paired phones
+  // (devices.push_token in Supabase). No Hiro server is involved, and nothing is
+  // sent unless cloud sync is signed in — the token registry lives there.
+  pushEnabled: false,
+  // Per-kind switches. A user who wants interview reminders but not a ping for
+  // every below-threshold scan needs these to be separable.
+  pushKinds: {
+    reply: true,        // a recruiter replied
+    interview: true,    // an interview is coming up
+    expiring: true,     // an application's closing date is near
+    scanFailed: true,   // a scan errored or was blocked
+    review: true,       // drafts are waiting for approval
+    newDevice: true,    // a device signed in to the account
+    followUp: true,     // a pipeline next-action date came due
+  },
+  // How far ahead to warn about an interview, and how long to keep quiet
+  // afterwards. Two reminders (a day out, an hour out) is the useful shape.
+  interviewReminderHoursAhead: [24, 2],
+  // Warn when a listing closes within this many days and the application is
+  // still unsent (held or in Needs Attention).
+  closingSoonDays: 3,
+  // Don't nag: at most one review-queue reminder per this many hours.
+  reviewReminderHours: 24,
+
+  // ─── Calendar sync ─────────────────────────────────────────────
+  // Two-way sync of interviews with Google Calendar or Outlook (Microsoft
+  // Graph). .ics export still exists and needs none of this.
+  calendarProvider: '',      // '' | 'google' | 'outlook'
+  calendarSyncEnabled: false,
+  // OAuth client credentials. Hiro ships no client secret of its own: the user
+  // registers their own OAuth app, which keeps a desktop app from embedding a
+  // secret that cannot be kept.
+  calendarClientId: '',
+  calendarClientSecret: '',
+  calendarRefreshToken: '',
+  // Which calendar to write to. Empty means the account's primary calendar.
+  calendarId: '',
+  // Sync token / delta link from the last incoming pass, so each poll asks only
+  // for what changed rather than re-reading the whole calendar.
+  calendarSyncCursor: '',
+  lastCalendarSyncAt: null,
+  // Minutes before an interview for the calendar's own reminder.
+  calendarReminderMinutes: 60,
+
+  // ─── Pipeline ──────────────────────────────────────────────────
+  // Days after which an application with no next action set is treated as
+  // needing one, so nothing quietly falls off the board. 0 disables.
+  pipelineNudgeDays: 7,
+
+  // ─── Local database encryption ─────────────────────────────────
+  // Encrypts autoapply.db and every backup at rest with AES-256-GCM, keyed by
+  // the OS keychain through Electron's safeStorage. Off by default because
+  // turning it on is a one-way door on machines whose keychain can be lost —
+  // see services/dbCrypto.js.
+  encryptDatabase: false,
 }
 
 function ensureDir() {

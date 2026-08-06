@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import Setup from './pages/Setup'
 import Dashboard from './pages/Dashboard'
+import Pipeline from './pages/Pipeline'
 import NeedsAttention from './pages/NeedsAttention'
 import Review from './pages/Review'
 import Settings from './pages/Settings'
@@ -10,15 +11,20 @@ import HiroLogo from './components/HiroLogo'
 
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: '▦', shortcut: '1' },
-  { id: 'review', label: 'Review', icon: '◇', shortcut: '2' },
-  { id: 'attention', label: 'Needs Attention', icon: '⚑', shortcut: '3' },
-  { id: 'timeline', label: 'Timeline', icon: '◷', shortcut: '4' },
-  { id: 'analytics', label: 'Analytics', icon: '◔', shortcut: '5' },
-  { id: 'settings', label: 'Settings', icon: '⚙', shortcut: '6' },
+  // Sits second because it is the page with work on it: what is owed and when,
+  // rather than what already happened.
+  { id: 'pipeline', label: 'Pipeline', icon: '≡', shortcut: '2' },
+  { id: 'review', label: 'Review', icon: '◇', shortcut: '3' },
+  { id: 'attention', label: 'Needs Attention', icon: '⚑', shortcut: '4' },
+  { id: 'timeline', label: 'Timeline', icon: '◷', shortcut: '5' },
+  { id: 'analytics', label: 'Analytics', icon: '◔', shortcut: '6' },
+  { id: 'settings', label: 'Settings', icon: '⚙', shortcut: '7' },
 ]
 
 export default function App() {
   const [page, setPage] = useState('dashboard')
+  // Set when another page asks the Dashboard to open a specific application.
+  const [focusApp, setFocusApp] = useState(null)
   const [setupDone, setSetupDone] = useState(null)
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark')
 
@@ -74,6 +80,15 @@ export default function App() {
       if (data.type === 'attention') {
         setAttentionCount(c => c + 1)
         showToast(`New job needs attention: ${data.job?.job_title}`, 'info')
+      }
+      // A device attaching itself to the cloud account is a security event, so it
+      // is raised here rather than left in the activity log for nobody to read.
+      if (data.type === 'new-device') {
+        showToast(
+          `New device signed in: ${data.device?.name || 'unknown device'} (${data.device?.platform || data.device?.kind || '?'}). `
+          + 'Check Settings → Cloud Sync if this was not you.',
+          'error'
+        )
       }
       if (data.type === 'scan-complete') {
         setScanRunning(false)
@@ -208,7 +223,10 @@ export default function App() {
   }
 
   const pages = {
-    dashboard: <Dashboard active={page === 'dashboard'} logs={logs} scanRunning={scanRunning} onScanStart={() => beginScan('real')} onDryRun={() => beginScan('dry')} onClearLogs={handleClearLogs} showToast={showToast} />,
+    dashboard: <Dashboard active={page === 'dashboard'} logs={logs} scanRunning={scanRunning} onScanStart={() => beginScan('real')} onDryRun={() => beginScan('dry')} onClearLogs={handleClearLogs} showToast={showToast} focusApplicationId={focusApp} onFocusHandled={() => setFocusApp(null)} />,
+    // Clicking a card on the board opens that application on the Dashboard —
+    // where the whole detail view already lives — rather than duplicating it.
+    pipeline: <Pipeline active={page === 'pipeline'} onOpenApplication={(id) => { setFocusApp(id); setPage('dashboard') }} />,
     review: <Review active={page === 'review'} onCountChange={setHeldCount} showToast={showToast} />,
     attention: <NeedsAttention onCountChange={setAttentionCount} showToast={showToast} />,
     timeline: <Timeline />,
@@ -219,9 +237,13 @@ export default function App() {
   const badgeFor = (id) => (id === 'attention' ? attentionCount : id === 'review' ? heldCount : 0)
 
   return (
-    <div style={{ display: 'flex', height: '100vh' }}>
+    // The data-testid attributes on the shell and the nav are the only stable
+    // hooks the app exposes: every style here is inline, so a test that selected
+    // on class names or DOM shape would break on any visual change. Used by the
+    // renderer tests and by the packaged smoke test (web/test/smoke).
+    <div data-testid="app-shell" style={{ display: 'flex', height: '100vh' }}>
       {/* Sidebar */}
-      <nav style={{
+      <nav data-testid="nav" style={{
         width: 220, background: 'var(--surface)', borderRight: '1px solid var(--border)',
         display: 'flex', flexDirection: 'column', padding: '20px 12px', gap: 2, flexShrink: 0,
         transition: 'background 0.3s ease, border-color 0.3s ease',
@@ -232,7 +254,7 @@ export default function App() {
         </div>
 
         {NAV.map(n => (
-          <button key={n.id} onClick={() => setPage(n.id)} style={{
+          <button key={n.id} data-testid={`nav-${n.id}`} onClick={() => setPage(n.id)} style={{
             background: page === n.id ? 'var(--surface2)' : 'transparent',
             border: 'none', color: page === n.id ? 'var(--text)' : 'var(--text-muted)',
             padding: '9px 12px', borderRadius: 8, cursor: 'pointer',

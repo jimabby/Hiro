@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { View, Text, ScrollView, RefreshControl, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, Linking, Platform } from 'react-native'
 import { colors, radius, statusColors } from '../theme'
+import { describeDue, isOverdue } from '../components/NextAction'
 import { enqueue, flush, getPending } from '../scanQueue'
 
 export default function DashboardScreen({ client }) {
@@ -18,6 +19,7 @@ export default function DashboardScreen({ client }) {
   const [pendingCount, setPendingCount] = useState(0)
   const [liveLog, setLiveLog] = useState([])
   const [cancelBusy, setCancelBusy] = useState(false)
+  const [dueActions, setDueActions] = useState([])
 
   const load = useCallback(async () => {
     try {
@@ -31,6 +33,9 @@ export default function DashboardScreen({ client }) {
       // Attention jobs are mirrored to the cloud too, so this no longer needs
       // a live desktop — but the scan-status and queue polling below does.
       try { setAttention(await client.getAttention()) } catch { setAttention([]) }
+      // Follow-ups that have come due. Both clients resolve an unsupported
+      // desktop or schema to an empty list, so this never breaks the dashboard.
+      try { setDueActions(await client.getDueActions?.() || []) } catch { setDueActions([]) }
       if (client.canScan) {
         // Desktop is reachable — deliver any scans queued while it was offline.
         await flush(client)
@@ -201,6 +206,33 @@ export default function DashboardScreen({ client }) {
           {stats.attentionCount != null && (
             <View style={styles.statRow}>
               <StatCard label="Needs Attention" value={stats.attentionCount} accent={stats.attentionCount > 0 ? colors.yellow : undefined} />
+            </View>
+          )}
+
+          {/* Follow-ups that have come due, above the interviews on purpose: an
+              overdue chase is the thing that is actively being lost, and it is the
+              one item on this screen the user can act on right now. */}
+          {dueActions.length > 0 && (
+            <View style={[styles.card, {
+              borderLeftWidth: 3,
+              borderLeftColor: dueActions.some(a => isOverdue(a.next_action_at)) ? colors.red : colors.accent,
+            }]}>
+              <Text style={styles.cardTitle}>
+                {dueActions.length} follow-up{dueActions.length === 1 ? '' : 's'} due
+              </Text>
+              {dueActions.map(a => (
+                <View key={a.id} style={styles.attentionRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.attentionTitle} numberOfLines={1}>
+                      {a.next_action_note || 'Follow up'}
+                    </Text>
+                    <Text style={styles.muted} numberOfLines={1}>{a.job_title} · {a.company}</Text>
+                  </View>
+                  <Text style={[styles.attentionScore, {
+                    color: isOverdue(a.next_action_at) ? colors.red : colors.accent,
+                  }]}>{describeDue(a.next_action_at)}</Text>
+                </View>
+              ))}
             </View>
           )}
 
