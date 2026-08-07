@@ -26,17 +26,30 @@ export default function App() {
   // Set when another page asks the Dashboard to open a specific application.
   const [focusApp, setFocusApp] = useState(null)
   const [setupDone, setSetupDone] = useState(null)
-  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark')
+  // Three states, not two. 'system' follows the OS appearance setting and is the
+  // default for a fresh install — an app that opens dark on a machine set to
+  // light looks broken before it has done anything. An explicit choice sticks.
+  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'system')
 
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme)
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const resolve = () => (theme === 'system' ? (media.matches ? 'dark' : 'light') : theme)
+    const paint = () => document.documentElement.setAttribute('data-theme', resolve())
+    paint()
     localStorage.setItem('theme', theme)
+    if (theme !== 'system') return
+    // Following the OS means following it live, not only at startup.
+    media.addEventListener('change', paint)
+    return () => media.removeEventListener('change', paint)
   }, [theme])
   const [attentionCount, setAttentionCount] = useState(0)
   const [heldCount, setHeldCount] = useState(0)
   const [todayCount, setTodayCount] = useState(0)
   const [update, setUpdate] = useState(null)
-  const [toast, setToast] = useState(null)
+  // A queue rather than a single slot: a scan can finish, a device can sign in
+  // and an update can land within the same second, and the old single-toast
+  // state silently dropped everything but the last one.
+  const [toasts, setToasts] = useState([])
   const [logs, setLogs] = useState([])
   const [scanRunning, setScanRunning] = useState(false)
   const [resumeModal, setResumeModal] = useState(false)
@@ -47,10 +60,17 @@ export default function App() {
   const [submitReview, setSubmitReview] = useState(null)
   const [scanMode, setScanMode] = useState('real') // 'real' | 'dry' — used by the resume-required flow
 
-  const showToast = useCallback((msg, type = 'info') => {
-    setToast({ msg, type })
-    setTimeout(() => setToast(null), 4000)
+  const dismissToast = useCallback((id) => {
+    setToasts(prev => prev.filter(t => t.id !== id))
   }, [])
+
+  const showToast = useCallback((msg, type = 'info') => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    // Errors stay put until dismissed. A failed scan reported for four seconds
+    // while the user was in another window is a failure they never saw.
+    setToasts(prev => [...prev.slice(-3), { id, msg, type }])
+    if (type !== 'error') setTimeout(() => dismissToast(id), 4500)
+  }, [dismissToast])
 
   useEffect(() => {
     window.api.getConfig().then(cfg => setSetupDone(cfg.setupComplete))
@@ -155,19 +175,36 @@ export default function App() {
   }, [scanRunning])
 
   // Global keyboard shortcuts for nav
+  const modalOpen = !!(question || submitReview || resumeModal)
   useEffect(() => {
     function handleGlobalKey(e) {
       // Don't fire when typing in inputs
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return
+      // Nor while a modal owns the screen — switching the page behind a
+      // blocking question left the app showing a tab the user can't reach.
+      if (modalOpen) return
+      // Ctrl/Cmd/Alt+number belong to the OS and to Electron's own menu
+      // accelerators; only a bare digit is ours.
+      if (e.ctrlKey || e.metaKey || e.altKey) return
 
-      const num = parseInt(e.key)
+      const num = parseInt(e.key, 10)
       if (num >= 1 && num <= NAV.length) {
         setPage(NAV[num - 1].id)
       }
     }
     window.addEventListener('keydown', handleGlobalKey)
     return () => window.removeEventListener('keydown', handleGlobalKey)
-  }, [])
+  }, [modalOpen])
+
+  // Escape closes the resume prompt. The question and submit-confirmation
+  // modals are deliberately excluded: both have an apply flow blocked on an
+  // answer, and dismissing one by reflex would silently decline it.
+  useEffect(() => {
+    if (!resumeModal) return
+    function onEsc(e) { if (e.key === 'Escape' && !resumeUploading) setResumeModal(false) }
+    window.addEventListener('keydown', onEsc)
+    return () => window.removeEventListener('keydown', onEsc)
+  }, [resumeModal, resumeUploading])
 
   if (setupDone === null) return null // loading
 
@@ -253,28 +290,35 @@ export default function App() {
           <span style={{ fontSize: 18, fontWeight: 700, color: 'var(--accent)' }}>Hiro</span>
         </div>
 
-        {NAV.map(n => (
-          <button key={n.id} data-testid={`nav-${n.id}`} onClick={() => setPage(n.id)} style={{
-            background: page === n.id ? 'var(--surface2)' : 'transparent',
-            border: 'none', color: page === n.id ? 'var(--text)' : 'var(--text-muted)',
-            padding: '9px 12px', borderRadius: 8, cursor: 'pointer',
-            textAlign: 'left', fontSize: 13, display: 'flex', alignItems: 'center',
-            gap: 10, fontWeight: page === n.id ? 600 : 400,
-            transition: 'all 0.15s',
-          }}>
-            <span style={{ fontSize: 15, width: 20, textAlign: 'center', opacity: page === n.id ? 1 : 0.6 }}>{n.icon}</span>
-            <span style={{ flex: 1 }}>{n.label}</span>
-            {badgeFor(n.id) > 0 && (
-              <span style={{
-                // Review is a queue waiting on the user, not a problem — amber
-                // rather than the red used for jobs that failed to apply.
-                background: n.id === 'review' ? 'var(--accent)' : 'var(--red)', color: '#fff', borderRadius: 10,
-                fontSize: 10, padding: '1px 6px', fontWeight: 700, minWidth: 18, textAlign: 'center',
-              }}>{badgeFor(n.id)}</span>
-            )}
-            <span className="kbd">{n.shortcut}</span>
-          </button>
-        ))}
+        {NAV.map(n => {
+          const count = badgeFor(n.id)
+          return (
+            <button
+              key={n.id}
+              data-testid={`nav-${n.id}`}
+              onClick={() => setPage(n.id)}
+              aria-current={page === n.id ? 'page' : undefined}
+              title={`${n.label} — press ${n.shortcut}`}
+              className={`nav-item${page === n.id ? ' nav-item-active' : ''}`}
+            >
+              <span className="nav-icon" aria-hidden="true">{n.icon}</span>
+              <span style={{ flex: 1 }}>{n.label}</span>
+              {count > 0 && (
+                <span
+                  // Review is a queue waiting on the user, not a problem — the
+                  // accent colour rather than the red used for jobs that failed.
+                  aria-label={`${count} ${n.id === 'review' ? 'awaiting review' : 'needing attention'}`}
+                  style={{
+                    background: n.id === 'review' ? 'var(--accent)' : 'var(--red)', color: '#fff', borderRadius: 10,
+                    fontSize: 10, padding: '1px 6px', fontWeight: 700, minWidth: 18, textAlign: 'center',
+                    fontVariantNumeric: 'tabular-nums',
+                  }}
+                >{count}</span>
+              )}
+              <span className="kbd" aria-hidden="true">{n.shortcut}</span>
+            </button>
+          )
+        })}
 
         <div style={{ marginTop: 'auto', padding: '0 12px', display: 'flex', flexDirection: 'column', gap: 10 }}>
           {/* Quick stats */}
@@ -297,18 +341,40 @@ export default function App() {
             }} />
             {scanRunning ? 'Scanning...' : 'Idle'}
           </div>
-          <button
-            onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
-            aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-            style={{
-              background: 'transparent', border: '1px solid var(--border)',
-              color: 'var(--text-muted)', borderRadius: 8, padding: '6px 10px',
-              cursor: 'pointer', fontSize: 12, textAlign: 'left',
-              transition: 'all 0.15s',
-            }}
-          >
-            {theme === 'dark' ? '☀ Light' : '☾ Dark'}
-          </button>
+          {/* Three-way, because "follow the system" is a real preference and a
+              two-state toggle cannot express it. */}
+          <div role="group" aria-label="Colour theme" style={{
+            display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 2,
+            background: 'var(--surface2)', border: '1px solid var(--border)',
+            borderRadius: 8, padding: 2,
+          }}>
+            {[
+              { id: 'light', icon: '☀', label: 'Light' },
+              { id: 'dark', icon: '☾', label: 'Dark' },
+              { id: 'system', icon: '◐', label: 'System' },
+            ].map(opt => (
+              <button
+                key={opt.id}
+                onClick={() => setTheme(opt.id)}
+                aria-pressed={theme === opt.id}
+                title={`${opt.label} theme`}
+                style={{
+                  background: theme === opt.id ? 'var(--surface)' : 'transparent',
+                  border: 'none', borderRadius: 6, padding: '5px 0',
+                  color: theme === opt.id ? 'var(--text)' : 'var(--text-faint)',
+                  cursor: 'pointer', fontSize: 12, lineHeight: 1.2,
+                  fontWeight: theme === opt.id ? 600 : 400,
+                  transition: 'background 0.15s, color 0.15s',
+                }}
+              >
+                <span aria-hidden="true">{opt.icon}</span>
+                <span style={{
+                  position: 'absolute', width: 1, height: 1,
+                  overflow: 'hidden', clip: 'rect(0 0 0 0)',
+                }}>{opt.label}</span>
+              </button>
+            ))}
+          </div>
         </div>
       </nav>
 
@@ -357,24 +423,30 @@ export default function App() {
         ))}
       </main>
 
-      {/* Toast notification */}
-      {toast && (
-        <div className={`toast toast-${toast.type}`}>
-          <span style={{ fontSize: 15 }}>
-            {toast.type === 'success' ? '✓' : toast.type === 'error' ? '✗' : 'ℹ'}
-          </span>
-          <span>{toast.msg}</span>
-        </div>
-      )}
+      {/* Toast notifications. Newest sits closest to the corner (the stack is
+          column-reverse), errors persist until dismissed. */}
+      <div className="toast-stack" role="status" aria-live="polite">
+        {toasts.map(t => (
+          <div key={t.id} className={`toast toast-${t.type}`}>
+            <span className="toast-icon" aria-hidden="true">
+              {t.type === 'success' ? '✓' : t.type === 'error' ? '✗' : 'ℹ'}
+            </span>
+            <span className="toast-msg">{t.msg}</span>
+            <button className="toast-close" aria-label="Dismiss notification"
+              onClick={() => dismissToast(t.id)}>×</button>
+          </div>
+        ))}
+      </div>
 
       {/* Resume required modal */}
       {resumeModal && (
-        <div className="modal-overlay" style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200,
-        }}>
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="resume-modal-title"
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200,
+          }}>
           <div className="card modal-content" style={{ width: 420 }}>
-            <h2 style={{ fontSize: 18, marginBottom: 8 }}>Resume Required</h2>
+            <h2 id="resume-modal-title" style={{ fontSize: 18, marginBottom: 8 }}>Resume Required</h2>
             <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 20 }}>
               A resume is needed to match and apply to jobs. Upload yours to start scanning.
             </p>
@@ -392,12 +464,12 @@ export default function App() {
           review step with the form filled in; nothing is sent until this is
           answered, and closing the app or walking away counts as "no". */}
       {submitReview && (
-        <div className="modal-overlay" style={{
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="submit-review-title" style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 310, padding: 24,
         }}>
           <div className="card modal-content" style={{ width: 620, maxHeight: '85vh', overflowY: 'auto' }}>
-            <h2 style={{ fontSize: 16, marginBottom: 8 }}>Send this application?</h2>
+            <h2 id="submit-review-title" style={{ fontSize: 16, marginBottom: 8 }}>Send this application?</h2>
             <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 14 }}>
               The form is filled in and one click from being submitted
               {submitReview.platform ? ` on ${submitReview.platform}` : ''}. These are the answers that
@@ -442,12 +514,12 @@ export default function App() {
 
       {/* Screening question modal — shown mid-apply when AI is unsure */}
       {question && (
-        <div className="modal-overlay" style={{
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="question-modal-title" style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300,
         }}>
           <div className="card modal-content" style={{ width: 500 }}>
-            <h2 style={{ fontSize: 16, marginBottom: 8 }}>Application Question</h2>
+            <h2 id="question-modal-title" style={{ fontSize: 16, marginBottom: 8 }}>Application Question</h2>
             <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 14 }}>
               The AI couldn't confidently answer this. Your answer will be saved for future applications.
             </p>

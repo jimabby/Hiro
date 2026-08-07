@@ -537,7 +537,7 @@ export default function Settings({ showToast, active }) {
   const [uploadError, setUploadError] = useState('')
   const [clUploadError, setClUploadError] = useState('')
   const [settingsTab, setSettingsTab] = useState('accounts')
-  const [pdfModal, setPdfModal] = useState(null) // { base64, title }
+  const [pdfModal, setPdfModal] = useState(null) // { url, title }
   const [pdfLoading, setPdfLoading] = useState(false)
   const [improvingId, setImprovingId] = useState(null)
   const [improveModal, setImproveModal] = useState(null) // { sourceId, sourceName, text }
@@ -630,9 +630,14 @@ export default function Settings({ showToast, active }) {
   // Tracks whether the form has edits the user hasn't saved yet, so refetching
   // on tab-focus never throws away typing in progress.
   const dirtyRef = useRef(false)
+  // The ref alone can't drive the UI. Mirroring it into state lets the header
+  // say so: one Save button serves six tabs, and there was previously nothing
+  // on screen distinguishing "saved" from "typed but not saved".
+  const [dirty, setDirty] = useState(false)
 
   const set = (key, val) => {
     dirtyRef.current = true
+    setDirty(true)
     setForm(f => ({ ...f, [key]: val }))
   }
 
@@ -640,7 +645,7 @@ export default function Settings({ showToast, active }) {
     setPdfLoading(title)
     try {
       const res = await window.api.getResumePDFBase64(text, originalPath || null, originalExt || null)
-      if (res.success) setPdfModal({ base64: res.base64, title })
+      if (res.success) setPdfModal({ url: res.url, title })
     } finally {
       setPdfLoading(false)
     }
@@ -680,6 +685,7 @@ export default function Settings({ showToast, active }) {
         r?.keywords?.trim() && (form.resumes || []).some(x => x.id === r.resumeId)),
     })
     dirtyRef.current = false // saved state now matches disk — safe to refetch
+    setDirty(false)
     setSaving(false)
     setSaved(true)
     setTimeout(() => setSaved(false), 3000)
@@ -704,8 +710,17 @@ export default function Settings({ showToast, active }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700 }}>Settings</h1>
         {settingsTab !== 'about' && settingsTab !== 'data' && (
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
             {saved && <span style={{ color: 'var(--green)', fontSize: 13 }}>✓ Saved</span>}
+            {dirty && !saving && (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--yellow)' }}>
+                <span style={{
+                  width: 7, height: 7, borderRadius: '50%',
+                  background: 'var(--yellow)', flexShrink: 0,
+                }} />
+                Unsaved changes
+              </span>
+            )}
             <button className="btn btn-primary" onClick={save} disabled={saving}>
               {saving ? 'Saving...' : 'Save Changes'}
             </button>
@@ -1160,7 +1175,7 @@ export default function Settings({ showToast, active }) {
                       </span>
                     </div>
                   )}
-                  <button className="btn" disabled={calBusy || !calClientId.trim()} onClick={async () => {
+                  <button className="btn btn-primary" disabled={calBusy || !calClientId.trim()} onClick={async () => {
                     setCalBusy(true)
                     const r = await window.api.calendarSyncConnect?.({
                       provider: calProvider,
@@ -1404,7 +1419,7 @@ export default function Settings({ showToast, active }) {
             {/* ── QR pairing ───────────────────────────────────── */}
             <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
               {!pairingSession ? (
-                <button className="btn" style={{ fontSize: 12 }} onClick={async () => {
+                <button className="btn btn-primary" style={{ fontSize: 12 }} onClick={async () => {
                   const s = await window.api.startPairing?.()
                   if (s?.error) return showToast?.(`Could not start pairing: ${s.error}`, 'error')
                   setPairingSession(s)
@@ -1761,7 +1776,7 @@ export default function Settings({ showToast, active }) {
               </div>
             </div>
             {!!cloudMsg && <p style={{ color: 'var(--red)', fontSize: 13, marginTop: 4 }}>{cloudMsg}</p>}
-            <button className="btn" disabled={cloudBusy} onClick={async () => {
+            <button className="btn btn-primary" disabled={cloudBusy} onClick={async () => {
               setCloudMsg('')
               if (!cloudUrl.trim() || !cloudKey.trim() || !cloudEmail.trim() || !cloudPassword) {
                 setCloudMsg('Project URL, anon key, email and password are all required.')
@@ -2202,7 +2217,7 @@ export default function Settings({ showToast, active }) {
                   setPdfLoading('cl')
                   const res = await window.api.getCoverLetterPDFBase64(form.coverLetterTemplate)
                   setPdfLoading(false)
-                  if (res.success) setPdfModal({ base64: res.base64, title: 'Cover Letter Template' })
+                  if (res.success) setPdfModal({ url: res.url, title: 'Cover Letter Template' })
                 }}>
                 {pdfLoading === 'cl' ? 'Loading...' : 'Preview PDF'}
               </button>
@@ -2724,7 +2739,7 @@ export default function Settings({ showToast, active }) {
               <button className="btn btn-ghost" style={{ fontSize: 13 }} onClick={() => setPdfModal(null)}>✕ Close</button>
             </div>
             <iframe
-              src={`data:application/pdf;base64,${pdfModal.base64}`}
+              src={pdfModal.url}
               style={{ flex: 1, border: 'none', width: '100%' }}
               title={pdfModal.title}
             />

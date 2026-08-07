@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, protocol } = require('electron')
 const path = require('path')
 
 // Point Playwright at the Chromium bundled with the app. This MUST run before
@@ -57,11 +57,46 @@ if (!gotTheLock) {
   })
 }
 
+// Window size and position, remembered between runs.
+//
+// Kept in its own file rather than in config.json on purpose: this is runtime
+// state, and Settings → Data's export is documented as carrying settings only.
+// A window geometry from someone else's monitor is exactly the kind of thing
+// that should not travel with a restored profile.
+const WINDOW_STATE_FILE = path.join(configService.CONFIG_DIR, 'window-state.json')
+
+function loadWindowState() {
+  try {
+    const saved = JSON.parse(require('fs').readFileSync(WINDOW_STATE_FILE, 'utf8'))
+    if (!Number.isFinite(saved.width) || !Number.isFinite(saved.height)) return null
+    return saved
+  } catch { return null }
+}
+
+function saveWindowState() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  try {
+    // getNormalBounds is the un-maximised geometry, so un-maximising after a
+    // restart returns the window to the size it had before it was maximised
+    // rather than to a full-screen-sized "restore".
+    const bounds = mainWindow.getNormalBounds()
+    require('fs').writeFileSync(WINDOW_STATE_FILE, JSON.stringify({
+      ...bounds,
+      maximised: mainWindow.isMaximized(),
+    }))
+  } catch { /* a window position is never worth failing a shutdown over */ }
+}
+
 function createWindow() {
   const iconPath = path.join(__dirname, '..', 'public', 'logo.png')
+  const saved = loadWindowState()
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: saved?.width ?? 1200,
+    height: saved?.height ?? 800,
+    // Electron clamps an off-screen position back onto a display, so a monitor
+    // that has since been unplugged cannot strand the window where it can't be
+    // reached. Centre when there is nothing saved.
+    ...(Number.isFinite(saved?.x) && Number.isFinite(saved?.y) ? { x: saved.x, y: saved.y } : {}),
     minWidth: 900,
     minHeight: 600,
     icon: iconPath,
@@ -95,12 +130,29 @@ function createWindow() {
   // Launch-on-login can start us hidden, and Settings has a "start minimised"
   // option — in both cases showing the window would defeat the point.
   const startHidden = process.argv.includes('--hidden') || configService.load().startMinimised
-  mainWindow.once('ready-to-show', () => { if (!startHidden) mainWindow.show() })
+  mainWindow.once('ready-to-show', () => {
+    if (saved?.maximised) mainWindow.maximize()
+    if (!startHidden) mainWindow.show()
+  })
+
+  // Written on move/resize rather than only on quit: closing to the tray, a
+  // crash, or a machine shutdown would otherwise lose the geometry. Debounced
+  // because these events fire continuously while a window is being dragged.
+  let saveGeometryTimer = null
+  const rememberGeometry = () => {
+    clearTimeout(saveGeometryTimer)
+    saveGeometryTimer = setTimeout(saveWindowState, 400)
+  }
+  mainWindow.on('resize', rememberGeometry)
+  mainWindow.on('move', rememberGeometry)
+  mainWindow.on('maximize', rememberGeometry)
+  mainWindow.on('unmaximize', rememberGeometry)
 
   // Closing the window hides it instead of quitting, so the scheduler keeps
   // running. Only honoured when a tray icon actually exists — otherwise the
   // app would keep running with no way to reach it.
   mainWindow.on('close', (e) => {
+    saveWindowState()
     if (tray.isQuitting() || !tray.hasTray() || !configService.load().minimizeToTray) return
     e.preventDefault()
     mainWindow.hide()
@@ -193,7 +245,56 @@ async function openDatabaseOrExplain() {
   }
 }
 
+// ─── The PDF preview scheme ─────────────────────────────────────────
+//
+// The résumé / cover-letter preview used to point an <iframe> straight at a
+// `data:application/pdf;base64,…` URL. That works on an http origin — which is
+// what `npm run dev` serves — but Chromium refuses to navigate a frame to a
+// data: URL from the packaged app's file:// origin, so in every shipped build
+// the preview rendered as an error page instead of the document. Nothing
+// reported it because the modal chrome still appeared around it.
+//
+// Serving the bytes over a registered scheme fixes that and is better anyway:
+// the PDF never has to be base64'd across IPC, and the policy below can allow
+// exactly this one scheme in a frame rather than all of `data:`.
+const PDF_SCHEME = 'hiro-pdf'
+
+// id -> Buffer, populated when the renderer asks for a preview and dropped on a
+// timer. Deliberately *not* single-use: the PDF viewer is free to re-request a
+// document or ask for byte ranges, and a URL that 404s on the second read would
+// half-render. Holding generated résumé PDFs for the life of the process would
+// be careless given what is in them, so the timer is the bound.
+const pdfPreviews = new Map()
+const PDF_PREVIEW_TTL_MS = 10 * 60 * 1000
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: PDF_SCHEME,
+  privileges: { standard: true, secure: true, supportFetchAPI: true },
+}])
+
+function stashPdfPreview(buffer) {
+  const id = require('crypto').randomUUID()
+  pdfPreviews.set(id, buffer)
+  setTimeout(() => pdfPreviews.delete(id), PDF_PREVIEW_TTL_MS).unref?.()
+  return `${PDF_SCHEME}://preview/${id}`
+}
+
+function registerPdfProtocol() {
+  protocol.handle(PDF_SCHEME, (request) => {
+    // The id is an unguessable UUID minted per preview, so there is nothing to
+    // enumerate; anything else gets a flat 404 rather than a hint.
+    const id = new URL(request.url).pathname.replace(/^\//, '')
+    const body = pdfPreviews.get(id)
+    if (!body) return new Response('Not found', { status: 404 })
+    return new Response(body, {
+      status: 200,
+      headers: { 'Content-Type': 'application/pdf' },
+    })
+  })
+}
+
 app.whenReady().then(async () => {
+  registerPdfProtocol()
   if (!await openDatabaseOrExplain()) return
   // Sweep rows orphaned by older versions, which deleted an application
   // without its interview prep / status history.
@@ -698,33 +799,32 @@ function resolveResumeOriginal(originalPath, allowedExts) {
   return resolved
 }
 
+// Returns a `hiro-pdf://` URL the renderer can put straight in an iframe. See
+// PDF_SCHEME above for why this is not a data: URI any more.
 ipcMain.handle('resume:getPDFBase64', async (_, resumeText, originalPath, originalExt) => {
   try {
     const fs = require('fs')
     // If uploaded as PDF, show the original file directly
     const safePdf = originalExt === 'pdf' ? resolveResumeOriginal(originalPath, ['pdf']) : null
     if (safePdf) {
-      const base64 = fs.readFileSync(safePdf).toString('base64')
-      return { success: true, base64 }
+      return { success: true, url: stashPdfPreview(fs.readFileSync(safePdf)) }
     }
     const { buildResumePDF } = require('./services/scraper/utils')
     const candidateName = (resumeText || '').split('\n').find(l => l.trim())?.trim() || 'Resume'
     const cfg = configService.load()
     const tmpPath = await buildResumePDF(resumeText, candidateName, cfg.personalLinks)
-    const base64 = fs.readFileSync(tmpPath).toString('base64')
-    return { success: true, base64 }
+    return { success: true, url: stashPdfPreview(fs.readFileSync(tmpPath)) }
   } catch (err) {
     return { success: false, error: err.message }
   }
 })
 
-// ─── IPC: Cover letter PDF base64 (plain text, no resume formatting) ─
+// ─── IPC: Cover letter PDF (plain text, no resume formatting) ────────
 ipcMain.handle('coverLetter:getPDFBase64', async (_, text) => {
   try {
     const { buildCoverLetterPDF } = require('./services/scraper/utils')
     const tmpPath = await buildCoverLetterPDF(text)
-    const base64 = require('fs').readFileSync(tmpPath).toString('base64')
-    return { success: true, base64 }
+    return { success: true, url: stashPdfPreview(require('fs').readFileSync(tmpPath)) }
   } catch (err) {
     return { success: false, error: err.message }
   }

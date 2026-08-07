@@ -298,7 +298,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
       const res = isCoverLetter
         ? await window.api.getCoverLetterPDFBase64(text)
         : await window.api.getResumePDFBase64(text)
-      if (res.success) setPdfModal({ base64: res.base64, title })
+      if (res.success) setPdfModal({ url: res.url, title })
       else showToast?.(res.error || 'Could not build the PDF', 'error')
     } catch (err) {
       showToast?.(`Could not build the PDF: ${err.message}`, 'error')
@@ -394,25 +394,39 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
     })
   }
 
+  // Bulk actions were a serial await per row — 200 selected rows meant 200
+  // sequential IPC round trips — and reported success unconditionally, so rows
+  // that failed to update were still struck from the on-screen list. Both now
+  // run as one batch and only the rows that actually succeeded are applied.
+  async function bulkApply(ids, fn) {
+    const results = await Promise.allSettled(ids.map(id => fn(id)))
+    const ok = ids.filter((_, i) => {
+      const r = results[i]
+      return r.status === 'fulfilled' && r.value?.success !== false
+    })
+    return { ok: new Set(ok), failed: ids.length - ok.length }
+  }
+
   async function bulkChangeStatus(newStatus) {
-    for (const id of selectedIds) {
-      await window.api.updateApplicationStatus(id, newStatus)
-    }
-    setApps(prev => prev.map(a => selectedIds.has(a.id) ? { ...a, status: newStatus } : a))
-    showToast?.(`${selectedIds.size} jobs updated to ${newStatus}`, 'success')
+    const ids = [...selectedIds]
+    const { ok, failed } = await bulkApply(ids, id => window.api.updateApplicationStatus(id, newStatus))
+    setApps(prev => prev.map(a => ok.has(a.id) ? { ...a, status: newStatus } : a))
+    if (selected && ok.has(selected.id)) setSelected(s => ({ ...s, status: newStatus }))
+    if (failed) showToast?.(`${ok.size} updated to ${newStatus}, ${failed} failed`, 'error')
+    else showToast?.(`${ok.size} job${ok.size === 1 ? '' : 's'} updated to ${newStatus}`, 'success')
     setSelectedIds(new Set())
   }
 
   async function bulkDelete() {
     if (!window.confirm(`Delete ${selectedIds.size} selected applications? This cannot be undone.`)) return
-    for (const id of selectedIds) {
-      await window.api.deleteApplication(id)
-    }
-    setApps(prev => prev.filter(a => !selectedIds.has(a.id)))
-    showToast?.(`${selectedIds.size} applications deleted`, 'success')
+    const ids = [...selectedIds]
+    const { ok, failed } = await bulkApply(ids, id => window.api.deleteApplication(id))
+    setApps(prev => prev.filter(a => !ok.has(a.id)))
+    if (failed) showToast?.(`${ok.size} deleted, ${failed} failed`, 'error')
+    else showToast?.(`${ok.size} application${ok.size === 1 ? '' : 's'} deleted`, 'success')
     setSelectedIds(new Set())
     setCurrentPage(1)
-    if (selected && selectedIds.has(selected.id)) setSelected(null)
+    if (selected && ok.has(selected.id)) setSelected(null)
   }
 
   useEffect(() => {
@@ -424,7 +438,8 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
         if (pdfModal) { setPdfModal(null); return }
         setSelected(null)
       }
-      if (e.key === '/' && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
+      const focusedTag = document.activeElement?.tagName
+      if (e.key === '/' && focusedTag !== 'INPUT' && focusedTag !== 'TEXTAREA') {
         e.preventDefault()
         searchRef.current?.focus()
       }
@@ -895,10 +910,31 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
         </div>
 
         {filtered.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-muted)' }}>
-            <div style={{ fontSize: 32, marginBottom: 8, opacity: 0.3 }}>▦</div>
-            No jobs yet. Run a scan to get started.
-          </div>
+          // "No jobs yet" over a filtered-out table told the user their history
+          // was empty when it was merely hidden. Separate the two cases, and
+          // give the filtered one a way back.
+          apps.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-icon" aria-hidden="true">▦</div>
+              <div className="empty-title">No applications yet</div>
+              <div className="empty-hint">
+                Run a scan to find and apply to matching jobs. Try <strong>Test Scan</strong> first if you
+                want to see what would be found without sending anything.
+              </div>
+            </div>
+          ) : (
+            <div className="empty-state">
+              <div className="empty-icon" aria-hidden="true">⌕</div>
+              <div className="empty-title">No jobs match these filters</div>
+              <div className="empty-hint" style={{ marginBottom: 14 }}>
+                {apps.length} application{apps.length === 1 ? ' is' : 's are'} hidden by the current filters.
+              </div>
+              <button className="btn btn-ghost btn-sm"
+                onClick={() => setFilter({ status: '', platform: '', search: '', salaryFrom: '', salaryTo: '' })}>
+                Clear filters
+              </button>
+            </div>
+          )
         ) : (
           <>
             <div className="table-wrap">
@@ -1017,7 +1053,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
 
       {/* Detail modal */}
       {selected && (
-        <div className="modal-overlay" style={{
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Application detail" style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
         }} onClick={() => setSelected(null)}>
@@ -1503,7 +1539,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
       )}
 
       {skippedApplying && (
-        <div className="modal-overlay" style={{
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="AI application in progress" style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200,
         }}>
@@ -1544,7 +1580,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
       )}
 
       {pdfModal && (
-        <div className="modal-overlay" style={{
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Document preview" style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300,
         }}>
@@ -1558,7 +1594,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
               <button className="btn btn-ghost" style={{ fontSize: 13 }} onClick={() => setPdfModal(null)}>✕ Close</button>
             </div>
             <iframe
-              src={`data:application/pdf;base64,${pdfModal.base64}`}
+              src={pdfModal.url}
               style={{ flex: 1, border: 'none', width: '100%' }}
               title={pdfModal.title}
             />

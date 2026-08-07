@@ -1,9 +1,13 @@
-// Mirrors the desktop app's dark palette (web/src/index.css)
+// Mirrors the desktop app's dark palette (web/src/index.css). Keep the two in
+// step — the phone and the desktop are the same product, and a companion app in
+// a slightly different grey reads as a knock-off.
 export const colors = {
-  bg: '#0f1117',
-  surface: '#1a1d27',
-  surface2: '#242736',
+  bg: '#0e1016',
+  surface: '#171a23',
+  surface2: '#212533',
+  surface3: '#2b3042',
   border: '#2e3245',
+  borderStrong: '#3d4258',
   accent: '#6366f1',
   accentHover: '#4f52d4',
   green: '#22c55e',
@@ -11,9 +15,11 @@ export const colors = {
   red: '#ef4444',
   text: '#e2e8f0',
   textMuted: '#94a3b8',
+  textFaint: '#64748b',
 }
 
 export const radius = 10
+export const radiusLg = 14
 
 export const statusColors = {
   applied: colors.accent,

@@ -1,32 +1,53 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg: #0f1117;
-  --surface: #1a1d27;
-  --surface2: #242736;
+  --bg: #0e1016;
+  --surface: #171a23;
+  --surface2: #212533;
+  --surface3: #2b3042;
   --border: #2e3245;
+  --border-strong: #3d4258;
   --accent: #6366f1;
   --accent-hover: #4f52d4;
+  --accent-soft: rgba(99, 102, 241, 0.16);
   --green: #22c55e;
   --yellow: #eab308;
   --red: #ef4444;
   --text: #e2e8f0;
   --text-muted: #94a3b8;
+  --text-faint: #64748b;
   --radius: 10px;
+  --radius-sm: 7px;
+  --radius-lg: 14px;
+  /* Elevation. Three steps only — resting surface, raised, and floating —
+     so a card, a hover and a modal are never ambiguous about which is on top. */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.55);
+  --ring: 0 0 0 3px rgba(99, 102, 241, 0.4);
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 [data-theme="light"] {
-  --bg: #f8fafc;
+  --bg: #f6f7fb;
   --surface: #ffffff;
   --surface2: #f1f5f9;
+  --surface3: #e2e8f0;
   --border: #e2e8f0;
-  --accent: #6366f1;
-  --accent-hover: #4f52d4;
+  --border-strong: #cbd5e1;
+  --accent: #5457e5;
+  --accent-hover: #4144cc;
+  --accent-soft: rgba(84, 87, 229, 0.1);
   --green: #16a34a;
-  --yellow: #ca8a04;
+  --yellow: #b45309;
   --red: #dc2626;
   --text: #1e293b;
-  --text-muted: #64748b;
+  --text-muted: #5b6b80;
+  --text-faint: #94a3b8;
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow: 0 2px 8px rgba(15, 23, 42, 0.07);
+  --shadow-lg: 0 16px 48px rgba(15, 23, 42, 0.18);
+  --ring: 0 0 0 3px rgba(84, 87, 229, 0.28);
 }
 
 body {
@@ -37,41 +58,82 @@ body {
   line-height: 1.5;
   height: 100vh;
   overflow: hidden;
-  transition: background 0.3s ease, color 0.3s ease;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  transition: background 0.3s var(--ease), color 0.3s var(--ease);
 }
 
 #root { height: 100vh; display: flex; flex-direction: column; }
 
+/* Numeric columns (match %, salary, counts) line up only with tabular figures. */
+.tnum, .stat-value, td.num, th.num { font-variant-numeric: tabular-nums; }
+
 /* Scrollbar */
-::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong); border-radius: 6px;
+  border: 3px solid transparent; background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--text-faint); background-clip: padding-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* Keyboard focus. Every interactive control gets the same ring, so tabbing
+   through the app never leaves you guessing where you are. Pointer clicks are
+   unaffected — :focus-visible only fires for keyboard and assistive input. */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+  border-radius: var(--radius-sm);
+}
 
 /* Buttons */
 .btn {
-  display: inline-flex; align-items: center; gap: 6px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   padding: 8px 16px; border-radius: var(--radius);
-  border: none; cursor: pointer; font-size: 13px; font-weight: 500;
-  transition: opacity 0.15s, background 0.15s;
+  cursor: pointer; font-size: 13px; font-weight: 500;
+  font-family: inherit; line-height: 1.4; white-space: nowrap;
+  /* A bare `.btn` used to fall through to the browser's default button
+     chrome — a light grey slab in the middle of a dark app. It now renders
+     as the neutral solid variant, which is what those call sites wanted. */
+  background: var(--surface3); color: var(--text);
+  border: 1px solid var(--border-strong);
+  transition: background 0.15s var(--ease), border-color 0.15s var(--ease),
+              color 0.15s var(--ease), transform 0.1s var(--ease), box-shadow 0.15s var(--ease);
 }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-primary { background: var(--accent); color: #fff; }
-.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn:hover:not(:disabled) { border-color: var(--text-faint); }
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.btn-primary {
+  background: var(--accent); color: #fff; border-color: transparent;
+  box-shadow: var(--shadow-sm);
+}
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); border-color: transparent; box-shadow: var(--shadow); }
+
 .btn-ghost { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
-.btn-ghost:hover:not(:disabled) { background: var(--surface2); color: var(--text); }
-.btn-danger { background: var(--red); color: #fff; }
+.btn-ghost:hover:not(:disabled) { background: var(--surface2); color: var(--text); border-color: var(--border-strong); }
+
+.btn-danger { background: var(--red); color: #fff; border-color: transparent; }
+.btn-danger:hover:not(:disabled) { filter: brightness(1.08); }
+
+/* Compact variant for the dense toolbars inside cards and table rows. */
+.btn-sm { padding: 4px 10px; font-size: 11px; border-radius: var(--radius-sm); }
 
 /* Inputs */
 input, textarea, select {
   background: var(--surface2); border: 1px solid var(--border);
   color: var(--text); border-radius: var(--radius); padding: 8px 12px;
   font-size: 13px; width: 100%; outline: none; font-family: inherit;
-  transition: border-color 0.15s;
+  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease), background 0.15s var(--ease);
 }
-input:focus, textarea:focus, select:focus { border-color: var(--accent); }
-input::placeholder, textarea::placeholder { color: var(--text-muted); }
-select option { background: var(--surface2); }
-textarea { resize: vertical; min-height: 80px; }
+input:hover:not(:disabled), textarea:hover:not(:disabled), select:hover:not(:disabled) { border-color: var(--border-strong); }
+input:focus, textarea:focus, select:focus { border-color: var(--accent); box-shadow: var(--ring); }
+input:disabled, textarea:disabled, select:disabled { opacity: 0.55; cursor: not-allowed; }
+input::placeholder, textarea::placeholder { color: var(--text-faint); }
+select { cursor: pointer; }
+select option { background: var(--surface2); color: var(--text); }
+textarea { resize: vertical; min-height: 80px; line-height: 1.6; }
 
 label { display: block; color: var(--text-muted); font-size: 12px; margin-bottom: 4px; font-weight: 500; }
 
@@ -81,48 +143,75 @@ label { display: block; color: var(--text-muted); font-size: 12px; margin-bottom
 /* Cards */
 .card {
   background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 20px;
-  transition: background 0.3s ease, border-color 0.3s ease;
+  border-radius: var(--radius-lg); padding: 20px;
+  box-shadow: var(--shadow-sm);
+  transition: background 0.3s var(--ease), border-color 0.2s var(--ease), box-shadow 0.2s var(--ease), transform 0.15s var(--ease);
 }
+/* Opt-in for cards that are themselves a click target (pipeline cards,
+   timeline days) — a flat card that moves on hover reads as pressable. */
+.card-interactive { cursor: pointer; }
+.card-interactive:hover { border-color: var(--border-strong); box-shadow: var(--shadow); transform: translateY(-1px); }
 
 /* Badges */
 .badge {
   display: inline-block; padding: 2px 8px; border-radius: 20px;
   font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.03em; white-space: nowrap;
 }
 .badge-green { background: rgba(34,197,94,0.15); color: var(--green); }
 .badge-yellow { background: rgba(234,179,8,0.15); color: var(--yellow); }
 .badge-red { background: rgba(239,68,68,0.15); color: var(--red); }
-.badge-blue { background: rgba(99,102,241,0.15); color: var(--accent); }
+.badge-blue { background: var(--accent-soft); color: var(--accent); }
 .badge-gray { background: var(--surface2); color: var(--text-muted); }
+[data-theme="light"] .badge-yellow { background: rgba(180,83,9,0.12); }
 
 /* Stat card */
 .stat-card { text-align: center; }
-.stat-card .stat-value { font-size: 32px; font-weight: 700; color: var(--text); }
+.stat-card .stat-value { font-size: 32px; font-weight: 700; color: var(--text); letter-spacing: -0.02em; }
 .stat-card .stat-label { color: var(--text-muted); font-size: 12px; margin-top: 4px; }
 
 /* Table */
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
-th { text-align: left; padding: 10px 12px; color: var(--text-muted); font-size: 11px; font-weight: 600; text-transform: uppercase; border-bottom: 1px solid var(--border); }
+th {
+  text-align: left; padding: 10px 12px; color: var(--text-muted);
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--border);
+}
 td { padding: 10px 12px; border-bottom: 1px solid var(--border); color: var(--text); font-size: 13px; }
 tr:last-child td { border-bottom: none; }
+tbody tr { transition: background 0.12s var(--ease); }
 tr:hover td { background: var(--surface2); }
 
 /* Toast / notification */
-.toast {
-  position: fixed; bottom: 24px; right: 24px;
-  background: var(--surface2); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 12px 18px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-  z-index: 9999; animation: slideIn 0.2s ease;
-  display: flex; align-items: center; gap: 10px;
-  font-size: 13px; max-width: 400px;
+.toast-stack {
+  position: fixed; bottom: 24px; right: 24px; z-index: 9999;
+  display: flex; flex-direction: column-reverse; gap: 10px;
+  max-width: 420px; pointer-events: none;
 }
+.toast {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 14px 12px 16px;
+  box-shadow: var(--shadow-lg);
+  animation: slideIn 0.22s var(--ease);
+  display: flex; align-items: flex-start; gap: 10px;
+  font-size: 13px; pointer-events: auto;
+}
+.toast-icon { flex-shrink: 0; font-size: 14px; line-height: 20px; }
+.toast-msg { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.toast-close {
+  flex-shrink: 0; background: none; border: none; color: var(--text-faint);
+  cursor: pointer; font-size: 15px; line-height: 1; padding: 2px 4px;
+  border-radius: 4px; transition: color 0.15s var(--ease), background 0.15s var(--ease);
+}
+.toast-close:hover { color: var(--text); background: var(--surface3); }
 .toast-success { border-left: 3px solid var(--green); }
+.toast-success .toast-icon { color: var(--green); }
 .toast-error { border-left: 3px solid var(--red); }
+.toast-error .toast-icon { color: var(--red); }
 .toast-info { border-left: 3px solid var(--accent); }
-@keyframes slideIn { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+.toast-info .toast-icon { color: var(--accent); }
+@keyframes slideIn { from { transform: translateY(12px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
 /* Pulse animation for scanning status */
 @keyframes pulse {
@@ -131,8 +220,26 @@ tr:hover td { background: var(--surface2); }
 }
 .pulse { animation: pulse 1.5s ease-in-out infinite; }
 
+/* Skeleton placeholder — a shaped grey block beats the word "Loading…" for
+   telling you what is about to arrive. */
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+.skeleton {
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--surface2) 25%, var(--surface3) 50%, var(--surface2) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+
+/* Empty state */
+.empty-state {
+  text-align: center; padding: 48px 24px; color: var(--text-muted);
+}
+.empty-state .empty-icon { font-size: 30px; opacity: 0.35; margin-bottom: 10px; }
+.empty-state .empty-title { font-size: 14px; color: var(--text); margin-bottom: 6px; }
+.empty-state .empty-hint { font-size: 12px; max-width: 420px; margin: 0 auto; line-height: 1.6; }
+
 /* Sortable table headers */
-th.sortable { cursor: pointer; user-select: none; }
+th.sortable { cursor: pointer; user-select: none; transition: color 0.15s var(--ease); }
 th.sortable:hover { color: var(--text); }
 
 /* Chip (removable tag) */
@@ -141,18 +248,21 @@ th.sortable:hover { color: var(--text); }
   background: var(--surface2); border: 1px solid var(--border);
   border-radius: 16px; padding: 3px 10px 3px 12px;
   font-size: 12px; color: var(--text);
+  transition: border-color 0.15s var(--ease);
 }
+.chip:hover { border-color: var(--border-strong); }
 .chip-remove {
   background: none; border: none; color: var(--text-muted);
   cursor: pointer; padding: 0; font-size: 14px; line-height: 1;
   display: inline-flex; align-items: center; justify-content: center;
   width: 16px; height: 16px; border-radius: 50%;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease);
 }
 .chip-remove:hover { background: var(--red); color: #fff; }
 
 /* Checkbox styling */
 input[type="checkbox"] {
-  width: auto; accent-color: var(--accent);
+  width: auto; accent-color: var(--accent); cursor: pointer;
 }
 
 /* Pagination */
@@ -163,9 +273,10 @@ input[type="checkbox"] {
 .pagination button {
   background: none; border: 1px solid var(--border);
   color: var(--text-muted); border-radius: 6px; padding: 4px 10px;
-  cursor: pointer; font-size: 12px;
+  cursor: pointer; font-size: 12px; font-variant-numeric: tabular-nums;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease), border-color 0.15s var(--ease);
 }
-.pagination button:hover:not(:disabled) { background: var(--surface2); color: var(--text); }
+.pagination button:hover:not(:disabled) { background: var(--surface2); color: var(--text); border-color: var(--border-strong); }
 .pagination button:disabled { opacity: 0.4; cursor: not-allowed; }
 .pagination button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 
@@ -173,30 +284,76 @@ input[type="checkbox"] {
 .log-box {
   background: #0a0c12; border: 1px solid var(--border);
   border-radius: var(--radius); padding: 12px;
-  font-family: 'Courier New', monospace; font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px; line-height: 1.6;
   color: #7dd3fc; height: 200px; overflow-y: auto;
-  white-space: pre-wrap; word-break: break-all;
+  white-space: pre-wrap; word-break: break-word;
 }
+/* The console stays dark in light mode on purpose — a terminal reads as a
+   terminal — but at the old contrast the text was barely legible. */
 [data-theme="light"] .log-box {
-  background: #1e293b;
-  color: #7dd3fc;
+  background: #10151f;
+  border-color: #1e293b;
+  color: #a5e4ff;
 }
 
-/* Fade-in for modals */
+/* Modal */
 @keyframes fadeIn {
   from { opacity: 0; }
   to { opacity: 1; }
 }
 @keyframes scaleIn {
-  from { transform: scale(0.95); opacity: 0; }
-  to { transform: scale(1); opacity: 1; }
+  from { transform: scale(0.97) translateY(6px); opacity: 0; }
+  to { transform: scale(1) translateY(0); opacity: 1; }
 }
-.modal-overlay { animation: fadeIn 0.15s ease; }
-.modal-content { animation: scaleIn 0.15s ease; }
+.modal-overlay {
+  animation: fadeIn 0.15s var(--ease);
+  backdrop-filter: blur(2px);
+}
+.modal-content {
+  animation: scaleIn 0.18s var(--ease);
+  box-shadow: var(--shadow-lg);
+}
 
 /* Kbd shortcut hint */
 .kbd {
   display: inline-block; background: var(--surface2); border: 1px solid var(--border);
-  border-radius: 4px; padding: 0px 5px; font-size: 10px; font-family: monospace;
-  color: var(--text-muted); line-height: 18px; margin-left: 4px;
+  border-radius: 4px; padding: 0px 5px; font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text-faint); line-height: 18px; margin-left: 4px;
+}
+
+/* Sidebar navigation */
+.nav-item {
+  position: relative;
+  background: transparent; border: none; color: var(--text-muted);
+  padding: 9px 12px; border-radius: 8px; cursor: pointer;
+  text-align: left; font-size: 13px; font-family: inherit;
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease);
+}
+.nav-item:hover:not(.nav-item-active) { background: var(--surface2); color: var(--text); }
+.nav-item-active { background: var(--surface2); color: var(--text); font-weight: 600; }
+/* A rail on the active item makes the current page findable at a glance,
+   which a background tint alone does not at this contrast. */
+.nav-item-active::before {
+  content: ''; position: absolute; left: -12px; top: 50%;
+  transform: translateY(-50%); width: 3px; height: 18px;
+  border-radius: 0 3px 3px 0; background: var(--accent);
+}
+.nav-item .nav-icon { font-size: 15px; width: 20px; text-align: center; opacity: 0.6; transition: opacity 0.15s var(--ease); }
+.nav-item-active .nav-icon, .nav-item:hover .nav-icon { opacity: 1; }
+.nav-item .kbd { opacity: 0; transition: opacity 0.15s var(--ease); }
+.nav-item:hover .kbd, .nav-item-active .kbd { opacity: 1; }
+
+/* Respect the OS "reduce motion" setting. The pulse and shimmer loops in
+   particular run forever and are exactly what that setting exists to stop. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .card-interactive:hover { transform: none; }
 }

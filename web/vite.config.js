@@ -12,6 +12,14 @@ import react from '@vitejs/plugin-react'
 // `style-src 'unsafe-inline'` is the one concession: React sets element style
 // attributes, which CSP counts as inline styles. It carries none of the script
 // execution risk that makes 'unsafe-inline' dangerous for script-src.
+//
+// `frame-src hiro-pdf:` is load-bearing. Without it, frame-src falls back to
+// `default-src 'none'` and every iframe is refused — which is exactly what
+// silently broke the résumé / cover-letter PDF preview in each packaged build
+// while it kept working under `npm run dev`, where this policy is not applied.
+// The scheme is registered and served by the main process (see PDF_SCHEME in
+// electron/main.js); naming it here rather than allowing `data:` keeps the
+// permission to exactly the one thing that needs it.
 const PROD_CSP = [
   "default-src 'none'",
   "script-src 'self'",
@@ -19,6 +27,7 @@ const PROD_CSP = [
   "img-src 'self' data:",
   "font-src 'self' data:",
   "connect-src 'none'",
+  "frame-src hiro-pdf:",
   "form-action 'none'",
   "frame-ancestors 'none'",
   "base-uri 'none'",

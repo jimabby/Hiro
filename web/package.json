@@ -9,6 +9,7 @@
     "postinstall": "node scripts/install-browser.js",
     "prebuild": "node scripts/install-browser.js",
     "build": "vite build && electron-builder",
+    "build:renderer": "vite build",
     "build:dry": "vite build && electron-builder --publish never",
     "build:publish": "vite build && electron-builder --publish always",
     "preview": "vite preview",

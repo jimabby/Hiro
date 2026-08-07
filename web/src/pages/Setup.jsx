@@ -43,14 +43,22 @@ export default function Setup({ onComplete }) {
     return errors
   }
 
+  // Steps 0 and 1 share one testResult slot, and it used to survive the move
+  // between them — so a successful AI key test left a green "✓ Connected" sitting
+  // beside the *email* Test Connection button on a step with nothing filled in.
+  function goToStep(fn) {
+    setValidationErrors([])
+    setTestResult(null)
+    setStep(fn)
+  }
+
   function nextStep() {
     const errors = validateStep(step)
     if (errors.length > 0) {
       setValidationErrors(errors)
       return
     }
-    setValidationErrors([])
-    setStep(s => s + 1)
+    goToStep(s => s + 1)
   }
 
   async function testAI() {
@@ -71,23 +79,35 @@ export default function Setup({ onComplete }) {
 
   async function finish() {
     setSaving(true)
+    setValidationErrors([])
     const resumes = form.masterResume
       ? [{ id: Date.now().toString(), name: 'My Resume', text: form.masterResume }]
       : []
-    await window.api.saveConfig({
-      ...form,
-      resumes,
-      defaultResumeId: resumes[0]?.id || '',
-      salaryMin: parseInt(form.salaryMin) || 0,
-      matchThreshold: parseInt(form.matchThreshold) || 80,
-      dailyLimitSeek: parseInt(form.dailyLimitSeek) || 10,
-      dailyLimitIndeed: parseInt(form.dailyLimitIndeed) || 10,
-      dailyLimitLinkedIn: parseInt(form.dailyLimitLinkedIn) || 10,
-      blacklistedCompanies: form.blacklistedCompanies.split(',').map(s => s.trim()).filter(Boolean),
-      setupComplete: true,
-    })
-    setSaving(false)
-    onComplete()
+    // A save that threw used to leave the button reading "Saving…" forever with
+    // no message — the last step of setup, and the wizard simply stopped.
+    try {
+      const res = await window.api.saveConfig({
+        ...form,
+        resumes,
+        defaultResumeId: resumes[0]?.id || '',
+        salaryMin: parseInt(form.salaryMin) || 0,
+        matchThreshold: parseInt(form.matchThreshold) || 80,
+        dailyLimitSeek: parseInt(form.dailyLimitSeek) || 10,
+        dailyLimitIndeed: parseInt(form.dailyLimitIndeed) || 10,
+        dailyLimitLinkedIn: parseInt(form.dailyLimitLinkedIn) || 10,
+        blacklistedCompanies: form.blacklistedCompanies.split(',').map(s => s.trim()).filter(Boolean),
+        setupComplete: true,
+      })
+      if (res?.success === false) {
+        setValidationErrors([res.error || 'Could not save your settings. Please try again.'])
+        return
+      }
+      onComplete()
+    } catch (err) {
+      setValidationErrors([`Could not save your settings: ${err.message}`])
+    } finally {
+      setSaving(false)
+    }
   }
 
   const completedSteps = (() => {
@@ -332,20 +352,20 @@ export default function Setup({ onComplete }) {
 
           {/* Navigation */}
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 24 }}>
-            <button className="btn btn-ghost" onClick={() => { setStep(s => s - 1); setValidationErrors([]) }} disabled={step === 0}>
+            <button className="btn btn-ghost" onClick={() => goToStep(s => s - 1)} disabled={step === 0}>
               Back
             </button>
             {step < STEPS.length - 1 ? (
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 {step === 1 && (
                   <button className="btn btn-ghost" style={{ color: 'var(--text-muted)', fontSize: 13 }}
-                    onClick={() => { set('gmailAddress', ''); set('gmailAppPassword', ''); setStep(s => s + 1) }}>
+                    onClick={() => { set('gmailAddress', ''); set('gmailAppPassword', ''); goToStep(s => s + 1) }}>
                     Skip for now
                   </button>
                 )}
                 {step === 3 && (
                   <button className="btn btn-ghost" style={{ color: 'var(--text-muted)', fontSize: 13 }}
-                    onClick={() => { set('masterResume', ''); setStep(s => s + 1) }}>
+                    onClick={() => { set('masterResume', ''); goToStep(s => s + 1) }}>
                     Skip for now
                   </button>
                 )}

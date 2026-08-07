@@ -136,9 +136,19 @@ export default function Timeline() {
       </div>
 
       {filteredDates.length === 0 ? (
-        <div className="card" style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text-muted)' }}>
-          <div style={{ fontSize: 32, marginBottom: 8, opacity: 0.3 }}>◷</div>
-          {dates.length === 0 ? 'No applications yet.' : 'No matching dates found.'}
+        <div className="card empty-state">
+          <div className="empty-icon" aria-hidden="true">◷</div>
+          {dates.length === 0 ? (
+            <>
+              <div className="empty-title">No applications yet</div>
+              <div className="empty-hint">Once a scan submits its first application, every day of activity shows up here.</div>
+            </>
+          ) : (
+            <>
+              <div className="empty-title">No matching days</div>
+              <div className="empty-hint">Nothing matches the current date filter or platform.</div>
+            </>
+          )}
         </div>
       ) : (
         <div style={{ position: 'relative', paddingLeft: 24 }}>
@@ -164,13 +174,26 @@ export default function Timeline() {
                   transition: 'background 0.15s',
                 }} />
 
-                <div className="card" style={{ cursor: 'pointer' }} onClick={() => toggleDay(date)}>
+                <div
+                  className="card card-interactive"
+                  // A bare clickable div was unreachable by keyboard — the only
+                  // way to expand a day was with a mouse.
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={isOpen}
+                  onClick={() => toggleDay(date)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleDay(date) }
+                  }}
+                >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                       <div>
                         <span style={{ fontWeight: 600, fontSize: 14 }}>{relativeDate(date)}</span>
                         <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                          {new Date(date + 'T12:00:00').toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })}
+                          {/* System locale, not a hardcoded en-AU — every other
+                              date in the app already follows the OS setting. */}
+                          {new Date(date + 'T12:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}
                         </div>
                       </div>
                       <div style={{ display: 'flex', gap: 6 }}>

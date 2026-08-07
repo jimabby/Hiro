@@ -40,6 +40,13 @@ jobs:
 
       - run: npm test --prefix web
 
+      # The unit suites only exercise the main-process services, and eslint does
+      # not type-check JSX — so a renderer that fails to build passed this job
+      # and was first caught by the packaged smoke test, which only runs on
+      # pushes to main. A Vite build takes seconds and closes that gap on PRs.
+      - name: Build the renderer
+        run: npm run build:renderer --prefix web
+
   # The packaged app, installed and driven. Slow (it downloads Chromium and runs
   # electron-builder), so it is limited to pushes on main rather than every PR —
   # the release workflow runs it again as a hard gate before publishing.

@@ -112,6 +112,29 @@ export default function NeedsAttention({ onCountChange, showToast }) {
     }
   }
 
+  // Dismiss/delete over a selection. Previously this awaited one IPC call per
+  // row in sequence, then removed every selected row from the list and
+  // decremented the sidebar badge by the full count regardless of what actually
+  // succeeded — so a failed call left a phantom row and a badge that no longer
+  // matched the database.
+  async function bulkResolve(apiFn, verb) {
+    const ids = [...selectedIds]
+    if (ids.length === 0) return
+    const results = await Promise.allSettled(ids.map(id => apiFn(id)))
+    const done = new Set(ids.filter((_, i) => {
+      const r = results[i]
+      return r.status === 'fulfilled' && r.value?.success !== false
+    }))
+    if (done.size) {
+      setJobs(prev => prev.filter(j => !done.has(j.id)))
+      onCountChange(prev => Math.max(0, prev - done.size))
+    }
+    setSelectedIds(new Set())
+    const failed = ids.length - done.size
+    if (failed) showToast?.(`${verb} ${done.size} job${done.size === 1 ? '' : 's'}, ${failed} failed`, 'error')
+    else showToast?.(`${verb} ${done.size} job${done.size === 1 ? '' : 's'}`, 'success')
+  }
+
   async function aiApply(job) {
     setApplying(job.id)
     setApplyLog([`Starting AI apply for ${job.job_title} at ${job.company}...`])
@@ -234,34 +257,51 @@ export default function NeedsAttention({ onCountChange, showToast }) {
                 onClick={aiApplySelected} disabled={applying !== null}>
                 Retry Selected
               </button>
-              <button className="btn btn-ghost" style={{ fontSize: 11, padding: '3px 8px' }} onClick={async () => {
-                for (const id of selectedIds) { await window.api.dismissAttentionJob(id) }
-                setJobs(prev => prev.filter(j => !selectedIds.has(j.id)))
-                onCountChange(prev => prev - selectedIds.size)
-                setSelectedIds(new Set())
-                showToast?.(`Dismissed ${selectedIds.size} jobs`, 'success')
-              }}>Dismiss Selected</button>
-              <button className="btn btn-ghost" style={{ fontSize: 11, padding: '3px 8px', color: 'var(--red)' }} onClick={async () => {
-                for (const id of selectedIds) { await window.api.deleteAttentionJob(id) }
-                setJobs(prev => prev.filter(j => !selectedIds.has(j.id)))
-                onCountChange(prev => prev - selectedIds.size)
-                setSelectedIds(new Set())
-                showToast?.(`Deleted ${selectedIds.size} jobs`, 'success')
-              }}>Delete Selected</button>
+              <button className="btn btn-ghost btn-sm"
+                onClick={() => bulkResolve(window.api.dismissAttentionJob, 'Dismissed')}>Dismiss Selected</button>
+              <button className="btn btn-ghost btn-sm" style={{ color: 'var(--red)' }}
+                onClick={() => bulkResolve(window.api.deleteAttentionJob, 'Deleted')}>Delete Selected</button>
             </div>
           )}
         </div>
       )}
 
       {filtered.length === 0 ? (
-        <div className="card" style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text-muted)' }}>
-          <div style={{ fontSize: 32, marginBottom: 8, opacity: 0.3 }}>⚑</div>
-          {jobs.length === 0 ? 'All clear — no jobs need attention.' : 'No matching jobs found.'}
+        <div className="card empty-state">
+          {jobs.length === 0 ? (
+            <>
+              <div className="empty-icon" style={{ color: 'var(--green)', opacity: 0.6 }} aria-hidden="true">✓</div>
+              <div className="empty-title">All clear</div>
+              <div className="empty-hint">
+                Every job the last scan found was either applied to or held for review. Anything the
+                automation cannot finish on its own lands here.
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="empty-icon" aria-hidden="true">⌕</div>
+              <div className="empty-title">No matching jobs</div>
+              <div className="empty-hint">
+                {jobs.length} job{jobs.length === 1 ? ' is' : 's are'} hidden by the current search or platform filter.
+              </div>
+            </>
+          )}
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {filtered.map(job => (
-            <div key={job.id} className="card" style={{ cursor: 'pointer' }} onClick={() => setSelected(job)}>
+            <div
+              key={job.id}
+              className="card card-interactive"
+              onClick={() => setSelected(job)}
+              role="button"
+              tabIndex={0}
+              aria-label={`Open ${job.job_title} at ${job.company}`}
+              onKeyDown={e => {
+                if (e.target !== e.currentTarget) return
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelected(job) }
+              }}
+            >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, flex: 1 }}>
                   <input type="checkbox" style={{ width: 'auto', marginTop: 4, flexShrink: 0 }}
@@ -319,7 +359,7 @@ export default function NeedsAttention({ onCountChange, showToast }) {
 
       {/* Detail modal */}
       {selected && (
-        <div className="modal-overlay" style={{
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Job detail" style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
         }} onClick={() => setSelected(null)}>
@@ -387,7 +427,7 @@ export default function NeedsAttention({ onCountChange, showToast }) {
 
       {/* AI Apply progress modal */}
       {applying && (
-        <div className="modal-overlay" style={{
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="AI application in progress" style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200,
         }}>

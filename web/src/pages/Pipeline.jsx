@@ -69,7 +69,11 @@ function NextActionEditor({ item, onSave, onCancel }) {
     }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
         {QUICK_DATES.map(q => (
-          <button key={q.days} className="btn btn-ghost" style={{ fontSize: 10, padding: '2px 6px' }}
+          <button key={q.days} className="btn btn-ghost btn-sm"
+            aria-pressed={date === addDaysISO(q.days)}
+            style={date === addDaysISO(q.days)
+              ? { borderColor: 'var(--accent)', color: 'var(--accent)' }
+              : undefined}
             onClick={() => setDate(addDaysISO(q.days))}>{q.label}</button>
         ))}
       </div>
@@ -77,12 +81,12 @@ function NextActionEditor({ item, onSave, onCancel }) {
       <input value={note} onChange={e => setNote(e.target.value)} style={{ fontSize: 12 }}
         placeholder="What needs doing? e.g. chase the recruiter" />
       <div style={{ display: 'flex', gap: 6 }}>
-        <button className="btn" style={{ fontSize: 11, padding: '3px 10px' }}
+        <button className="btn btn-primary btn-sm"
           onClick={() => onSave({ date, note })}>Save</button>
-        <button className="btn btn-ghost" style={{ fontSize: 11, padding: '3px 10px' }}
+        <button className="btn btn-ghost btn-sm"
           onClick={onCancel}>Cancel</button>
         {item.next_action_at && (
-          <button className="btn btn-ghost" style={{ fontSize: 11, padding: '3px 10px', color: 'var(--text-muted)' }}
+          <button className="btn btn-ghost btn-sm" style={{ color: 'var(--text-muted)' }}
             onClick={() => onSave({ date: null, note: '' })}>Clear</button>
         )}
       </div>
@@ -94,11 +98,23 @@ function Card({ item, today, editing, onEdit, onSave, onCancel, onDone, onOpen }
   const due = item.next_action_at
   const border = item.overdue ? 'var(--red)' : item.dueToday ? 'var(--accent)' : 'transparent'
 
+  const open = editing ? undefined : () => onOpen(item)
+
   return (
-    <div className="card" style={{
-      padding: 12, marginBottom: 8, borderLeft: `3px solid ${border}`,
-      cursor: editing ? 'default' : 'pointer',
-    }} onClick={editing ? undefined : () => onOpen(item)}>
+    <div
+      className={`card${editing ? '' : ' card-interactive'}`}
+      style={{ padding: 12, marginBottom: 8, borderLeft: `3px solid ${border}` }}
+      onClick={open}
+      // Keyboard users could reach the buttons inside a card but never the card
+      // itself, so opening an application was mouse-only.
+      role={editing ? undefined : 'button'}
+      tabIndex={editing ? undefined : 0}
+      aria-label={editing ? undefined : `Open ${item.job_title} at ${item.company}`}
+      onKeyDown={editing ? undefined : (e) => {
+        if (e.target !== e.currentTarget) return
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(item) }
+      }}
+    >
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
         <div style={{ minWidth: 0, flex: 1 }}>
           <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -125,7 +141,7 @@ function Card({ item, today, editing, onEdit, onSave, onCancel, onDone, onOpen }
           }}>
             {item.overdue ? '⚑ ' : ''}{item.next_action_note || 'Follow up'} · {relativeDay(due, today)}
           </span>
-          <button className="btn btn-ghost" style={{ fontSize: 10, padding: '1px 6px', marginLeft: 'auto' }}
+          <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }}
             onClick={(e) => { e.stopPropagation(); onDone(item) }}
             title="Mark this action done and clear the reminder">Done</button>
         </div>
@@ -142,7 +158,7 @@ function Card({ item, today, editing, onEdit, onSave, onCancel, onDone, onOpen }
       {editing
         ? <NextActionEditor item={item} onSave={onSave} onCancel={onCancel} />
         : (
-          <button className="btn btn-ghost" style={{ fontSize: 10, padding: '2px 6px', marginTop: 6 }}
+          <button className="btn btn-ghost btn-sm" style={{ marginTop: 6 }}
             onClick={(e) => { e.stopPropagation(); onEdit(item) }}>
             {due ? 'Reschedule' : 'Set next action'}
           </button>
@@ -211,8 +227,22 @@ export default function Pipeline({ active, onOpenApplication }) {
   if (!data) {
     return (
       <div data-testid="pipeline">
-        <h2 style={{ marginBottom: 8 }}>Pipeline</h2>
-        <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading…</p>
+        <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>Pipeline</h1>
+        {/* Shaped placeholders rather than the word "Loading" — the board's
+            layout appears immediately, so the page doesn't jump when it lands. */}
+        <div aria-hidden="true" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(220px, 1fr))', gap: 14, marginTop: 20 }}>
+          {[0, 1, 2, 3].map(col => (
+            <div key={col}>
+              <div className="skeleton" style={{ height: 14, width: '55%', marginBottom: 14 }} />
+              {[0, 1].map(row => (
+                <div key={row} className="skeleton" style={{ height: 78, marginBottom: 8, borderRadius: 'var(--radius-lg)' }} />
+              ))}
+            </div>
+          ))}
+        </div>
+        <span style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>
+          Loading pipeline…
+        </span>
       </div>
     )
   }
@@ -222,7 +252,7 @@ export default function Pipeline({ active, onOpenApplication }) {
   return (
     <div data-testid="pipeline">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
-        <h2 style={{ margin: 0 }}>Pipeline</h2>
+        <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Pipeline</h1>
         <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={load}>Refresh</button>
       </div>
       <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 20 }}>
@@ -233,11 +263,13 @@ export default function Pipeline({ active, onOpenApplication }) {
       {error && <p style={{ color: 'var(--red)', fontSize: 13, marginBottom: 16 }}>{error}</p>}
 
       {empty && (
-        <div className="card">
-          <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: 0 }}>
+        <div className="card empty-state">
+          <div className="empty-icon" aria-hidden="true">≡</div>
+          <div className="empty-title">Nothing to chase yet</div>
+          <div className="empty-hint">
             No submitted applications yet. Once a scan sends one, it appears here and you can book
             the follow-up.
-          </p>
+          </div>
         </div>
       )}
 
