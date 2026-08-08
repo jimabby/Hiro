@@ -21,6 +21,7 @@
 // how each apply went, and putting it there keeps four scrapers unchanged.
 
 const database = require('./database')
+const configService = require('./config')
 
 // How many consecutive empty-but-healthy scrapes before we call it a selector
 // break. Two could easily be a quiet week on a narrow search; three in a row on
@@ -38,6 +39,13 @@ function recordScrape(platform, { found = 0, blocked = false, error = null } = {
       detail: error || (blocked ? 'Site served a challenge instead of results' : `${found} listing(s)`),
       count: found,
     })
+    if (blocked) startCooldown(platform, 'blocked')
+    else {
+      const diagnosis = diagnose(platform, database.getAutomationEvents(platform, 40))
+      if (diagnosis.status === 'critical' && /found nothing/.test(diagnosis.headline)) {
+        startCooldown(platform, 'selector-suspected')
+      }
+    }
   } catch { /* health tracking must never break a scan */ }
 }
 
@@ -49,7 +57,36 @@ function recordApply(platform, { success, reason = '' } = {}) {
       detail: reason || (success ? 'Submitted' : 'Failed'),
       count: success ? 1 : 0,
     })
+    if (!success) {
+      const diagnosis = diagnose(platform, database.getAutomationEvents(platform, 40))
+      if (/forms are not being completed/.test(diagnosis.headline)) startCooldown(platform, 'selector-miss')
+    }
   } catch { /* as above */ }
+}
+
+function startCooldown(platform, reason, now = Date.now()) {
+  try {
+    const cfg = configService.load()
+    const hours = Math.max(1, Number(cfg.automationCooldownHours) || 6)
+    const until = new Date(now + hours * 3600000).toISOString()
+    configService.update(current => ({
+      ...current,
+      automationCooldowns: {
+        ...(current.automationCooldowns || {}),
+        [platform]: { until, reason },
+      },
+    }))
+    return { until, reason }
+  } catch { return null }
+}
+
+function getCooldown(platform, now = Date.now()) {
+  try {
+    const entry = configService.load().automationCooldowns?.[platform]
+    const until = typeof entry === 'string' ? entry : entry?.until
+    if (!until || new Date(until).getTime() <= now) return { active: false, until: null, reason: null }
+    return { active: true, until, reason: entry?.reason || 'automation-health' }
+  } catch { return { active: false, until: null, reason: null } }
 }
 
 // An apply failure is only useful if it says which kind it is. These three have
@@ -192,5 +229,6 @@ function describeAge(at, now = Date.now()) {
 
 module.exports = {
   recordScrape, recordApply, summarise, diagnose, classifyApplyFailure,
+  startCooldown, getCooldown,
   EMPTY_STREAK_FOR_SUSPICION, STALE_SUCCESS_HOURS,
 }

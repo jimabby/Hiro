@@ -25,6 +25,14 @@ let stored = {
   supabaseRefreshToken: 'refresh-token',
   setupComplete: true,
   cloudSyncEnabled: true,
+  calendarRefreshToken: 'calendar-refresh',
+  calendarClientSecret: 'calendar-secret',
+  deviceId: 'desktop-a',
+  deviceName: 'Desktop A',
+  knownDeviceIds: ['desktop-a'],
+  mobileDevices: [{ id: 'phone-a', tokenHash: 'hash' }],
+  calendarSyncCursor: 'cursor-a',
+  encryptDatabase: true,
 }
 
 stub({
@@ -55,14 +63,17 @@ check('reports it carries no credentials', opened.includesSecrets, false)
 // ── Secrets are opt-in ────────────────────────────────────────────
 check('API key excluded by default', 'aiApiKey' in opened.payload, false)
 check('email password excluded by default', 'gmailAppPassword' in opened.payload, false)
+check('calendar refresh token excluded by default', 'calendarRefreshToken' in opened.payload, false)
+check('calendar client secret excluded by default', 'calendarClientSecret' in opened.payload, false)
 check('non-secret email address still travels', opened.payload.gmailAddress, 'me@example.com')
 
 const withSecrets = ct.inspectBundle(ct.exportBundle(PASS, { includeSecrets: true }), PASS)
 check('API key included when opted in', withSecrets.payload.aiApiKey, 'sk-secret-key')
+check('calendar credential included when opted in', withSecrets.payload.calendarRefreshToken, 'calendar-refresh')
 check('flags that it carries credentials', withSecrets.includesSecrets, true)
 
 // ── Runtime state never travels ───────────────────────────────────
-for (const key of ['pendingScans', 'lastScanAt', 'mobileApiToken', 'supabaseRefreshToken', 'setupComplete', 'cloudSyncEnabled']) {
+for (const key of ['pendingScans', 'lastScanAt', 'mobileApiToken', 'supabaseRefreshToken', 'setupComplete', 'cloudSyncEnabled', 'deviceId', 'deviceName', 'knownDeviceIds', 'mobileDevices', 'calendarSyncCursor', 'encryptDatabase']) {
   check(`runtime key excluded: ${key}`, key in opened.payload, false)
 }
 

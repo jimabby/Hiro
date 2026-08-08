@@ -979,10 +979,16 @@ export default function Settings({ showToast, active }) {
           </label>
         </div>
         {form.enableFollowUp && (
-          <div className="form-group">
-            <label>Send follow-up email after how many days of no response</label>
-            <input type="number" min={1} max={30} value={form.followUpDays || 7} onChange={e => set('followUpDays', e.target.value)} />
-          </div>
+          <>
+            <div className="form-group">
+              <label>Send follow-up email after how many days of no response</label>
+              <input type="number" min={1} max={30} value={form.followUpDays || 7} onChange={e => set('followUpDays', e.target.value)} />
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+              <input type="checkbox" style={{ width: 'auto' }} checked={form.reviewFollowUpEmails !== false} onChange={e => set('reviewFollowUpEmails', e.target.checked)} />
+              Review each drafted follow-up before it is emailed
+            </label>
+          </>
         )}
       </div>
       {/* Smart Scheduling */}

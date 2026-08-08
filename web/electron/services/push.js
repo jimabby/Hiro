@@ -232,7 +232,7 @@ async function checkInterviewReminders(cfg) {
     if (!when) continue
     const hoursUntil = (when.getTime() - now) / 3600000
     if (hoursUntil < 0) continue
-    // Fire the tightest window that has been entered. Sorting descending means a
+    // Fire the tightest window that has been entered. Sorting ascending means a
     // desktop that was off all day sends the 2-hour reminder rather than the
     // stale 24-hour one — and the dedupe key covers the window, so the 24-hour
     // reminder for the same interview will never arrive afterwards.

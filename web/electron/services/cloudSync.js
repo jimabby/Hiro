@@ -117,6 +117,7 @@ async function restoreSession() {
 async function signOut() {
   try { await getClient()?.auth.signOut() } catch {}
   user = null
+  sessionStartedAt = null
   stopAuto()
   configService.update({ cloudSyncEnabled: false, supabaseRefreshToken: '' })
   return getStatus()

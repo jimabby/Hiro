@@ -221,15 +221,17 @@ async function runBatch(batchSize) {
   running = true
   let batchError = null
   let batchBlocked = []
+  let batchPaused = []
   log(`Starting batch (${batchSize} apps max)...`)
   cloudSync.updateScanStatus(true).catch(() => {})
 
   try {
     const result = await applicator.run({ ...cfg, askQuestion: makeAskQuestion(win), batchLimit: batchSize }, { log, notifyAttention })
     if (result?.blocked?.length) batchBlocked = result.blocked
+    if (result?.paused?.length) batchPaused = result.paused
   } catch (err) {
-    batchError = err.message
-    log(`Batch error: ${err.message}`)
+    batchError = describeError(err)
+    log(`Batch error: ${batchError}`)
   } finally {
     running = false
     lastScanOutcome = {
@@ -237,17 +239,19 @@ async function runBatch(batchSize) {
       ok: !batchError,
       error: batchError,
       blocked: batchBlocked,
+      paused: batchPaused,
       source: 'batch',
     }
     cloudSync.updateScanStatus(false).catch(() => {})
     log(batchError ? `Batch failed: ${batchError}` : 'Batch complete.')
-    notify({ type: 'scan-complete', error: batchError, blocked: batchBlocked })
+    notify({ type: 'scan-complete', error: batchError, blocked: batchBlocked, paused: batchPaused })
     webhooks.send('scan-complete', {
       message: batchError
         ? `Batch failed: ${batchError}`
         : (batchBlocked.length ? `Batch complete, but blocked on: ${batchBlocked.map(b => b.platform).join(', ')}` : `Batch of ${batchSize} complete`),
       ok: !batchError,
       blocked: batchBlocked,
+      paused: batchPaused,
     }).catch(() => {})
     cloudSync.sync().catch(() => {})
     setImmediate(() => { processQueue() })
@@ -383,6 +387,9 @@ async function runScan(overrides = {}) {
   const dryRun = !!overrides.dryRun
   let scanError = null
   let scanBlocked = []
+  // Platforms automation health paused. Reported, but never through the failure
+  // channel — see the note on `paused` in applicator.js.
+  let scanPaused = []
   // Surfaced on the dashboard and the phone: a scan that drafted ten
   // applications for review, or that couldn't score anything because the AI
   // was down, must not look like a scan that simply found nothing.
@@ -398,6 +405,7 @@ async function runScan(overrides = {}) {
     if (dryRun) runCfg.dryRun = true
     const result = await applicator.run(runCfg, { log, notifyAttention })
     if (result?.blocked?.length) scanBlocked = result.blocked
+    if (result?.paused?.length) scanPaused = result.paused
     scanHeld = result?.held || 0
     scanScoringFailures = result?.scoringFailures || 0
     // A scan that stopped on the budget cap is not a success, but it isn't a
@@ -426,13 +434,14 @@ async function runScan(overrides = {}) {
         ok: !scanError,
         error: scanError,
         blocked: scanBlocked,
+        paused: scanPaused,
         held: scanHeld,
         scoringFailures: scanScoringFailures,
         source: overrides.fromQueue ? 'queue' : (overrides.source || 'desktop'),
       }
     }
     log(dryRun ? 'Test scan complete (dry run — nothing was submitted).' : 'Scan complete.')
-    notify({ type: 'scan-complete', error: scanError, blocked: scanBlocked, held: scanHeld, scoringFailures: scanScoringFailures })
+    notify({ type: 'scan-complete', error: scanError, blocked: scanBlocked, paused: scanPaused, held: scanHeld, scoringFailures: scanScoringFailures })
     if (!dryRun) {
       try {
         const s = database.getStats()
@@ -441,9 +450,15 @@ async function runScan(overrides = {}) {
         const blockNote = scanBlocked.length
           ? `Blocked on ${scanBlocked.map(b => b.platform).join(', ')}`
           : null
+        // A paused platform is worth mentioning but never worth alarming about:
+        // it rides along on the ordinary summary rather than changing the title.
+        const pauseNote = scanPaused.length
+          ? ` · ${scanPaused.map(p => p.platform).join(', ')} paused by automation health`
+          : ''
         nativeNotify(
           scanError ? 'Scan failed' : (blockNote ? 'Scan partially blocked' : 'Scan complete'),
-          scanError || blockNote || `${s.totalToday} application${s.totalToday === 1 ? '' : 's'} today · ${s.attentionCount} need${s.attentionCount === 1 ? 's' : ''} attention`
+          scanError || blockNote
+            || `${s.totalToday} application${s.totalToday === 1 ? '' : 's'} today · ${s.attentionCount} need${s.attentionCount === 1 ? 's' : ''} attention${pauseNote}`
         )
       } catch { /* stats are decorative here */ }
       webhooks.send('scan-complete', {
@@ -452,6 +467,7 @@ async function runScan(overrides = {}) {
           : (scanBlocked.length ? `Scan complete, but blocked on: ${scanBlocked.map(b => b.platform).join(', ')}` : 'Full scan complete'),
         ok: !scanError,
         blocked: scanBlocked,
+        paused: scanPaused,
       }).catch(() => {})
       // A scan that failed or was blocked is the one scan outcome the user has
       // to act on, and the one they will not notice from a minimised window.
@@ -488,6 +504,9 @@ function getScanInfo() {
     // Platforms that refused to serve results on the last scan. Non-empty here
     // means missing results, not absent results.
     lastScanBlocked: lastScanOutcome?.blocked || [],
+    // Platforms Hiro paused itself. Also missing results, but by choice — the UI
+    // presents these as information rather than as something to act on.
+    lastScanPaused: lastScanOutcome?.paused || [],
     batchSchedule,
   }
 }
@@ -540,6 +559,7 @@ async function runFollowUp() {
   }
 
   let sent = 0
+  let drafted = 0
   let noAddress = 0
   let failed = 0
   for (const job of jobs) {
@@ -556,6 +576,17 @@ async function runFollowUp() {
       const emailText = await aiAdapter.generateFollowUpEmail(
         cfg.aiProvider, cfg.aiApiKey, job.job_title, job.company, activeResume, cfg.geminiModel
       )
+      if (cfg.reviewFollowUpEmails) {
+        database.saveFollowUpDraft({
+          applicationId: job.id,
+          recipient,
+          subject: `Follow-up: ${job.job_title} at ${job.company}`,
+          body: emailText,
+        })
+        drafted++
+        log(`Follow-up drafted for review: ${job.job_title} at ${job.company}`)
+        continue
+      }
       await emailService.sendFollowUpEmail({ ...job, recruiter_email: recipient }, emailText, cfg)
       database.markFollowUpSent(job.id)
       sent++
@@ -568,6 +599,7 @@ async function runFollowUp() {
 
   if (jobs.length > 0) {
     const parts = [`${sent} sent`]
+    if (drafted) parts.push(`${drafted} waiting for review`)
     if (failed) parts.push(`${failed} failed`)
     if (noAddress) parts.push(`${noAddress} had no recruiter address`)
     log(`Follow-up pass complete: ${parts.join(', ')}.`)
@@ -693,4 +725,4 @@ function getBatchSchedule() {
   return batchSchedule
 }
 
-module.exports = { init, restart, stop, cancelScan, runNow, runDryRun, requestScan, processQueue, getScanInfo, getLastDryRun, runInboxCheck, runStaleSweep, getStatus, getBatchSchedule }
+module.exports = { init, restart, stop, cancelScan, runNow, runDryRun, requestScan, processQueue, getScanInfo, getLastDryRun, runInboxCheck, runFollowUp, runStaleSweep, getStatus, getBatchSchedule, runBatch }

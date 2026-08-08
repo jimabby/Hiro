@@ -28,6 +28,7 @@ function scoreColour(score) {
 
 export default function Review({ active, showToast, onCountChange }) {
   const [held, setHeld] = useState([])
+  const [followUps, setFollowUps] = useState([])
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState(() => new Set())
   const [detail, setDetail] = useState(null)
@@ -38,10 +39,15 @@ export default function Review({ active, showToast, onCountChange }) {
 
   const load = useCallback(async () => {
     try {
-      const rows = await window.api.getHeldApplications()
+      const [rows, drafts] = await Promise.all([
+        window.api.getHeldApplications(),
+        window.api.getFollowUpDrafts?.() || Promise.resolve([]),
+      ])
       const list = Array.isArray(rows) ? rows : []
+      const followUpList = Array.isArray(drafts) ? drafts : []
       setHeld(list)
-      onCountChange?.(list.length)
+      setFollowUps(followUpList)
+      onCountChange?.(list.length + followUpList.length)
       // Drop selections for rows that no longer exist, or "Approve 3" would
       // act on jobs that were already submitted.
       setSelected(prev => new Set([...prev].filter(id => list.some(r => r.id === id))))
@@ -125,6 +131,22 @@ export default function Review({ active, showToast, onCountChange }) {
     }
   }
 
+  async function resolveFollowUp(id, approve) {
+    setBusy(true)
+    try {
+      const result = approve
+        ? await window.api.approveFollowUpDraft(id)
+        : await window.api.rejectFollowUpDraft(id)
+      if (result?.success) showToast?.(approve ? 'Follow-up email sent' : 'Follow-up draft rejected', approve ? 'success' : 'info')
+      else showToast?.(result?.reason || 'Could not update follow-up', 'error')
+    } catch (err) {
+      showToast?.(`Could not update follow-up: ${err.message}`, 'error')
+    } finally {
+      setBusy(false)
+      load()
+    }
+  }
+
   if (loading) return <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading review queue…</div>
 
   return (
@@ -152,6 +174,24 @@ export default function Review({ active, showToast, onCountChange }) {
         or reject. Approving submits the documents already written — it costs no extra AI calls.
         {' '}Turn this queue off in Settings → Automation if you would rather Hiro submit directly.
       </p>
+
+      {followUps.length > 0 && (
+        <div className="card" style={{ marginBottom: 20 }}>
+          <h2 style={{ fontSize: 15, marginBottom: 6 }}>Follow-up emails</h2>
+          <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 14 }}>AI drafted these messages, but none has been emailed yet.</p>
+          {followUps.map(draft => (
+            <div key={draft.id} style={{ borderTop: '1px solid var(--border)', padding: '14px 0' }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{draft.job_title} at {draft.company}</div>
+              <div style={{ color: 'var(--text-muted)', fontSize: 12, margin: '4px 0 10px' }}>To: {draft.recipient} · {draft.subject}</div>
+              <pre style={{ background: 'var(--surface2)', borderRadius: 8, padding: 12, whiteSpace: 'pre-wrap', fontFamily: 'inherit', fontSize: 12 }}>{draft.body}</pre>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
+                <button className="btn btn-ghost" disabled={busy} onClick={() => resolveFollowUp(draft.id, false)}>Reject</button>
+                <button className="btn btn-primary" disabled={busy} onClick={() => resolveFollowUp(draft.id, true)}>Approve & send</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {held.length === 0 ? (
         <div className="card" style={{ padding: 32, textAlign: 'center', color: 'var(--text-muted)' }}>

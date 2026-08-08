@@ -1135,7 +1135,8 @@ ipcMain.handle('db:getStats', () => database.getStats())
 // ─── IPC: AI Apply from Needs Attention ─────────────────────────
 ipcMain.handle('application:applySkipped', async (_, jobId) => {
   try {
-    const cfg = { ...configService.load(), askQuestion: makeAskQuestion(mainWindow) }
+    const saved = configService.load()
+    const cfg = { ...saved, askQuestion: makeAskQuestion(mainWindow), confirmSubmit: saved.confirmBeforeSubmit ? makeConfirmSubmit(mainWindow) : undefined }
     const result = await applicator.applySkippedJob(jobId, cfg, (msg) => {
       logger.append(`[skipped-apply] ${msg}`)
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1152,7 +1153,8 @@ ipcMain.handle('application:applySkipped', async (_, jobId) => {
 
 ipcMain.handle('attention:apply', async (_, jobId) => {
   try {
-    const cfg = { ...configService.load(), askQuestion: makeAskQuestion(mainWindow) }
+    const saved = configService.load()
+    const cfg = { ...saved, askQuestion: makeAskQuestion(mainWindow), confirmSubmit: saved.confirmBeforeSubmit ? makeConfirmSubmit(mainWindow) : undefined }
     const result = await applicator.applyAttentionJob(jobId, cfg, attentionLog)
     return result
   } catch (err) {
@@ -1171,7 +1173,8 @@ ipcMain.handle('attention:applyMany', async (_, jobIds) => {
     return { success: false, reason: 'No jobs selected' }
   }
   try {
-    const cfg = { ...configService.load(), askQuestion: makeAskQuestion(mainWindow) }
+    const saved = configService.load()
+    const cfg = { ...saved, askQuestion: makeAskQuestion(mainWindow), confirmSubmit: saved.confirmBeforeSubmit ? makeConfirmSubmit(mainWindow) : undefined }
     return await applicator.applyAttentionJobs(jobIds, cfg, attentionLog)
   } catch (err) {
     return { success: false, reason: err.message }
@@ -1336,9 +1339,8 @@ ipcMain.handle('review:list', () => database.getHeldApplications())
 
 ipcMain.handle('review:approve', async (_, id) => {
   try {
-    // confirmSubmit is supplied only here: these are user-initiated, so
-    // there is someone present to answer. A scheduled scan gets no
-    // callback and proceeds without blocking on a modal.
+    // User-initiated submissions receive the final confirmation callback. A
+    // scheduled scan gets none and cannot block on a modal nobody may answer.
     const saved = configService.load()
     const cfg = {
       ...saved,
@@ -1356,9 +1358,8 @@ ipcMain.handle('review:approve', async (_, id) => {
 ipcMain.handle('review:approveMany', async (_, ids) => {
   if (!Array.isArray(ids) || ids.length === 0) return { success: false, reason: 'No applications selected' }
   try {
-    // confirmSubmit is supplied only here: these are user-initiated, so
-    // there is someone present to answer. A scheduled scan gets no
-    // callback and proceeds without blocking on a modal.
+    // User-initiated submissions receive the final confirmation callback. A
+    // scheduled scan gets none and cannot block on a modal nobody may answer.
     const saved = configService.load()
     const cfg = {
       ...saved,
@@ -1375,6 +1376,31 @@ ipcMain.handle('review:approveMany', async (_, ids) => {
 
 ipcMain.handle('review:reject', (_, id) => {
   try { return database.rejectHeldApplication(id) } catch (err) { return { success: false, error: err.message } }
+})
+
+ipcMain.handle('review:followUps', () => database.getFollowUpDrafts())
+ipcMain.handle('review:approveFollowUp', async (_, id) => {
+  try {
+    const draft = database.getFollowUpDraft(id)
+    if (!draft || draft.status !== 'held') return { success: false, reason: 'Follow-up draft not found' }
+    const cfg = configService.load()
+    await emailService.sendFollowUpEmail({
+      job_title: draft.job_title, company: draft.company,
+      recruiter_email: draft.recipient,
+    }, draft.body, cfg)
+    // resolveFollowUpDraft marks the application's follow-up decided; the email
+    // has already gone, so it must run even if something below were to fail.
+    return database.resolveFollowUpDraft(id, 'sent')
+  } catch (err) { return { success: false, reason: err.message } }
+})
+// Declining is as final as sending. Both settle the draft through the same call
+// precisely so a rejection cannot leave the application due for redrafting.
+ipcMain.handle('review:rejectFollowUp', (_, id) => {
+  try {
+    const draft = database.getFollowUpDraft(id)
+    if (!draft || draft.status !== 'held') return { success: false, reason: 'Follow-up draft not found' }
+    return database.resolveFollowUpDraft(id, 'rejected')
+  } catch (err) { return { success: false, reason: err.message } }
 })
 
 function reviewLog(msg) {

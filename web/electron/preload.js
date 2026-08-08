@@ -210,6 +210,9 @@ contextBridge.exposeInMainWorld('api', {
   approveHeldApplication: (id) => ipcRenderer.invoke('review:approve', id),
   approveHeldApplications: (ids) => ipcRenderer.invoke('review:approveMany', ids),
   rejectHeldApplication: (id) => ipcRenderer.invoke('review:reject', id),
+  getFollowUpDrafts: () => ipcRenderer.invoke('review:followUps'),
+  approveFollowUpDraft: (id) => ipcRenderer.invoke('review:approveFollowUp', id),
+  rejectFollowUpDraft: (id) => ipcRenderer.invoke('review:rejectFollowUp', id),
   onReviewLog: (cb) => ipcRenderer.on('review:log', (_, msg) => cb(msg)),
 
   // AI usage & spend

@@ -77,7 +77,7 @@ export default function App() {
 
     window.api.getStats().then(s => {
       setAttentionCount(s.attentionCount || 0)
-      setHeldCount(s.heldCount || 0)
+      setHeldCount((s.heldCount || 0) + (s.followUpReviewCount || 0))
       setTodayCount(s.totalToday || 0)
     })
 
@@ -114,7 +114,7 @@ export default function App() {
         setScanRunning(false)
         window.api.getStats().then(s => {
           setAttentionCount(s.attentionCount || 0)
-          setHeldCount(s.heldCount || 0)
+          setHeldCount((s.heldCount || 0) + (s.followUpReviewCount || 0))
           setTodayCount(s.totalToday || 0)
         })
         // A scan that died partway used to report "Scan complete" like any
@@ -133,6 +133,11 @@ export default function App() {
         }
         else if (data.held > 0) {
           showToast(`${data.held} application${data.held === 1 ? '' : 's'} drafted and waiting in Review — nothing was sent`, 'info')
+        }
+        // A platform Hiro paused itself is worth saying, but it is the system
+        // working — informational, and ranked below anything the user must act on.
+        else if (data.paused?.length) {
+          showToast(`Scan complete — ${data.paused.map(p => p.platform).join(', ')} paused by automation health`, 'info')
         }
         else showToast('Scan complete', 'success')
       }

@@ -17,7 +17,10 @@ const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json')
 // plaintext values still load and get encrypted on the next save. If the OS
 // keychain is unavailable, values fall back to plaintext rather than locking
 // the user out.
-const SECRET_KEYS = ['aiApiKey', 'gmailAppPassword', 'supabaseRefreshToken', 'mobileApiToken']
+const SECRET_KEYS = [
+  'aiApiKey', 'gmailAppPassword', 'supabaseRefreshToken', 'mobileApiToken',
+  'calendarRefreshToken', 'calendarClientSecret',
+]
 const ENC_PREFIX = 'enc:v1:'
 
 let safeStorage = null
@@ -82,6 +85,7 @@ const DEFAULTS = {
   dailyReportTime: '18:00',
   followUpDays: 7,
   enableFollowUp: false,
+  reviewFollowUpEmails: true,
   enableInboxCheck: false,
   // Inbox checks used to run Mon–Fri only, so a Friday-evening recruiter reply
   // wasn't seen until Monday. Every day by default; the weekday-only cadence is
@@ -206,6 +210,12 @@ const DEFAULTS = {
   atsBoards: [],
   enableAtsBoards: false,
   dailyLimitAts: 10,
+
+  // Platforms that repeatedly block automation or exhibit broken selectors
+  // are paused automatically. Entries are { platform: ISO timestamp } and are
+  // maintained by automationHealth; the duration remains user-configurable.
+  automationCooldownHours: 6,
+  automationCooldowns: {},
 
   // ─── Recruiter contact extraction ──────────────────────────────
   // Pull a contact address out of the job ad and out of recruiter replies, so

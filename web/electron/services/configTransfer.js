@@ -25,6 +25,9 @@ const RUNTIME_KEYS = new Set([
   'pendingScans', 'lastScanAt', 'lastInboxCheck', 'lastCloudSyncAt',
   'setupComplete', 'mobileApiToken', 'mobileApiEnabled',
   'supabaseRefreshToken', 'cloudSyncEnabled',
+  'deviceId', 'deviceName', 'knownDeviceIds', 'mobileDevices',
+  'calendarSyncCursor', 'lastCalendarSyncAt', 'encryptDatabase',
+  'automationCooldowns',
   // Registers a login item pointing at THIS machine's install path, and the
   // OS-level entry is written by the tray service rather than by config alone.
   // Importing it elsewhere would tick the box without registering anything.
@@ -33,7 +36,9 @@ const RUNTIME_KEYS = new Set([
 
 // Credentials. Excluded unless the user explicitly opts in, so the default
 // export is safe to keep around as a settings backup.
-const SECRET_KEYS = new Set(['aiApiKey', 'gmailAppPassword'])
+const SECRET_KEYS = new Set([
+  'aiApiKey', 'gmailAppPassword', 'calendarRefreshToken', 'calendarClientSecret',
+])
 
 function deriveKey(passphrase, salt) {
   return crypto.scryptSync(Buffer.from(passphrase, 'utf8'), salt, SCRYPT.keylen, {
@@ -44,7 +49,7 @@ function deriveKey(passphrase, salt) {
 }
 
 // Build the payload to encrypt. `includeSecrets` decides whether API keys and
-// the Gmail app password travel with it.
+// email and calendar credentials travel with it.
 function buildPayload(includeSecrets) {
   const cfg = configService.load()
   const out = {}

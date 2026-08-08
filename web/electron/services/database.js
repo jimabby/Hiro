@@ -123,6 +123,17 @@ function createTables() {
       found_at TEXT DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS follow_up_drafts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      application_id INTEGER NOT NULL UNIQUE,
+      recipient TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      body TEXT NOT NULL,
+      status TEXT DEFAULT 'held',
+      created_at TEXT DEFAULT (datetime('now')),
+      resolved_at TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS screening_cache (
       question_hash TEXT PRIMARY KEY,
       question TEXT NOT NULL,
@@ -316,6 +327,10 @@ function migrate() {
   // Review mode ('held' status) parks a job instead of submitting it. These
   // carry the drafted documents forward so approving it doesn't re-run the AI.
   try { db.run('ALTER TABLE applications ADD COLUMN held_at TEXT') } catch {}
+  // Single quotes: double quotes are SQLite's IDENTIFIER syntax, and this only
+  // stored "[]" as a string because of the legacy double-quoted-string fallback
+  // that resolves an unknown identifier to a literal.
+  try { db.run("ALTER TABLE applications ADD COLUMN fabrication_flags TEXT DEFAULT '[]'") } catch {}
 
   // Indexes for frequent queries
   try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_applied_at ON applications(applied_at DESC)') } catch {}
@@ -490,8 +505,8 @@ function insertApplication(data) {
   const status = data.status || 'applied'
   db.run(`
     INSERT INTO applications
-      (job_title, company, platform, salary, job_url, job_description, match_score, match_explanation, tailored_resume, cover_letter, screening_qa, status, closing_date, salary_min, salary_max, resume_id, resume_name, recruiter_email, held_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (job_title, company, platform, salary, job_url, job_description, match_score, match_explanation, tailored_resume, cover_letter, screening_qa, status, closing_date, salary_min, salary_max, resume_id, resume_name, recruiter_email, held_at, fabrication_flags)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     data.job_title, data.company, data.platform, data.salary || '',
     data.job_url, data.job_description, data.match_score,
@@ -504,6 +519,7 @@ function insertApplication(data) {
     data.resume_id || null, data.resume_name || null,
     data.recruiter_email || '',
     status === 'held' ? new Date().toISOString() : null,
+    JSON.stringify(data.fabrication_flags || []),
   ])
   // Read the new row id BEFORE persist(): db.export() resets last_insert_rowid.
   const newId = queryOne('SELECT last_insert_rowid() as id')?.id
@@ -1174,6 +1190,7 @@ function getStats() {
     attentionCount: queryOne('SELECT COUNT(*) as c FROM attention_jobs WHERE dismissed = 0')?.c || 0,
     // Jobs parked by review mode, waiting for the user to approve or reject.
     heldCount: queryOne("SELECT COUNT(*) as c FROM applications WHERE status = 'held'")?.c || 0,
+    followUpReviewCount: queryOne("SELECT COUNT(*) as c FROM follow_up_drafts WHERE status = 'held'")?.c || 0,
     byPlatform: query(`SELECT platform, COUNT(*) as count FROM applications WHERE ${SENT_ONLY} GROUP BY platform`),
     // byStatus deliberately keeps every row: it is a breakdown BY status, so
     // 'skipped' and 'held' are the point rather than a distortion.
@@ -1196,6 +1213,39 @@ function getTodayCountByPlatform(platform) {
   return queryOne(
     `SELECT COUNT(*) as c FROM applications
      WHERE platform = ? AND status NOT IN ('skipped', 'held') AND applied_at >= ${TODAY_START}`,
+    [platform]
+  )?.c || 0
+}
+
+function holdApplicationDraft(id, data) {
+  const row = queryOne('SELECT * FROM applications WHERE id = ?', [id])
+  if (!row) return { success: false }
+  const detail = (data.flags || []).map(f => `${f.kind}: ${f.value}`).join('; ')
+  run(`UPDATE applications SET status = 'held', held_at = ?,
+       tailored_resume = ?, cover_letter = ?, resume_id = ?, resume_name = ?,
+       fabrication_flags = ?, match_explanation = ?,
+       updated_at = datetime('now'), cloud_dirty = 1 WHERE id = ?`, [
+    new Date().toISOString(), data.tailoredResume || '',
+    data.coverLetter || '', data.resumeId || null, data.resumeName || null,
+    JSON.stringify(data.flags || []),
+    `${row.match_explanation || ''}${row.match_explanation ? '\n\n' : ''}Fabrication guard: ${detail}`,
+    id,
+  ])
+  recordStatusChange(id, 'held')
+  recordSnapshot(id, 'drafted', {
+    base_resume: data.baseResume, resume_name: data.resumeName,
+    tailored_resume: data.tailoredResume, cover_letter: data.coverLetter,
+    match_score: row.match_score, status: 'held', provider: data.provider, model: data.model,
+  })
+  return { success: true }
+}
+
+// ATS boards never submit automatically; creating a Needs Attention draft is
+// the spend-causing completed unit, so its daily cap must count those rows.
+function getTodayAttentionCountByPlatform(platform) {
+  return queryOne(
+    `SELECT COUNT(*) as c FROM attention_jobs
+     WHERE platform = ? AND found_at >= ${TODAY_START}`,
     [platform]
   )?.c || 0
 }
@@ -1256,11 +1306,58 @@ function setLastReplyUid(id, uid) {
 }
 
 function getApplicationsForFollowUp(daysOld) {
-  return query("SELECT * FROM applications WHERE status = 'applied' AND follow_up_sent = 0 AND applied_at <= datetime('now', '-' || ? || ' days')", [daysOld])
+  return query(`SELECT * FROM applications a
+                WHERE status = 'applied' AND follow_up_sent = 0
+                AND applied_at <= datetime('now', '-' || ? || ' days')
+                AND NOT EXISTS (SELECT 1 FROM follow_up_drafts d
+                                WHERE d.application_id = a.id AND d.status = 'held')`, [daysOld])
 }
 
 function markFollowUpSent(id) {
   run('UPDATE applications SET follow_up_sent = 1 WHERE id = ?', [id])
+}
+
+function saveFollowUpDraft({ applicationId, recipient, subject, body }) {
+  run(`INSERT INTO follow_up_drafts (application_id, recipient, subject, body, status)
+       VALUES (?, ?, ?, ?, 'held')
+       ON CONFLICT(application_id) DO UPDATE SET recipient = excluded.recipient,
+       subject = excluded.subject, body = excluded.body, status = 'held',
+       created_at = datetime('now'), resolved_at = NULL`,
+  [applicationId, recipient, subject, body])
+  return { success: true }
+}
+
+function getFollowUpDrafts() {
+  return query(`SELECT d.*, a.job_title, a.company
+                FROM follow_up_drafts d JOIN applications a ON a.id = d.application_id
+                WHERE d.status = 'held' ORDER BY d.created_at ASC`)
+}
+
+function getFollowUpDraft(id) {
+  return queryOne(`SELECT d.*, a.job_title, a.company
+                   FROM follow_up_drafts d JOIN applications a ON a.id = d.application_id
+                   WHERE d.id = ?`, [id])
+}
+
+// Settle a drafted follow-up, whichever way the user went.
+//
+// Marking the application follow_up_sent belongs HERE rather than in the
+// callers, because it is what stops the draft being written again. Only the
+// 'held' status keeps an application out of getApplicationsForFollowUp, so a
+// draft resolved any other way left follow_up_sent at 0 and the application
+// became due again on the next pass — the AI redrafted a message the user had
+// already declined, every weekday, forever.
+//
+// The column reads as "sent", but what it has always gated is whether the
+// follow-up for this application is DECIDED. A rejection is a decision.
+function resolveFollowUpDraft(id, status) {
+  const draft = queryOne('SELECT application_id FROM follow_up_drafts WHERE id = ?', [id])
+  if (!draft) return { success: false, reason: 'Follow-up draft not found' }
+  batch(() => {
+    run(`UPDATE follow_up_drafts SET status = ?, resolved_at = datetime('now') WHERE id = ?`, [status, id])
+    markFollowUpSent(draft.application_id)
+  })
+  return { success: true }
 }
 
 // ─── Stale applications ──────────────────────────────────────────
@@ -1987,7 +2084,7 @@ module.exports = {
   init, batch, pruneOrphanedRows, backfillSalaryColumns,
   getApplications, getApplicationsList, getApplication, hasJobUrl, hasAttentionJobUrl, hasSeenJobUrl,
   findRecentApplicationToCompany, insertApplication, updateApplicationStatus,
-  getHeldApplications, markHeldApplied, rejectHeldApplication,
+  getHeldApplications, markHeldApplied, rejectHeldApplication, holdApplicationDraft,
   recordSnapshot, getSnapshots, getSnapshot, getSnapshotDiff, compareSnapshots, restoreSnapshot,
   recordAutomationEvent, getAutomationEvents, clearAutomationEvents,
   recordSyncConflict, getSyncConflicts, countSyncConflicts, clearSyncConflicts, applyConflictResolution,
@@ -1999,9 +2096,10 @@ module.exports = {
   getAttentionJobs, getAttentionJob, insertAttentionJob, dismissAttentionJob, deleteAttentionJob, clearAllAttentionJobs,
   getAllInterviewEventsForSync,
   getCachedAnswer, saveCachedAnswer, getAllCachedAnswers, deleteCachedAnswer, clearAllCachedAnswers,
-  getStats, getTodayCountByPlatform, getSalaryStats,
+  getStats, getTodayCountByPlatform, getTodayAttentionCountByPlatform, getSalaryStats,
   findDuplicateAcrossPlatforms, getApplicationsByDate, getApplicationsPerDay,
   getApplicationsForFollowUp, markFollowUpSent,
+  saveFollowUpDraft, getFollowUpDrafts, getFollowUpDraft, resolveFollowUpDraft,
   getApplicationsAwaitingReply, setLastReplyUid, markStaleApplications, OPEN_STATUSES,
   saveInterviewPrep, getInterviewPrep, deleteInterviewPrep,
   addInterviewEvent, upsertDetectedInterview, getInterviewEvents, getUpcomingInterviews, getInterviewEvent, deleteInterviewEvent,

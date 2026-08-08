@@ -11,7 +11,15 @@ const path = require('path')
 const { stub, service, createChecker } = require('./helpers')
 
 const CONFIG_DIR = path.join(os.tmpdir(), 'hiro-health-' + Date.now())
-stub({ './config': { load: () => ({}), update: () => {}, CONFIG_DIR } })
+let storedConfig = {}
+stub({ './config': {
+  load: () => ({ ...storedConfig }),
+  update: patch => {
+    storedConfig = typeof patch === 'function' ? patch({ ...storedConfig }) : { ...storedConfig, ...patch }
+    return storedConfig
+  },
+  CONFIG_DIR,
+} })
 
 const health = service('automationHealth.js')
 const { check, done } = createChecker()
@@ -153,5 +161,16 @@ check('no events reports unknown, not broken',
 // A malformed timestamp must not throw or claim freshness.
 check('an unparseable timestamp does not crash',
   health.diagnose('Seek', [ev('scrape-ok', { count: 1, at: 'not-a-date' })]).status, 'warning')
+
+// A diagnosed failure changes behaviour, not just the dashboard: pause the
+// platform so the next scheduled scan does not hammer it again.
+{
+  const now = Date.now()
+  health.startCooldown('Indeed', 'blocked', now)
+  const cooldown = health.getCooldown('Indeed', now + 1000)
+  check('automation failure starts a cooldown', cooldown.active, true)
+  check('cooldown remembers why it paused', cooldown.reason, 'blocked')
+  check('cooldown expires', health.getCooldown('Indeed', now + 7 * 3600000).active, false)
+}
 
 done()

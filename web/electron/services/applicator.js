@@ -7,6 +7,7 @@ const database = require('./database')
 const { randomDelay, stripMarkdown } = require('./scraper/utils')
 const { parseClosingDate } = require('./dateParser')
 const automationHealth = require('./automationHealth')
+const { inspectTailoring, describeFlags } = require('./fabricationGuard')
 
 // Pick the resume to use for a given job. A rule matches when any of its
 // comma-separated keywords appears in the job title or description; the first
@@ -133,6 +134,12 @@ async function doRun(cfg, { log, notifyAttention }) {
   // expired login). Reported in the summary so the caller can tell "blocked"
   // apart from "nothing found".
   const blocked = []
+  // Platforms this run deliberately skipped because automation health paused
+  // them. Kept apart from `blocked`: a pause is Hiro's own decision working as
+  // designed, and folding it into the failure channel reported a healthy system
+  // as a broken one — a "Scan did not complete" push and a red banner for a
+  // back-off the app chose itself.
+  const paused = []
   // Jobs the model couldn't score this run. They are deliberately NOT saved —
   // the next scan retries them — but the count is surfaced so a scan that
   // quietly achieved nothing because the API was down doesn't look like a scan
@@ -141,16 +148,25 @@ async function doRun(cfg, { log, notifyAttention }) {
   let budgetStopped = false
   const batchLimit = cfg.batchLimit || Infinity // smart scheduling passes a finite limit
   const summary = () => (cfg.dryRun
-    ? { dryRun: true, scores: dryScores, wouldApply: dryWouldApply, threshold: cfg.matchThreshold, blocked, scoringFailures, budgetStopped }
-    : { dryRun: false, applied: batchCount, held: heldCount, blocked, scoringFailures, budgetStopped })
+    ? { dryRun: true, scores: dryScores, wouldApply: dryWouldApply, threshold: cfg.matchThreshold, blocked, paused, scoringFailures, budgetStopped }
+    : { dryRun: false, applied: batchCount, held: heldCount, blocked, paused, scoringFailures, budgetStopped })
 
   for (const { name, scraper, limit } of scrapers) {
     if (cancelled || batchCount >= batchLimit) { if (cancelled) log('Scan cancelled.'); return summary() }
 
+    const cooldown = automationHealth.getCooldown(name)
+    if (cooldown.active) {
+      log(`${name}: paused by automation health until ${cooldown.until}. Skipping this run.`)
+      paused.push({ platform: name, until: cooldown.until, reason: cooldown.reason })
+      continue
+    }
+
     log(`Scanning ${name}...`)
 
     // Dry run ignores daily limits so every found job gets scored for tuning.
-    const todayCount = database.getTodayCountByPlatform(name)
+    const todayCount = name === 'ATS'
+      ? database.getTodayAttentionCountByPlatform(name)
+      : database.getTodayCountByPlatform(name)
     if (!cfg.dryRun && todayCount >= limit) {
       log(`${name}: daily limit reached (${todayCount}/${limit}). Skipping.`)
       continue
@@ -197,7 +213,14 @@ async function doRun(cfg, { log, notifyAttention }) {
     for (const job of filtered) {
       if (cancelled || batchCount >= batchLimit) { if (cancelled) log('Scan cancelled.'); return summary() }
 
-      const currentCount = database.getTodayCountByPlatform(name)
+      // Some structured board adapters omit the redundant platform field. It
+      // is still required for attribution and, for ATS, for the draft-based
+      // daily limit below.
+      job.platform = job.platform || name
+
+      const currentCount = name === 'ATS'
+        ? database.getTodayAttentionCountByPlatform(name)
+        : database.getTodayCountByPlatform(name)
       if (!cfg.dryRun && currentCount >= limit) break
 
       // Skip already-seen jobs. Checks BOTH tables: a job whose apply failed
@@ -353,6 +376,40 @@ async function doRun(cfg, { log, notifyAttention }) {
       if (cancelled) { log('Scan cancelled.'); return summary() }
 
       const recruiterEmail = findRecruiterEmail(jobCfg, { ...job, job_description: jobDescription }, log)
+
+      // Prompts are guidance, not enforcement. Any newly introduced durable
+      // employment fact forces human review even when blanket review mode is
+      // disabled or the score clears the auto-submit threshold.
+      const fabrication = inspectTailoring(jobCfg.masterResume, tailoredResume)
+      if (!fabrication.safe) {
+        const detail = describeFlags(fabrication.flags)
+        if (scraper.supportsAutoApply === false) {
+          job.reason = `Possible fabricated resume facts need review before manual submission: ${detail}`
+          job.job_description = jobDescription || job.job_description || ''
+          job.tailored_resume = tailoredResume
+          job.cover_letter = coverLetter
+          job.recruiter_email = recruiterEmail
+          await addAttentionJob(job, jobCfg, log, notifyAttention)
+          await randomDelay(1500, 4000)
+          continue
+        }
+        database.insertApplication({
+          job_title: job.job_title, company: job.company, platform: name,
+          salary: job.salary || '', job_url: job.job_url,
+          job_description: jobDescription, match_score: matchScore,
+          match_explanation: `${matchExplanation || ''}${matchExplanation ? '\n\n' : ''}Fabrication guard: ${detail}`,
+          base_resume: jobCfg.masterResume || '', provider: jobCfg.aiProvider || '',
+          model: jobCfg.geminiModel || '', tailored_resume: tailoredResume,
+          cover_letter: coverLetter, screening_qa: [], status: 'held',
+          closing_date: job.closing_date, resume_id: jobCfg.activeResumeId,
+          resume_name: jobCfg.activeResumeName, recruiter_email: recruiterEmail,
+          fabrication_flags: fabrication.flags,
+        })
+        heldCount++
+        log(`  HELD by fabrication guard — ${detail}`)
+        await randomDelay(1500, 4000)
+        continue
+      }
 
       // Company career boards have no automatable submit step. Route them to
       // Needs Attention with the documents drafted rather than calling apply()
@@ -534,6 +591,13 @@ async function tailorAndApply(job, cfg, log) {
     log(`Cover letter error: ${err.message}`)
   }
 
+  const fabrication = inspectTailoring(cfg.masterResume, tailoredResume)
+  if (!fabrication.safe) {
+    const detail = describeFlags(fabrication.flags)
+    log(`Fabrication guard stopped submission — ${detail}`)
+    return { success: false, heldForFabrication: true, fabricationFlags: fabrication.flags, reason: `Possible fabricated resume facts: ${detail}`, tailoredResume, coverLetter }
+  }
+
   log('Applying...')
   let result
   try {
@@ -579,6 +643,20 @@ async function doApplyAttentionJob(jobId, cfg, log) {
 
   const result = await tailorAndApply(job, cfg, log)
 
+  if (result.heldForFabrication) {
+    database.insertApplication({
+      ...job, base_resume: cfg.masterResume || '', tailored_resume: result.tailoredResume,
+      cover_letter: result.coverLetter, screening_qa: [], status: 'held',
+      resume_id: cfg.activeResumeId, resume_name: cfg.activeResumeName,
+      provider: cfg.aiProvider || '', model: cfg.geminiModel || '',
+      fabrication_flags: result.fabricationFlags,
+      match_explanation: `${job.match_explanation || ''}${job.match_explanation ? '\n\n' : ''}Fabrication guard: ${describeFlags(result.fabricationFlags)}`,
+    })
+    database.dismissAttentionJob(jobId)
+    log('Moved to Review; nothing was submitted.')
+    return result
+  }
+
   if (result.success) {
     database.insertApplication({
       job_title: job.job_title,
@@ -594,6 +672,11 @@ async function doApplyAttentionJob(jobId, cfg, log) {
       screening_qa: result.screeningQa || [],
       status: 'applied',
       closing_date: job.closing_date || null,
+      base_resume: cfg.masterResume || '',
+      resume_id: cfg.activeResumeId,
+      resume_name: cfg.activeResumeName,
+      provider: cfg.aiProvider || '',
+      model: cfg.geminiModel || '',
     })
     database.dismissAttentionJob(jobId)
     log('Saved to history and removed from Needs Attention')
@@ -619,6 +702,17 @@ async function doApplySkippedJob(jobId, cfg, log) {
   cfg = resolveActiveResume(cfg, job, log)
 
   const result = await tailorAndApply(job, cfg, log)
+
+  if (result.heldForFabrication) {
+    database.holdApplicationDraft(jobId, {
+      baseResume: cfg.masterResume || '', tailoredResume: result.tailoredResume,
+      coverLetter: result.coverLetter, resumeId: cfg.activeResumeId,
+      resumeName: cfg.activeResumeName, provider: cfg.aiProvider || '',
+      model: cfg.geminiModel || '', flags: result.fabricationFlags,
+    })
+    log('Moved to Review; nothing was submitted.')
+    return result
+  }
 
   if (result.success) {
     database.updateApplicationAfterApply(jobId, result.tailoredResume, result.coverLetter, result.screeningQa)

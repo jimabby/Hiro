@@ -32,7 +32,8 @@
 
 ### Scheduling
 - **Configurable scan time** — set a daily scan time (Mon–Fri) in Settings
-- **Auto follow-up emails** — after a configurable number of days, AI drafts and sends a follow-up for unanswered applications
+- **Reviewed follow-up emails** — after a configurable number of days, AI drafts a follow-up for unanswered applications and holds it in Review by default; approve it before anything is emailed, or explicitly opt into direct sending
+- **Resume fabrication guard** — compares every tailored resume with its frozen base and forces review when new dates, credentials, job titles or employer names appear
 - **Daily email report** — summary of applications sent to your Gmail at a configurable time
 - **Inbox reply detection** — scans your inbox for recruiter replies on a configurable cadence (every 2 hours, every day of the week by default) and updates each application's status (Interview / Offer / Rejected / Pending), using AI to read the email body when an AI provider is configured. Scans resume from the last check rather than re-reading the whole mailbox each time, and applications marked Pending or No Response stay in scope — a later email that finally schedules an interview is still picked up. The newest matching email wins, and each one is only classified once
 - **Stale application sweep** — after a configurable number of days with no reply (default 45), an application moves to **No Response** so it stops dragging down your response rate. Nothing is deleted, and the inbox keeps watching it in case a late reply arrives
@@ -85,6 +86,7 @@ actually loses people offers: **what do I owe, and when?**
 - **Cover letter template** — optional structural base for AI to fill in
 - **Daily scan time picker** — choose exactly when the automated scan runs
 - **Auto follow-up** — toggle on/off with configurable day threshold
+- **Automation health cooldowns** — blocked or selector-broken platforms pause automatically instead of being hammered again by the next scheduled scan. A pause is reported as a pause, not as a failed scan: it says which platform, why, and when it rejoins, without the alert a real block raises
 - **Company cooldown** — how long to wait before applying to another role at the same company
 - **Resume routing rules** — keyword → resume mapping, checked top to bottom
 - **Pages per scan** — how deep to page through each platform's results (1–10)

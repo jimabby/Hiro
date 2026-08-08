@@ -640,6 +640,32 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
         </div>
       )}
 
+      {/* A platform Hiro paused itself after repeated blocks or a suspected
+          selector break. Deliberately quieter than the blocked banner above:
+          nothing is wrong and there is nothing to do, but the missing results
+          still have to be accounted for or the day looks like a thin market. */}
+      {scanInfo?.lastScanPaused?.length > 0 && !scanRunning && (
+        <div className="card" style={{
+          marginBottom: 16, padding: '12px 16px', fontSize: 13,
+          borderLeft: '3px solid var(--border)',
+        }}>
+          <span style={{ fontWeight: 600 }}>
+            Paused: {scanInfo.lastScanPaused.map(p => p.platform).join(', ')}
+          </span>
+          <div style={{ color: 'var(--text-muted)', marginTop: 4 }}>
+            {scanInfo.lastScanPaused.map(p => (
+              <div key={p.platform}>
+                {p.platform}: backed off after repeated failures ({p.reason}); resumes {new Date(p.until).toLocaleString()}
+              </div>
+            ))}
+            <div style={{ marginTop: 4 }}>
+              Hiro skipped these to avoid hardening the block. They rejoin the next
+              scan automatically — adjust the window in Settings → Automation.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Stats */}
       {!stats && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 16, marginBottom: 24 }}>

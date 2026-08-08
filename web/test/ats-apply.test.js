@@ -101,6 +101,16 @@ async function main() {
   check('the reason explains why it needs a manual application',
     /submit on the site/i.test(row.reason), true)
 
+  let extraScores = 0
+  ats.scrape = async () => [{
+    job_title: 'New Expensive Draft', company: 'Another Co', job_url: 'https://boards.example/jobs/capped',
+    _description: 'A new role that would otherwise consume AI calls.', _provider: 'Greenhouse',
+  }]
+  ai.scoreMatchWithExplanation = async () => { extraScores++; return { score: 90, explanation: '' } }
+  await applicator.run({ ...CFG, dailyLimitAts: 2 }, { log: (m) => logs.push(m), notifyAttention: () => {} })
+  check('ATS daily cap stops scoring once today drafts reach the limit', extraScores, 0)
+  check('the capped ATS job is not drafted', db.hasSeenJobUrl('https://boards.example/jobs/capped'), false)
+
   // ── The write is defensive on its own ────────────────────────
   // A caller that omits an optional field must not take the whole scan down with
   // it. Bound directly rather than through the applicator, because the point is
