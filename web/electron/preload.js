@@ -15,8 +15,12 @@ contextBridge.exposeInMainWorld('api', {
   runCampaign: (id) => ipcRenderer.invoke('features:runCampaign', id),
   importJob: (job) => ipcRenderer.invoke('features:importJob', job),
   getContacts: () => ipcRenderer.invoke('features:contacts'),
+  getDueContacts: () => ipcRenderer.invoke('features:dueContacts'),
   saveContact: (contact) => ipcRenderer.invoke('features:saveContact', contact),
   deleteContact: (id) => ipcRenderer.invoke('features:deleteContact', id),
+  completeContactReminder: (id) => ipcRenderer.invoke('features:completeContact', id),
+  snoozeContactReminder: (id, date) => ipcRenderer.invoke('features:snoozeContact', id, date),
+  getCampaignAnalytics: () => ipcRenderer.invoke('features:campaignAnalytics'),
   getOptimisationInsights: () => ipcRenderer.invoke('features:insights'),
 
   // Automation
@@ -179,6 +183,8 @@ contextBridge.exposeInMainWorld('api', {
   backupNow: () => ipcRenderer.invoke('db:backupNow'),
   listBackups: () => ipcRenderer.invoke('db:listBackups'),
   restoreBackup: (name) => ipcRenderer.invoke('db:restoreBackup', name),
+  drillBackups: () => ipcRenderer.invoke('db:drillBackups'),
+  getBackupDrillStatus: () => ipcRenderer.invoke('db:backupDrillStatus'),
 
   // Events from main process
   onNotification: (cb) => ipcRenderer.on('notification', (_, data) => cb(data)),

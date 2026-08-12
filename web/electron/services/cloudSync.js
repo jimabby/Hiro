@@ -189,6 +189,8 @@ function localToCloud(a) {
     // back — the phone needs both to label the row honestly.
     resume_id: a.resume_id || null,
     resume_name: a.resume_name || null,
+    campaign_id: a.campaign_id || null,
+    campaign_name: a.campaign_name || null,
     held_at: a.held_at ? toISO(a.held_at) : null,
     applied_at: toISO(a.applied_at),
     updated_at: toISO(a.updated_at),

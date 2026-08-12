@@ -15,7 +15,11 @@ module.exports = function registerFeatureHandlers({ ipcMain, scheduler, getWindo
   })
   ipcMain.handle('features:importJob', (_, job) => featureHub.importJob(job))
   ipcMain.handle('features:contacts', () => featureHub.listContacts())
+  ipcMain.handle('features:dueContacts', () => featureHub.dueContacts())
   ipcMain.handle('features:saveContact', (_, contact) => featureHub.saveContact(contact))
   ipcMain.handle('features:deleteContact', (_, id) => featureHub.deleteContact(id))
+  ipcMain.handle('features:completeContact', (_, id) => featureHub.completeContact(id))
+  ipcMain.handle('features:snoozeContact', (_, id, date) => featureHub.snoozeContact(id, date))
+  ipcMain.handle('features:campaignAnalytics', () => featureHub.campaignAnalytics())
   ipcMain.handle('features:insights', () => featureHub.insights())
 }

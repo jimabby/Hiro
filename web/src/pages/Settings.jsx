@@ -297,10 +297,14 @@ function formatBytes(bytes) {
 
 function BackupsCard({ showToast }) {
   const [backups, setBackups] = useState([])
+  const [drill, setDrill] = useState(null)
   const [busy, setBusy] = useState(false)
 
   async function load() {
-    try { setBackups(await window.api.listBackups() || []) } catch { setBackups([]) }
+    try {
+      const [items, status] = await Promise.all([window.api.listBackups(), window.api.getBackupDrillStatus()])
+      setBackups(items || []); setDrill(status)
+    } catch { setBackups([]) }
   }
   useEffect(() => { load() }, [])
 
@@ -313,15 +317,28 @@ function BackupsCard({ showToast }) {
             The database is backed up automatically once a day (last 7 kept) in ~/.hiro/backups.
           </p>
         </div>
-        <button className="btn btn-ghost" style={{ fontSize: 12 }} disabled={busy} onClick={async () => {
-          setBusy(true)
-          try {
-            const res = await window.api.backupNow()
-            if (res.success) { showToast?.('Backup created', 'success'); await load() }
-            else showToast?.(res.error || 'Backup failed', 'error')
-          } finally { setBusy(false) }
-        }}>{busy ? 'Working…' : 'Back Up Now'}</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn btn-ghost" style={{ fontSize: 12 }} disabled={busy} onClick={async () => {
+            setBusy(true)
+            try {
+              const res = await window.api.drillBackups()
+              await load()
+              showToast?.(res.success ? `Recovery drill passed for ${res.checked} backup(s)` : (res.error || `${res.failed} backup(s) failed`), res.success ? 'success' : 'error')
+            } finally { setBusy(false) }
+          }}>Test Recovery</button>
+          <button className="btn btn-ghost" style={{ fontSize: 12 }} disabled={busy} onClick={async () => {
+            setBusy(true)
+            try {
+              const res = await window.api.backupNow()
+              if (res.success) { showToast?.('Backup created', 'success'); await load() }
+              else showToast?.(res.error || 'Backup failed', 'error')
+            } finally { setBusy(false) }
+          }}>{busy ? 'Working…' : 'Back Up Now'}</button>
+        </div>
       </div>
+      {drill && <p style={{ color: drill.success ? 'var(--green)' : 'var(--red)', fontSize: 12 }}>
+        Last recovery drill: {new Date(drill.checkedAt).toLocaleString()} · {drill.checked} checked · {drill.failed} failed
+      </p>}
       {backups.length === 0 && <p style={{ color: 'var(--text-muted)', fontSize: 12 }}>No backups yet — one is created automatically each day the app runs.</p>}
       {backups.map(b => (
         <div key={b.name} style={{

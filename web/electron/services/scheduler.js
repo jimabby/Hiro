@@ -17,6 +17,8 @@ let weeklyReportTask = null
 let staleTask = null
 let calendarTask = null
 let pushTask = null
+let contactTask = null
+let backupDrillTask = null
 let campaignTasks = []
 let batchTimeouts = []
 let running = false
@@ -35,6 +37,10 @@ function init(mainWindow) {
   startTasks()
   // Catch up on the overnight sweep if the desktop wasn't running at 3:30am.
   runStaleSweep()
+  runContactReminders()
+  // Opening and integrity-checking seven databases can take noticeable time on
+  // a large history. Let the window finish starting before doing that I/O.
+  setImmediate(() => { runBackupDrillIfDue() })
   // Drain any scans queued (e.g. from the mobile app) while the desktop was off.
   processQueue()
 }
@@ -147,6 +153,22 @@ function startTasks() {
       pushTask = cron.schedule('*/10 * * * *', () => { push.runDueChecks().catch(() => {}) })
     } catch (err) {
       log(`Could not schedule notification checks: ${err.message}`)
+    }
+  }
+
+  if (cfg.enableContactReminders !== false) {
+    try {
+      contactTask = cron.schedule('0 9 * * *', () => { runContactReminders() })
+    } catch (err) {
+      log(`Could not schedule contact reminders: ${err.message}`)
+    }
+  }
+
+  if (cfg.enableBackupDrills !== false) {
+    try {
+      backupDrillTask = cron.schedule('15 4 * * 0', () => { runBackupDrill() })
+    } catch (err) {
+      log(`Could not schedule backup recovery drill: ${err.message}`)
     }
   }
 }
@@ -300,6 +322,8 @@ function stop({ abortRun = true } = {}) {
   staleTask = disposeTask(staleTask)
   calendarTask = disposeTask(calendarTask)
   pushTask = disposeTask(pushTask)
+  contactTask = disposeTask(contactTask)
+  backupDrillTask = disposeTask(backupDrillTask)
   campaignTasks.forEach(disposeTask)
   campaignTasks = []
   for (const t of batchTimeouts) clearTimeout(t)
@@ -416,6 +440,8 @@ async function runScan(overrides = {}) {
   // was down, must not look like a scan that simply found nothing.
   let scanHeld = 0
   let scanScoringFailures = 0
+  let runResult = null
+  const campaignStartedAt = new Date().toISOString()
   log(dryRun ? 'Starting test scan (dry run — nothing will be submitted)...' : 'Starting job scan...')
   cloudSync.updateScanStatus(true).catch(() => {})
 
@@ -425,9 +451,14 @@ async function runScan(overrides = {}) {
     if (overrides.location) runCfg.jobLocation = overrides.location
     if (overrides.salaryMin) runCfg.salaryMin = overrides.salaryMin
     if (overrides.resumeId) runCfg.defaultResumeId = overrides.resumeId
-    if (overrides.campaignId) runCfg.reviewBeforeSubmit = overrides.reviewBeforeSubmit !== false
+    if (overrides.campaignId) {
+      runCfg.reviewBeforeSubmit = overrides.reviewBeforeSubmit !== false
+      runCfg.campaignId = overrides.campaignId
+      runCfg.campaignName = String(overrides.source || '').replace(/^campaign:/, '') || 'Campaign'
+    }
     if (dryRun) runCfg.dryRun = true
     const result = await applicator.run(runCfg, { log, notifyAttention })
+    runResult = result
     if (result?.blocked?.length) scanBlocked = result.blocked
     if (result?.paused?.length) scanPaused = result.paused
     scanHeld = result?.held || 0
@@ -462,6 +493,18 @@ async function runScan(overrides = {}) {
         held: scanHeld,
         scoringFailures: scanScoringFailures,
         source: overrides.fromQueue ? 'queue' : (overrides.source || 'desktop'),
+      }
+      if (overrides.campaignId) {
+        try {
+          database.recordCampaignRun({
+            campaignId: overrides.campaignId,
+            campaignName: String(overrides.source || '').replace(/^campaign:/, ''),
+            startedAt: campaignStartedAt, found: runResult?.found,
+            applied: runResult?.applied, held: runResult?.held,
+            scoringFailures: runResult?.scoringFailures,
+            ok: !scanError, error: scanError,
+          })
+        } catch (err) { log(`Could not record campaign analytics: ${describeError(err)}`) }
       }
     }
     log(dryRun ? 'Test scan complete (dry run — nothing was submitted).' : 'Scan complete.')
@@ -704,6 +747,51 @@ function notifyAttention(job) {
   webhooks.send('attention', job).catch(() => {})
 }
 
+function localDate(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function runContactReminders() {
+  try {
+    const today = localDate()
+    const due = database.getDueContacts(today)
+    for (const contact of due) {
+      const title = `Follow up with ${contact.name || contact.email}`
+      const body = [contact.company, contact.role, contact.notes].filter(Boolean).join(' · ').slice(0, 300)
+      if (!database.claimPushKey(`contact:${contact.id}:${today}`, 'contact-reminder', title, body)) continue
+      notify({ type: 'contact-reminder', contact })
+      nativeNotify(title, body || `Contact reminder due ${contact.next_action_at}`)
+    }
+    return { success: true, due: due.length }
+  } catch (err) {
+    log(`Contact reminder check failed: ${describeError(err)}`)
+    return { success: false, error: describeError(err) }
+  }
+}
+
+function runBackupDrill() {
+  try {
+    database.maybeBackup()
+    const report = database.drillBackups()
+    if (report.success) log(`Backup recovery drill passed for ${report.checked} backup(s).`)
+    else {
+      log(`Backup recovery drill failed: ${report.error || `${report.failed} backup(s) could not be restored`}`)
+      nativeNotify('Backup recovery drill failed', report.error || `${report.failed} backup(s) could not be restored.`)
+    }
+    notify({ type: 'backup-drill', report })
+    return report
+  } catch (err) {
+    log(`Backup recovery drill failed: ${describeError(err)}`)
+    return { success: false, error: describeError(err) }
+  }
+}
+
+function runBackupDrillIfDue() {
+  const last = database.getBackupDrillStatus()
+  if (!last?.checkedAt || Date.now() - new Date(last.checkedAt).getTime() >= 7 * 86400000) return runBackupDrill()
+  return { success: true, skipped: true, last }
+}
+
 // OS-level notification for events that matter while Hiro runs in the
 // background. Skipped when the window is focused (the in-app toast already
 // covers that) or when disabled in Settings.
@@ -749,4 +837,4 @@ function getBatchSchedule() {
   return batchSchedule
 }
 
-module.exports = { init, restart, stop, cancelScan, runNow, runDryRun, requestScan, processQueue, getScanInfo, getLastDryRun, runInboxCheck, runFollowUp, runStaleSweep, getStatus, getBatchSchedule, runBatch }
+module.exports = { init, restart, stop, cancelScan, runNow, runDryRun, requestScan, processQueue, getScanInfo, getLastDryRun, runInboxCheck, runFollowUp, runStaleSweep, runContactReminders, runBackupDrill, runBackupDrillIfDue, getStatus, getBatchSchedule, runBatch }

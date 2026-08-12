@@ -300,6 +300,20 @@ function createTables() {
       updated_at TEXT DEFAULT (datetime('now')),
       UNIQUE (email, company)
     );
+
+    CREATE TABLE IF NOT EXISTS campaign_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      campaign_id TEXT NOT NULL,
+      campaign_name TEXT DEFAULT '',
+      started_at TEXT NOT NULL,
+      finished_at TEXT DEFAULT (datetime('now')),
+      found INTEGER DEFAULT 0,
+      applied INTEGER DEFAULT 0,
+      held INTEGER DEFAULT 0,
+      scoring_failures INTEGER DEFAULT 0,
+      ok INTEGER DEFAULT 1,
+      error TEXT DEFAULT ''
+    );
   `)
   persist()
 }
@@ -338,6 +352,10 @@ function migrate() {
   // tell afterwards which one converts — the routing rules were untestable.
   try { db.run('ALTER TABLE applications ADD COLUMN resume_id TEXT') } catch {}
   try { db.run('ALTER TABLE applications ADD COLUMN resume_name TEXT') } catch {}
+  try { db.run('ALTER TABLE applications ADD COLUMN campaign_id TEXT') } catch {}
+  try { db.run('ALTER TABLE applications ADD COLUMN campaign_name TEXT') } catch {}
+  try { db.run('ALTER TABLE attention_jobs ADD COLUMN campaign_id TEXT') } catch {}
+  try { db.run('ALTER TABLE attention_jobs ADD COLUMN campaign_name TEXT') } catch {}
   // Review mode ('held' status) parks a job instead of submitting it. These
   // carry the drafted documents forward so approving it doesn't re-run the AI.
   try { db.run('ALTER TABLE applications ADD COLUMN held_at TEXT') } catch {}
@@ -354,6 +372,9 @@ function migrate() {
   try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_status ON applications(status)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_platform ON applications(platform)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_company ON applications(company)') } catch {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_campaign ON applications(campaign_id)') } catch {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_attention_campaign ON attention_jobs(campaign_id)') } catch {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_campaign_runs_id ON campaign_runs(campaign_id, started_at DESC)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_attention_dismissed ON attention_jobs(dismissed)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_history_app ON status_history(application_id)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_snapshots_app ON application_snapshots(application_id, taken_at)') } catch {}
@@ -413,7 +434,7 @@ function queryOne(sql, params = []) {
 // getApplicationsList, which omits them and fetches detail on selection.
 const LIST_COLUMNS = `id, job_title, company, platform, salary, salary_min, salary_max, job_url,
   match_score, match_explanation, status, comment, recruiter_email, applied_at, updated_at,
-  closing_date, follow_up_sent, resume_id, resume_name,
+  closing_date, follow_up_sent, resume_id, resume_name, campaign_id, campaign_name,
   next_action_at, next_action_note`
 
 function getApplications(filters = {}) {
@@ -519,8 +540,8 @@ function insertApplication(data) {
   const status = data.status || 'applied'
   db.run(`
     INSERT INTO applications
-      (job_title, company, platform, salary, job_url, job_description, match_score, match_explanation, tailored_resume, cover_letter, screening_qa, status, closing_date, salary_min, salary_max, resume_id, resume_name, recruiter_email, held_at, fabrication_flags)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (job_title, company, platform, salary, job_url, job_description, match_score, match_explanation, tailored_resume, cover_letter, screening_qa, status, closing_date, salary_min, salary_max, resume_id, resume_name, recruiter_email, held_at, fabrication_flags, campaign_id, campaign_name)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     data.job_title, data.company, data.platform, data.salary || '',
     data.job_url, data.job_description, data.match_score,
@@ -534,6 +555,7 @@ function insertApplication(data) {
     data.recruiter_email || '',
     status === 'held' ? new Date().toISOString() : null,
     JSON.stringify(data.fabrication_flags || []),
+    data.campaign_id || null, data.campaign_name || null,
   ])
   // Read the new row id BEFORE persist(): db.export() resets last_insert_rowid.
   const newId = queryOne('SELECT last_insert_rowid() as id')?.id
@@ -994,14 +1016,15 @@ function restoreApplicationFromCloud(r) {
       (id, job_title, company, platform, salary, salary_min, salary_max, job_url,
        job_description, match_score, match_explanation, tailored_resume, cover_letter,
        screening_qa, comment, recruiter_email, status, resume_id, resume_name,
-       held_at, applied_at, updated_at, cloud_dirty, cloud_updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`,
+       campaign_id, campaign_name, held_at, applied_at, updated_at, cloud_dirty, cloud_updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`,
     [
       r.local_id, r.job_title || '', r.company || '', r.platform || '', r.salary || '',
       r.salary_min ?? null, r.salary_max ?? null, r.job_url || '', r.job_description || '',
       r.match_score ?? null, r.match_explanation || '', r.tailored_resume || '',
       r.cover_letter || '', r.screening_qa || '', r.comment || '', r.recruiter_email || '',
       r.status || 'applied', r.resume_id || null, r.resume_name || null,
+      r.campaign_id || null, r.campaign_name || null,
       r.held_at || null, r.applied_at || null, r.updated_at || null, r.updated_at || null,
     ]
   )
@@ -1096,14 +1119,15 @@ function insertAttentionJob(data) {
   // object, so the insert threw and the whole feature silently saved nothing.
   run(`
     INSERT INTO attention_jobs
-      (job_title, company, platform, salary, job_url, job_description, match_score, talking_points, reason, closing_date, salary_min, salary_max)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (job_title, company, platform, salary, job_url, job_description, match_score, talking_points, reason, closing_date, salary_min, salary_max, campaign_id, campaign_name)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     data.job_title ?? '', data.company ?? '', data.platform ?? '', data.salary || '',
     data.job_url ?? '', data.job_description ?? '', data.match_score ?? null,
     JSON.stringify(data.talking_points || []), data.reason || '',
     data.closing_date || null,
     parsed.salary_min ?? null, parsed.salary_max ?? null,
+    data.campaign_id || null, data.campaign_name || null,
   ])
   return { success: true }
 }
@@ -2096,12 +2120,56 @@ function getStorageInfo() {
   return { dbSize, counts, encryption: getEncryptionStatus() }
 }
 
+// Prove that backups can be decrypted and opened without touching the live
+// database. A byte-for-byte copy is not a recovery plan until SQLite has
+// accepted it and its integrity check passes.
+function drillBackups() {
+  if (!SQL) return { success: false, error: 'Database not initialised yet' }
+  const backups = listBackups().filter(b => /^autoapply-\d{4}-\d{2}-\d{2}\.db$/.test(b.name))
+  const results = []
+  for (const backup of backups) {
+    const file = path.join(BACKUP_DIR, backup.name)
+    let testDb = null
+    try {
+      const { data } = dbCrypto.readFile(file)
+      testDb = new SQL.Database(data)
+      const integrity = toRows(testDb.exec('PRAGMA integrity_check'))[0]
+      if (!integrity || String(Object.values(integrity)[0]).toLowerCase() !== 'ok') throw new Error('SQLite integrity check failed')
+      const applications = toRows(testDb.exec('SELECT COUNT(*) AS count FROM applications'))[0]?.count || 0
+      results.push({ name: backup.name, success: true, applications })
+    } catch (err) {
+      results.push({ name: backup.name, success: false, error: err.message || String(err) })
+    } finally {
+      try { testDb?.close() } catch {}
+    }
+  }
+  const report = {
+    success: results.length > 0 && results.every(r => r.success),
+    checkedAt: new Date().toISOString(), checked: results.length,
+    failed: results.filter(r => !r.success).length, results,
+  }
+  if (!results.length) report.error = 'No daily backups exist yet.'
+  configService.update({ lastBackupDrill: report })
+  return report
+}
+
+function getBackupDrillStatus() { return configService.load().lastBackupDrill || null }
+
 // Contacts/referrals are intentionally separate from applications: one person
 // can span several roles, and a relationship should survive deleting a listing.
 function getContacts() {
   return query(`SELECT * FROM contacts ORDER BY
     CASE WHEN next_action_at IS NULL OR next_action_at = '' THEN 1 ELSE 0 END,
     next_action_at ASC, updated_at DESC`)
+}
+
+function getDueContacts(date) {
+  if (!date) {
+    const now = new Date()
+    date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  }
+  return query(`SELECT * FROM contacts WHERE next_action_at IS NOT NULL
+    AND next_action_at != '' AND next_action_at <= ? ORDER BY next_action_at ASC, updated_at ASC`, [date])
 }
 
 function saveContact(input = {}) {
@@ -2121,6 +2189,63 @@ function saveContact(input = {}) {
 }
 
 function deleteContact(id) { run('DELETE FROM contacts WHERE id = ?', [Number(id)]); return { success: true } }
+
+function completeContactReminder(id) {
+  run("UPDATE contacts SET next_action_at = NULL, updated_at = datetime('now') WHERE id = ?", [Number(id)])
+  return { success: true }
+}
+
+function snoozeContactReminder(id, date) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) return { success: false, reason: 'Date must be YYYY-MM-DD.' }
+  run("UPDATE contacts SET next_action_at = ?, updated_at = datetime('now') WHERE id = ?", [date, Number(id)])
+  return { success: true }
+}
+
+function recordCampaignRun(input = {}) {
+  run(`INSERT INTO campaign_runs
+    (campaign_id,campaign_name,started_at,finished_at,found,applied,held,scoring_failures,ok,error)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`, [
+    String(input.campaignId || ''), String(input.campaignName || ''), input.startedAt || new Date().toISOString(),
+    input.finishedAt || new Date().toISOString(), Number(input.found) || 0, Number(input.applied) || 0,
+    Number(input.held) || 0, Number(input.scoringFailures) || 0, input.ok === false ? 0 : 1,
+    String(input.error || '').slice(0, 2000),
+  ])
+  return { success: true }
+}
+
+function getCampaignAnalytics() {
+  const runs = query(`SELECT campaign_id,
+    (SELECT newer.campaign_name FROM campaign_runs newer
+      WHERE newer.campaign_id = campaign_runs.campaign_id
+      ORDER BY newer.finished_at DESC, newer.id DESC LIMIT 1) AS campaign_name,
+    COUNT(*) AS runs, SUM(found) AS found, SUM(applied) AS applied, SUM(held) AS held,
+    SUM(scoring_failures) AS scoring_failures, SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END) AS failed_runs,
+    MAX(finished_at) AS last_run_at FROM campaign_runs GROUP BY campaign_id`)
+  const outcomes = query(`SELECT campaign_id, MAX(campaign_name) AS campaign_name,
+    COUNT(*) AS applications,
+    SUM(CASE WHEN status NOT IN ('held','skipped') THEN 1 ELSE 0 END) AS sent,
+    SUM(CASE WHEN status IN ('interview','offer') THEN 1 ELSE 0 END) AS converted,
+    ROUND(AVG(match_score), 1) AS avg_score
+    FROM applications WHERE campaign_id IS NOT NULL AND campaign_id != '' GROUP BY campaign_id`)
+  const byId = new Map(runs.map(r => [r.campaign_id, r]))
+  for (const row of outcomes) {
+    if (!byId.has(row.campaign_id)) {
+      byId.set(row.campaign_id, {
+        campaign_id: row.campaign_id, campaign_name: row.campaign_name,
+        runs: 0, found: 0, applied: 0, held: 0,
+        scoring_failures: 0, failed_runs: 0, last_run_at: null,
+      })
+    }
+    const target = byId.get(row.campaign_id)
+    const { campaign_name: outcomeName, ...metrics } = row
+    Object.assign(target, metrics)
+    if (!target.campaign_name) target.campaign_name = outcomeName
+  }
+  return [...byId.values()].map(row => ({
+    ...row,
+    conversion_rate: Number(row.sent) > 0 ? Math.round((Number(row.converted) / Number(row.sent)) * 100) : null,
+  })).sort((a, b) => String(b.last_run_at || '').localeCompare(String(a.last_run_at || '')))
+}
 
 function getOptimisationInsights() {
   const stats = getStats()
@@ -2174,9 +2299,10 @@ module.exports = {
   claimPushKey, getPushLog, prunePushLog,
   getCalendarLink, getCalendarLinks, saveCalendarLink, deleteCalendarLink, getOrphanedCalendarLinks,
   getWeeklyReportData, getStorageInfo,
-  getContacts, saveContact, deleteContact, getOptimisationInsights,
+  getContacts, getDueContacts, saveContact, deleteContact, completeContactReminder, snoozeContactReminder,
+  recordCampaignRun, getCampaignAnalytics, getOptimisationInsights,
   getStatusHistory,
-  backupNow, maybeBackup, listBackups, restoreBackup,
+  backupNow, maybeBackup, listBackups, restoreBackup, drillBackups, getBackupDrillStatus,
   setEncryption, getEncryptionStatus,
   exportRecoveryKey: () => dbCrypto.exportRecoveryKey(),
   importRecoveryKey: (text) => dbCrypto.importRecoveryKey(text),

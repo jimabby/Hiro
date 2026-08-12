@@ -53,12 +53,13 @@
 - **Status history** — every status change is recorded and shown as a timeline in the job detail panel, so you can see how long each company took to respond
 - **Desktop notifications** — OS notifications for scan completion, jobs needing attention, and recruiter replies while Hiro runs in the background (toggle in Settings)
 - **Automatic backups** — the database is backed up daily (last 7 kept) to `~/.hiro/backups`, with one-click restore in Settings → Data. Each restore keeps a timestamped pre-restore snapshot (last 3)
+- **Automated recovery drills** — weekly, Hiro decrypts and opens every retained daily backup in isolation, runs SQLite's integrity check, records the result, and alerts on failure without replacing the live database
 - **Settings transfer** — export resumes, job criteria, blacklist, routing rules, and templates to a passphrase-encrypted file and restore them on another machine (Settings → Data). Credentials are excluded unless you opt in; runtime state never travels
 
 ### Workbench
-- **Campaign profiles** — save several keyword/location/salary/resume strategies and schedule each one independently on weekdays
-- **Job URL import** — validate and add a specific HTTPS job link directly to Needs Attention when a board search misses it
-- **Recruiter contacts** — keep a lightweight contact list, automatically enriched when an application gains a recruiter email
+- **Campaign profiles and analytics** — save keyword/location/salary/resume strategies, schedule each independently, and compare runs, jobs found, submissions, held drafts, failures, scores, and interview/offer conversion
+- **Job URL and browser-extension import** — add a listing directly to Needs Attention from Workbench or the securely paired Manifest V3 extension in [extension/](extension/)
+- **Recruiter contacts and reminders** — maintain relationships, automatically enrich them when an application gains a recruiter email, and receive daily due reminders with Done and Snooze actions
 - **Optimisation insights** — practical suggestions based on score-band outcomes, resume conversion, and AI spend
 
 ### Pipeline
@@ -135,6 +136,7 @@ Hiro/
 │   ├── test/smoke/     drives the packaged installer end to end
 │   └── test/contract/  real calls to the job boards, Expo and the AI providers
 ├── app/        Mobile companion — Expo React Native (LAN or cloud)
+├── extension/  Chrome/Edge Manifest V3 job importer
 ├── supabase/   schema.sql for optional cloud sync — re-runnable
 └── RELEASING.md  signing, notarization, and the release gates
 ```

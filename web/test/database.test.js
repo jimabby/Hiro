@@ -196,6 +196,12 @@ async function main() {
   db.saveContact({ email: 'alex@example.com', company: 'Canva', notes: 'Updated note' })
   check('saving the same contact updates rather than duplicates', db.getContacts().length, 1)
   check('updated contact note is retained', db.getContacts()[0].notes, 'Updated note')
+  db.saveContact({ email: 'alex@example.com', company: 'Canva', notes: 'Due', next_action_at: '2026-01-01' })
+  check('due contact reminders are returned', db.getDueContacts('2026-01-02').length, 1)
+  db.snoozeContactReminder(db.getContacts()[0].id, '2026-02-01')
+  check('snoozed contact is no longer due', db.getDueContacts('2026-01-02').length, 0)
+  db.completeContactReminder(db.getContacts()[0].id)
+  check('completed contact clears its reminder', db.getContacts()[0].next_action_at, null)
 
   const insights = db.getOptimisationInsights()
   check('optimisation always returns an actionable insight', insights.length > 0, true)
@@ -203,11 +209,33 @@ async function main() {
   db.deleteContact(db.getContacts()[0].id)
   check('contact can be deleted', db.getContacts().length, 0)
 
+  const campaignApp = db.insertApplication({
+    job_title: 'Campaign role', company: 'Campaign Co', platform: 'Seek', job_url: 'https://campaign/1', job_description: '',
+    match_score: 88, tailored_resume: '', screening_qa: [], status: 'interview',
+    campaign_id: 'campaign-1', campaign_name: 'Data campaign',
+  })
+  check('campaign attribution is persisted', db.getApplication(campaignApp.id).campaign_id, 'campaign-1')
+  db.recordCampaignRun({ campaignId: 'campaign-1', campaignName: 'Data campaign', found: 8, applied: 2, held: 1 })
+  const campaignStats = db.getCampaignAnalytics()[0]
+  check('campaign run totals are durable', campaignStats.found, 8)
+  check('campaign outcomes calculate conversion', campaignStats.conversion_rate, 100)
+  db.recordCampaignRun({ campaignId: 'campaign-1', campaignName: 'Renamed campaign', found: 2 })
+  check('campaign analytics uses the latest campaign name', db.getCampaignAnalytics()[0].campaign_name, 'Renamed campaign')
+
   // ── Orphan sweep ────────────────────────────────────────────────
   db.saveInterviewPrep(999999, ['orphan'])
   const swept = db.pruneOrphanedRows()
   check('orphan sweep removes prep with no application', swept.removedInterviewPreps >= 1, true)
   check('orphan sweep leaves live rows alone', db.getInterviewEvents(canvaId).length, 1)
+
+  db.backupNow()
+  const drill = db.drillBackups()
+  check('backup recovery drill opens every daily backup', drill.success, true)
+  check('backup drill verifies at least one file', drill.checked >= 1, true)
+  fs.writeFileSync(path.join(TMP, 'backups', drill.results[0].name), Buffer.from('corrupt backup'))
+  const failedDrill = db.drillBackups()
+  check('recovery drill detects a corrupt backup', failedDrill.success, false)
+  check('corrupt backup is named in the report', failedDrill.results[0].name, drill.results[0].name)
 
   done()
 }

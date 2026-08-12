@@ -1,0 +1,12 @@
+:root { color-scheme: dark; font: 13px system-ui, sans-serif; background: #11131a; color: #eef1f7; }
+body { width: 360px; margin: 0; padding: 16px; box-sizing: border-box; }
+header { display: flex; align-items: baseline; gap: 8px; margin-bottom: 14px; }
+header strong { color: #8b7cff; font-size: 24px; } header span, p { color: #9ca3b3; }
+label { display: block; color: #b9c0ce; margin: 8px 0; }
+input, textarea { width: 100%; box-sizing: border-box; margin-top: 4px; border: 1px solid #353a49; border-radius: 7px; background: #1b1e28; color: inherit; padding: 8px; }
+textarea { min-height: 95px; resize: vertical; }
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+button { width: 100%; border: 0; border-radius: 7px; padding: 9px; margin-top: 8px; background: #7567e8; color: white; font-weight: 650; cursor: pointer; }
+button.secondary { background: transparent; border: 1px solid #353a49; color: #b9c0ce; }
+button:disabled { opacity: .55; cursor: wait; }
+#message { min-height: 18px; margin-bottom: 0; } #message.error { color: #ff7f87; } #message.success { color: #66d39a; }

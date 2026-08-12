@@ -74,6 +74,7 @@ added alongside. Re-running is needed if your project predates:
   follow-up dates, editable from the phone
 - `push_log` — the notification history the desktop writes
 - `applications.encrypted_payload` — end-to-end encrypted sensitive fields
+- `applications.campaign_id` / `campaign_name` — campaign attribution retained during recovery sync
 - `review_requests` — approve or reject held applications remotely
 - validation constraints — reject unknown statuses, impossible scores, and
   oversized remote request fields

@@ -119,6 +119,9 @@ const DEFAULTS = {
   mobileApiToken: '',
   pendingScans: [],   // scan requests queued (e.g. from the mobile app) waiting to run
   campaigns: [],
+  enableContactReminders: true,
+  enableBackupDrills: true,
+  lastBackupDrill: null,
   lastScanAt: null,
   // Cloud sync (Supabase) — shared account so desktop + phone see one dataset.
   cloudSyncEnabled: false,

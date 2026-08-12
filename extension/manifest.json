@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Hiro Job Importer",
+  "version": "1.0.0",
+  "description": "Securely import the current job listing into Hiro Needs Attention.",
+  "minimum_chrome_version": "102",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "optional_host_permissions": ["http://*/*"],
+  "action": {
+    "default_title": "Import job into Hiro",
+    "default_popup": "popup.html"
+  }
+}

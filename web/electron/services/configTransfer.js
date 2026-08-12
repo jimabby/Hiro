@@ -29,6 +29,7 @@ const RUNTIME_KEYS = new Set([
   'deviceId', 'deviceName', 'knownDeviceIds', 'mobileDevices',
   'calendarSyncCursor', 'lastCalendarSyncAt', 'encryptDatabase',
   'automationCooldowns',
+  'lastBackupDrill',
   // Registers a login item pointing at THIS machine's install path, and the
   // OS-level entry is written by the tray service rather than by config alone.
   // Importing it elsewhere would tick the box without registering anything.

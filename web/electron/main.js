@@ -409,6 +409,7 @@ const RUNTIME_CONFIG_KEYS = [
   'cloudSyncEnabled', 'supabaseEmail', 'supabaseRefreshToken',
   'cloudDataKey',
   'mobileApiEnabled', 'mobileApiToken',
+  'lastBackupDrill',
 ]
 
 ipcMain.handle('config:save', (_, config) => {
@@ -1130,6 +1131,8 @@ ipcMain.handle('db:listBackups', () => database.listBackups())
 ipcMain.handle('db:restoreBackup', (_, name) => {
   try { return database.restoreBackup(name) } catch (err) { return { success: false, error: err.message } }
 })
+ipcMain.handle('db:drillBackups', () => scheduler.runBackupDrill())
+ipcMain.handle('db:backupDrillStatus', () => database.getBackupDrillStatus())
 
 // ─── IPC: Database ──────────────────────────────────────────────
 // The list view gets slim rows — SELECT * shipped every job description,

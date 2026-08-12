@@ -126,6 +126,7 @@ async function doRun(cfg, { log, notifyAttention }) {
 
   let batchCount = 0
   let heldCount = 0
+  let foundCount = 0
   let dryWouldApply = 0
   // Every score a dry run produced, so the caller can recommend a threshold
   // from the real distribution rather than guesswork.
@@ -149,7 +150,7 @@ async function doRun(cfg, { log, notifyAttention }) {
   const batchLimit = cfg.batchLimit || Infinity // smart scheduling passes a finite limit
   const summary = () => (cfg.dryRun
     ? { dryRun: true, scores: dryScores, wouldApply: dryWouldApply, threshold: cfg.matchThreshold, blocked, paused, scoringFailures, budgetStopped }
-    : { dryRun: false, applied: batchCount, held: heldCount, blocked, paused, scoringFailures, budgetStopped })
+    : { dryRun: false, found: foundCount, applied: batchCount, held: heldCount, blocked, paused, scoringFailures, budgetStopped })
 
   for (const { name, scraper, limit } of scrapers) {
     if (cancelled || batchCount >= batchLimit) { if (cancelled) log('Scan cancelled.'); return summary() }
@@ -179,6 +180,7 @@ async function doRun(cfg, { log, notifyAttention }) {
       // getJobDescription is a lookup rather than a second network round trip.
       scraper.primeDescriptions?.(jobs)
       log(`${name}: found ${jobs.length} jobs across ${cfg.scrapePages || 1} page(s)`)
+      foundCount += jobs.length
       // A successful scrape that finds nothing is worth saying out loud — it's
       // the signal that the search is too narrow or has been exhausted.
       if (jobs.length === 0) {
@@ -322,6 +324,7 @@ async function doRun(cfg, { log, notifyAttention }) {
       // Below threshold — save as skipped so user can still view it
       if (matchScore < cfg.matchThreshold) {
         database.insertApplication({
+          campaign_id: cfg.campaignId, campaign_name: cfg.campaignName,
           job_title: job.job_title,
           company: job.company,
           platform: name,
@@ -394,6 +397,7 @@ async function doRun(cfg, { log, notifyAttention }) {
           continue
         }
         database.insertApplication({
+          campaign_id: cfg.campaignId, campaign_name: cfg.campaignName,
           job_title: job.job_title, company: job.company, platform: name,
           salary: job.salary || '', job_url: job.job_url,
           job_description: jobDescription, match_score: matchScore,
@@ -434,6 +438,7 @@ async function doRun(cfg, { log, notifyAttention }) {
       // spending another AI call.
       if (shouldHoldForReview(cfg, matchScore)) {
         database.insertApplication({
+          campaign_id: cfg.campaignId, campaign_name: cfg.campaignName,
           job_title: job.job_title,
           company: job.company,
           platform: name,
@@ -488,6 +493,7 @@ async function doRun(cfg, { log, notifyAttention }) {
 
       if (result.success) {
         database.insertApplication({
+          campaign_id: cfg.campaignId, campaign_name: cfg.campaignName,
           job_title: job.job_title,
           company: job.company,
           platform: name,
@@ -557,6 +563,8 @@ async function addAttentionJob(job, cfg, log, notifyAttention) {
 
   const attentionJob = {
     ...job,
+    campaign_id: cfg.campaignId || job.campaign_id || null,
+    campaign_name: cfg.campaignName || job.campaign_name || null,
     talking_points: talkingPoints,
     reason: job.reason || 'Requires manual application',
     closing_date: job.closing_date || null,
@@ -677,6 +685,7 @@ async function doApplyAttentionJob(jobId, cfg, log) {
       resume_name: cfg.activeResumeName,
       provider: cfg.aiProvider || '',
       model: cfg.geminiModel || '',
+      campaign_id: job.campaign_id, campaign_name: job.campaign_name,
     })
     database.dismissAttentionJob(jobId)
     log('Saved to history and removed from Needs Attention')

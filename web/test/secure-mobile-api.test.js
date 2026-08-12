@@ -7,6 +7,7 @@ const { stub, service, createChecker } = require('./helpers')
 const PORT = 48232
 const cfg = { mobileApiEnabled: true, mobileApiPort: PORT, mobileApiToken: 'l'.repeat(32), mobileDevices: [] }
 let statusWrite = null
+let imported = null
 stub({
   './config': {
     load: () => cfg,
@@ -18,6 +19,7 @@ stub({
   './database': {
     getStats: () => ({ totalAllTime: 17 }),
     updateApplicationStatus: (id, status) => { statusWrite = { id, status }; return { success: true } },
+    insertAttentionJob: value => { imported = value; return { success: true, id: 22 } },
   },
   './scheduler': { getScanInfo: () => ({ running: false }) },
   './logger': { append: () => {}, tail: () => [] },
@@ -78,6 +80,14 @@ function headers(token, method, path, raw, timestamp = String(Date.now()), nonce
     })
     check('encrypted write succeeds', writeRes.status, 200)
     check('encrypted write reaches database', statusWrite, { id: 9, status: 'interview' })
+
+    const importPath = '/api/import-job'
+    const importRaw = encrypt(paired.token, { url: 'https://jobs.example/42', title: 'Platform Engineer', company: 'Example' })
+    const importRes = await fetch(`http://127.0.0.1:${PORT}${importPath}`, {
+      method: 'POST', headers: headers(paired.token, 'POST', importPath, importRaw), body: importRaw,
+    })
+    check('secure extension import succeeds', importRes.status, 200)
+    check('extension import reaches Needs Attention', imported.job_title, 'Platform Engineer')
 
     const replay = await fetch(`http://127.0.0.1:${PORT}${path}`, { headers: signed })
     check('replayed nonce is rejected', replay.status, 401)

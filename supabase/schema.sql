@@ -157,6 +157,8 @@ alter table public.applications add column if not exists resume_name text;
 -- and interview rates, exactly as the desktop does.
 alter table public.applications add column if not exists held_at timestamptz;
 alter table public.applications add column if not exists encrypted_payload text;
+alter table public.applications add column if not exists campaign_id text;
+alter table public.applications add column if not exists campaign_name text;
 
 -- In-app account deletion (required by Apple App Store guideline 5.1.1(v)).
 -- Runs as the function owner (security definer) so a signed-in user can delete

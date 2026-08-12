@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header><strong>Hiro</strong><span>Job Importer</span></header>
+  <section id="pairing">
+    <p>On the desktop, open Settings → Mobile App → Pair a phone.</p>
+    <label>Desktop address<input id="host" placeholder="192.168.1.10"></label>
+    <div class="row"><label>Port<input id="port" value="4823" inputmode="numeric"></label><label>One-time code<input id="code" maxlength="8" placeholder="ABCD1234"></label></div>
+    <button id="pair">Pair extension</button>
+  </section>
+  <section id="importer" hidden>
+    <label>Role<input id="title"></label>
+    <label>Company<input id="company"></label>
+    <label>Listing URL<input id="url"></label>
+    <label>Description<textarea id="description"></textarea></label>
+    <button id="import">Add to Needs Attention</button>
+    <button id="forget" class="secondary">Forget pairing</button>
+  </section>
+  <p id="message" role="status"></p>
+  <script src="protocol.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -112,6 +112,12 @@ export default function App() {
           'error'
         )
       }
+      if (data.type === 'contact-reminder') {
+        showToast(`Follow up with ${data.contact?.name || data.contact?.email || 'contact'} — due ${data.contact?.next_action_at}`, 'info')
+      }
+      if (data.type === 'backup-drill' && data.report?.success === false) {
+        showToast(data.report.error || `${data.report.failed} backup recovery check(s) failed`, 'error')
+      }
       if (data.type === 'scan-complete') {
         setScanRunning(false)
         window.api.getStats().then(s => {

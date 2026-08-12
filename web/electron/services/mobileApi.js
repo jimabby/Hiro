@@ -6,6 +6,7 @@ const pairing = require('./pairing')
 const database = require('./database')
 const scheduler = require('./scheduler')
 const logger = require('./logger')
+const featureHub = require('./featureHub')
 
 // LAN HTTP API for the Hiro mobile companion app (app/ in this repo).
 // All data stays on this machine — the phone connects directly over the
@@ -311,6 +312,15 @@ async function handle(req, res) {
 
     if (req.method === 'GET' && path === '/api/stats') {
       return json(res, 200, database.getStats())
+    }
+
+    // Used by the optional browser extension. It pairs as its own revocable
+    // device and uses the same signed/encrypted protocol as a newly paired
+    // phone; no shared bearer token is embedded in the extension.
+    if (req.method === 'POST' && path === '/api/import-job') {
+      const body = await readBody(req)
+      const result = featureHub.importJob(body)
+      return json(res, result?.success === false ? 400 : 200, result)
     }
 
     if (req.method === 'GET' && path === '/api/applications') {

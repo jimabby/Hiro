@@ -33,6 +33,7 @@ let stored = {
   mobileDevices: [{ id: 'phone-a', tokenHash: 'hash' }],
   calendarSyncCursor: 'cursor-a',
   encryptDatabase: true,
+  lastBackupDrill: { checkedAt: '2026-03-01T00:00:00Z', success: true },
 }
 
 stub({
@@ -73,7 +74,7 @@ check('calendar credential included when opted in', withSecrets.payload.calendar
 check('flags that it carries credentials', withSecrets.includesSecrets, true)
 
 // ── Runtime state never travels ───────────────────────────────────
-for (const key of ['pendingScans', 'lastScanAt', 'mobileApiToken', 'supabaseRefreshToken', 'setupComplete', 'cloudSyncEnabled', 'deviceId', 'deviceName', 'knownDeviceIds', 'mobileDevices', 'calendarSyncCursor', 'encryptDatabase']) {
+for (const key of ['pendingScans', 'lastScanAt', 'mobileApiToken', 'supabaseRefreshToken', 'setupComplete', 'cloudSyncEnabled', 'deviceId', 'deviceName', 'knownDeviceIds', 'mobileDevices', 'calendarSyncCursor', 'encryptDatabase', 'lastBackupDrill']) {
   check(`runtime key excluded: ${key}`, key in opened.payload, false)
 }
 

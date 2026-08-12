@@ -52,11 +52,16 @@ function importJob(input = {}) {
 }
 
 function listContacts() { return database.getContacts() }
+function dueContacts() { return database.getDueContacts() }
 function saveContact(input) { return database.saveContact(input) }
 function deleteContact(id) { return database.deleteContact(id) }
+function completeContact(id) { return database.completeContactReminder(id) }
+function snoozeContact(id, date) { return database.snoozeContactReminder(id, date) }
+function campaignAnalytics() { return database.getCampaignAnalytics() }
 function insights() { return database.getOptimisationInsights() }
 
 module.exports = {
   listCampaigns, saveCampaign, deleteCampaign, importJob,
-  listContacts, saveContact, deleteContact, insights,
+  listContacts, dueContacts, saveContact, deleteContact, completeContact, snoozeContact,
+  campaignAnalytics, insights,
 }
