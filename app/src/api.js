@@ -1,4 +1,5 @@
 // HTTP client for the Hiro desktop companion API (web/electron/services/mobileApi.js)
+import { encryptPayload, decryptPayload, signedHeaders } from './secureProtocol'
 
 const TIMEOUT_MS = 8000
 
@@ -29,9 +30,13 @@ export async function pairWithDesktop({ host, port, code, deviceName, platform }
 }
 
 export class HiroClient {
-  constructor({ host, port, token }) {
+  constructor({ host, port, token, secure = false }) {
     this.baseUrl = `http://${host}:${port}`
     this.token = token
+    // Connections created by the one-time pairing flow use authenticated,
+    // encrypted envelopes. Saved/manual connections from older Hiro releases
+    // remain bearer-token compatible until the user re-pairs.
+    this.secure = secure
     this.canScan = true // LAN client can reach the desktop to trigger scans
   }
 
@@ -39,16 +44,26 @@ export class HiroClient {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
     try {
+      const method = options.method || 'GET'
+      const plainBody = options.body ? JSON.parse(options.body) : null
+      const rawBody = this.secure
+        ? (plainBody == null ? '' : JSON.stringify(await encryptPayload(this.token, plainBody)))
+        : (options.body || '')
       const res = await fetch(`${this.baseUrl}${path}`, {
         ...options,
+        method,
+        body: rawBody || undefined,
         signal: controller.signal,
         headers: {
-          Authorization: `Bearer ${this.token}`,
           'Content-Type': 'application/json',
+          ...(this.secure
+            ? signedHeaders(this.token, method, path, rawBody)
+            : { Authorization: `Bearer ${this.token}` }),
           ...(options.headers || {}),
         },
       })
-      const body = await res.json()
+      const envelope = await res.json()
+      const body = this.secure ? await decryptPayload(this.token, envelope) : envelope
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`)
       return body
     } catch (err) {

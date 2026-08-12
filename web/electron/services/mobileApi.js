@@ -54,6 +54,44 @@ function regenerateToken() {
 const MAX_FAILURES = 10
 const LOCKOUT_MS = 5 * 60 * 1000
 const failures = new Map() // ip -> { count, until }
+const seenNonces = new Map()
+
+function signInput(req, timestamp, nonce, rawBody = '') {
+  return [req.method, req.url, timestamp, nonce, rawBody].join('\n')
+}
+
+function verifySignedRequest(req, rawBody = '') {
+  const timestamp = String(req.headers['x-hiro-timestamp'] || '')
+  const nonce = String(req.headers['x-hiro-nonce'] || '')
+  const signature = String(req.headers['x-hiro-signature'] || '')
+  const time = Number(timestamp)
+  if (!nonce || !signature || !Number.isFinite(time) || Math.abs(Date.now() - time) > 300000 || seenNonces.has(nonce)) return null
+  for (const candidate of pairing.deviceSecrets(configService)) {
+    const expected = crypto.createHmac('sha256', candidate.token).update(signInput(req, timestamp, nonce, rawBody)).digest('hex')
+    if (timingSafeEqualStr(signature, expected)) {
+      seenNonces.set(nonce, Date.now())
+      pairing.touchDevice(configService, candidate.device.id)
+      return candidate
+    }
+  }
+  return null
+}
+
+function encryptPayload(token, body) {
+  const key = crypto.createHash('sha256').update(token).digest(), iv = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv)
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(body), 'utf8'), cipher.final()])
+  return { secure: 2, data: Buffer.concat([iv, ciphertext, cipher.getAuthTag()]).toString('base64') }
+}
+
+function decryptPayload(token, envelope) {
+  if (envelope?.secure !== 2) throw new Error('Encrypted request required.')
+  const key = crypto.createHash('sha256').update(token).digest()
+  const combined = Buffer.from(envelope.data, 'base64'), iv = combined.subarray(0, 12), tag = combined.subarray(-16), ciphertext = combined.subarray(12, -16)
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv)
+  decipher.setAuthTag(tag)
+  return JSON.parse(Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8'))
+}
 
 function authCheck(ip, token) {
   const now = Date.now()
@@ -96,6 +134,7 @@ setInterval(() => {
   for (const [ip, e] of failures) {
     if (e.until <= now && e.count === 0) failures.delete(ip)
   }
+  for (const [nonce, at] of seenNonces) if (now - at > 600000) seenNonces.delete(nonce)
 }, 10 * 60 * 1000).unref?.()
 
 // True only for loopback and the RFC1918 / RFC4193 private ranges the phone
@@ -142,12 +181,13 @@ function getLanAddresses() {
 // LAN can't read responses or send JSON POSTs from a browser — defense in
 // depth on top of the bearer token.
 function json(res, status, body) {
-  const data = JSON.stringify(body)
+  const data = JSON.stringify(res.secureToken ? encryptPayload(res.secureToken, body) : body)
   res.writeHead(status, { 'Content-Type': 'application/json' })
   res.end(data)
 }
 
-function readBody(req) {
+function readRawBody(req) {
+  if (req.rawBody !== undefined) return Promise.resolve(req.rawBody)
   return new Promise((resolve, reject) => {
     let raw = ''
     req.on('data', (chunk) => {
@@ -155,10 +195,19 @@ function readBody(req) {
       if (raw.length > 1e6) { req.destroy(); reject(new Error('Body too large')) }
     })
     req.on('end', () => {
-      try { resolve(raw ? JSON.parse(raw) : {}) } catch { reject(new Error('Invalid JSON')) }
+      req.rawBody = raw
+      resolve(raw)
     })
     req.on('error', reject)
   })
+}
+
+async function readBody(req) {
+  const raw = await readRawBody(req)
+  try {
+    const parsed = raw ? JSON.parse(raw) : {}
+    return req.secureToken ? decryptPayload(req.secureToken, parsed) : parsed
+  } catch { throw new Error('Invalid JSON or encrypted payload') }
 }
 
 // Exchange a pairing code for a token belonging to this phone alone.
@@ -236,7 +285,17 @@ async function handle(req, res) {
     return handlePair(req, res, ip)
   }
 
-  const check = authCheck(ip, token)
+  try {
+    if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) req.rawBody = ''
+    else await readRawBody(req)
+  } catch (err) { return json(res, 400, { error: err.message }) }
+
+  const signed = verifySignedRequest(req, req.rawBody || '')
+  if (signed) {
+    req.secureToken = signed.token
+    res.secureToken = signed.token
+  }
+  const check = signed ? { ok: true, device: signed.device } : authCheck(ip, token)
   if (!check.ok) {
     if (check.retryAfter) {
       res.setHeader('Retry-After', String(check.retryAfter))
@@ -290,7 +349,7 @@ async function handle(req, res) {
     const commentMatch = path.match(/^\/api\/applications\/(\d+)\/comment$/)
     if (req.method === 'POST' && commentMatch) {
       const body = await readBody(req)
-      database.updateApplicationComment(Number(commentMatch[1]), String(body.comment || ''))
+      database.updateApplicationComment(Number(commentMatch[1]), String(body.comment || '').slice(0, 5000))
       return json(res, 200, { success: true })
     }
 
@@ -302,7 +361,7 @@ async function handle(req, res) {
       const body = await readBody(req)
       const result = database.setNextAction(Number(nextActionMatch[1]), {
         date: body.date ?? null,
-        note: typeof body.note === 'string' ? body.note : '',
+        note: typeof body.note === 'string' ? body.note.slice(0, 1000) : '',
       })
       // setNextAction rejects a malformed date rather than storing it; report
       // that as a 400 instead of a silent success.
@@ -323,8 +382,8 @@ async function handle(req, res) {
     if (req.method === 'POST' && path === '/api/scan') {
       const body = await readBody(req)
       const queued = scheduler.requestScan({
-        keywords: typeof body.keywords === 'string' ? body.keywords : '',
-        location: typeof body.location === 'string' ? body.location : '',
+        keywords: typeof body.keywords === 'string' ? body.keywords.slice(0, 500) : '',
+        location: typeof body.location === 'string' ? body.location.slice(0, 160) : '',
         source: 'mobile',
       })
       return json(res, 200, { queued: true, id: queued.id, ...scheduler.getScanInfo() })

@@ -25,6 +25,7 @@ const RUNTIME_KEYS = new Set([
   'pendingScans', 'lastScanAt', 'lastInboxCheck', 'lastCloudSyncAt',
   'setupComplete', 'mobileApiToken', 'mobileApiEnabled',
   'supabaseRefreshToken', 'cloudSyncEnabled',
+  'cloudDataKey',
   'deviceId', 'deviceName', 'knownDeviceIds', 'mobileDevices',
   'calendarSyncCursor', 'lastCalendarSyncAt', 'encryptDatabase',
   'automationCooldowns',
@@ -38,6 +39,7 @@ const RUNTIME_KEYS = new Set([
 // export is safe to keep around as a settings backup.
 const SECRET_KEYS = new Set([
   'aiApiKey', 'gmailAppPassword', 'calendarRefreshToken', 'calendarClientSecret',
+  'cloudDataKey',
 ])
 
 function deriveKey(passphrase, salt) {

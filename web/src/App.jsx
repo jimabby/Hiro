@@ -7,6 +7,7 @@ import Review from './pages/Review'
 import Settings from './pages/Settings'
 import Timeline from './pages/Timeline'
 import Analytics from './pages/Analytics'
+import Workbench from './pages/Workbench'
 import HiroLogo from './components/HiroLogo'
 
 const NAV = [
@@ -19,6 +20,7 @@ const NAV = [
   { id: 'timeline', label: 'Timeline', icon: '◷', shortcut: '5' },
   { id: 'analytics', label: 'Analytics', icon: '◔', shortcut: '6' },
   { id: 'settings', label: 'Settings', icon: '⚙', shortcut: '7' },
+  { id: 'workbench', label: 'Workbench', icon: '+', shortcut: '8' },
 ]
 
 export default function App() {
@@ -273,6 +275,7 @@ export default function App() {
     attention: <NeedsAttention onCountChange={setAttentionCount} showToast={showToast} />,
     timeline: <Timeline />,
     analytics: <Analytics active={page === 'analytics'} />,
+    workbench: <Workbench active={page === 'workbench'} showToast={showToast} />,
     settings: <Settings active={page === 'settings'} showToast={showToast} />,
   }
 

@@ -149,7 +149,7 @@ jobs:
       # block every PR on something no release can act on. Run
       # `npm audit --prefix app` to see them deliberately.
       - name: Audit mobile production dependencies
-        run: npm audit --omit=dev --audit-level=high --prefix app
+        run: npm run audit:production --prefix app
 
   # Do the external services still behave the way Hiro assumes? Not on PRs: these
   # make real network calls, and a blip must never fail somebody's branch. On a

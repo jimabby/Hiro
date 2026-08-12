@@ -28,6 +28,7 @@ const applicator = require('./services/applicator')
 const gmailAuth = require('./services/gmailAuth')
 const mobileApi = require('./services/mobileApi')
 const cloudSync = require('./services/cloudSync')
+const registerFeatureHandlers = require('./ipc/featureHandlers')
 const logger = require('./services/logger')
 const configTransfer = require('./services/configTransfer')
 const tray = require('./services/tray')
@@ -343,6 +344,18 @@ app.whenReady().then(async () => {
         mainWindow.webContents.send('notification', { type: 'new-device', device })
       }
     },
+    onRemoteReview: async (request) => {
+      const id = Number(request.application_local_id)
+      if (request.action === 'reject') {
+        const result = database.rejectHeldApplication(id)
+        if (!result?.success) throw new Error(result?.reason || 'Held application could not be rejected.')
+        return result
+      }
+      const saved = configService.load()
+      const result = await applicator.approveHeldApplication(id, saved, reviewLog)
+      if (!result?.success) throw new Error(result?.reason || 'Submission could not be completed.')
+      return result
+    },
   }).catch(() => {})
   // Interviews may have been created or moved while the desktop was closed.
   calendarSync.syncNow().catch(() => {})
@@ -394,6 +407,7 @@ ipcMain.handle('config:loadError', () => configService.getLoadError())
 const RUNTIME_CONFIG_KEYS = [
   'pendingScans', 'lastScanAt', 'lastInboxCheck', 'lastCloudSyncAt',
   'cloudSyncEnabled', 'supabaseEmail', 'supabaseRefreshToken',
+  'cloudDataKey',
   'mobileApiEnabled', 'mobileApiToken',
 ]
 
@@ -409,6 +423,8 @@ ipcMain.handle('config:save', (_, config) => {
   scheduler.restart(mainWindow)
   return { success: true }
 })
+
+registerFeatureHandlers({ ipcMain, scheduler, getWindow: () => mainWindow })
 
 // ─── IPC: Cloud sync ────────────────────────────────────────────
 ipcMain.handle('cloud:status', () => cloudSync.getStatus())

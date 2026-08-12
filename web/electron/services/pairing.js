@@ -102,6 +102,7 @@ function issueDeviceToken(configService, { name, platform }, now = Date.now()) {
     name: String(name || 'Phone').slice(0, 60),
     platform: String(platform || 'unknown').slice(0, 20),
     tokenHash: hashToken(token),
+    tokenEnc: configService.encryptSecret ? configService.encryptSecret(token) : undefined,
     createdAt: new Date(now).toISOString(),
     lastSeenAt: new Date(now).toISOString(),
     expiresAt: ttlDays > 0 ? new Date(now + ttlDays * 86400000).toISOString() : null,
@@ -122,7 +123,7 @@ function listRaw(cfg) {
 }
 
 function publicView(device, now = Date.now()) {
-  const { tokenHash, ...rest } = device
+  const { tokenHash, tokenEnc, ...rest } = device
   return { ...rest, expired: isExpired(device, now) }
 }
 
@@ -150,6 +151,13 @@ function verifyDeviceToken(configService, token, now = Date.now()) {
     }
   }
   return matched ? publicView(matched, now) : null
+}
+
+function deviceSecrets(configService, now = Date.now()) {
+  return listRaw(configService.load()).filter(d => !isExpired(d, now) && d.tokenEnc).map(d => ({
+    device: publicView(d, now),
+    token: configService.decryptSecret ? configService.decryptSecret(d.tokenEnc) : d.tokenEnc,
+  })).filter(x => x.token)
 }
 
 // Record that a device was seen, at most once a minute — this runs on every
@@ -184,7 +192,7 @@ function revokeAll(configService) {
 
 module.exports = {
   createPairingCode, getActiveCode, clearPairingCode, consumePairingCode,
-  issueDeviceToken, verifyDeviceToken, listDevices, revokeDevice, revokeAll, touchDevice,
+  issueDeviceToken, verifyDeviceToken, deviceSecrets, listDevices, revokeDevice, revokeAll, touchDevice,
   hashToken, normaliseTtlDays,
   CODE_TTL_MS, DEFAULT_TOKEN_TTL_DAYS,
 }

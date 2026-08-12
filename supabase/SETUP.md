@@ -8,6 +8,11 @@ mirror: the desktop pushes applications up, the phone reads/writes them, and
 status/comment changes flow back to the desktop. Conflicts resolve by
 last-write-wins on `updated_at`.
 
+Sensitive application text (job descriptions, tailored resumes, cover letters,
+screening answers, and recruiter email) is encrypted on the desktop before it
+reaches Supabase and decrypted on signed-in Hiro clients. The initial key is
+derived locally from the shared account credentials and is never uploaded.
+
 ## 1. Create a Supabase project
 
 1. Go to <https://supabase.com> → **New project** (the free tier is plenty).
@@ -68,6 +73,10 @@ added alongside. Re-running is needed if your project predates:
 - `applications.next_action_at` / `next_action_note` — the Pipeline board's
   follow-up dates, editable from the phone
 - `push_log` — the notification history the desktop writes
+- `applications.encrypted_payload` — end-to-end encrypted sensitive fields
+- `review_requests` — approve or reject held applications remotely
+- validation constraints — reject unknown statuses, impossible scores, and
+  oversized remote request fields
 
 > **If you set up cloud sync before August 2026**, the `devices` policy was created
 > without a preceding `drop policy if exists`, so re-running this file used to fail

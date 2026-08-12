@@ -8,6 +8,17 @@ contextBridge.exposeInMainWorld('api', {
   testAiConnection: (provider, apiKey, geminiModel) => ipcRenderer.invoke('ai:test', provider, apiKey, geminiModel),
   testEmailConnection: (email, password) => ipcRenderer.invoke('email:test', email, password),
 
+  // Campaigns, universal job import, contacts/referrals and recommendations
+  getCampaigns: () => ipcRenderer.invoke('features:campaigns'),
+  saveCampaign: (campaign) => ipcRenderer.invoke('features:saveCampaign', campaign),
+  deleteCampaign: (id) => ipcRenderer.invoke('features:deleteCampaign', id),
+  runCampaign: (id) => ipcRenderer.invoke('features:runCampaign', id),
+  importJob: (job) => ipcRenderer.invoke('features:importJob', job),
+  getContacts: () => ipcRenderer.invoke('features:contacts'),
+  saveContact: (contact) => ipcRenderer.invoke('features:saveContact', contact),
+  deleteContact: (id) => ipcRenderer.invoke('features:deleteContact', id),
+  getOptimisationInsights: () => ipcRenderer.invoke('features:insights'),
+
   // Automation
   startAutomation: () => ipcRenderer.invoke('automation:start'),
   startDryRun: () => ipcRenderer.invoke('automation:dryRun'),

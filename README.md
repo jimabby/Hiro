@@ -55,6 +55,12 @@
 - **Automatic backups** — the database is backed up daily (last 7 kept) to `~/.hiro/backups`, with one-click restore in Settings → Data. Each restore keeps a timestamped pre-restore snapshot (last 3)
 - **Settings transfer** — export resumes, job criteria, blacklist, routing rules, and templates to a passphrase-encrypted file and restore them on another machine (Settings → Data). Credentials are excluded unless you opt in; runtime state never travels
 
+### Workbench
+- **Campaign profiles** — save several keyword/location/salary/resume strategies and schedule each one independently on weekdays
+- **Job URL import** — validate and add a specific HTTPS job link directly to Needs Attention when a board search misses it
+- **Recruiter contacts** — keep a lightweight contact list, automatically enriched when an application gains a recruiter email
+- **Optimisation insights** — practical suggestions based on score-band outcomes, resume conversion, and AI spend
+
 ### Pipeline
 The rest of the app answers "what happened". This page answers the question that
 actually loses people offers: **what do I owe, and when?**
@@ -115,8 +121,8 @@ actually loses people offers: **what do I owe, and when?**
 - **Registered on your account** — the phone appears in the desktop's device list with its session age, so it can be seen and signed out. It checks its own standing on every foreground and signs itself out if revoked
 - **App Store-ready** — in-app account deletion, privacy policy, EAS build config (see [app/README.md](app/README.md))
 - **Two ways to connect:**
-  - **Local network (default)** — the phone talks directly to the desktop via a token-protected LAN API; no cloud involved
-  - **Cloud sync (optional)** — sign in to a Supabase account on both desktop and phone to mirror applications, interviews, and attention jobs to the cloud, so the phone works from anywhere. Your local database stays the source of truth. See [supabase/SETUP.md](supabase/SETUP.md)
+  - **Local network (default)** — one-time pairing gives the phone its own OS-keychain-wrapped secret; subsequent API messages are signed, replay-protected, and AES-256-GCM encrypted
+  - **Cloud sync (optional)** — sign in to a Supabase account on both desktop and phone to mirror applications, interviews, and attention jobs to the cloud. Sensitive application text is encrypted before upload and row-level security isolates accounts. See [supabase/SETUP.md](supabase/SETUP.md)
 
 ---
 
@@ -152,7 +158,7 @@ Hiro/
 
 ## Prerequisites
 
-- **Node.js** v18+
+- **Node.js** v22.12+ (the version required by the current Electron toolchain)
 - A supported AI provider API key (Claude, OpenAI, DeepSeek, or Gemini)
 - A **Gmail App Password** for notifications (myaccount.google.com → Security → App Passwords)
 

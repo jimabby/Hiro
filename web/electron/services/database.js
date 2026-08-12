@@ -286,6 +286,20 @@ function createTables() {
       synced_at TEXT DEFAULT (datetime('now')),
       UNIQUE (provider, external_id)
     );
+
+    CREATE TABLE IF NOT EXISTS contacts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT DEFAULT '',
+      email TEXT NOT NULL,
+      company TEXT DEFAULT '',
+      role TEXT DEFAULT '',
+      relationship TEXT DEFAULT 'recruiter',
+      notes TEXT DEFAULT '',
+      next_action_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE (email, company)
+    );
   `)
   persist()
 }
@@ -810,6 +824,8 @@ function updateApplicationComment(id, comment) {
 
 function updateRecruiterEmail(id, email) {
   run("UPDATE applications SET recruiter_email = ?, updated_at = datetime('now'), cloud_dirty = 1 WHERE id = ?", [email, id])
+  const app = getApplication(id)
+  if (email && app) saveContact({ email, company: app.company, role: `Recruiting contact for ${app.job_title}`, relationship: 'recruiter' })
   return { success: true }
 }
 
@@ -2080,6 +2096,55 @@ function getStorageInfo() {
   return { dbSize, counts, encryption: getEncryptionStatus() }
 }
 
+// Contacts/referrals are intentionally separate from applications: one person
+// can span several roles, and a relationship should survive deleting a listing.
+function getContacts() {
+  return query(`SELECT * FROM contacts ORDER BY
+    CASE WHEN next_action_at IS NULL OR next_action_at = '' THEN 1 ELSE 0 END,
+    next_action_at ASC, updated_at DESC`)
+}
+
+function saveContact(input = {}) {
+  const email = String(input.email || '').trim().toLowerCase().slice(0, 320)
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { success: false, reason: 'Enter a valid email address.' }
+  const values = [
+    String(input.name || '').trim().slice(0, 160), email,
+    String(input.company || '').trim().slice(0, 200), String(input.role || '').trim().slice(0, 160),
+    String(input.relationship || 'recruiter').trim().slice(0, 40), String(input.notes || '').trim().slice(0, 5000),
+    /^\d{4}-\d{2}-\d{2}$/.test(input.next_action_at || '') ? input.next_action_at : null,
+  ]
+  run(`INSERT INTO contacts (name,email,company,role,relationship,notes,next_action_at)
+    VALUES (?,?,?,?,?,?,?) ON CONFLICT(email,company) DO UPDATE SET
+    name=excluded.name, role=excluded.role, relationship=excluded.relationship,
+    notes=excluded.notes, next_action_at=excluded.next_action_at, updated_at=datetime('now')`, values)
+  return { success: true }
+}
+
+function deleteContact(id) { run('DELETE FROM contacts WHERE id = ?', [Number(id)]); return { success: true } }
+
+function getOptimisationInsights() {
+  const stats = getStats()
+  const bands = getScoreBandConversion()
+  const resumes = getResumeConversion()
+  const usage = getAiUsageSummary()
+  const suggestions = []
+  const meaningful = bands.filter(b => Number(b.applied) >= 10)
+  if (meaningful.length >= 2) {
+    const best = [...meaningful].sort((a, b) => Number(b.conversionRate) - Number(a.conversionRate))[0]
+    suggestions.push({ kind: 'threshold', title: `Prioritise ${best.label} matches`, detail: `${best.conversionRate}% reached interview or offer across ${best.applied} applications.` })
+  }
+  const provenResumes = resumes.filter(r => Number(r.sent) >= 10)
+  if (provenResumes.length) {
+    const best = [...provenResumes].sort((a, b) => Number(b.interviewRate) - Number(a.interviewRate))[0]
+    suggestions.push({ kind: 'resume', title: `${best.resume_name || 'One resume'} is converting best`, detail: `${best.interviewRate}% interview rate from ${best.sent} sent applications.` })
+  }
+  if (Number(usage?.month?.cost || 0) > 0 && Number(stats.totalThisWeek || 0) === 0) {
+    suggestions.push({ kind: 'spend', title: 'AI spend without recent submissions', detail: 'Review blocked platforms, held drafts, and your match threshold before the next scan.' })
+  }
+  if (!suggestions.length) suggestions.push({ kind: 'sample', title: 'Keep collecting outcomes', detail: 'Hiro will recommend thresholds and resume routing once a segment has at least 10 sent applications.' })
+  return suggestions
+}
+
 module.exports = {
   init, batch, pruneOrphanedRows, backfillSalaryColumns,
   getApplications, getApplicationsList, getApplication, hasJobUrl, hasAttentionJobUrl, hasSeenJobUrl,
@@ -2109,6 +2174,7 @@ module.exports = {
   claimPushKey, getPushLog, prunePushLog,
   getCalendarLink, getCalendarLinks, saveCalendarLink, deleteCalendarLink, getOrphanedCalendarLinks,
   getWeeklyReportData, getStorageInfo,
+  getContacts, saveContact, deleteContact, getOptimisationInsights,
   getStatusHistory,
   backupNow, maybeBackup, listBackups, restoreBackup,
   setEncryption, getEncryptionStatus,

@@ -186,6 +186,23 @@ async function main() {
   check('skipped jobs are excluded from conversion',
     db.getScoreBandConversion().find(b => b.lo === 90).applied, 4)
 
+  // ── Contacts and optimisation workbench ────────────────────────────────
+  check('invalid contact email is rejected', db.saveContact({ email: 'not-an-email' }).success, false)
+  check('a recruiter contact can be saved', db.saveContact({
+    name: 'Alex Recruiter', email: 'Alex@Example.com', company: 'Canva',
+    relationship: 'recruiter', notes: 'Met after interview', next_action_at: '2026-08-20',
+  }).success, true)
+  check('contact email is normalised', db.getContacts()[0].email, 'alex@example.com')
+  db.saveContact({ email: 'alex@example.com', company: 'Canva', notes: 'Updated note' })
+  check('saving the same contact updates rather than duplicates', db.getContacts().length, 1)
+  check('updated contact note is retained', db.getContacts()[0].notes, 'Updated note')
+
+  const insights = db.getOptimisationInsights()
+  check('optimisation always returns an actionable insight', insights.length > 0, true)
+  check('insight contains a title', typeof insights[0].title, 'string')
+  db.deleteContact(db.getContacts()[0].id)
+  check('contact can be deleted', db.getContacts().length, 0)
+
   // ── Orphan sweep ────────────────────────────────────────────────
   db.saveInterviewPrep(999999, ['orphan'])
   const swept = db.pruneOrphanedRows()

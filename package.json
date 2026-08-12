@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Hiro — AI-powered automated job application suite (desktop app + mobile companion)",
   "private": true,
+  "engines": { "node": ">=22.12.0" },
   "scripts": {
     "web": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build",

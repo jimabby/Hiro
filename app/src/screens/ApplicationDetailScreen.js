@@ -18,6 +18,7 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
   const [comment, setComment] = useState('')
   const [savingComment, setSavingComment] = useState(false)
   const [savedComment, setSavedComment] = useState(false)
+  const [reviewQueued, setReviewQueued] = useState('')
 
   const load = useCallback(async () => {
     try {
@@ -78,6 +79,18 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
           {!!app.salary && <Text style={styles.muted}>{app.salary}</Text>}
           <Text style={styles.muted}>Applied {(app.applied_at || '').slice(0, 16)}</Text>
 
+          {app.status === 'held' && client.requestReviewAction && (
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Waiting for review</Text>
+              <Text style={styles.body}>Queue a decision for the desktop. Approval submits only when its browser session is available.</Text>
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                <TouchableOpacity style={styles.saveBtn} onPress={async () => { await client.requestReviewAction(id, 'approve'); setReviewQueued('Approval queued') }}><Text style={styles.saveBtnText}>Approve on desktop</Text></TouchableOpacity>
+                <TouchableOpacity style={[styles.saveBtn, { backgroundColor: colors.red }]} onPress={async () => { await client.requestReviewAction(id, 'reject'); setReviewQueued('Rejection queued') }}><Text style={styles.saveBtnText}>Reject</Text></TouchableOpacity>
+              </View>
+              {!!reviewQueued && <Text style={[styles.muted, { marginTop: 8 }]}>{reviewQueued}</Text>}
+            </View>
+          )}
+
           {/* Only offered when there is genuinely something to follow up on, and
               only when this build of the desktop/schema supports it — the client
               throws a clear message rather than failing silently, but hiding the
@@ -104,7 +117,7 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
             </View>
           )}
 
-          <View style={styles.card}>
+          {app.status !== 'held' && <View style={styles.card}>
             <Text style={styles.cardTitle}>Status</Text>
             <View style={styles.statusRow}>
               {STATUSES.map(s => {
@@ -121,7 +134,7 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
                 )
               })}
             </View>
-          </View>
+          </View>}
 
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Notes</Text>

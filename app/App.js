@@ -14,6 +14,7 @@ import { supabase, CloudClient } from './src/supabase'
 import { colors } from './src/theme'
 import { registerDevice, checkRevoked, clearPushToken } from './src/deviceRegistry'
 import { subscribeToTaps } from './src/push'
+import { loadCloudKey, clearCloudKey } from './src/cloudCrypto'
 import ConnectScreen from './src/screens/ConnectScreen'
 import DashboardScreen from './src/screens/DashboardScreen'
 import ApplicationsScreen from './src/screens/ApplicationsScreen'
@@ -43,6 +44,7 @@ function AppContent() {
 
   useEffect(() => {
     (async () => {
+      await loadCloudKey()
       // A live Supabase session (cloud mode) takes priority and works anywhere.
       if (supabase) {
         const { data } = await supabase.auth.getSession()
@@ -84,6 +86,7 @@ function AppContent() {
       // notifications keep arriving on a phone that has signed out.
       await clearPushToken(connection.userId)
       await supabase.auth.signOut()
+      await clearCloudKey()
     }
     await secureStore.removeItem(STORAGE_KEY)
     setConnection(null)
@@ -101,6 +104,7 @@ function AppContent() {
   const verifyStanding = useCallback(async () => {
     if (!userId) return
     if (await checkRevoked(userId)) {
+      await clearCloudKey()
       setConnection(null)
       Alert.alert(
         'Signed out',

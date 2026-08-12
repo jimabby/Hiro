@@ -6,6 +6,7 @@
 const configService = require('./config')
 const database = require('./database')
 const logger = require('./logger')
+const cloudCrypto = require('./cloudCrypto')
 const deviceIdentity = require('./deviceIdentity')
 
 let createClient = null
@@ -33,6 +34,35 @@ let sessionStartedAt = null
 // Called when a device the account has never had before shows up, so the
 // renderer can raise it rather than leaving it in the log.
 let onNewDevice = null
+let onRemoteReview = null
+// A successful interactive sign-in may follow an account password reset. The
+// local database is authoritative and still has the plaintext, so its first
+// upload must replace payloads encrypted with the previous derived key before
+// any attempt to decrypt those old cloud rows.
+let pendingRekey = false
+const CLOUD_PAGE_SIZE = 500
+
+// PostgREST projects commonly cap a response at 1,000 rows. A plain select()
+// therefore is not an "all rows" operation, even though it looks like one.
+// Keep paging until the server returns a short page; callers use this for
+// recovery and deletion bookkeeping, where silently missing the tail is data
+// loss rather than a cosmetic pagination bug.
+async function selectAll(buildQuery, pageSize = CLOUD_PAGE_SIZE) {
+  const rows = []
+  for (let from = 0; ; from += pageSize) {
+    const query = buildQuery()
+    // Test adapters and older PostgREST-compatible clients may not expose
+    // range(); retain their single-page behavior while real Supabase clients
+    // always take the complete paginated path.
+    const { data, error } = await (typeof query.range === 'function'
+      ? query.range(from, from + pageSize - 1)
+      : query)
+    if (error) throw new Error(error.message)
+    const page = data || []
+    rows.push(...page)
+    if (typeof query.range !== 'function' || page.length < pageSize) return rows
+  }
+}
 
 function getClient() {
   if (!createClient) return null
@@ -93,7 +123,12 @@ async function signIn(email, password) {
     cloudSyncEnabled: true,
     supabaseEmail: email,
     supabaseRefreshToken: data.session?.refresh_token || '',
+    cloudDataKey: cloudCrypto.deriveKey(email, password),
   })
+  // Existing cloud rows may predate end-to-end encryption. Re-upload them once
+  // with encrypted_payload now that this device has the account-derived key.
+  database.markAllDirty?.()
+  pendingRekey = true
   startAuto()
   sync().catch(() => {})
   return getStatus()
@@ -119,11 +154,17 @@ async function signOut() {
   user = null
   sessionStartedAt = null
   stopAuto()
-  configService.update({ cloudSyncEnabled: false, supabaseRefreshToken: '' })
+  configService.update({ cloudSyncEnabled: false, supabaseRefreshToken: '', cloudDataKey: '' })
   return getStatus()
 }
 
 function localToCloud(a) {
+  const dataKey = configService.load().cloudDataKey
+  const encryptedPayload = dataKey ? cloudCrypto.encrypt(dataKey, {
+    job_description: a.job_description || '', tailored_resume: a.tailored_resume || '',
+    cover_letter: a.cover_letter || '', screening_qa: a.screening_qa || '',
+    recruiter_email: a.recruiter_email || '',
+  }) : null
   return {
     user_id: user.id,
     local_id: a.id,
@@ -134,14 +175,15 @@ function localToCloud(a) {
     salary_min: a.salary_min ?? null,
     salary_max: a.salary_max ?? null,
     job_url: a.job_url || '',
-    job_description: a.job_description || '',
+    job_description: encryptedPayload ? null : (a.job_description || ''),
     match_score: a.match_score ?? null,
     match_explanation: a.match_explanation || '',
-    tailored_resume: a.tailored_resume || '',
-    cover_letter: a.cover_letter || '',
-    screening_qa: a.screening_qa || '',
+    tailored_resume: encryptedPayload ? null : (a.tailored_resume || ''),
+    cover_letter: encryptedPayload ? null : (a.cover_letter || ''),
+    screening_qa: encryptedPayload ? null : (a.screening_qa || ''),
     comment: a.comment || '',
-    recruiter_email: a.recruiter_email || '',
+    recruiter_email: encryptedPayload ? null : (a.recruiter_email || ''),
+    encrypted_payload: encryptedPayload,
     status: a.status || 'applied',
     // Which resume was sent, and whether review mode is still holding this
     // back — the phone needs both to label the row honestly.
@@ -185,11 +227,11 @@ async function pushDirty(c) {
 async function pullChanges(c) {
   // Full rows, not just the editable columns: a row this device has never seen
   // has to be reconstructable locally, and the cloud is the only copy left.
-  const { data, error } = await c
+  const data = await selectAll(() => c
     .from('applications')
     .select('*')
     .eq('user_id', user.id)
-  if (error) throw new Error(error.message)
+    .order('local_id', { ascending: true }))
 
   const localIds = new Set(database.getAllApplicationIds())
   // Deletions this desktop actually performed. Only these may be removed from
@@ -202,6 +244,9 @@ async function pullChanges(c) {
   // row, and each one would otherwise serialize the whole database.
   database.batch(() => {
     for (const remote of data || []) {
+      if (remote.encrypted_payload) {
+        Object.assign(remote, cloudCrypto.decrypt(configService.load().cloudDataKey, remote.encrypted_payload) || {})
+      }
       if (remote.local_id == null) continue
       if (!localIds.has(remote.local_id)) {
         // Absent locally means one of two very different things, and the old
@@ -375,18 +420,20 @@ async function pushAttentionJobs(c) {
 // delete-then-queue, with .select() confirming which rows THIS desktop claimed,
 // so a request is never queued twice even if two syncs overlap.
 async function pollScanRequests(c) {
-  const { data, error } = await c
-    .from('scan_requests')
-    .select('id, keywords, location')
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: true })
-  if (error) {
+  let data
+  try {
+    data = await selectAll(() => c
+      .from('scan_requests')
+      .select('id, keywords, location')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: true }))
+  } catch (error) {
     // The table is optional (added later than applications) — if it doesn't
     // exist in this project yet, skip quietly rather than failing the sync.
     // Anything else (RLS, permissions, network) is a real failure and must
     // surface, or a broken mirror looks like an unconfigured one.
     if (isMissingTable(error, 'scan_requests')) return
-    throw new Error(error.message)
+    throw error
   }
   if (!data || data.length === 0) return
 
@@ -403,6 +450,39 @@ async function pollScanRequests(c) {
   const scheduler = require('./scheduler')
   for (const req of claimed || []) {
     scheduler.requestScan({ keywords: req.keywords || '', location: req.location || '', source: 'cloud' })
+  }
+}
+
+async function pollReviewRequests(c) {
+  if (!onRemoteReview) return
+  let pending
+  try {
+    pending = await selectAll(() => c.from('review_requests')
+      .select('id, application_local_id, action')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: true }))
+  } catch (error) {
+    if (isMissingTable({ message: error.message }, 'review_requests')) return
+    throw error
+  }
+  if (!pending.length) return
+  const { data: claimed, error } = await c.from('review_requests').delete()
+    .eq('user_id', user.id).in('id', pending.map(r => r.id))
+    .select('id, application_local_id, action')
+  if (error) throw new Error(error.message)
+  for (const request of claimed || []) {
+    try {
+      await onRemoteReview(request)
+      logger.append(`Cloud review: ${request.action} processed for application ${request.application_local_id}`)
+    } catch (err) {
+      // A browser session may be temporarily unavailable. Put the command back
+      // rather than turning a phone's visible "queued" confirmation into loss.
+      await c.from('review_requests').upsert({
+        id: request.id, user_id: user.id, application_local_id: request.application_local_id,
+        action: request.action,
+      })
+      logger.append(`Cloud review deferred for application ${request.application_local_id}: ${err.message}`)
+    }
   }
 }
 
@@ -674,7 +754,7 @@ async function signOutEverywhere() {
   }
   user = null
   stopAuto()
-  configService.update({ cloudSyncEnabled: false, supabaseRefreshToken: '', knownDeviceIds: [] })
+  configService.update({ cloudSyncEnabled: false, supabaseRefreshToken: '', cloudDataKey: '', knownDeviceIds: [] })
   logger.append('Cloud sync: signed out every device on the account (all refresh tokens invalidated).')
   return { success: true }
 }
@@ -763,7 +843,11 @@ async function sync() {
       return getStatus()
     }
 
-    const pulled = await pullChanges(c) // apply phone edits first so we don't clobber them
+    if (pendingRekey) {
+      await pushDirty(c)
+      pendingRekey = false
+    }
+    const pulled = await pullChanges(c) // normally apply phone edits first so we don't clobber them
     // Recovering rows from the cloud is a significant, user-visible event (it
     // is what a reinstall looks like) — report it rather than letting the
     // database silently repopulate.
@@ -777,6 +861,7 @@ async function sync() {
     await pushInterviews(c)
     await pushAttentionJobs(c)
     await pollScanRequests(c)
+    await pollReviewRequests(c)
     await registerDevice(c)
     // Reading the list back is also how a new device on the account is noticed;
     // never let that reporting break a sync that otherwise succeeded.
@@ -807,6 +892,7 @@ function stopAuto() {
 // Called on app launch: restore the session and start periodic sync.
 async function init(hooks = {}) {
   onNewDevice = hooks.onNewDevice || null
+  onRemoteReview = hooks.onRemoteReview || null
   const cfg = configService.load()
   if (!cfg.cloudSyncEnabled) return
   if (await restoreSession()) {
@@ -817,7 +903,7 @@ async function init(hooks = {}) {
 
 module.exports = {
   init, signIn, signOut, sync, getStatus, updateScanStatus,
-  resolveFirstSync,
+  resolveFirstSync, selectAll,
   listDevices, revokeDevice, forgetDevice, signOutEverywhere,
   getPushTargets, clearPushToken,
 }

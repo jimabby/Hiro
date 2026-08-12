@@ -156,6 +156,7 @@ alter table public.applications add column if not exists resume_name text;
 -- phone shows these as "Held for review" and must keep them out of response
 -- and interview rates, exactly as the desktop does.
 alter table public.applications add column if not exists held_at timestamptz;
+alter table public.applications add column if not exists encrypted_payload text;
 
 -- In-app account deletion (required by Apple App Store guideline 5.1.1(v)).
 -- Runs as the function owner (security definer) so a signed-in user can delete
@@ -271,3 +272,46 @@ create policy "own push log" on public.push_log
 
 create index if not exists idx_push_log_user_sent
   on public.push_log (user_id, sent_at desc);
+
+-- Phone-to-desktop approval commands. The phone cannot submit an application
+-- itself because only the desktop owns the authenticated browser session. It
+-- queues an explicit one-shot command; the desktop claims it by deleting the
+-- row and then performs the normal guarded approval path.
+create table if not exists public.review_requests (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  application_local_id integer not null,
+  action text not null check (action in ('approve', 'reject')),
+  created_at timestamptz not null default now(),
+  unique (user_id, application_local_id, action)
+);
+alter table public.review_requests enable row level security;
+drop policy if exists "own review requests" on public.review_requests;
+create policy "own review requests" on public.review_requests for all
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create index if not exists idx_review_requests_user_created
+  on public.review_requests (user_id, created_at);
+-- One application has one pending decision. Upserting a changed decision from
+-- the phone replaces the previous choice instead of executing both.
+create unique index if not exists idx_review_requests_one_pending
+  on public.review_requests (user_id, application_local_id);
+
+-- Enforce the same invariants at the cloud boundary that both clients enforce
+-- in their UI. Constraints are NOT VALID first so an older project can re-run
+-- this migration, inspect legacy rows, and validate separately if necessary.
+do $$ begin
+  alter table public.applications add constraint applications_status_valid
+    check (status in ('applied','interview','offer','rejected','pending','no_response','skipped','held')) not valid;
+exception when duplicate_object then null; end $$;
+do $$ begin
+  alter table public.applications add constraint applications_score_valid
+    check (match_score is null or match_score between 0 and 100) not valid;
+exception when duplicate_object then null; end $$;
+do $$ begin
+  alter table public.scan_requests add constraint scan_request_size_valid
+    check (char_length(keywords) <= 500 and char_length(location) <= 160) not valid;
+exception when duplicate_object then null; end $$;
+do $$ begin
+  alter table public.devices add constraint device_fields_valid
+    check (char_length(device_id) <= 200 and char_length(coalesce(name,'')) <= 160 and char_length(coalesce(platform,'')) <= 80) not valid;
+exception when duplicate_object then null; end $$;

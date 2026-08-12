@@ -11,7 +11,7 @@ Connect one of two ways:
 
 ```
 Local network (LAN):
-┌──────────────┐         LAN (HTTP + token)        ┌──────────────┐
+┌──────────────┐       signed + encrypted LAN      ┌──────────────┐
 │  Hiro mobile │  ───────────────────────────────▶ │ Hiro desktop │
 │  (this app)  │   GET /api/stats, /applications…  │  (Electron)  │
 └──────────────┘   POST /api/scan (trigger a run)  └──────────────┘
@@ -22,11 +22,11 @@ Cloud account:
 └──────────────┘                └──────────┘                └──────────────┘
 ```
 
-In LAN mode the desktop runs a small token-protected HTTP server ([web/electron/services/mobileApi.js](../web/electron/services/mobileApi.js)) on port `4823`. In cloud mode both apps sign into your Supabase project and share the `applications` table.
+In LAN mode the desktop runs a small HTTP server ([web/electron/services/mobileApi.js](../web/electron/services/mobileApi.js)) on port `4823`. One-time pairing creates a per-phone secret stored through each OS keychain. Every later request is HMAC-signed with timestamp/nonce replay protection and request/response bodies are AES-256-GCM encrypted. The shared bearer-token field exists only to migrate older installations. In cloud mode both apps sign into your Supabase project and share encrypted application records.
 
 ## Setup
 
-1. **On the desktop app:** Settings → Notifications → **Mobile App** → enable the mobile companion server. Note the server address and pairing token shown.
+1. **On the desktop app:** Settings → Notifications → **Mobile App** → enable the mobile companion server and choose **Pair a phone**.
 2. **Install dependencies:**
    ```bash
    cd app
@@ -38,7 +38,7 @@ In LAN mode the desktop runs a small token-protected HTTP server ([web/electron/
    npm run ios        # iOS simulator
    npm run android    # Android emulator
    ```
-4. On the Connect screen, choose **Desktop (Wi-Fi)** and enter the server IP, port, and pairing token from step 1.
+4. On the Connect screen, choose **Desktop (Wi-Fi)** and scan the QR code, or enter its address and one-time code.
 
 Your phone and computer must be on the same network.
 
@@ -80,9 +80,9 @@ Permission is requested lazily — when you turn notifications on, not on first
 launch. iOS shows that prompt exactly once ever, and asking before the user has
 seen what the app does is how apps get denied permanently.
 
-For a standalone build, `getExpoPushTokenAsync` needs an EAS project id. Add it
-under `expo.extra.eas.projectId` in `app.json` (`eas init` writes it for you). In
-Expo Go during development it is inferred.
+For a standalone build, `getExpoPushTokenAsync` needs an EAS project id. Set
+`EXPO_PUBLIC_EAS_PROJECT_ID`; [app.config.js](./app.config.js) maps it to
+`expo.extra.eas.projectId`. In Expo Go during development it is inferred.
 
 ## This phone on your account
 
@@ -112,6 +112,8 @@ one fails the build instead of shipping.
 ```bash
 npm test                    # unit suites
 npm run check:permissions   # resolved-config permission audit
+npm run audit:production    # fail on unreviewed production advisories
+npm run check:release       # validate Supabase and EAS release environment
 npx expo export --platform ios --platform android   # Metro over every module
 ```
 
@@ -146,10 +148,12 @@ The app is App Store-ready: unique bundle ID (`com.cessleigh.hiro`), full-bleed
    ```bash
    eas env:create --name EXPO_PUBLIC_SUPABASE_URL --value https://xxxx.supabase.co --environment production
    eas env:create --name EXPO_PUBLIC_SUPABASE_ANON_KEY --value your-anon-key --environment production
+   eas env:create --name EXPO_PUBLIC_EAS_PROJECT_ID --value your-project-id --environment production
    ```
    (The anon key is safe to ship — Row Level Security protects the data.)
 5. **Re-run [../supabase/schema.sql](../supabase/schema.sql)** in your Supabase
-   project so the `delete_account()` function and `scan_status` table exist.
+   project so encrypted payloads, remote approvals, validation constraints, and
+   the latest sync tables exist.
 
 ### Build and submit
 

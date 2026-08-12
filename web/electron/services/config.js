@@ -20,6 +20,7 @@ const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json')
 const SECRET_KEYS = [
   'aiApiKey', 'gmailAppPassword', 'supabaseRefreshToken', 'mobileApiToken',
   'calendarRefreshToken', 'calendarClientSecret',
+  'cloudDataKey',
 ]
 const ENC_PREFIX = 'enc:v1:'
 
@@ -41,6 +42,9 @@ function decryptValue(value) {
   if (!canEncrypt()) return ''
   try { return safeStorage.decryptString(Buffer.from(value.slice(ENC_PREFIX.length), 'base64')) } catch { return '' }
 }
+
+const encryptSecret = encryptValue
+const decryptSecret = decryptValue
 
 function mapSecrets(config, fn) {
   const out = { ...config }
@@ -114,6 +118,7 @@ const DEFAULTS = {
   mobileApiPort: 4823,
   mobileApiToken: '',
   pendingScans: [],   // scan requests queued (e.g. from the mobile app) waiting to run
+  campaigns: [],
   lastScanAt: null,
   // Cloud sync (Supabase) — shared account so desktop + phone see one dataset.
   cloudSyncEnabled: false,
@@ -121,6 +126,7 @@ const DEFAULTS = {
   supabaseAnonKey: '',
   supabaseEmail: '',
   supabaseRefreshToken: '',
+  cloudDataKey: '',
   lastCloudSyncAt: null,
 
   // This installation's identity on the account. Generated once, never
@@ -358,4 +364,4 @@ function update(patch) {
   return next
 }
 
-module.exports = { load, save, update, getLoadError, CONFIG_DIR, DEFAULTS }
+module.exports = { load, save, update, getLoadError, CONFIG_DIR, DEFAULTS, encryptSecret, decryptSecret }

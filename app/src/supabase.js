@@ -49,6 +49,9 @@ export async function deleteAccount() {
 // desktop stopped. Extracted so a test can pin the two together.
 import { deriveStats, derivePerDay, isUnsent } from './stats'
 import { isDueOrOverdue } from './dates'
+import { decryptCloudPayload } from './cloudCrypto'
+
+const VALID_STATUSES = ['applied', 'interview', 'offer', 'rejected', 'pending', 'no_response', 'skipped', 'held']
 
 // Columns the list/stats screens actually need. Selecting * pulled every
 // cover letter, tailored resume, and job description over cellular on each
@@ -60,6 +63,18 @@ const BASE_COLUMNS = 'id, local_id, job_title, company, platform, salary, match_
 // they are requested separately and dropped on the first failure.
 const PIPELINE_COLUMNS = 'next_action_at, next_action_note'
 const SLIM_COLUMNS = `${BASE_COLUMNS}, ${PIPELINE_COLUMNS}`
+const CLOUD_PAGE_SIZE = 500
+
+async function selectAll(buildQuery, pageSize = CLOUD_PAGE_SIZE) {
+  const rows = []
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await buildQuery().range(from, from + pageSize - 1)
+    if (error) return { data: null, error }
+    const page = data || []
+    rows.push(...page)
+    if (page.length < pageSize) return { data: rows, error: null }
+  }
+}
 
 // Reads/writes the shared `applications` table. Exposes the same methods the
 // screens already call on HiroClient (getStats, getApplications, getApplication,
@@ -83,11 +98,11 @@ export class CloudClient {
   }
 
   async _fetchAll() {
-    const fetch = (columns) => supabase
+    const fetch = (columns) => selectAll(() => supabase
       .from('applications')
       .select(columns)
       .eq('user_id', this.userId)
-      .order('applied_at', { ascending: false })
+      .order('applied_at', { ascending: false }))
 
     let { data, error } = await fetch(this._columns || SLIM_COLUMNS)
     // PostgREST reports an unknown column as PGRST204 / 42703. Remember the
@@ -136,10 +151,13 @@ export class CloudClient {
       .eq('local_id', id)
       .maybeSingle()
     if (error) throw new Error(error.message)
-    return data ? this._map(data) : null
+    if (!data) return null
+    if (data.encrypted_payload) Object.assign(data, await decryptCloudPayload(data.encrypted_payload) || {})
+    return this._map(data)
   }
 
   async updateStatus(id, status) {
+    if (!VALID_STATUSES.includes(status)) throw new Error('Invalid application status.')
     const { error } = await supabase
       .from('applications')
       .update({ status, updated_at: new Date().toISOString() })
@@ -151,6 +169,7 @@ export class CloudClient {
   }
 
   async updateComment(id, comment) {
+    comment = String(comment || '').slice(0, 5000)
     const { error } = await supabase
       .from('applications')
       .update({ comment, updated_at: new Date().toISOString() })
@@ -298,6 +317,8 @@ export class CloudClient {
   // its periodic sync. `cloud: true` tells the UI to phrase the confirmation
   // accordingly (no live desktop status available here).
   async requestScan({ keywords = '', location = '' } = {}) {
+    keywords = String(keywords).trim().slice(0, 500)
+    location = String(location).trim().slice(0, 160)
     const { error } = await supabase
       .from('scan_requests')
       .insert({ user_id: this.userId, keywords, location })
@@ -308,5 +329,15 @@ export class CloudClient {
       throw new Error(error.message)
     }
     return { cloud: true }
+  }
+
+  async requestReviewAction(id, action) {
+    if (!['approve', 'reject'].includes(action)) throw new Error('Invalid review action.')
+    const { error } = await supabase.from('review_requests').upsert({
+      user_id: this.userId, application_local_id: Number(id), action,
+    }, { onConflict: 'user_id,application_local_id' })
+    if (error) throw new Error(/review_requests/.test(error.message)
+      ? 'Remote review needs the review_requests table — re-run supabase/schema.sql.' : error.message)
+    return { success: true, queued: true }
   }
 }

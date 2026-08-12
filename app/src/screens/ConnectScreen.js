@@ -7,6 +7,7 @@ import { HiroClient, pairWithDesktop } from '../api'
 import QrPairScanner from './QrPairScanner'
 import { supabase, isConfigured } from '../supabase'
 import { colors, radius } from '../theme'
+import { setCloudKeyFromPassword } from '../cloudCrypto'
 
 export default function ConnectScreen({ onConnected }) {
   const [mode, setMode] = useState(isConfigured ? 'cloud' : 'lan')
@@ -64,10 +65,10 @@ export default function ConnectScreen({ onConnected }) {
         deviceName: Platform.OS === 'ios' ? 'iPhone' : 'Android phone',
         platform: Platform.OS,
       })
-      const client = new HiroClient({ host: conn.host, port: conn.port, token: res.token })
+      const client = new HiroClient({ host: conn.host, port: conn.port, token: res.token, secure: true })
       const ping = await client.ping()
       if (!ping.ok) throw new Error('Unexpected response from server')
-      await onConnected({ mode: 'lan', host: conn.host, port: conn.port, token: res.token })
+      await onConnected({ mode: 'lan', host: conn.host, port: conn.port, token: res.token, secure: true })
     } catch (err) {
       setError(err.message)
     } finally {
@@ -88,6 +89,7 @@ export default function ConnectScreen({ onConnected }) {
         password,
       })
       if (err) throw new Error(err.message)
+      await setCloudKeyFromPassword(email.trim(), password)
       await onConnected({ mode: 'cloud', userId: data.user.id, email: data.user.email })
     } catch (err) {
       setError(err.message)

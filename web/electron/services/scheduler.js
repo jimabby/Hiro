@@ -17,6 +17,7 @@ let weeklyReportTask = null
 let staleTask = null
 let calendarTask = null
 let pushTask = null
+let campaignTasks = []
 let batchTimeouts = []
 let running = false
 let win = null
@@ -58,6 +59,19 @@ function parseTime(value, fallback) {
 function startTasks() {
   const cfg = configService.load()
   if (!cfg.setupComplete) return
+
+  for (const campaign of Array.isArray(cfg.campaigns) ? cfg.campaigns : []) {
+    if (!campaign.enabled) continue
+    try {
+      const [h, m] = parseTime(campaign.scheduleTime, '09:00')
+      campaignTasks.push(cron.schedule(`${m} ${h} * * 1-5`, () => requestScan({
+        ...campaign,
+        campaignId: campaign.id, source: `campaign:${campaign.name}`,
+      })))
+    } catch (err) {
+      log(`Could not schedule campaign "${campaign.name}": ${err.message}`)
+    }
+  }
 
   // One bad task must not prevent the others from being scheduled.
   try {
@@ -286,6 +300,8 @@ function stop({ abortRun = true } = {}) {
   staleTask = disposeTask(staleTask)
   calendarTask = disposeTask(calendarTask)
   pushTask = disposeTask(pushTask)
+  campaignTasks.forEach(disposeTask)
+  campaignTasks = []
   for (const t of batchTimeouts) clearTimeout(t)
   batchTimeouts = []
   batchSchedule = []
@@ -333,12 +349,17 @@ async function runDryRun(mainWindow) {
 // desktop is idle. `opts` may carry { keywords, location } to override the
 // saved search for this run, and `source` for logging.
 function requestScan(opts = {}) {
+  const requestedSalary = Number(opts.salaryMin)
   const req = {
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
     createdAt: new Date().toISOString(),
     keywords: (opts.keywords || '').trim(),
     location: (opts.location || '').trim(),
     source: opts.source || 'desktop',
+    campaignId: opts.campaignId || null,
+    salaryMin: Number.isFinite(requestedSalary) ? Math.min(10000000, Math.max(0, requestedSalary)) : 0,
+    resumeId: opts.resumeId || '',
+    reviewBeforeSubmit: opts.reviewBeforeSubmit !== false,
   }
   configService.update(c => ({ ...c, pendingScans: [...(Array.isArray(c.pendingScans) ? c.pendingScans : []), req] }))
   log(`Scan request queued from ${req.source}${req.keywords ? ` (keywords: ${req.keywords})` : ''}`)
@@ -356,7 +377,7 @@ async function processQueue() {
   if (pending.length === 0) return
 
   const req = pending[0]
-  const result = await runScan({ keywords: req.keywords, location: req.location, fromQueue: true })
+  const result = await runScan({ ...req, fromQueue: true })
 
   // Only pop the request if the scan actually ran. If the desktop was busy or
   // setup isn't complete yet, the request stays queued and is retried after
@@ -402,6 +423,9 @@ async function runScan(overrides = {}) {
     const runCfg = { ...cfg, askQuestion: makeAskQuestion(win) }
     if (overrides.keywords) runCfg.jobKeywords = overrides.keywords
     if (overrides.location) runCfg.jobLocation = overrides.location
+    if (overrides.salaryMin) runCfg.salaryMin = overrides.salaryMin
+    if (overrides.resumeId) runCfg.defaultResumeId = overrides.resumeId
+    if (overrides.campaignId) runCfg.reviewBeforeSubmit = overrides.reviewBeforeSubmit !== false
     if (dryRun) runCfg.dryRun = true
     const result = await applicator.run(runCfg, { log, notifyAttention })
     if (result?.blocked?.length) scanBlocked = result.blocked
