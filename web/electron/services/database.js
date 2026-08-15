@@ -1028,6 +1028,168 @@ function getSalaryStats() {
   }
 }
 
+// ─── Ghost jobs ──────────────────────────────────────────────────
+//
+// A listing that keeps coming back is usually not a vacancy. Employers repost
+// to keep a pipeline warm, to satisfy a policy that a role be advertised, or
+// because an agency is farming CVs for a role that was filled months ago. From
+// inside a single scan these are indistinguishable from a fresh opening, which
+// is why they are so expensive: each repost is a new job_url, so the
+// duplicate-skip cannot catch it, and every reappearance costs another score, a
+// tailored résumé and a cover letter.
+//
+// The evidence only exists across time, and this database has been keeping it
+// all along — every scan already records the title, the company and when it was
+// seen. Titles and companies are compared case-insensitively and the URL must
+// differ, so this counts genuine repostings rather than one listing seen twice.
+//
+// Deliberately reported rather than acted on. "Probably a ghost" is a judgement
+// about an employer, and silently blacklisting on it would hide real jobs.
+const GHOST_MIN_POSTINGS = 3
+const GHOST_MIN_SPAN_DAYS = 45
+
+function getGhostJobs({ minPostings = GHOST_MIN_POSTINGS, minSpanDays = GHOST_MIN_SPAN_DAYS } = {}) {
+  // Both tables: a repost that was never applied to sits in attention_jobs, and
+  // ignoring those would miss precisely the roles automation could not submit.
+  const rows = query(`
+    SELECT LOWER(TRIM(job_title)) as t, LOWER(TRIM(company)) as c,
+           job_title, company, job_url, applied_at as seen_at, salary
+    FROM applications
+    WHERE job_title <> '' AND company <> ''
+    UNION ALL
+    SELECT LOWER(TRIM(job_title)) as t, LOWER(TRIM(company)) as c,
+           job_title, company, job_url, found_at as seen_at, salary
+    FROM attention_jobs
+    WHERE job_title <> '' AND company <> ''
+  `)
+
+  const groups = new Map()
+  for (const r of rows) {
+    const key = `${r.t} ${r.c}`
+    if (!groups.has(key)) {
+      groups.set(key, { jobTitle: r.job_title, company: r.company, urls: new Set(), seen: [], salary: r.salary || '' })
+    }
+    const g = groups.get(key)
+    if (r.job_url) g.urls.add(r.job_url)
+    if (r.seen_at) g.seen.push(r.seen_at)
+  }
+
+  const out = []
+  for (const g of groups.values()) {
+    // Distinct URLs is the repost count. The same URL seen twice is one posting
+    // recorded twice, which says nothing about the employer.
+    const postings = g.urls.size
+    if (postings < minPostings || g.seen.length === 0) continue
+    g.seen.sort()
+    const first = g.seen[0]
+    const last = g.seen[g.seen.length - 1]
+    const spanDays = Math.round((new Date(last).getTime() - new Date(first).getTime()) / 86400000)
+    if (!Number.isFinite(spanDays) || spanDays < minSpanDays) continue
+    out.push({
+      jobTitle: g.jobTitle,
+      company: g.company,
+      postings,
+      firstSeen: first,
+      lastSeen: last,
+      spanDays,
+      salary: g.salary,
+      // Roughly how often it comes back. A monthly repost reads very differently
+      // from three in a fortnight followed by silence.
+      averageGapDays: postings > 1 ? Math.round(spanDays / (postings - 1)) : null,
+    })
+  }
+  // Most-reposted first; ties broken by how long the employer has been at it.
+  return out.sort((a, b) => b.postings - a.postings || b.spanDays - a.spanDays)
+}
+
+// ─── Advertised-pay benchmark ────────────────────────────────────
+//
+// What a role like this one has been advertised at, drawn from the history this
+// app has already collected. The Offers page could show what an offer IS but had
+// nothing to say about whether it was good, which is the only question anyone
+// actually has while holding one.
+//
+// Matched on significant title words rather than an exact string, because
+// "Senior Backend Engineer" and "Backend Engineer (Senior)" are the same market
+// and an exact match would find neither. Every figure is an ADVERTISED range —
+// what employers published, not what anyone was paid — and the caller must say
+// so; presenting it as market rate would be the one failure here that actively
+// misleads a negotiation.
+const TITLE_STOPWORDS = new Set([
+  'a', 'an', 'and', 'the', 'of', 'for', 'to', 'in', 'at', 'or', 'with',
+  'job', 'role', 'position', 'opportunity', 'new', 'x', 'f', 'm', 'd',
+])
+
+function titleTokens(title) {
+  return String(title || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9+#. ]+/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 2 && !TITLE_STOPWORDS.has(w))
+}
+
+function getSalaryBenchmark(jobTitle, { minSample = 5 } = {}) {
+  const tokens = titleTokens(jobTitle)
+  if (tokens.length === 0) return { sample: 0, tokens: [], comparable: false }
+
+  const rows = query(`
+    SELECT job_title, salary_min, salary_max FROM applications
+    WHERE salary_min IS NOT NULL OR salary_max IS NOT NULL
+    UNION ALL
+    SELECT job_title, salary_min, salary_max FROM attention_jobs
+    WHERE salary_min IS NOT NULL OR salary_max IS NOT NULL
+  `)
+
+  // A row counts when it shares at least half of this title's significant
+  // words. Requiring all of them matches almost nothing; requiring one matches
+  // every "engineer" ever advertised.
+  const needed = Math.max(1, Math.ceil(tokens.length / 2))
+  const midpoints = []
+  for (const r of rows) {
+    const other = new Set(titleTokens(r.job_title))
+    if (tokens.filter(t => other.has(t)).length < needed) continue
+    if (r.salary_min != null && r.salary_max != null) midpoints.push((r.salary_min + r.salary_max) / 2)
+    else if (r.salary_min != null || r.salary_max != null) midpoints.push(r.salary_min ?? r.salary_max)
+  }
+
+  if (midpoints.length === 0) return { sample: 0, tokens, comparable: false }
+  midpoints.sort((a, b) => a - b)
+  const at = (q) => midpoints[Math.min(midpoints.length - 1, Math.max(0, Math.round(q * (midpoints.length - 1))))]
+  return {
+    sample: midpoints.length,
+    tokens,
+    // Under this, a "percentile" is a description of four numbers rather than a
+    // market. Reported so the UI can show the figures but withhold the verdict.
+    comparable: midpoints.length >= minSample,
+    minSample,
+    p25: Math.round(at(0.25)),
+    median: Math.round(at(0.5)),
+    p75: Math.round(at(0.75)),
+    low: Math.round(midpoints[0]),
+    high: Math.round(midpoints[midpoints.length - 1]),
+  }
+}
+
+// Where a given figure falls in that distribution, as a percentile.
+function percentileFor(benchmark, value) {
+  if (!benchmark?.sample || !Number.isFinite(value)) return null
+  // Reconstructed from the quartiles the benchmark exposes rather than a second
+  // query: enough to say "around the median" / "top quarter", which is the
+  // resolution the answer is actually good to.
+  if (value <= benchmark.low) return 0
+  if (value >= benchmark.high) return 100
+  const points = [[benchmark.low, 0], [benchmark.p25, 25], [benchmark.median, 50], [benchmark.p75, 75], [benchmark.high, 100]]
+  for (let i = 1; i < points.length; i++) {
+    const [x0, y0] = points[i - 1]
+    const [x1, y1] = points[i]
+    if (value <= x1) {
+      if (x1 === x0) return y1
+      return Math.round(y0 + ((value - x0) / (x1 - x0)) * (y1 - y0))
+    }
+  }
+  return 100
+}
+
 // ─── Cloud Sync Bookkeeping ──────────────────────────────────────
 
 // Rows with local changes the cloud hasn't seen (new rows start dirty).
@@ -1317,6 +1479,24 @@ function getTodayCountByPlatform(platform) {
   return queryOne(
     `SELECT COUNT(*) as c FROM applications
      WHERE platform = ? AND status NOT IN ('skipped', 'held') AND applied_at >= ${TODAY_START}`,
+    [platform]
+  )?.c || 0
+}
+
+// Drafts held for review, created today, per platform.
+//
+// getTodayCountByPlatform above deliberately excludes these, and that is right
+// for the limit it governs — the daily limit bounds what is SENT. But with
+// review-before-submit on and no auto-submit threshold, nothing is ever sent,
+// so that limit never engages and the scan walks every listing it scraped,
+// paying for a score, a tailored résumé and a cover letter on each. The user
+// who turned on the safest setting in the app got the largest bill.
+//
+// This is the matching bound for the other outcome: a cap on drafts produced.
+function getTodayHeldCountByPlatform(platform) {
+  return queryOne(
+    `SELECT COUNT(*) as c FROM applications
+     WHERE platform = ? AND status = 'held' AND applied_at >= ${TODAY_START}`,
     [platform]
   )?.c || 0
 }
@@ -2356,6 +2536,33 @@ function getResumeConversion() {
   })).sort((a, b) => b.applied - a.applied)
 }
 
+// Sent applications per arm of a résumé A/B test.
+//
+// Deliberately a separate query from getResumeConversion rather than a filter
+// over it: that report groups by whatever résumé happened to be used, which
+// includes rule-routed and pre-experiment applications. An experiment can only
+// be read from applications that were actually randomised, so this counts rows
+// sent since the experiment started and nothing earlier.
+function getResumeExperimentArms(resumeAId, resumeBId, startedAt) {
+  const arm = (resumeId) => {
+    const row = queryOne(
+      `SELECT COUNT(*) as sent,
+              SUM(CASE WHEN status IN ('interview', 'offer') THEN 1 ELSE 0 END) as converted,
+              SUM(CASE WHEN status IN ('interview', 'offer', 'rejected', 'pending') THEN 1 ELSE 0 END) as replied
+       FROM applications
+       WHERE resume_id = ? AND ${SENT_ONLY}${startedAt ? ' AND applied_at >= ?' : ''}`,
+      startedAt ? [resumeId, startedAt] : [resumeId]
+    )
+    return {
+      resumeId,
+      sent: row?.sent || 0,
+      converted: row?.converted || 0,
+      replied: row?.replied || 0,
+    }
+  }
+  return [arm(resumeAId), arm(resumeBId)]
+}
+
 // ─── AI usage & cost ─────────────────────────────────────────────
 
 function recordAiUsage({ provider, model, operation, inputTokens = 0, outputTokens = 0, costUsd = 0 }) {
@@ -2846,7 +3053,7 @@ module.exports = {
   recordSnapshot, getSnapshots, getSnapshot, getSnapshotDiff, compareSnapshots, restoreSnapshot,
   recordAutomationEvent, getAutomationEvents, clearAutomationEvents,
   recordSyncConflict, getSyncConflicts, countSyncConflicts, clearSyncConflicts, applyConflictResolution,
-  getResumeConversion, recordAiUsage, getAiUsageSummary, getMonthlyAiSpend, pruneAiUsage, clearAiUsage,
+  getResumeConversion, getResumeExperimentArms, getGhostJobs, getSalaryBenchmark, percentileFor, recordAiUsage, getAiUsageSummary, getMonthlyAiSpend, pruneAiUsage, clearAiUsage,
   UNSENT_STATUSES,
   updateApplicationAfterApply, updateApplicationComment, updateRecruiterEmail, deleteApplication, clearAllApplications,
   getDirtyApplications, getAllApplicationIds, markCloudSynced, markCloudSeen, applyCloudEdit,
@@ -2854,7 +3061,7 @@ module.exports = {
   getAttentionJobs, getAttentionJob, insertAttentionJob, dismissAttentionJob, deleteAttentionJob, clearAllAttentionJobs,
   getAllInterviewEventsForSync,
   getCachedAnswer, saveCachedAnswer, getAllCachedAnswers, deleteCachedAnswer, clearAllCachedAnswers,
-  getStats, getTodayCountByPlatform, getTodayAttentionCountByPlatform, getSalaryStats,
+  getStats, getTodayCountByPlatform, getTodayAttentionCountByPlatform, getTodayHeldCountByPlatform, getSalaryStats,
   findDuplicateAcrossPlatforms, getApplicationsByDate, getApplicationsPerDay,
   getApplicationsForFollowUp, markFollowUpSent,
   saveFollowUpDraft, getFollowUpDrafts, getFollowUpDraft, resolveFollowUpDraft,

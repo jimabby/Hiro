@@ -356,6 +356,8 @@ export default function Analytics({ active }) {
   const [salary, setSalary] = useState(null)
   const [rejection, setRejection] = useState(null)
   const [versions, setVersions] = useState([])
+  const [experiment, setExperiment] = useState(null)
+  const [ghosts, setGhosts] = useState([])
 
   useEffect(() => {
     Promise.all([
@@ -379,6 +381,8 @@ export default function Analytics({ active }) {
     window.api.getAiUsage?.().then(u => setAiUsage(u || null)).catch(() => {})
     window.api.getRejectionAnalysis?.().then(r => setRejection(r || null)).catch(() => {})
     window.api.getVersionOutcomes?.().then(v => setVersions(v || [])).catch(() => {})
+    window.api.getResumeExperiment?.().then(e => setExperiment(e || null)).catch(() => {})
+    window.api.getGhostJobs?.().then(g => setGhosts(g || [])).catch(() => {})
   }, [active])
 
   useEffect(() => {
@@ -582,6 +586,95 @@ export default function Analytics({ active }) {
       {/* Which resume actually converts. Routing rules send different jobs to
           different resumes; the score histogram can't tell them apart, so
           until now the rules were an untested assumption. */}
+      {/* The randomised counterpart to "Which Resume Converts" below.
+          That table groups by whichever resume happened to be used, and routing
+          rules mean each resume saw a different slice of the market — so a gap
+          between two rows can be the jobs rather than the documents. Here the
+          jobs are split by hash, so the comparison is like-for-like and a
+          surviving difference is caused by the resume. */}
+      {experiment?.running && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+            <span style={{ fontWeight: 600, fontSize: 14 }}>{experiment.name}</span>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              randomised A/B test{experiment.startedAt ? ` · since ${new Date(experiment.startedAt).toLocaleDateString()}` : ''}
+            </span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+            {(experiment.arms || []).map((arm, i) => {
+              const leading = experiment.leader && experiment.leader === arm.resumeId
+              return (
+                <div key={arm.resumeId || i} style={{
+                  border: `1px solid ${leading && experiment.confident ? 'var(--green)' : 'var(--border)'}`,
+                  borderRadius: 8, padding: '12px 14px',
+                }}>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
+                    {i === 0 ? 'A' : 'B'} · {arm.name}
+                  </div>
+                  <div style={{ fontSize: 24, fontWeight: 600 }}>
+                    {arm.ratePct == null ? '—' : `${arm.ratePct}%`}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                    {arm.converted} of {arm.sent} reached interview or offer
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+          <p style={{
+            fontSize: 12, marginBottom: 0,
+            color: experiment.confident ? 'var(--green)' : 'var(--text-muted)',
+          }}>
+            {experiment.verdict}
+          </p>
+        </div>
+      )}
+
+      {/* Listings that keep coming back. Each repost carries a new URL, so the
+          duplicate check cannot see them and every reappearance costs another
+          three model calls — the pattern only exists across scans, which is
+          exactly what this database has been quietly recording all along. */}
+      {ghosts.length > 0 && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+            <span style={{ fontWeight: 600, fontSize: 14 }}>Probably Not Real Vacancies</span>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              repeatedly reposted listings
+            </span>
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: 'var(--text-muted)', fontSize: 11 }}>
+                <th style={{ padding: '4px 8px 8px 0', fontWeight: 500 }}>Role</th>
+                <th style={{ padding: '4px 8px 8px', fontWeight: 500 }}>Company</th>
+                <th style={{ padding: '4px 8px 8px', fontWeight: 500, textAlign: 'right' }}>Postings</th>
+                <th style={{ padding: '4px 8px 8px', fontWeight: 500, textAlign: 'right' }}>Over</th>
+                <th style={{ padding: '4px 0 8px 8px', fontWeight: 500, textAlign: 'right' }}>Every</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ghosts.slice(0, 12).map(g => (
+                <tr key={`${g.jobTitle}|${g.company}`} style={{ borderTop: '1px solid var(--border)' }}>
+                  <td style={{ padding: '8px 8px 8px 0' }}>{g.jobTitle}</td>
+                  <td style={{ padding: '8px', color: 'var(--text-muted)' }}>{g.company}</td>
+                  <td style={{ padding: '8px', textAlign: 'right', fontWeight: 600 }}>{g.postings}</td>
+                  <td style={{ padding: '8px', textAlign: 'right', color: 'var(--text-muted)' }}>{g.spanDays}d</td>
+                  <td style={{ padding: '8px 0 8px 8px', textAlign: 'right', color: 'var(--text-muted)' }}>
+                    {g.averageGapDays == null ? '—' : `~${g.averageGapDays}d`}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 10, marginBottom: 0 }}>
+            Each of these has been advertised at least three times under different URLs over more than
+            six weeks. That usually means a pipeline being kept warm, an agency collecting CVs, or a
+            policy requiring the role be posted — not a vacancy waiting for you. Blacklist the company
+            from a job's detail panel if you'd rather stop seeing them.
+          </p>
+        </div>
+      )}
+
       {resumeConv.length > 0 && (
         <div className="card" style={{ marginBottom: 24 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>

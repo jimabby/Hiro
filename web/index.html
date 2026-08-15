@@ -3,6 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      No Content-Security-Policy here on purpose. The shipped page gets a strict
+      one, injected at build time by the hiro-inject-csp plugin in
+      vite.config.js — writing it into this file instead would either ship the
+      dev server's required 'unsafe-inline'/'unsafe-eval' and HMR websocket to
+      users, or break `npm run dev`. See that plugin for the policy itself.
+    -->
     <link rel="icon" href="/public/logo.svg" type="image/svg+xml" />
     <title>Hiro</title>
   </head>

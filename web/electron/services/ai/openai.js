@@ -2,11 +2,33 @@ const OpenAI = require('openai')
 const { withUsage } = require('./usage')
 const { interviewQuestionsPrompt } = require('./prompts')
 
-// Named so a model change is one edit rather than a dozen. DeepSeek reuses this
-// adapter via a baseURL override and has a single model name.
+// Named so a model change is one edit rather than a dozen.
 const FAST_MODEL = 'gpt-4o-mini'
 const SMART_MODEL = 'gpt-4o'
 const DEEPSEEK_MODEL = 'deepseek-chat'
+
+// Every OpenAI-compatible endpoint runs through this adapter; a "flavour" says
+// which one and what to call there. DeepSeek passed a bare baseURL string and
+// the model was then inferred from `baseURL ? … : …` at a dozen call sites —
+// which worked for exactly two providers and could not express a third. A local
+// server (Ollama, LM Studio, llama.cpp) is a third: same wire protocol, its own
+// address, and a model name only the user knows.
+const OPENAI_FLAVOUR = { baseURL: undefined, provider: 'chatgpt', fast: FAST_MODEL, smart: SMART_MODEL }
+const DEEPSEEK_FLAVOUR = { baseURL: 'https://api.deepseek.com', provider: 'deepseek', fast: DEEPSEEK_MODEL, smart: DEEPSEEK_MODEL }
+
+// Accepts the legacy bare-string baseURL (DeepSeek) as well as a descriptor, so
+// deepseek.js needs no change.
+function resolve(flavour) {
+  if (!flavour) return OPENAI_FLAVOUR
+  if (typeof flavour === 'string') return { ...DEEPSEEK_FLAVOUR, baseURL: flavour }
+  const model = flavour.model || FAST_MODEL
+  return {
+    baseURL: flavour.baseURL,
+    provider: flavour.provider || 'local',
+    fast: flavour.fast || model,
+    smart: flavour.smart || model,
+  }
+}
 
 function parseJSON(text) {
   const cleaned = text.replace(/```(?:json)?\s*/gi, '').replace(/```\s*/g, '').trim()
@@ -19,11 +41,12 @@ function getClient(apiKey, baseURL) {
 
 // Single entry point for every request, so retry/backoff, the monthly budget
 // cap and cost accounting apply uniformly rather than being remembered at a
-// dozen call sites. DeepSeek reuses this adapter via a baseURL override, and
-// is recorded under its own provider name so the cost breakdown stays honest.
-async function complete(operation, baseURL, apiKey, params) {
-  return withUsage(operation, baseURL ? 'deepseek' : 'chatgpt', async () => {
-    const client = getClient(apiKey, baseURL)
+// dozen call sites. Each flavour is recorded under its own provider name so the
+// cost breakdown stays honest.
+async function complete(operation, flavour, apiKey, params) {
+  const f = resolve(flavour)
+  return withUsage(operation, f.provider, async () => {
+    const client = getClient(apiKey, f.baseURL)
     const response = await client.chat.completions.create(params)
     return {
       value: response.choices?.[0]?.message?.content ?? '',
@@ -33,17 +56,17 @@ async function complete(operation, baseURL, apiKey, params) {
   })
 }
 
-async function testConnection(apiKey, baseURL) {
-  await complete('testConnection', baseURL, apiKey, {
-    model: baseURL ? DEEPSEEK_MODEL : FAST_MODEL,
+async function testConnection(apiKey, flavour) {
+  await complete('testConnection', flavour, apiKey, {
+    model: resolve(flavour).fast,
     max_tokens: 10,
     messages: [{ role: 'user', content: 'hi' }],
   })
 }
 
-async function tailorResume(jobDescription, masterResume, apiKey, baseURL) {
-  const model = baseURL ? DEEPSEEK_MODEL : SMART_MODEL
-  const text = await complete('tailorResume', baseURL, apiKey, {
+async function tailorResume(jobDescription, masterResume, apiKey, flavour) {
+  const model = resolve(flavour).smart
+  const text = await complete('tailorResume', flavour, apiKey, {
     model,
     max_tokens: 2000,
     messages: [{
@@ -63,9 +86,9 @@ ${masterResume}`,
   return text
 }
 
-async function answerScreeningQuestion(question, jobDescription, masterResume, apiKey, baseURL) {
-  const model = baseURL ? DEEPSEEK_MODEL : FAST_MODEL
-  const text = await complete('answerScreeningQuestion', baseURL, apiKey, {
+async function answerScreeningQuestion(question, jobDescription, masterResume, apiKey, flavour) {
+  const model = resolve(flavour).fast
+  const text = await complete('answerScreeningQuestion', flavour, apiKey, {
     model,
     max_tokens: 500,
     messages: [{
@@ -90,9 +113,9 @@ Return ONLY the answer, no commentary.`,
   return text
 }
 
-async function generateTalkingPoints(jobDescription, masterResume, apiKey, baseURL) {
-  const model = baseURL ? DEEPSEEK_MODEL : FAST_MODEL
-  const text = await complete('generateTalkingPoints', baseURL, apiKey, {
+async function generateTalkingPoints(jobDescription, masterResume, apiKey, flavour) {
+  const model = resolve(flavour).fast
+  const text = await complete('generateTalkingPoints', flavour, apiKey, {
     model,
     max_tokens: 600,
     messages: [{
@@ -111,9 +134,9 @@ RESUME: ${masterResume.slice(0, 1000)}`,
   }
 }
 
-async function scoreMatch(jobDescription, masterResume, apiKey, baseURL) {
-  const model = baseURL ? DEEPSEEK_MODEL : FAST_MODEL
-  const text = await complete('scoreMatch', baseURL, apiKey, {
+async function scoreMatch(jobDescription, masterResume, apiKey, flavour) {
+  const model = resolve(flavour).fast
+  const text = await complete('scoreMatch', flavour, apiKey, {
     model,
     max_tokens: 50,
     messages: [{
@@ -129,11 +152,11 @@ RESUME: ${masterResume.slice(0, 1000)}`,
   return isNaN(score) ? 50 : Math.min(100, Math.max(0, score))
 }
 
-async function generateCoverLetter(jobDescription, masterResume, apiKey, baseURL, tone, template) {
-  const model = baseURL ? DEEPSEEK_MODEL : SMART_MODEL
+async function generateCoverLetter(jobDescription, masterResume, apiKey, flavour, tone, template) {
+  const model = resolve(flavour).smart
   const toneInstruction = tone === 'casual' ? 'Write in a warm, approachable, conversational tone.' : tone === 'confident' ? 'Write with assertive, direct confidence — lead with impact.' : ''
   const templateInstruction = template ? `Use the following as the structural base, filling in job-specific details:\n\n${template}\n\n` : ''
-  const text = await complete('generateCoverLetter', baseURL, apiKey, {
+  const text = await complete('generateCoverLetter', flavour, apiKey, {
     model,
     max_tokens: 800,
     messages: [{
@@ -158,9 +181,9 @@ ${masterResume}`,
   return text
 }
 
-async function scoreMatchWithExplanation(jobDescription, masterResume, apiKey, baseURL) {
-  const model = baseURL ? DEEPSEEK_MODEL : FAST_MODEL
-  const text = await complete('scoreMatchWithExplanation', baseURL, apiKey, {
+async function scoreMatchWithExplanation(jobDescription, masterResume, apiKey, flavour) {
+  const model = resolve(flavour).fast
+  const text = await complete('scoreMatchWithExplanation', flavour, apiKey, {
     model,
     max_tokens: 200,
     messages: [{ role: 'user', content: `Score how well this resume matches this job description.
@@ -180,9 +203,9 @@ RESUME: ${masterResume.slice(0, 1000)}` }],
   }
 }
 
-async function generateInterviewQuestions(jobDescription, masterResume, apiKey, baseURL, replyContext) {
-  const model = baseURL ? DEEPSEEK_MODEL : SMART_MODEL
-  const text = await complete('generateInterviewQuestions', baseURL, apiKey, {
+async function generateInterviewQuestions(jobDescription, masterResume, apiKey, flavour, replyContext) {
+  const model = resolve(flavour).smart
+  const text = await complete('generateInterviewQuestions', flavour, apiKey, {
     model,
     max_tokens: 3000,
     messages: [{ role: 'user', content: interviewQuestionsPrompt(jobDescription, masterResume, replyContext) }],
@@ -191,9 +214,9 @@ async function generateInterviewQuestions(jobDescription, masterResume, apiKey, 
   catch { return [] }
 }
 
-async function generateFollowUpQuestion(question, userAnswer, jobDescription, apiKey, baseURL) {
-  const model = baseURL ? DEEPSEEK_MODEL : FAST_MODEL
-  const text = await complete('generateFollowUpQuestion', baseURL, apiKey, {
+async function generateFollowUpQuestion(question, userAnswer, jobDescription, apiKey, flavour) {
+  const model = resolve(flavour).fast
+  const text = await complete('generateFollowUpQuestion', flavour, apiKey, {
     model,
     max_tokens: 300,
     messages: [{ role: 'user', content: `You are an interview coach. The candidate was asked this interview question and gave the answer below. Generate ONE follow-up probe question an interviewer might ask to dig deeper.
@@ -206,9 +229,9 @@ JOB CONTEXT: ${(jobDescription || '').slice(0, 500)}` }],
   return text.trim()
 }
 
-async function analyzeKeywordGap(jobDescription, masterResume, apiKey, baseURL) {
-  const model = baseURL ? DEEPSEEK_MODEL : FAST_MODEL
-  const text = await complete('analyzeKeywordGap', baseURL, apiKey, {
+async function analyzeKeywordGap(jobDescription, masterResume, apiKey, flavour) {
+  const model = resolve(flavour).fast
+  const text = await complete('analyzeKeywordGap', flavour, apiKey, {
     model,
     max_tokens: 600,
     messages: [{ role: 'user', content: `Analyze which key skills and qualifications from this job are present or missing in this resume.
@@ -222,9 +245,9 @@ RESUME: ${masterResume.slice(0, 800)}` }],
   catch { return { missing: [], present: [] } }
 }
 
-async function generateFollowUpEmail(jobTitle, company, masterResume, apiKey, baseURL) {
-  const model = baseURL ? DEEPSEEK_MODEL : SMART_MODEL
-  const text = await complete('generateFollowUpEmail', baseURL, apiKey, {
+async function generateFollowUpEmail(jobTitle, company, masterResume, apiKey, flavour) {
+  const model = resolve(flavour).smart
+  const text = await complete('generateFollowUpEmail', flavour, apiKey, {
     model,
     max_tokens: 400,
     messages: [{ role: 'user', content: `Write a brief professional follow-up email for a job application.
@@ -238,9 +261,9 @@ ${masterResume.slice(0, 800)}` }],
   return text
 }
 
-async function improveResume(resumeText, apiKey, baseURL) {
-  const model = baseURL ? DEEPSEEK_MODEL : SMART_MODEL
-  const text = await complete('improveResume', baseURL, apiKey, {
+async function improveResume(resumeText, apiKey, flavour) {
+  const model = resolve(flavour).smart
+  const text = await complete('improveResume', flavour, apiKey, {
     model,
     max_tokens: 2000,
     messages: [{
@@ -262,9 +285,9 @@ ${resumeText}`,
 // Classify a recruiter's reply into an application status. Returns one of
 // 'interview' | 'rejected' | 'offer' | 'pending' (pending = reply received but
 // outcome unclear). Used by the inbox checker to refine the keyword guess.
-async function classifyReply(subject, body, company, apiKey, baseURL) {
-  const model = baseURL ? DEEPSEEK_MODEL : FAST_MODEL
-  const text = await complete('classifyReply', baseURL, apiKey, {
+async function classifyReply(subject, body, company, apiKey, flavour) {
+  const model = resolve(flavour).fast
+  const text = await complete('classifyReply', flavour, apiKey, {
     model,
     max_tokens: 10,
     messages: [{ role: 'user', content: `Classify this reply to a job application at "${company}" into exactly one label:

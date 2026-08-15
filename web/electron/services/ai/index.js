@@ -2,6 +2,7 @@ const claude = require('./claude')
 const openai = require('./openai')
 const deepseek = require('./deepseek')
 const gemini = require('./gemini')
+const local = require('./local')
 
 // Strip any markdown formatting that AI models add despite being told not to
 function stripMarkdown(text) {
@@ -22,15 +23,20 @@ function getAdapter(provider) {
     case 'chatgpt': return openai
     case 'deepseek': return deepseek
     case 'gemini': return gemini
+    case 'local': return local
     default: throw new Error(`Unknown AI provider: ${provider}`)
   }
 }
 
-// The 4th adapter arg is the Gemini model name, but the OpenAI adapter reads
-// that position as baseURL — only forward it for the gemini provider, or a
-// leftover geminiModel value breaks ChatGPT calls.
+// The 4th adapter arg is the model name, but the OpenAI adapter reads that
+// position as its flavour — only forward it for providers that name their own
+// model, or a leftover geminiModel value breaks ChatGPT calls. A local server
+// also names its own model (whatever the user has pulled), so it shares the
+// slot; the local adapter falls back to its configured default when it's blank.
+const NAMES_OWN_MODEL = new Set(['gemini', 'local'])
+
 function modelFor(provider, geminiModel) {
-  return provider === 'gemini' ? geminiModel : undefined
+  return NAMES_OWN_MODEL.has(provider) ? geminiModel : undefined
 }
 
 // For Gemini, pass geminiModel as an extra arg (other adapters ignore it)

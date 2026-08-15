@@ -15,6 +15,7 @@
 - **Spend cap and cost meter** — per-call token usage and estimated cost are recorded and broken down by operation on the Analytics page. An optional monthly cap is checked *before* each call, so it stops work rather than reporting the overrun afterwards
 - **Block detection** — a CAPTCHA, rate-limit page, or expired login is reported as *blocked* rather than as "found 0 jobs", so a silently throttled scan is visible instead of looking like an empty market
 - **Selector health, by name** — when a site moves its markup the scraper does not crash, it finds nothing and reports a quiet zero. Each scan now records which selectors matched and which never did, so the alert names the specific selector that moved and the file to fix it in. This also catches the break the "three empty scans" heuristic cannot see at all: listings still being found, but one field unreadable, so every listing is discarded and the scan looks perfectly healthy
+- **Runs entirely on your machine, if you want** — an Ollama / LM Studio / llama.cpp endpoint can be used in place of a hosted provider. Nothing leaves the device, nothing is billed, and no provider sees your job search. Weaker tailoring than a frontier model, so it is a choice rather than the default — see [AI Providers](#ai-providers)
 - **AI match scoring** — rates each job against your resume (0–100%) with a one-sentence explanation of the score
 - **Resume tailoring** — AI rewrites your resume to match each job description (without changing facts)
 - **Cover letter generation** — AI writes a tailored cover letter with configurable tone (Professional / Casual / Confident) and optional custom template
@@ -23,6 +24,7 @@
 - **Resume routing** — keyword rules pick a different base resume per job type (e.g. send "data, analytics, sql" roles to your data resume); anything unmatched uses your default
 - **Cross-platform duplicate detection** — skips jobs already applied to via another platform, and recognises jobs already sitting in Needs Attention so a failed apply isn't re-scored, re-tailored and re-queued on every subsequent scan
 - **Daily limits count what was actually sent** — jobs scored below the threshold, or held for review, don't consume the per-platform daily allowance
+- **A separate daily cap on drafts** — because of the line above, review-before-submit mode never consumed the send allowance, so nothing bounded it: a scan drafted, and paid for, every listing it scraped. Drafts held for review now have their own per-platform daily ceiling (default 20, 0 to disable), checked before the scoring and tailoring spend rather than after it
 - **Recruiter contact extraction** — pulls a follow-up address out of the job ad, and out of any recruiter reply. Platform, no-reply and placeholder addresses are ignored, and an ambiguous ad yields nothing rather than a guess. Without this, auto follow-up skipped every application because nothing ever filled the field in
 - **Company cooldown** — after applying to a company, other roles there are skipped for a configurable window (default 30 days, 0 to disable) rather than being blocked permanently
 - **Closing-date detection** — parses the application deadline out of the job ad so you can act on what expires first, and it's editable in the job detail panel when the ad didn't state one (or stated it oddly)
@@ -86,6 +88,7 @@ pipeline was for, and the one the rest of the app had nothing to say about.
 - **The deadline that expires first is hoisted to the top**, and coloured by how close it is. An offer with two days left and one with three weeks left should not look the same
 - **For and against, and an excitement rating** — the part no number captures, kept next to the parts that are all number
 - **Decided offers stay on the board** — a declined offer is still part of the record of what was on the table, but it leaves the "best on the table" figure
+- **Is it any good?** — the rest of the page says what an offer *is*; this is the only thing here that speaks to whether it is worth taking. An entered offer is placed against what comparable roles were advertised at, drawn from your own scan history — matched on significant title words, so "Senior Backend Engineer" and "Backend Engineer (Senior)" count as the same market. Two things it will not do: it never calls this *market rate* (these are advertised ranges, which skew high and are not what anyone was paid), and below five comparable ads it shows the figures but withholds the percentile, because a "75th percentile" drawn from three adverts is a sentence about three adverts. Advertised ranges are never benchmarked against other advertised ranges
 
 ### Job Detail Panel
 - **Match explanation** — one-sentence AI summary of why the job scored the way it did
@@ -100,6 +103,8 @@ pipeline was for, and the one the rest of the app had nothing to say about.
 - **Analytics page** — SVG bar chart of applications over the last 7 days, platform donut chart, by-status breakdown, response and interview rates, advertised-salary spread (median / average / range, annualised), and a match-score histogram with your apply threshold marked (for tuning it alongside Test Scan)
 - **Interview rate by match score** — what share of each score band actually reached interview or offer. The histogram shows where your threshold sits; this shows whether it belongs there. Bands with too few applications to be meaningful are greyed out rather than shown as a confident 0% or 100%
 - **Which resume converts** — interview rate, response rate and average match score per resume actually sent. Routing rules send different jobs to different resumes; this is the evidence for keeping or dropping each rule instead of assuming it helps. Rates from fewer than 10 applications are marked as not yet meaningful
+- **Resume A/B test** — the randomised version of the above, and the answer to its one real weakness. Because routing rules aim each resume at a different slice of the market, a gap in that table can be the jobs rather than the document, and deleting the "worse" resume on it is a decision made on a confounded number. Turn on a test and the jobs no routing rule claimed are split between two resumes by a hash of the job URL — so assignment is independent of what the job is, balanced, and stable across re-scans. The verdict is willing to say *"ahead, but within what chance would produce at this sample size"*, which is the honest and most common answer; it names a winner only when a two-proportion test clears p < 0.05, and refuses to read anything at all below 15 sent applications per arm
+- **Probably not real vacancies** — listings an employer keeps reposting. Each repost carries a new URL, so the duplicate check cannot see it and every reappearance costs another score, resume and cover letter. The pattern only exists across scans, which is exactly what this database has been recording all along: three or more postings under different URLs across more than six weeks usually means a pipeline being kept warm, an agency collecting CVs, or a policy requiring the role be advertised. Reported, never acted on automatically — "probably a ghost" is a judgement about an employer, and silently blacklisting on it would hide real jobs
 - **Where applications end** — the split that decides what to work on: rejected *before* anyone interviewed you (the resume and targeting are the problem) versus rejected *after* interviewing (they are not). Broken down by resume and by score band, with the median time employers take to say no. The stage is derived from the status history, never stored, so it can't disagree with the status shown elsewhere
 - **Which version won** — interview rate of the documents each AI model wrote, so two providers are judged on results rather than on how their output reads. One application counts once per model however many times it was re-drafted, and a sample too small to mean anything reports no rate at all rather than a confident 0%
 - **AI usage and cost** — spend today and this month, token counts, and a breakdown by operation (scoring, tailoring, cover letters), so an expensive scan is visible before the bill is
@@ -113,6 +118,8 @@ pipeline was for, and the one the rest of the app had nothing to say about.
 - **Automation health cooldowns** — blocked or selector-broken platforms pause automatically instead of being hammered again by the next scheduled scan. A pause is reported as a pause, not as a failed scan: it says which platform, why, and when it rejoins, without the alert a real block raises
 - **Company cooldown** — how long to wait before applying to another role at the same company
 - **Resume routing rules** — keyword → resume mapping, checked top to bottom
+- **Resume A/B test** — pick two resumes and split the unrouted jobs between them at random. Routing rules always win: a rule is an explicit targeting decision, and overriding it to feed an experiment would change what real employers receive without being asked. Changing either arm starts a new test rather than mixing two populations
+- **Daily draft limit** — how many drafts review mode may hold per platform per day (0 for none)
 - **Pages per scan** — how deep to page through each platform's results (1–10)
 - **Inbox cadence** — how often to check for replies, and whether to skip weekends
 - **No Response threshold** — days without a reply before an application is retired, with a Run Now button
@@ -295,8 +302,36 @@ Sessions are stored at `~/.hiro/` and reused automatically.
 | ChatGPT (OpenAI) | GPT-4o or GPT-4-turbo work well |
 | DeepSeek | Cost-effective option |
 | Gemini (Google) | Enter your model name (e.g. `gemini-2.5-flash`) — check [aistudio.google.com](https://aistudio.google.com) for available models |
+| Local model | Any OpenAI-compatible server on your machine — Ollama, LM Studio, llama.cpp. No API key, no bill, nothing leaves the device |
 
 All AI features (match scoring, resume tailoring, cover letter, interview questions, keyword gap, follow-up email) work with any supported provider.
+
+### Running the model locally
+
+Everything else about Hiro is built so a job search stays private — the database
+encrypts at rest, cloud sync is end-to-end encrypted with a key the server never
+receives — and yet every scan sent the full resume and the full job description
+to a third party under an account with your real billing details. That was the
+largest hole in the app's own privacy argument, and the only one you could not
+close from Settings.
+
+Choose **Local model** and set the server address and model name:
+
+| Server | Address |
+|---|---|
+| Ollama | `http://localhost:11434/v1` |
+| LM Studio | `http://localhost:1234/v1` |
+
+```bash
+ollama pull llama3.1:8b   # or whatever you prefer; `ollama list` shows what you have
+```
+
+The trade is real: a small local model tailors a resume noticeably less well than
+a frontier one, and is likelier to answer the scoring prompt in prose rather than
+the JSON the adapter parses — which reads as a score of 50 for every job. Worth
+running `HIRO_TEST_LOCAL_MODEL=<model> npm run test:contract --prefix web` before
+trusting one with a real scan; that check costs nothing and is the only thing
+that catches it.
 
 ---
 
@@ -304,7 +339,9 @@ All AI features (match scoring, resume tailoring, cover letter, interview questi
 
 ```bash
 cd web
-npm test              # 32 hermetic suites, no network, no browser  (~30s)
+npm test              # 51 hermetic main-process suites + the renderer suites  (~40s)
+npm run test:main     # just the main-process suites (plain node)
+npm run test:renderer # just the renderer suites (vitest + jsdom)
 npm run lint
 npm run build:dry && npm run smoke   # install the packaged app and drive it
 npm run test:contract # real calls to the job boards and Expo — see below
@@ -319,9 +356,27 @@ Four layers, each covering something the others cannot:
 | Layer | What only it can catch |
 |---|---|
 | `web/test/*.test.js` | Service logic, against a real SQLite database. Hermetic — safe on every push |
+| `web/test/renderer/` | The preload bridge contract and component lifecycle. Found the listener bug below |
 | `web/test/smoke/` | The **packaged** app: installer, main process, preload bridge, renderer. Found the ATS bug below |
 | `app/test/` | The stats and date logic the phone shares with the desktop, pinned so the two cannot drift again |
 | `web/test/contract/` | That Greenhouse, Lever, Ashby and Expo still reply in the shape the adapters parse. Found the entity bug below |
+
+`web/test/cross-platform-crypto.test.js` is the odd one out and runs in CI's
+mobile job, where the phone's dependencies are installed. The desktop and the
+phone each implement the cloud key derivation, in different crypto libraries, and
+they must agree bit-for-bit — but a drift is invisible from the desktop, which
+keeps working and keeps uploading while every paired phone silently cannot
+decrypt or cannot sign in at all. It reimplements the phone's derivation against
+the `@noble/hashes` build the phone actually ships and asserts the two match.
+
+The renderer layer earned its place immediately: every page used to unsubscribe
+with `removeAllListeners(channel)`, which removes *every* listener on that
+channel rather than its own. `update:status` has two subscribers — the app-wide
+update banner and the panel in Settings — so opening Settings once and navigating
+away silently killed the banner for the rest of the session, precisely when it
+mattered, because the download just started from that panel reported its progress
+and its "restart to install" into nothing. Each `on*` now returns its own
+unsubscribe, and a test asserts every one of them does.
 
 The two integration layers have already earned their place. The smoke test found
 that **every career-board match was silently dropped** — nothing set

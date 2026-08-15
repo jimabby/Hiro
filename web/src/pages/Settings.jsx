@@ -143,8 +143,8 @@ function UpdatePanel({ form, set, showToast }) {
 
   useEffect(() => {
     window.api.getUpdateStatus?.().then(setStatus).catch(() => {})
-    window.api.onUpdateStatus?.(setStatus)
-    return () => window.api.removeAllListeners?.('update:status')
+    const off = window.api.onUpdateStatus?.(setStatus)
+    return () => off?.()
   }, [])
 
   async function check() {
@@ -202,8 +202,8 @@ function IndeedAccountCard() {
 
   useEffect(() => {
     window.api.indeedStatus().then(s => setLoggedIn(s.loggedIn))
-    window.api.onIndeedStatusUpdate(m => setMsg(m))
-    return () => window.api.removeAllListeners('indeed:status-update')
+    const off = window.api.onIndeedStatusUpdate(m => setMsg(m))
+    return () => off?.()
   }, [])
 
   return (
@@ -248,8 +248,8 @@ function SeekAccountCard() {
 
   useEffect(() => {
     window.api.seekStatus().then(s => setLoggedIn(s.loggedIn))
-    window.api.onSeekStatusUpdate(m => setMsg(m))
-    return () => window.api.removeAllListeners('seek:status-update')
+    const off = window.api.onSeekStatusUpdate(m => setMsg(m))
+    return () => off?.()
   }, [])
 
   return (
@@ -636,11 +636,11 @@ export default function Settings({ showToast, active }) {
       setCloudUrl(cfg.supabaseUrl || '')
       setCloudKey(cfg.supabaseAnonKey || '')
     })
-    window.api.onLinkedInStatusUpdate(msg => setLinkedinMsg(msg))
-    window.api.onGmailStatusUpdate(msg => setGmailMsg(msg))
+    const offLinkedin = window.api.onLinkedInStatusUpdate(msg => setLinkedinMsg(msg))
+    const offGmail = window.api.onGmailStatusUpdate(msg => setGmailMsg(msg))
     return () => {
-      window.api.removeAllListeners('linkedin:status-update')
-      window.api.removeAllListeners('gmail:status-update')
+      offLinkedin?.()
+      offGmail?.()
     }
   }, [])
 
@@ -710,7 +710,10 @@ export default function Settings({ showToast, active }) {
 
   async function testAI() {
     setTestingAi(true); setAiResult(null)
-    const res = await window.api.testAiConnection(form.aiProvider, form.aiApiKey, form.geminiModel)
+    // A local server names its own model in the same argument slot Gemini uses
+    // — see NAMES_OWN_MODEL in services/ai/index.js.
+    const model = form.aiProvider === 'local' ? form.localAiModel : form.geminiModel
+    const res = await window.api.testAiConnection(form.aiProvider, form.aiApiKey, model)
     setTestingAi(false); setAiResult(res)
   }
 
@@ -783,12 +786,51 @@ export default function Settings({ showToast, active }) {
             <option value="chatgpt">ChatGPT (OpenAI)</option>
             <option value="deepseek">DeepSeek</option>
             <option value="gemini">Gemini (Google)</option>
+            <option value="local">Local model (Ollama / LM Studio)</option>
           </select>
         </div>
-        <div className="form-group">
-          <label>API Key</label>
-          <input type="password" value={form.aiApiKey} onChange={e => set('aiApiKey', e.target.value)} />
-        </div>
+        {form.aiProvider === 'local' ? (
+          <div style={{
+            fontSize: 12, color: 'var(--text-muted)', background: 'var(--bg-subtle)',
+            border: '1px solid var(--border)', borderRadius: 6, padding: '10px 12px', marginBottom: 12,
+          }}>
+            Résumés and job descriptions are sent to this address only. Nothing leaves this
+            machine and nothing is billed, so the spend cap and cost meter will read zero.
+            Expect weaker tailoring than a frontier model.
+          </div>
+        ) : (
+          <div className="form-group">
+            <label>API Key</label>
+            <input type="password" value={form.aiApiKey} onChange={e => set('aiApiKey', e.target.value)} />
+          </div>
+        )}
+        {form.aiProvider === 'local' && (
+          <>
+            <div className="form-group">
+              <label>Server address</label>
+              <input
+                value={form.localAiBaseUrl || ''}
+                onChange={e => set('localAiBaseUrl', e.target.value)}
+                placeholder="http://localhost:11434/v1"
+              />
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                Ollama serves this at <code>http://localhost:11434/v1</code>; LM Studio at
+                {' '}<code>http://localhost:1234/v1</code>. The endpoint must be OpenAI-compatible.
+              </span>
+            </div>
+            <div className="form-group">
+              <label>Model</label>
+              <input
+                value={form.localAiModel || ''}
+                onChange={e => set('localAiModel', e.target.value)}
+                placeholder="e.g. llama3.1:8b"
+              />
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                Must already be pulled on the server — <code>ollama list</code> shows what is available.
+              </span>
+            </div>
+          </>
+        )}
         {form.aiProvider === 'gemini' && (
           <div className="form-group">
             <label>Gemini Model Name</label>
@@ -803,7 +845,9 @@ export default function Settings({ showToast, active }) {
           </div>
         )}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button className="btn btn-ghost" onClick={testAI} disabled={!form.aiApiKey || testingAi}>
+          {/* A local server takes no key, so requiring one would leave the only
+              button that proves the endpoint works permanently disabled. */}
+          <button className="btn btn-ghost" onClick={testAI} disabled={(form.aiProvider !== 'local' && !form.aiApiKey) || testingAi}>
             {testingAi ? 'Testing...' : 'Test Connection'}
           </button>
           {aiResult && (
@@ -2186,6 +2230,78 @@ export default function Settings({ showToast, active }) {
         ))}
       </div>
 
+      {/* Resume A/B test. Sits below routing on purpose: rules take priority,
+          and the experiment fills the space the default resume would have. */}
+      {(() => {
+        const exp = form.resumeExperiment || {}
+        const resumes = form.resumes || []
+        const setExp = (patch) => set('resumeExperiment', { ...exp, ...patch })
+        return (
+          <div className="card" style={{ marginBottom: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+              <h3 style={{ fontSize: 15, margin: 0 }}>Resume A/B Test</h3>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={!!exp.enabled}
+                  disabled={resumes.length < 2}
+                  onChange={e => setExp({ enabled: e.target.checked })}
+                />
+                Running
+              </label>
+            </div>
+            <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 14 }}>
+              Splits the jobs no routing rule claimed between two resumes, decided by a hash of the
+              job URL. “Which Resume Converts” compares resumes that were sent to different kinds of
+              job, so a gap there can be the market rather than the document — this removes that
+              confound, and Analytics reports whether the difference is bigger than chance.
+            </p>
+            {resumes.length < 2 ? (
+              <p style={{ color: 'var(--text-muted)', fontSize: 12, margin: 0 }}>
+                Add a second resume above to run a test.
+              </p>
+            ) : (
+              <>
+                <div className="form-group" style={{ marginBottom: 10 }}>
+                  <label>Test name</label>
+                  <input
+                    placeholder="e.g. Metrics-led vs narrative-led"
+                    value={exp.name || ''}
+                    onChange={e => setExp({ name: e.target.value })}
+                  />
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  {['resumeA', 'resumeB'].map((slot, i) => (
+                    <div className="form-group" key={slot} style={{ marginBottom: 0 }}>
+                      <label>{i === 0 ? 'Resume A' : 'Resume B'}</label>
+                      <select value={exp[slot] || ''} onChange={e => setExp({ [slot]: e.target.value })}>
+                        <option value="">Not set</option>
+                        {resumes.map(r => (
+                          <option key={r.id} value={r.id}>{r.name || r.id}</option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+                {exp.enabled && exp.resumeA && exp.resumeA === exp.resumeB && (
+                  <p style={{ color: 'var(--yellow)', fontSize: 12, marginTop: 10, marginBottom: 0 }}>
+                    Both arms are the same resume — nothing is being compared. The default resume is
+                    used until they differ.
+                  </p>
+                )}
+                {exp.enabled && exp.startedAt && (
+                  <p style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 10, marginBottom: 0 }}>
+                    Running since {new Date(exp.startedAt).toLocaleDateString()}. Changing either arm
+                    starts a new test — results are only read from applications sent after that point,
+                    because earlier ones were never randomised.
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+        )
+      })()}
+
       {/* Personal Links */}
       <div className="card" style={{ marginBottom: 16 }}>
         <h3 style={{ marginBottom: 4, fontSize: 15 }}>Personal Links</h3>
@@ -2583,6 +2699,28 @@ export default function Settings({ showToast, active }) {
                   ? 'Empty — every draft waits for your approval.'
                   : <>Jobs at <strong>{form.autoSubmitThreshold}%</strong> or above are sent without review. Anything
                      lower, or a job that could not be scored, still waits for you.</>}
+              </p>
+            </div>
+          )}
+
+          {form.reviewBeforeSubmit && (
+            <div className="form-group" style={{ marginTop: 14 }}>
+              <label>Draft at most, per platform per day</label>
+              <input
+                type="number"
+                min="0"
+                value={form.dailyDraftLimit ?? 20}
+                onChange={e => {
+                  const n = Number(e.target.value)
+                  set('dailyDraftLimit', Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 20)
+                }}
+              />
+              <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
+                {Number(form.dailyDraftLimit) === 0
+                  ? 'No limit — a scan will draft every job it finds above the match threshold, and pay for each one.'
+                  : <>The daily limits above count applications that were <em>sent</em>, so in review mode they never
+                     apply — without this, a scan drafts and pays for every listing it scrapes. Checked before the
+                     scoring and tailoring spend, not after.</>}
               </p>
             </div>
           )}

@@ -12,8 +12,13 @@
 //   HIRO_TEST_CLAUDE_KEY, HIRO_TEST_OPENAI_KEY,
 //   HIRO_TEST_DEEPSEEK_KEY, HIRO_TEST_GEMINI_KEY  (+ HIRO_TEST_GEMINI_MODEL)
 //
-// Each run costs a few cents of real tokens, which is the other reason this is not
-// part of `npm test`.
+// The local provider needs no key — set HIRO_TEST_LOCAL_MODEL to a model your
+// server already has (and HIRO_CONFIG_DIR's localAiBaseUrl if it isn't Ollama's
+// default). That one costs nothing to run, and is the most worth running: small
+// models are far likelier than hosted ones to break these parsers.
+//
+// Each hosted run costs a few cents of real tokens, which is the other reason this
+// is not part of `npm test`.
 
 const aiAdapter = require('../../electron/services/ai/index')
 
@@ -30,6 +35,12 @@ const PROVIDERS = [
   { id: 'chatgpt', env: 'HIRO_TEST_OPENAI_KEY' },
   { id: 'deepseek', env: 'HIRO_TEST_DEEPSEEK_KEY' },
   { id: 'gemini', env: 'HIRO_TEST_GEMINI_KEY', model: process.env.HIRO_TEST_GEMINI_MODEL || 'gemini-2.5-flash' },
+  // A local server has no key to gate on, so it opts in with the model name
+  // instead: set HIRO_TEST_LOCAL_MODEL to whatever you have pulled. Worth
+  // running before trusting a local model with a real scan — a small model that
+  // answers the score prompt in prose rather than JSON parses as 50 for every
+  // job, and this is the only check that would catch it.
+  { id: 'local', env: 'HIRO_TEST_LOCAL_MODEL', keyless: true, model: process.env.HIRO_TEST_LOCAL_MODEL },
 ]
 
 // Short, unambiguous fixtures: a strong match and an obvious mismatch. The point
@@ -40,8 +51,10 @@ const RESUME = 'Jane Test. Eight years as a backend engineer: Node.js, PostgreSQ
 const MATCHING_JOB = 'Senior Backend Engineer. Node.js and PostgreSQL on Kubernetes in AWS. 5+ years required.'
 const MISMATCHED_JOB = 'Registered Veterinary Nurse. Small-animal practice. Certificate IV required.'
 
-async function testProvider({ id, env, model }) {
-  const key = process.env[env]
+async function testProvider({ id, env, model, keyless }) {
+  // A keyless provider is opted into by the same env var, but its value is the
+  // model rather than a credential; the adapter supplies its own placeholder.
+  const key = keyless ? (process.env[env] ? 'local' : '') : process.env[env]
   if (!key) {
     console.log(`SKIP  ${id}: ${env} is not set`)
     return

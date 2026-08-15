@@ -37,19 +37,87 @@ function encryptValue(value) {
   try { return ENC_PREFIX + safeStorage.encryptString(value).toString('base64') } catch { return value }
 }
 
+// ─── Secrets that cannot be decrypted right now ────────────────────────────
+//
+// A ciphertext this machine cannot unwrap is NOT the same as an absent value,
+// and the difference used to be fatal. decryptValue returned '' for it, and the
+// very next configService.update() — one runs at the end of every scan — wrote
+// that '' straight back over the ciphertext. A keychain that was merely locked,
+// or a profile copied to a second machine, silently and permanently destroyed
+// the API key, the Gmail app password, the Supabase refresh token and the cloud
+// data key. dbCrypto has always refused to guess in exactly this situation (see
+// its 'key-unwrap-failed' path); this is the same rule applied to config.
+//
+// The ciphertext is remembered here at load time and written back verbatim on
+// save unless the user has actually supplied a new value, so a keychain that
+// comes back later finds the secrets intact.
+const preservedSecrets = new Map() // key -> original 'enc:v1:…' string
+
+// Set when a secret was present but unreadable, so the UI can say so instead of
+// presenting a blank field that looks like the value was never set.
+let secretError = null
+
+function getSecretError() {
+  return secretError
+}
+
 function decryptValue(value) {
   if (typeof value !== 'string' || !value.startsWith(ENC_PREFIX)) return value
-  if (!canEncrypt()) return ''
-  try { return safeStorage.decryptString(Buffer.from(value.slice(ENC_PREFIX.length), 'base64')) } catch { return '' }
+  if (!canEncrypt()) throw new Error('the OS keychain is unavailable')
+  try {
+    return safeStorage.decryptString(Buffer.from(value.slice(ENC_PREFIX.length), 'base64'))
+  } catch {
+    throw new Error('the stored value could not be unwrapped by this keychain')
+  }
 }
 
 const encryptSecret = encryptValue
-const decryptSecret = decryptValue
+// Callers outside this module (pairing.js) want a best-effort read: an
+// unreadable per-device token means that device falls back to bearer auth, and
+// there is nothing to preserve because the hash is the authority.
+const decryptSecret = (value) => {
+  try { return decryptValue(value) } catch { return '' }
+}
 
-function mapSecrets(config, fn) {
+// Decrypt for load(). Records what could not be read rather than flattening it
+// to '', so save() can put the original back.
+function decryptForLoad(config) {
+  const out = { ...config }
+  const unreadable = []
+  preservedSecrets.clear()
+  for (const key of SECRET_KEYS) {
+    if (!(key in out)) continue
+    const raw = out[key]
+    try {
+      out[key] = decryptValue(raw)
+    } catch (err) {
+      preservedSecrets.set(key, raw)
+      unreadable.push(key)
+      out[key] = ''
+      if (!secretError) secretError = err.message
+    }
+  }
+  secretError = unreadable.length
+    ? `${unreadable.length} saved secret${unreadable.length === 1 ? '' : 's'} (${unreadable.join(', ')}) could not be decrypted because ${secretError}. `
+      + 'They have been left untouched on disk and will work again once the keychain is available. '
+      + 'Re-entering a value here replaces the stored one.'
+    : null
+  return out
+}
+
+// Encrypt for save(). A field the caller left empty while its stored ciphertext
+// is unreadable keeps the ciphertext; anything the user actually typed wins.
+function encryptForSave(config) {
   const out = { ...config }
   for (const key of SECRET_KEYS) {
-    if (key in out) out[key] = fn(out[key])
+    if (!(key in out)) {
+      // The key was dropped from the object entirely (a partial patch). Keep
+      // whatever is on disk rather than losing it.
+      if (preservedSecrets.has(key)) out[key] = preservedSecrets.get(key)
+      continue
+    }
+    if (!out[key] && preservedSecrets.has(key)) out[key] = preservedSecrets.get(key)
+    else out[key] = encryptValue(out[key])
   }
   return out
 }
@@ -58,6 +126,13 @@ const DEFAULTS = {
   aiProvider: '',
   aiApiKey: '',
   geminiModel: '',
+  // ─── Local model (aiProvider: 'local') ─────────────────────────
+  // An OpenAI-compatible server on this machine — Ollama, LM Studio,
+  // llama.cpp. Nothing leaves the device and nothing is billed. See
+  // services/ai/local.js for why this is the one privacy gap the user could not
+  // otherwise close.
+  localAiBaseUrl: 'http://localhost:11434/v1',
+  localAiModel: 'llama3.1:8b',
   gmailAddress: '',
   gmailAppPassword: '',
   jobKeywords: '',
@@ -70,6 +145,13 @@ const DEFAULTS = {
   // first rule whose comma-separated keywords appear in the job title or
   // description picks that resume, otherwise defaultResumeId is used.
   resumeRules: [],
+
+  // ─── Résumé A/B test ───────────────────────────────────────────
+  // Randomly split the jobs no routing rule claimed between two résumés, so the
+  // interview-rate difference between them is caused by the document rather
+  // than by which jobs each was pointed at. See services/resumeExperiment.js
+  // for why the existing "which résumé converts" report cannot answer this.
+  resumeExperiment: { enabled: false, name: '', resumeA: '', resumeB: '' },
   matchThreshold: 80,
   // Days before the same company is eligible again after a successful apply.
   // 0 disables the cooldown entirely (per-listing and cross-platform duplicate
@@ -78,6 +160,10 @@ const DEFAULTS = {
   dailyLimitSeek: 10,
   dailyLimitIndeed: 10,
   dailyLimitLinkedIn: 10,
+  // Per-platform ceiling on drafts held for review in one day. The daily limits
+  // above count what was SENT, so with review-before-submit on they never fire
+  // and a scan would draft — and pay for — every listing it scraped. 0 disables.
+  dailyDraftLimit: 20,
   blacklistedCompanies: [],
   enableSeek: true,
   enableIndeed: true,
@@ -311,7 +397,7 @@ function load() {
     const raw = fs.readFileSync(CONFIG_FILE, 'utf8')
     const parsed = JSON.parse(raw)
     loadError = null
-    return mapSecrets({ ...DEFAULTS, ...parsed }, decryptValue)
+    return decryptForLoad({ ...DEFAULTS, ...parsed })
   } catch (err) {
     // Keep the unreadable file so it can be recovered by hand, and do it only
     // once — a later successful save must not be shadowed by a stale copy.
@@ -341,7 +427,7 @@ function fsyncFile(file, flags) {
 // can't leave a truncated config — rename is atomic on NTFS and POSIX alike.
 function save(config) {
   ensureDir()
-  const json = JSON.stringify(mapSecrets(config, encryptValue), null, 2)
+  const json = JSON.stringify(encryptForSave(config), null, 2)
   const tmp = CONFIG_FILE + '.tmp'
   try {
     fs.writeFileSync(tmp, json, 'utf8')
@@ -367,4 +453,9 @@ function update(patch) {
   return next
 }
 
-module.exports = { load, save, update, getLoadError, CONFIG_DIR, DEFAULTS, encryptSecret, decryptSecret }
+module.exports = {
+  load, save, update, getLoadError, getSecretError,
+  CONFIG_DIR, DEFAULTS, encryptSecret, decryptSecret,
+  // exported for tests
+  _resetSecretState: () => { preservedSecrets.clear(); secretError = null },
+}

@@ -9,6 +9,10 @@ export default function Setup({ onComplete }) {
     aiProvider: 'claude',
     aiApiKey: '',
     geminiModel: '',
+    // Ollama's default OpenAI-compatible endpoint, so choosing "local" with a
+    // stock install needs no typing at all.
+    localAiBaseUrl: 'http://localhost:11434/v1',
+    localAiModel: 'llama3.1:8b',
     gmailAddress: '',
     gmailAppPassword: '',
     jobKeywords: '',
@@ -34,7 +38,14 @@ export default function Setup({ onComplete }) {
   function validateStep(stepNum) {
     const errors = []
     if (stepNum === 0) {
-      if (!form.aiApiKey.trim()) errors.push('API key is required to use AI features.')
+      // A local server authenticates nothing — requiring a key there would block
+      // setup on a credential that does not exist. It needs an address instead.
+      if (form.aiProvider === 'local') {
+        if (!String(form.localAiBaseUrl || '').trim()) errors.push('A server address is required for a local model.')
+        if (!String(form.localAiModel || '').trim()) errors.push('A model name is required for a local model.')
+      } else if (!form.aiApiKey.trim()) {
+        errors.push('API key is required to use AI features.')
+      }
     }
     if (stepNum === 2) {
       if (!form.jobKeywords.trim()) errors.push('At least one job keyword is required.')
@@ -64,7 +75,8 @@ export default function Setup({ onComplete }) {
   async function testAI() {
     setTesting(true)
     setTestResult(null)
-    const res = await window.api.testAiConnection(form.aiProvider, form.aiApiKey, form.geminiModel)
+    const model = form.aiProvider === 'local' ? form.localAiModel : form.geminiModel
+    const res = await window.api.testAiConnection(form.aiProvider, form.aiApiKey, model)
     setTesting(false)
     setTestResult(res)
   }
@@ -110,9 +122,15 @@ export default function Setup({ onComplete }) {
     }
   }
 
+  // Step 0 is satisfied by a key, or — for a local model — by an address and a
+  // model name. Used for the progress ticks, the review page and the warning.
+  const aiConfigured = form.aiProvider === 'local'
+    ? !!(String(form.localAiBaseUrl || '').trim() && String(form.localAiModel || '').trim())
+    : !!form.aiApiKey
+
   const completedSteps = (() => {
     const done = []
-    if (form.aiApiKey) done.push(0)
+    if (aiConfigured) done.push(0)
     if (form.gmailAddress && form.gmailAppPassword) done.push(1)
     if (form.jobKeywords) done.push(2)
     if (form.masterResume) done.push(3)
@@ -160,16 +178,49 @@ export default function Setup({ onComplete }) {
                   <option value="chatgpt">ChatGPT (OpenAI)</option>
                   <option value="deepseek">DeepSeek</option>
                   <option value="gemini">Gemini (Google)</option>
+                  <option value="local">Local model (Ollama / LM Studio)</option>
                 </select>
               </div>
-              <div className="form-group">
-                <label>API Key</label>
-                <input
-                  type="password" value={form.aiApiKey}
-                  onChange={e => set('aiApiKey', e.target.value)}
-                  placeholder="Paste your API key here..."
-                />
-              </div>
+              {form.aiProvider === 'local' ? (
+                <>
+                  <div style={{
+                    fontSize: 12, color: 'var(--text-muted)', background: 'var(--bg-subtle)',
+                    border: '1px solid var(--border)', borderRadius: 6, padding: '10px 12px', marginBottom: 12,
+                  }}>
+                    Your résumé and every job description stay on this machine. No API key, no bill,
+                    and no provider sees your job search — in exchange for weaker tailoring than a
+                    frontier model gives.
+                  </div>
+                  <div className="form-group">
+                    <label>Server address</label>
+                    <input
+                      value={form.localAiBaseUrl || ''}
+                      onChange={e => set('localAiBaseUrl', e.target.value)}
+                      placeholder="http://localhost:11434/v1"
+                    />
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                      Ollama: http://localhost:11434/v1 · LM Studio: http://localhost:1234/v1
+                    </span>
+                  </div>
+                  <div className="form-group">
+                    <label>Model</label>
+                    <input
+                      value={form.localAiModel || ''}
+                      onChange={e => set('localAiModel', e.target.value)}
+                      placeholder="e.g. llama3.1:8b"
+                    />
+                  </div>
+                </>
+              ) : (
+                <div className="form-group">
+                  <label>API Key</label>
+                  <input
+                    type="password" value={form.aiApiKey}
+                    onChange={e => set('aiApiKey', e.target.value)}
+                    placeholder="Paste your API key here..."
+                  />
+                </div>
+              )}
               {form.aiProvider === 'gemini' && (
                 <div className="form-group">
                   <label>Gemini Model Name</label>
@@ -184,7 +235,7 @@ export default function Setup({ onComplete }) {
                 </div>
               )}
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
-                <button className="btn btn-ghost" onClick={testAI} disabled={!form.aiApiKey || testing}>
+                <button className="btn btn-ghost" onClick={testAI} disabled={!aiConfigured || testing}>
                   {testing ? 'Testing...' : 'Test Connection'}
                 </button>
                 {testResult && (
@@ -317,8 +368,11 @@ export default function Setup({ onComplete }) {
             <div>
               <h2 style={{ marginBottom: 20, fontSize: 18 }}>Review & Start</h2>
               {[
-                ['AI Provider', form.aiProvider, !!form.aiApiKey],
-                ['API Key', form.aiApiKey ? '••••••••' : 'Not set', !!form.aiApiKey],
+                ['AI Provider', form.aiProvider, aiConfigured],
+                ...(form.aiProvider === 'local'
+                  ? [['Server', form.localAiBaseUrl || 'Not set', !!form.localAiBaseUrl],
+                     ['Model', form.localAiModel || 'Not set', !!form.localAiModel]]
+                  : [['API Key', form.aiApiKey ? '••••••••' : 'Not set', !!form.aiApiKey]]),
                 ...(form.aiProvider === 'gemini' ? [['Gemini Model', form.geminiModel || 'Not set', !!form.geminiModel]] : []),
                 ['Email', form.gmailAddress || 'Skipped (optional)', !!form.gmailAddress],
                 ['Keywords', form.jobKeywords || 'Not set', !!form.jobKeywords],
@@ -333,9 +387,11 @@ export default function Setup({ onComplete }) {
                   <span style={{ color: ok ? 'var(--text)' : 'var(--yellow)' }}>{v}</span>
                 </div>
               ))}
-              {!form.aiApiKey && (
+              {!aiConfigured && (
                 <div style={{ marginTop: 12, padding: '8px 12px', background: 'rgba(234,179,8,0.15)', borderRadius: 8, fontSize: 12, color: 'var(--yellow)' }}>
-                  Warning: No AI API key set. AI features won't work until you add one in Settings.
+                  {form.aiProvider === 'local'
+                    ? "Warning: the local model isn't fully configured. AI features won't work until the server address and model are set in Settings."
+                    : "Warning: No AI API key set. AI features won't work until you add one in Settings."}
                 </div>
               )}
             </div>

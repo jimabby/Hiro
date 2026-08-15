@@ -93,16 +93,24 @@ export default function App() {
       if (err) showToast(err, 'error')
     }).catch(() => {})
 
+    // A secret that is on disk but unreadable by this machine's keychain shows
+    // as an empty field, which is indistinguishable from never having set one —
+    // and the temptation is then to retype it, or to assume it was lost. Say
+    // which secrets are affected and that they are still there.
+    window.api.getConfigSecretError?.().then(err => {
+      if (err) showToast(err, 'error')
+    }).catch(() => {})
+
     // Update availability, pushed from the main process as it changes.
     window.api.getUpdateStatus?.().then(setUpdate).catch(() => {})
-    window.api.onUpdateStatus?.(setUpdate)
+    const offUpdate = window.api.onUpdateStatus?.(setUpdate)
 
     // Seed the activity log from the persisted file so it survives a restart.
     window.api.getRecentLogs?.().then(lines => {
       if (Array.isArray(lines) && lines.length) setLogs(lines)
     })
 
-    window.api.onNotification((data) => {
+    const offNotification = window.api.onNotification((data) => {
       if (data.type === 'attention') {
         setAttentionCount(c => c + 1)
         showToast(`New job needs attention: ${data.job?.job_title}`, 'info')
@@ -155,26 +163,29 @@ export default function App() {
       }
     })
 
-    window.api.onAutomationLog((msg) => {
+    const offLog = window.api.onAutomationLog((msg) => {
       setLogs(prev => [...prev.slice(-200), msg])
       if (msg.includes('Starting')) setScanRunning(true)
     })
 
-    window.api.onQuestionAsk((q) => {
+    const offQuestion = window.api.onQuestionAsk((q) => {
       // Payload is { id, question } (id routes the answer back to the right
       // apply flow); tolerate a plain string from an older main process.
       setQuestion(typeof q === 'string' ? { id: null, question: q } : q)
       setQuestionAnswer('')
     })
 
-    window.api.onSubmitReview?.((payload) => setSubmitReview(payload))
+    const offSubmitReview = window.api.onSubmitReview?.((payload) => setSubmitReview(payload))
 
+    // Each subscription is torn down individually. Tearing down the whole
+    // channel here would also unsubscribe Settings' own panels, which listen to
+    // several of these — see the note on subscribe() in preload.js.
     return () => {
-      window.api.removeAllListeners('notification')
-      window.api.removeAllListeners('automation:log')
-      window.api.removeAllListeners('question:ask')
-      window.api.removeAllListeners('submit:review')
-      window.api.removeAllListeners('update:status')
+      offNotification?.()
+      offLog?.()
+      offQuestion?.()
+      offSubmitReview?.()
+      offUpdate?.()
     }
   }, [showToast])
 

@@ -90,6 +90,31 @@ module.exports = [
     },
   },
 
+  // ─── Renderer tests: ES modules, browser + the test runner's globals ──
+  // These run under vitest in jsdom, so they are ES modules like the renderer
+  // itself, but they also reach Node APIs — the preload-contract test patches
+  // Node's module loader to feed the real CommonJS preload a fake `electron`.
+  {
+    files: ['test/renderer/**/*.js', 'test/renderer/**/*.jsx', 'vitest.config.js'],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: 'module',
+      globals: { ...globals.browser, ...globals.node },
+      parserOptions: {
+        ecmaFeatures: { jsx: true },
+      },
+    },
+    plugins: { react },
+    rules: {
+      ...js.configs.recommended.rules,
+      'react/jsx-uses-vars': 'error',
+      'react/jsx-uses-react': 'error',
+      'no-unused-vars': ['error', { args: 'none', varsIgnorePattern: '^_' }],
+      'no-empty': ['error', { allowEmptyCatch: true }],
+      eqeqeq: ['error', 'always', { null: 'ignore' }],
+    },
+  },
+
   // ─── Renderer: ES modules in a browser ─────────────────────────
   {
     files: ['src/**/*.js', 'src/**/*.jsx'],

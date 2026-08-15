@@ -33,10 +33,10 @@ export default function NeedsAttention({ onCountChange, showToast }) {
   useEffect(() => { load() }, [])
 
   useEffect(() => {
-    window.api.onAttentionLog((msg) => {
+    const off = window.api.onAttentionLog((msg) => {
       setApplyLog(prev => [...prev, msg])
     })
-    return () => window.api.removeAllListeners('attention:log')
+    return () => off?.()
   }, [])
 
   useEffect(() => {

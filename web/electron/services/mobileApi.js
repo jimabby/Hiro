@@ -187,17 +187,30 @@ function json(res, status, body) {
   res.end(data)
 }
 
+const MAX_BODY_BYTES = 1e6
+
+// Buffered as bytes, not concatenated as strings.
+//
+// `raw += chunk` decodes each TCP chunk on its own, so a multi-byte UTF-8
+// character split across a chunk boundary becomes two replacement characters.
+// That corrupts the body, and because this exact string is the HMAC signing
+// input, it shows up as a signature mismatch on a request that was signed
+// perfectly well — a failure that would be near-impossible to diagnose from
+// either end. The old size guard counted characters too, so the 1 MB cap was
+// not the byte limit it claimed to be.
 function readRawBody(req) {
   if (req.rawBody !== undefined) return Promise.resolve(req.rawBody)
   return new Promise((resolve, reject) => {
-    let raw = ''
+    const chunks = []
+    let bytes = 0
     req.on('data', (chunk) => {
-      raw += chunk
-      if (raw.length > 1e6) { req.destroy(); reject(new Error('Body too large')) }
+      bytes += chunk.length
+      if (bytes > MAX_BODY_BYTES) { req.destroy(); reject(new Error('Body too large')); return }
+      chunks.push(chunk)
     })
     req.on('end', () => {
-      req.rawBody = raw
-      resolve(raw)
+      req.rawBody = Buffer.concat(chunks).toString('utf8')
+      resolve(req.rawBody)
     })
     req.on('error', reject)
   })
@@ -258,7 +271,9 @@ function timingSafeEqualStr(a, b) {
 }
 
 async function handle(req, res) {
-  if (req.method === 'OPTIONS') return json(res, 204, {})
+  // 204 means "no content", so it must not carry a body — json() would send one
+  // and set a Content-Length that contradicts the status.
+  if (req.method === 'OPTIONS') { res.writeHead(204); return res.end() }
 
   const url = new URL(req.url, 'http://localhost')
   const path = url.pathname

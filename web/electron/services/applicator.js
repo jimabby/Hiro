@@ -7,12 +7,14 @@ const database = require('./database')
 const { randomDelay, stripMarkdown } = require('./scraper/utils')
 const { parseClosingDate } = require('./dateParser')
 const automationHealth = require('./automationHealth')
+const resumeExperiment = require('./resumeExperiment')
 const { inspectTailoring, describeFlags } = require('./fabricationGuard')
 
 // Pick the resume to use for a given job. A rule matches when any of its
 // comma-separated keywords appears in the job title or description; the first
 // matching rule wins, so ordering in Settings is the precedence. Falls back to
-// the configured default resume, then the master resume.
+// the running A/B experiment's assignment, then the configured default resume,
+// then the master resume.
 function selectResume(cfg, job) {
   const resumes = Array.isArray(cfg.resumes) ? cfg.resumes : []
   const rules = Array.isArray(cfg.resumeRules) ? cfg.resumeRules : []
@@ -26,6 +28,17 @@ function selectResume(cfg, job) {
     const match = resumes.find(r => r.id === rule.resumeId)
     if (match) return { resume: match, ruleKeywords: keywords.join(', ') }
   }
+
+  // No rule claimed this job, so it is eligible for the experiment. Checked
+  // AFTER the rules deliberately: a rule is an explicit targeting decision, and
+  // overriding it to feed an experiment would change what real employers
+  // receive in a way the user never asked for.
+  const arm = resumeExperiment.assignArm(job?.job_url, cfg.resumeExperiment)
+  if (arm) {
+    const assigned = resumes.find(r => r.id === arm)
+    if (assigned) return { resume: assigned, ruleKeywords: null, experimentArm: arm }
+  }
+
   return { resume: resumes.find(r => r.id === cfg.defaultResumeId) || null, ruleKeywords: null }
 }
 
@@ -34,8 +47,11 @@ function selectResume(cfg, job) {
 // there's no way to tell afterwards which resume was actually sent, and the
 // routing rules can't be judged against interview rates.
 function withResume(cfg, job, log) {
-  const { resume, ruleKeywords } = selectResume(cfg, job)
+  const { resume, ruleKeywords, experimentArm } = selectResume(cfg, job)
   if (ruleKeywords && log) log(`  Resume rule matched (${ruleKeywords}) → "${resume.name || resume.id}"`)
+  // Said out loud so an experiment is never running invisibly — the whole point
+  // is that the user knows two different documents are going out.
+  else if (experimentArm && log) log(`  A/B test → "${resume.name || resume.id}"`)
   return {
     ...cfg,
     masterResume: resume?.text || cfg.masterResume || '',
@@ -154,6 +170,9 @@ async function doRun(cfg, { log, notifyAttention }) {
   let scoringFailures = 0
   let budgetStopped = false
   const batchLimit = cfg.batchLimit || Infinity // smart scheduling passes a finite limit
+  // Per-platform ceiling on drafts held for review in a day. 0 disables it,
+  // which restores the old unbounded behaviour for anyone who wants it.
+  const draftLimit = Number.isFinite(Number(cfg.dailyDraftLimit)) ? Number(cfg.dailyDraftLimit) : 20
   const summary = () => (cfg.dryRun
     ? { dryRun: true, scores: dryScores, wouldApply: dryWouldApply, threshold: cfg.matchThreshold, blocked, paused, scoringFailures, budgetStopped }
     : { dryRun: false, found: foundCount, applied: batchCount, held: heldCount, blocked, paused, scoringFailures, budgetStopped })
@@ -238,6 +257,16 @@ async function doRun(cfg, { log, notifyAttention }) {
         ? database.getTodayAttentionCountByPlatform(name)
         : database.getTodayCountByPlatform(name)
       if (!cfg.dryRun && currentCount >= limit) break
+
+      // The daily limit above counts submissions, so in review mode — where
+      // nothing is ever submitted — it never fires. Without this, turning on
+      // "review before submit" silently removed the only bound on how much a
+      // scan could spend. Checked here, before the description fetch and the
+      // three model calls, because a cap enforced after the spend is not a cap.
+      if (!cfg.dryRun && draftLimit > 0 && database.getTodayHeldCountByPlatform(name) >= draftLimit) {
+        log(`${name}: daily draft limit reached (${draftLimit} held for review). Approve or reject some on the Review page.`)
+        break
+      }
 
       // Skip already-seen jobs. Checks BOTH tables: a job whose apply failed
       // sits in attention_jobs with no applications row, so checking only

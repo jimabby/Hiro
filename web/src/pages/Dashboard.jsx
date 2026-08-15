@@ -249,8 +249,8 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
   }, [logs])
 
   useEffect(() => {
-    window.api.onSkippedApplyLog(msg => setSkippedApplyLog(prev => [...prev, msg]))
-    return () => window.api.removeAllListeners('skipped:apply-log')
+    const off = window.api.onSkippedApplyLog(msg => setSkippedApplyLog(prev => [...prev, msg]))
+    return () => off?.()
   }, [])
 
   useEffect(() => {

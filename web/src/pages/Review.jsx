@@ -62,8 +62,8 @@ export default function Review({ active, showToast, onCountChange }) {
   useEffect(() => { if (active) load() }, [active, load])
 
   useEffect(() => {
-    window.api.onReviewLog?.((msg) => setLog(prev => [...prev.slice(-100), msg]))
-    return () => window.api.removeAllListeners?.('review:log')
+    const off = window.api.onReviewLog?.((msg) => setLog(prev => [...prev.slice(-100), msg]))
+    return () => off?.()
   }, [])
 
   useEffect(() => {

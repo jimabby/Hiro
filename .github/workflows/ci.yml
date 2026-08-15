@@ -38,12 +38,13 @@ jobs:
 
       - run: npm run lint --prefix web
 
+      # Both halves: the main-process suites under plain Node, then the renderer
+      # suites under vitest/jsdom.
       - run: npm test --prefix web
 
-      # The unit suites only exercise the main-process services, and eslint does
-      # not type-check JSX — so a renderer that fails to build passed this job
-      # and was first caught by the packaged smoke test, which only runs on
-      # pushes to main. A Vite build takes seconds and closes that gap on PRs.
+      # eslint does not type-check JSX, so a renderer that fails to build passed
+      # this job and was first caught by the packaged smoke test, which only runs
+      # on pushes to main. A Vite build takes seconds and closes that gap on PRs.
       - name: Build the renderer
         run: npm run build:renderer --prefix web
 
@@ -106,6 +107,17 @@ jobs:
       # derivations that must agree with the desktop, and the offline scan queue.
       - name: Mobile unit tests
         run: npm test --prefix app
+
+      # The desktop and the phone each implement the cloud key derivation, in
+      # different crypto libraries, and they must agree bit-for-bit. A drift is
+      # invisible on the desktop — it keeps working and keeps uploading, while
+      # every paired phone silently cannot decrypt or cannot sign in at all.
+      #
+      # Run here rather than in the desktop job because it needs the @noble
+      # build the phone actually ships; the web half of it depends on nothing
+      # outside Node, so no web install is required.
+      - name: Desktop/phone key derivation agrees
+        run: node web/test/cross-platform-crypto.test.js
 
       # `expo config` only proves app.json parses; an export runs Metro over
       # every module, which is what catches a bad import or a syntax error after

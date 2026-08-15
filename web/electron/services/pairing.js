@@ -90,9 +90,20 @@ function hashToken(token) {
   return crypto.createHash('sha256').update(String(token)).digest('hex')
 }
 
-// Mint a token for one device and record it. The plaintext is returned once,
-// here, and never stored — the same reason a password manager cannot show you
-// your own hash.
+// Mint a token for one device and record it.
+//
+// Two copies are kept, for two different jobs:
+//
+//   tokenHash — sha256, the authority for "is this token valid". A leaked
+//               config file yields nothing usable from this.
+//   tokenEnc  — the plaintext, wrapped by the OS keychain. Needed because the
+//               signed-request protocol HMACs with the token as the key, and a
+//               hash cannot do that. Recoverable on this machine by design, so
+//               this file alone is not enough — an attacker needs the keychain
+//               too — but it is NOT the same as not storing the token, and the
+//               comment here used to claim it was.
+//
+// The plaintext is returned to the caller exactly once, here.
 function issueDeviceToken(configService, { name, platform }, now = Date.now()) {
   const cfg = configService.load()
   const ttlDays = normaliseTtlDays(cfg.mobileTokenTtlDays)

@@ -36,6 +36,7 @@ const updater = require('./services/updater')
 const entryUrl = require('./services/entryUrl')
 const push = require('./services/push')
 const calendarSync = require('./services/calendarSync')
+const resumeExperiment = require('./services/resumeExperiment')
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
@@ -432,6 +433,11 @@ ipcMain.handle('config:get', () => configService.load())
 // rather than silently appearing as a factory reset.
 ipcMain.handle('config:loadError', () => configService.getLoadError())
 
+// Same principle one level down: a secret whose ciphertext this machine cannot
+// unwrap is reported rather than shown as an empty field. The value itself is
+// left on disk untouched — see the note above preservedSecrets in config.js.
+ipcMain.handle('config:secretError', () => configService.getSecretError())
+
 // Keys owned by background services (scheduler, cloud sync, mobile API,
 // inbox). The renderer's form is a snapshot from page load — saving it
 // verbatim would clobber anything these services wrote since.
@@ -447,6 +453,21 @@ ipcMain.handle('config:save', (_, config) => {
   const current = configService.load()
   const merged = { ...config }
   for (const key of RUNTIME_CONFIG_KEYS) merged[key] = current[key]
+
+  // Stamp when an A/B test started, and re-stamp whenever its arms change.
+  // Without this the result would be read over applications sent before the
+  // experiment existed — which are exactly the non-randomised ones it was
+  // created to avoid. Changing an arm mid-flight is a new experiment, not a
+  // continuation, so the clock restarts rather than mixing two populations.
+  const before = current.resumeExperiment || {}
+  const after = merged.resumeExperiment || {}
+  const armsChanged = before.resumeA !== after.resumeA || before.resumeB !== after.resumeB
+  if (after.enabled && (!before.enabled || armsChanged || !before.startedAt)) {
+    merged.resumeExperiment = { ...after, startedAt: new Date().toISOString() }
+  } else if (after.enabled) {
+    merged.resumeExperiment = { ...after, startedAt: before.startedAt }
+  }
+
   configService.save(merged)
   // Keep the OS login item in step with the setting that claims to control it.
   if (merged.launchOnLogin !== current.launchOnLogin || merged.startMinimised !== current.startMinimised) {
@@ -1474,6 +1495,34 @@ ipcMain.handle('ai:clearUsage', () => database.clearAiUsage())
 
 // ─── IPC: Resume conversion analytics ────────────────────────────
 ipcMain.handle('analytics:resumeConversion', () => database.getResumeConversion())
+
+// Listings that keep being reposted — see the note above getGhostJobs.
+ipcMain.handle('analytics:ghostJobs', () => database.getGhostJobs())
+
+// Advertised-pay distribution for roles like this one, plus where a figure sits
+// in it. Used by the Offers page.
+ipcMain.handle('analytics:salaryBenchmark', (_, jobTitle, value) => {
+  const benchmark = database.getSalaryBenchmark(jobTitle)
+  return {
+    ...benchmark,
+    percentile: Number.isFinite(Number(value)) ? database.percentileFor(benchmark, Number(value)) : null,
+  }
+})
+
+// The randomised counterpart to the report above. Returns { running: false }
+// when no experiment is configured, so the page can simply not render the panel.
+ipcMain.handle('analytics:resumeExperiment', () => {
+  const cfg = configService.load()
+  const experiment = cfg.resumeExperiment || {}
+  if (!resumeExperiment.isRunning(experiment)) return { running: false }
+
+  const nameFor = (id) => (cfg.resumes || []).find(r => r.id === id)?.name || 'Deleted résumé'
+  const arms = database.getResumeExperimentArms(experiment.resumeA, experiment.resumeB, experiment.startedAt)
+  const summary = resumeExperiment.summarise(
+    arms.map(a => ({ ...a, name: nameFor(a.resumeId) }))
+  )
+  return { running: true, name: experiment.name || 'Résumé A/B test', startedAt: experiment.startedAt || null, ...summary }
+})
 
 // ─── IPC: ATS job boards ─────────────────────────────────────────
 // Validate a board before saving it, so a typo in the slug is caught here

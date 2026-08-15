@@ -52,6 +52,58 @@ function deadlineText(offer) {
   return `${offer.daysToRespond} day${offer.daysToRespond === 1 ? '' : 's'} to respond`
 }
 
+// Where an offer sits against what comparable roles were advertised at.
+//
+// The rest of this page says what an offer IS. This is the only thing here that
+// speaks to whether it is any good — which is the question everyone actually has
+// while holding one, and the one the app previously had no answer to despite
+// having the entire advertised-pay history sitting in its own database.
+//
+// Two things it refuses to do. It never calls this "market rate": these are
+// advertised ranges, which skew high and are not what anyone was paid. And below
+// a handful of comparable listings it shows the figures but withholds the
+// percentile, because a "75th percentile" drawn from three adverts is a sentence
+// about three adverts.
+function Benchmark({ jobTitle, value }) {
+  const [data, setData] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    if (!jobTitle || !Number.isFinite(Number(value))) { setData(null); return undefined }
+    window.api.getSalaryBenchmark?.(jobTitle, Number(value))
+      .then(b => { if (!cancelled) setData(b || null) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [jobTitle, value])
+
+  if (!data?.sample) return null
+
+  const pct = data.percentile
+  const tone = pct == null || !data.comparable ? 'var(--text-muted)'
+    : pct >= 75 ? 'var(--green)' : pct <= 25 ? 'var(--yellow)' : 'var(--text)'
+
+  return (
+    <div style={{
+      marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)', fontSize: 12,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <span style={{ color: 'var(--text-muted)' }}>
+          Comparable ads: {money(data.p25)} – {money(data.p75)} (median {money(data.median)})
+        </span>
+        <span style={{ color: tone, fontWeight: data.comparable ? 600 : 400 }}>
+          {data.comparable && pct != null
+            ? `This offer sits around the ${pct}th percentile`
+            : `Only ${data.sample} comparable ad${data.sample === 1 ? '' : 's'} — too few to place it`}
+        </span>
+      </div>
+      <div style={{ color: 'var(--text-muted)', fontSize: 10, marginTop: 4 }}>
+        From {data.sample} advertised range{data.sample === 1 ? '' : 's'} in your own scan history matching
+        “{data.tokens.join(' ')}”. These are what employers advertised, not what they paid.
+      </div>
+    </div>
+  )
+}
+
 function OfferForm({ form, setForm, onSave, onCancel, saving }) {
   const field = (key, props = {}) => (
     <input
@@ -287,6 +339,13 @@ export default function Offers({ active, showToast, onOpenApplication }) {
           )}
 
           {o.notes && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8, whiteSpace: 'pre-wrap' }}>{o.notes}</div>}
+
+          {/* Only for a figure the user actually entered. Benchmarking an
+              advertised range against other advertised ranges would compare a
+              number to the population it came from and call it a finding. */}
+          {!o.compIsAdvertised && o.comparableComp != null && (
+            <Benchmark jobTitle={o.job_title} value={o.comparableComp} />
+          )}
 
           <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
             <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => {

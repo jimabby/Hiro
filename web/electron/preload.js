@@ -1,9 +1,27 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
+// Subscribe to a main-process event and hand back the unsubscribe.
+//
+// Every on* below returns one, and callers must use it. The old contract was
+// removeAllListeners(channel), which is indiscriminate: `update:status` has two
+// independent subscribers — the app-wide banner in App.jsx and the panel in
+// Settings — and unmounting the panel tore down the banner's listener too. The
+// banner then sat silent for the rest of the session, which is worst precisely
+// when it matters, because the download the user just started from that panel
+// reports its progress and its "restart to install" through it.
+function subscribe(channel, cb) {
+  const handler = (_event, ...args) => cb(...args)
+  ipcRenderer.on(channel, handler)
+  return () => ipcRenderer.removeListener(channel, handler)
+}
+
 contextBridge.exposeInMainWorld('api', {
   // Config
   getConfig: () => ipcRenderer.invoke('config:get'),
   getConfigLoadError: () => ipcRenderer.invoke('config:loadError'),
+  // Secrets that are on disk but unreadable by this machine's keychain. Distinct
+  // from a value that was never set, and the UI must not present them alike.
+  getConfigSecretError: () => ipcRenderer.invoke('config:secretError'),
   saveConfig: (config) => ipcRenderer.invoke('config:save', config),
   testAiConnection: (provider, apiKey, geminiModel) => ipcRenderer.invoke('ai:test', provider, apiKey, geminiModel),
   testEmailConnection: (email, password) => ipcRenderer.invoke('email:test', email, password),
@@ -59,9 +77,9 @@ contextBridge.exposeInMainWorld('api', {
   clearAllAttentionJobs: () => ipcRenderer.invoke('db:clearAllAttentionJobs'),
   applyAttentionJob: (id) => ipcRenderer.invoke('attention:apply', id),
   applyAttentionJobs: (ids) => ipcRenderer.invoke('attention:applyMany', ids),
-  onAttentionLog: (cb) => ipcRenderer.on('attention:log', (_, msg) => cb(msg)),
+  onAttentionLog: (cb) => subscribe('attention:log', cb),
   applySkippedJob: (id) => ipcRenderer.invoke('application:applySkipped', id),
-  onSkippedApplyLog: (cb) => ipcRenderer.on('skipped:apply-log', (_, msg) => cb(msg)),
+  onSkippedApplyLog: (cb) => subscribe('skipped:apply-log', cb),
 
   // Stats
   getStats: () => ipcRenderer.invoke('db:getStats'),
@@ -75,13 +93,13 @@ contextBridge.exposeInMainWorld('api', {
   seekStatus: () => ipcRenderer.invoke('seek:status'),
   seekLogin: () => ipcRenderer.invoke('seek:login'),
   seekLogout: () => ipcRenderer.invoke('seek:logout'),
-  onSeekStatusUpdate: (cb) => ipcRenderer.on('seek:status-update', (_, msg) => cb(msg)),
+  onSeekStatusUpdate: (cb) => subscribe('seek:status-update', cb),
 
   // Indeed session
   indeedStatus: () => ipcRenderer.invoke('indeed:status'),
   indeedLogin: () => ipcRenderer.invoke('indeed:login'),
   indeedLogout: () => ipcRenderer.invoke('indeed:logout'),
-  onIndeedStatusUpdate: (cb) => ipcRenderer.on('indeed:status-update', (_, msg) => cb(msg)),
+  onIndeedStatusUpdate: (cb) => subscribe('indeed:status-update', cb),
 
   // Resume file import / improve / download
   importResumeFile: () => ipcRenderer.invoke('resume:importFile'),
@@ -93,9 +111,9 @@ contextBridge.exposeInMainWorld('api', {
 
   // Screening question prompts (mid-apply). Payload is { id, question }; the
   // answer must echo the id back so it reaches the apply flow that asked.
-  onQuestionAsk: (cb) => ipcRenderer.on('question:ask', (_, payload) => cb(payload)),
+  onQuestionAsk: (cb) => subscribe('question:ask', cb),
   sendQuestionAnswer: (payload) => ipcRenderer.send('question:answer', payload),
-  onSubmitReview: (cb) => ipcRenderer.on('submit:review', (_, payload) => cb(payload)),
+  onSubmitReview: (cb) => subscribe('submit:review', cb),
   sendSubmitConfirm: (payload) => ipcRenderer.send('submit:confirm', payload),
 
   // Export CSV
@@ -196,10 +214,9 @@ contextBridge.exposeInMainWorld('api', {
   getBackupDrillStatus: () => ipcRenderer.invoke('db:backupDrillStatus'),
 
   // Events from main process
-  onNotification: (cb) => ipcRenderer.on('notification', (_, data) => cb(data)),
-  onAutomationLog: (cb) => ipcRenderer.on('automation:log', (_, msg) => cb(msg)),
-  onLinkedInStatusUpdate: (cb) => ipcRenderer.on('linkedin:status-update', (_, msg) => cb(msg)),
-  removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel),
+  onNotification: (cb) => subscribe('notification', cb),
+  onAutomationLog: (cb) => subscribe('automation:log', cb),
+  onLinkedInStatusUpdate: (cb) => subscribe('linkedin:status-update', cb),
 
   // Mobile companion API
   getAutomationHealth: () => ipcRenderer.invoke('automation:health'),
@@ -239,7 +256,7 @@ contextBridge.exposeInMainWorld('api', {
   getFollowUpDrafts: () => ipcRenderer.invoke('review:followUps'),
   approveFollowUpDraft: (id) => ipcRenderer.invoke('review:approveFollowUp', id),
   rejectFollowUpDraft: (id) => ipcRenderer.invoke('review:rejectFollowUp', id),
-  onReviewLog: (cb) => ipcRenderer.on('review:log', (_, msg) => cb(msg)),
+  onReviewLog: (cb) => subscribe('review:log', cb),
 
   // AI usage & spend
   getAiUsage: () => ipcRenderer.invoke('ai:usage'),
@@ -247,6 +264,16 @@ contextBridge.exposeInMainWorld('api', {
 
   // Which resume actually converts
   getResumeConversion: () => ipcRenderer.invoke('analytics:resumeConversion'),
+
+  // The randomised version of the above: two resumes, jobs split by hash, so a
+  // difference is caused by the document rather than by which jobs it was sent to.
+  getResumeExperiment: () => ipcRenderer.invoke('analytics:resumeExperiment'),
+
+  // Listings an employer keeps reposting — probably not real vacancies.
+  getGhostJobs: () => ipcRenderer.invoke('analytics:ghostJobs'),
+
+  // Advertised pay for comparable roles, and where a figure sits in it.
+  getSalaryBenchmark: (jobTitle, value) => ipcRenderer.invoke('analytics:salaryBenchmark', jobTitle, value),
 
   // Company career boards (Greenhouse / Lever / Ashby)
   testAtsBoard: (provider, slug) => ipcRenderer.invoke('ats:testBoard', provider, slug),
@@ -256,7 +283,7 @@ contextBridge.exposeInMainWorld('api', {
   checkForUpdate: () => ipcRenderer.invoke('update:check'),
   downloadUpdate: () => ipcRenderer.invoke('update:download'),
   installUpdate: () => ipcRenderer.invoke('update:install'),
-  onUpdateStatus: (cb) => ipcRenderer.on('update:status', (_, status) => cb(status)),
+  onUpdateStatus: (cb) => subscribe('update:status', cb),
 
   // Tray / launch-on-login availability
   getTrayStatus: () => ipcRenderer.invoke('tray:status'),
@@ -265,7 +292,6 @@ contextBridge.exposeInMainWorld('api', {
   gmailStatus: () => ipcRenderer.invoke('gmail:status'),
   gmailLogin: (email) => ipcRenderer.invoke('gmail:login', email),
   gmailLogout: () => ipcRenderer.invoke('gmail:logout'),
-  onGmailStatusUpdate: (cb) => ipcRenderer.on('gmail:status-update', (_, msg) => cb(msg)),
+  onGmailStatusUpdate: (cb) => subscribe('gmail:status-update', cb),
   checkInboxNow: () => ipcRenderer.invoke('inbox:checkNow'),
-  onInboxReply: (cb) => ipcRenderer.on('notification', (_, data) => { if (data.type === 'inbox-reply') cb(data.item) }),
 })
