@@ -124,6 +124,12 @@ async function doRun(cfg, { log, notifyAttention }) {
     scrapers.push({ name: 'ATS', scraper: ats, limit: cfg.dailyLimitAts })
   }
 
+  // Submissions ATTEMPTED, which is what the batch limit governs. Counting only
+  // successes meant a batch of 3 where every apply failed never reached its
+  // limit, so it walked the entire scrape set — paying for scoring, tailoring
+  // and a cover letter on every listing — instead of stopping after three.
+  let batchAttempts = 0
+  // Submissions that actually went through. This is the number worth reporting.
   let batchCount = 0
   let heldCount = 0
   let foundCount = 0
@@ -153,7 +159,7 @@ async function doRun(cfg, { log, notifyAttention }) {
     : { dryRun: false, found: foundCount, applied: batchCount, held: heldCount, blocked, paused, scoringFailures, budgetStopped })
 
   for (const { name, scraper, limit } of scrapers) {
-    if (cancelled || batchCount >= batchLimit) { if (cancelled) log('Scan cancelled.'); return summary() }
+    if (cancelled || batchAttempts >= batchLimit) { if (cancelled) log('Scan cancelled.'); return summary() }
 
     const cooldown = automationHealth.getCooldown(name)
     if (cooldown.active) {
@@ -204,7 +210,15 @@ async function doRun(cfg, { log, notifyAttention }) {
     // A zero-result scrape that was not blocked and did not error is the exact
     // shape of a scraper whose selectors have moved. One is meaningless; a run
     // of them is the only warning this failure mode ever gives.
-    automationHealth.recordScrape(name, { found: jobs.length })
+    //
+    // The selector report narrows that from "something broke" to which selector
+    // broke, and catches the partial break the streak heuristic cannot see —
+    // cards found but one field unreadable, so every listing is discarded and
+    // the scan reports a healthy-looking zero.
+    automationHealth.recordScrape(name, {
+      found: jobs.length,
+      selectors: scraper.getSelectorReport?.() || null,
+    })
 
     const blacklist = (cfg.blacklistedCompanies || []).map(c => String(c).toLowerCase())
     // Defensive on both sides: a listing with no company name (a malformed card,
@@ -213,7 +227,7 @@ async function doRun(cfg, { log, notifyAttention }) {
     const filtered = jobs.filter(j => j?.job_url && !blacklist.includes(String(j.company || '').toLowerCase()))
 
     for (const job of filtered) {
-      if (cancelled || batchCount >= batchLimit) { if (cancelled) log('Scan cancelled.'); return summary() }
+      if (cancelled || batchAttempts >= batchLimit) { if (cancelled) log('Scan cancelled.'); return summary() }
 
       // Some structured board adapters omit the redundant platform field. It
       // is still required for attribution and, for ATS, for the draft-based
@@ -476,7 +490,10 @@ async function doRun(cfg, { log, notifyAttention }) {
         log(`  Auto-submitting (${matchScore}% ≥ ${cfg.autoSubmitThreshold}% auto-submit threshold)`)
       }
 
-      // Apply
+      // Apply. Counted here, before the outcome is known — the batch limit
+      // exists to bound how much work a batch does, and a failed submission
+      // cost exactly as much scraping and AI spend as a successful one.
+      batchAttempts++
       await randomDelay(3000, 8000)
       let result
       try {

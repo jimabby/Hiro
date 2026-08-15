@@ -1,5 +1,6 @@
 const Anthropic = require('@anthropic-ai/sdk')
 const { withUsage } = require('./usage')
+const { interviewQuestionsPrompt } = require('./prompts')
 
 // Two tiers, named so a model change is one edit rather than thirteen.
 //   FAST  — short, structured, cheap: connection tests, scores, labels, lists.
@@ -180,18 +181,11 @@ RESUME: ${masterResume.slice(0, 1000)}` }],
   }
 }
 
-async function generateInterviewQuestions(jobDescription, masterResume, apiKey) {
+async function generateInterviewQuestions(jobDescription, masterResume, apiKey, _model, replyContext) {
   const text = await complete('generateInterviewQuestions', apiKey, {
     ...SMART,
     max_tokens: 3000,
-    messages: [{ role: 'user', content: `Generate 8 likely interview questions for this job with a tailored sample answer for each, based on the candidate's actual resume experience.
-Return a JSON array: [{ "question": "...", "answer": "...", "category": "..." }, ...]
-Category must be one of: "behavioral", "technical", "situational", "role-specific".
-Include at least 2 behavioral, 2 technical, and mix the rest.
-Answers should be 2-4 sentences, specific to the candidate's real experience. No markdown in answers.
-
-JOB: ${jobDescription.slice(0, 1000)}
-RESUME: ${masterResume.slice(0, 1200)}` }],
+    messages: [{ role: 'user', content: interviewQuestionsPrompt(jobDescription, masterResume, replyContext) }],
   })
   try { return parseJSON(text) }
   catch { return [] }

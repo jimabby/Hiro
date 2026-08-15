@@ -7,7 +7,7 @@ import { HiroClient, pairWithDesktop } from '../api'
 import QrPairScanner from './QrPairScanner'
 import { supabase, isConfigured } from '../supabase'
 import { colors, radius } from '../theme'
-import { setCloudKeyFromPassword } from '../cloudCrypto'
+import { deriveAccountKeys, setCloudKey } from '../cloudCrypto'
 
 export default function ConnectScreen({ onConnected }) {
   const [mode, setMode] = useState(isConfigured ? 'cloud' : 'lan')
@@ -84,12 +84,24 @@ export default function ConnectScreen({ onConnected }) {
     setBusy(true)
     setError('')
     try {
-      const { data, error: err } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
-        password,
+      const address = email.trim()
+      // The password is never sent as-is: Supabase gets a derived secret, and
+      // the key that decrypts the documents is derived separately and stays on
+      // this phone. See cloudCrypto for why the two must not be the same value.
+      const { dataKey, authSecret } = deriveAccountKeys(address, password)
+      let { data, error: err } = await supabase.auth.signInWithPassword({
+        email: address,
+        password: authSecret,
       })
-      if (err) throw new Error(err.message)
-      await setCloudKeyFromPassword(email.trim(), password)
+      if (err) {
+        // An account the desktop has not upgraded yet is still on the raw
+        // password. Sign in with it so the phone works today; the desktop
+        // performs the one-time rotation on its next sign-in.
+        const legacy = await supabase.auth.signInWithPassword({ email: address, password })
+        if (legacy.error) throw new Error(err.message)
+        data = legacy.data
+      }
+      await setCloudKey(dataKey)
       await onConnected({ mode: 'cloud', userId: data.user.id, email: data.user.email })
     } catch (err) {
       setError(err.message)

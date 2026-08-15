@@ -1,7 +1,11 @@
 const { chromium } = require('playwright-extra')
 const StealthPlugin = require('puppeteer-extra-plugin-stealth')
 chromium.use(StealthPlugin())
-const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown, verifySubmission, confirmSubmission, gotoResultsPage } = require('./utils')
+const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown, verifySubmission, confirmSubmission, gotoResultsPage, createSelectorProbe } = require('./utils')
+
+// Which selectors matched on the most recent scrape — see seek.js.
+let lastSelectorReport = null
+function getSelectorReport() { return lastSelectorReport }
 const indeedSession = require('../indeedSession')
 const aiAdapter = require('../ai/index')
 const database = require('../database')
@@ -57,6 +61,8 @@ async function scrape(cfg) {
   const jobs = []
   const seen = new Set()
   const pages = Math.min(MAX_PAGES, Math.max(1, Number(cfg.scrapePages) || 1))
+  const probe = createSelectorProbe('Indeed')
+  lastSelectorReport = null
 
   try {
     const query = encodeURIComponent(jobKeywords)
@@ -70,24 +76,26 @@ async function scrape(cfg) {
       await gotoResultsPage(page, url, 'Indeed')
 
       const jobCards = await page.$$('.job_seen_beacon, .resultContent, [data-testid="slider_item"]')
+      probe.record('job-card', jobCards.length > 0)
       if (jobCards.length === 0) break
 
       let added = 0
       for (const card of jobCards) {
         try {
-          const title = await card.$eval(
+          const title = probe.seen('jobTitle', await card.$eval(
             'h2.jobTitle span[title], h2.jobTitle a span, h2 a span',
             el => el.textContent.trim()
-          ).catch(() => '')
-          const company = await card.$eval(
+          ).catch(() => ''))
+          const company = probe.seen('companyName', await card.$eval(
             '[data-testid="company-name"], .companyName, [class*="companyName"]',
             el => el.textContent.trim()
-          ).catch(() => '')
+          ).catch(() => ''))
+          // Unprobed: most Indeed listings genuinely omit pay.
           const salary = await card.$eval(
             '[data-testid="attribute_snippet_testid"], .salaryOnly, [class*="salary"]',
             el => el.textContent.trim()
           ).catch(() => '')
-          const href = await card.$eval('h2.jobTitle a, h2 a', el => el.href).catch(() => '')
+          const href = probe.seen('jobLink', await card.$eval('h2.jobTitle a, h2 a', el => el.href).catch(() => ''))
 
           if (title && company && href && !seen.has(href)) {
             seen.add(href)
@@ -101,6 +109,7 @@ async function scrape(cfg) {
       if (pageNum < pages - 1) await randomDelay(2500, 6000)
     }
   } finally {
+    lastSelectorReport = probe.report()
     await browser.close()
   }
 
@@ -479,4 +488,4 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
   }
 }
 
-module.exports = { scrape, getJobDescription, apply }
+module.exports = { scrape, getJobDescription, apply, getSelectorReport }

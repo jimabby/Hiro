@@ -8,7 +8,17 @@ async function securePost(path, body) {
   const res = await fetch(`http://${connection.host}:${connection.port}${path}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...signed }, body: raw,
   })
-  const payload = await HiroProtocol.decrypt(connection.token, await res.json())
+  const envelope = await res.json()
+  // Anything the desktop refuses before verifying the signature (403 non-local
+  // peer, 429 lockout, 401 expired token) has to be unencrypted — it has no key
+  // to answer with. Read those in the clear instead of failing the envelope
+  // check, which reported every one of them as "re-pair the extension".
+  if (!res.ok && envelope?.secure !== 2) {
+    throw new Error(envelope?.error || (res.status === 401
+      ? 'The desktop no longer accepts this extension — pair it again.'
+      : `Desktop returned ${res.status}`))
+  }
+  const payload = await HiroProtocol.decrypt(connection.token, envelope)
   if (!res.ok) throw new Error(payload.error || payload.reason || `Desktop returned ${res.status}`)
   return payload
 }

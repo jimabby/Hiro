@@ -63,8 +63,28 @@ export class HiroClient {
         },
       })
       const envelope = await res.json()
+      // The desktop can only encrypt a reply once it has verified the request
+      // signature, so everything it rejects BEFORE that point — 403 from a
+      // non-private address, 429 from the lockout, 401 from an expired device
+      // token — necessarily comes back in the clear. Reading those through the
+      // envelope check turned every one of them into "Desktop returned an
+      // unencrypted response. Re-pair this phone", which is wrong advice for a
+      // lockout and useless for a captive-portal 403.
+      if (!res.ok && envelope?.secure !== 2) {
+        const err = new Error(envelope?.error || `HTTP ${res.status}`)
+        // 401 on a connection that WAS working means the token is no longer
+        // accepted — expired or revoked. That one really does need re-pairing,
+        // and the UI can offer it directly instead of guessing.
+        err.needsPairing = res.status === 401
+        err.status = res.status
+        throw err
+      }
       const body = this.secure ? await decryptPayload(this.token, envelope) : envelope
-      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`)
+      if (!res.ok) {
+        const err = new Error(body.error || `HTTP ${res.status}`)
+        err.status = res.status
+        throw err
+      }
       return body
     } catch (err) {
       if (err.name === 'AbortError') throw new Error('Connection timed out — is the desktop app running?')

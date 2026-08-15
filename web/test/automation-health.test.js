@@ -173,4 +173,66 @@ check('an unparseable timestamp does not crash',
   check('cooldown expires', health.getCooldown('Indeed', now + 7 * 3600000).active, false)
 }
 
+// ── Named selector breakage ────────────────────────────────────
+// The streak heuristic can only ever say "something is broken". A probe names
+// the selector that moved, which is the difference between an alarm and a fix.
+{
+  const d = health.diagnose('Seek', [ev('selector-stale', { detail: 'jobTitle', count: 1 }), ev('scrape-empty')])
+  check('a stale selector is critical', d.status, 'critical')
+  check('the broken selector is named', d.headline.includes('jobTitle'), true)
+  check('the stale selectors are machine-readable', d.staleSelectors, ['jobTitle'])
+  check('the advice points at the file', /scraper\/seek\.js/.test(d.advice), true)
+}
+{
+  const d = health.diagnose('Indeed', [ev('selector-stale', { detail: 'jobTitle, companyName', count: 2 })])
+  check('several stale selectors are all named',
+    d.headline.includes('jobTitle') && d.headline.includes('companyName'), true)
+  check('several stale selectors are all listed', d.staleSelectors, ['jobTitle', 'companyName'])
+}
+
+// A broken card container is a different message: nothing could be read at all,
+// rather than one field being unreadable.
+{
+  const d = health.diagnose('Seek', [ev('selector-stale', { detail: 'job-card', count: 1 })])
+  check('a broken card selector is reported as a markup change',
+    /results markup has changed/.test(d.headline), true)
+  check('the card advice explains nothing could be read',
+    /no listing could be read/.test(d.advice), true)
+}
+
+// The partial break is the whole point: cards ARE being found, so no empty
+// streak ever accumulates, but one field is unreadable so every listing is
+// discarded and the scan reports a healthy-looking zero. Before the probe this
+// was invisible.
+{
+  const d = health.diagnose('Seek', [
+    ev('selector-stale', { detail: 'jobTitle' }),
+    ev('scrape-empty'),
+    ev('scrape-ok', { count: 20 }),
+  ])
+  check('a partial break is caught even after a successful scrape', d.status, 'critical')
+  check('a partial break explains why the scan looked empty',
+    /discarded|looked empty/.test(d.advice), true)
+}
+
+// A stale report must not outrank the causes that make every selector miss for
+// reasons that have nothing to do with the markup.
+{
+  const d = health.diagnose('Seek', [ev('session-expired'), ev('selector-stale', { detail: 'jobTitle' })])
+  check('an expired login still leads', d.headline, 'Login has expired')
+}
+{
+  const d = health.diagnose('Seek', [ev('blocked'), ev('blocked'), ev('selector-stale', { detail: 'jobTitle' })])
+  check('being blocked still leads', /blocking us/.test(d.headline), true)
+}
+
+// A stale report that has scrolled out of the recent window must stop driving
+// the verdict, or one bad day would brand a platform broken indefinitely.
+{
+  const stale = ev('selector-stale', { detail: 'jobTitle' })
+  const recent = Array.from({ length: 6 }, () => ev('scrape-ok', { count: 12 }))
+  const d = health.diagnose('Seek', [...recent, stale])
+  check('an old selector report stops driving the verdict', d.status, 'ok')
+}
+
 done()

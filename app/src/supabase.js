@@ -152,7 +152,18 @@ export class CloudClient {
       .maybeSingle()
     if (error) throw new Error(error.message)
     if (!data) return null
-    if (data.encrypted_payload) Object.assign(data, await decryptCloudPayload(data.encrypted_payload) || {})
+    if (data.encrypted_payload) {
+      // A payload under a retired key must not make the whole application
+      // unopenable — the title, company, status and score are unencrypted and
+      // are most of what this screen shows. Surface the documents as pending
+      // instead of failing the read.
+      try {
+        Object.assign(data, await decryptCloudPayload(data.encrypted_payload) || {})
+      } catch (err) {
+        if (!err.obsoleteEnvelope) throw err
+        data.documents_pending = 'Documents are still encrypted with a retired key. Open Hiro on the desktop to re-upload them.'
+      }
+    }
     return this._map(data)
   }
 

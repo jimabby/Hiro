@@ -112,18 +112,54 @@ function getStatus() {
   }
 }
 
+// Sign in, upgrading the account to a derived auth secret if it is still on the
+// raw password.
+//
+// The password itself must never reach Supabase — see cloudCrypto. Accounts
+// created before that was true still have the raw password set, so:
+//
+//   1. try the derived secret (every already-upgraded account)
+//   2. on failure, try the raw password — and if THAT works, this is a legacy
+//      account, so immediately rotate its password to the derived secret
+//
+// Step 2 is the only moment the raw password is ever sent, it happens once per
+// account, and the rotation closes it permanently.
+async function signInWithDerivedSecret(c, email, password) {
+  const { dataKey, authSecret } = cloudCrypto.deriveAccountKeys(email, password)
+
+  const upgraded = await c.auth.signInWithPassword({ email, password: authSecret })
+  if (!upgraded.error) return { session: upgraded.data, dataKey, migrated: false }
+
+  const legacy = await c.auth.signInWithPassword({ email, password })
+  if (legacy.error) {
+    // Report the derived-secret failure, not the legacy one: for the ordinary
+    // case of a mistyped password on an upgraded account, that is the real
+    // error, and the fallback's message would only be a confusing echo.
+    throw new Error(upgraded.error.message)
+  }
+
+  const { error: rotateError } = await c.auth.updateUser({ password: authSecret })
+  if (rotateError) {
+    // Signed in, but still on the raw password. Refuse rather than proceed:
+    // continuing would encrypt this session's uploads under a key the server
+    // can derive, which is precisely what this exists to prevent.
+    throw new Error(`Signed in, but the account could not be upgraded to encrypted-key mode: ${rotateError.message}. Try again, or reset your password in Supabase.`)
+  }
+  logger.append('Cloud sync: account upgraded — the server no longer holds material that can derive your data key.')
+  return { session: legacy.data, dataKey, migrated: true }
+}
+
 async function signIn(email, password) {
   const c = getClient()
   if (!c) throw new Error('Supabase is not configured — add your project URL and anon key first.')
-  const { data, error } = await c.auth.signInWithPassword({ email, password })
-  if (error) throw new Error(error.message)
+  const { session: data, dataKey } = await signInWithDerivedSecret(c, email, password)
   user = data.user
   lastError = null
   configService.update({
     cloudSyncEnabled: true,
     supabaseEmail: email,
     supabaseRefreshToken: data.session?.refresh_token || '',
-    cloudDataKey: cloudCrypto.deriveKey(email, password),
+    cloudDataKey: dataKey,
   })
   // Existing cloud rows may predate end-to-end encryption. Re-upload them once
   // with encrypted_payload now that this device has the account-derived key.
@@ -244,10 +280,27 @@ async function pullChanges(c) {
 
   // Same reason as pushDirty: markCloudSeen/applyCloudEdit fire once per remote
   // row, and each one would otherwise serialize the whole database.
+  const dataKey = configService.load().cloudDataKey
+  let obsoleteRows = 0
+
   database.batch(() => {
     for (const remote of data || []) {
       if (remote.encrypted_payload) {
-        Object.assign(remote, cloudCrypto.decrypt(configService.load().cloudDataKey, remote.encrypted_payload) || {})
+        // A row this device cannot decrypt is not a reason to abandon the pull.
+        // It used to be: the throw escaped the loop and every remaining row —
+        // including perfectly readable ones — was skipped for good.
+        //
+        // The documents are the only encrypted part; status, comment and the
+        // rest of the row travel in clear, so the row is still worth applying.
+        // Encrypted fields simply stay as the desktop already has them, and
+        // pushDirty re-uploads them under the current key.
+        try {
+          Object.assign(remote, cloudCrypto.decrypt(dataKey, remote.encrypted_payload) || {})
+        } catch (err) {
+          if (!err.obsoleteEnvelope) throw err
+          obsoleteRows++
+          delete remote.encrypted_payload
+        }
       }
       if (remote.local_id == null) continue
       if (!localIds.has(remote.local_id)) {
@@ -323,7 +376,16 @@ async function pullChanges(c) {
   const settled = [...tombstoned].filter(id => !remoteIds.has(id))
   if (settled.length > 0) database.clearTombstones(settled)
 
-  return { restored: restored.length, deleted: toDeleteRemotely.length }
+  // Rows still encrypted under a retired key. They are re-uploaded under the
+  // current one by the next pushDirty (sign-in marks everything dirty), so this
+  // is a progress note rather than a fault — but a silent one would look like
+  // documents had gone missing from the phone.
+  if (obsoleteRows > 0) {
+    logger.append(`Cloud sync: ${obsoleteRows} row(s) still hold documents encrypted with a retired key — re-uploading them under the current key.`)
+    database.markAllDirty?.()
+  }
+
+  return { restored: restored.length, deleted: toDeleteRemotely.length, obsolete: obsoleteRows }
 }
 
 // ─── One-way mirrors (desktop → cloud) ───────────────────────────

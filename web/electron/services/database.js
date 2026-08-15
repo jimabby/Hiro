@@ -314,6 +314,57 @@ function createTables() {
       ok INTEGER DEFAULT 1,
       error TEXT DEFAULT ''
     );
+
+    -- What a recruiter actually wrote back.
+    --
+    -- The inbox check already downloads the reply body to classify it, then
+    -- threw it away. That body is the single most useful input to interview
+    -- preparation there is — it names the interviewers, the format, the panel,
+    -- the round — and regenerating questions from the job ad alone ignores
+    -- everything the employer has since said.
+    --
+    -- Bodies are truncated on write: this is context for a prompt, not a mail
+    -- archive, and an unbounded column would put whole quoted threads into a
+    -- database that is rewritten in full on every save.
+    CREATE TABLE IF NOT EXISTS recruiter_replies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      application_id INTEGER NOT NULL,
+      uid INTEGER,
+      from_address TEXT DEFAULT '',
+      subject TEXT DEFAULT '',
+      body TEXT DEFAULT '',
+      classified_as TEXT DEFAULT '',
+      received_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE (application_id, uid)
+    );
+
+    -- Offers under consideration, and the things that decide between them.
+    --
+    -- Compensation is already normalised on the application row, but an offer
+    -- is not a job ad: the number that matters is the one in the offer letter,
+    -- not the one in the advert, and the deadline to accept is nowhere on the
+    -- application at all.
+    CREATE TABLE IF NOT EXISTS offers (
+      application_id INTEGER PRIMARY KEY,
+      base_salary INTEGER,
+      bonus INTEGER,
+      equity TEXT DEFAULT '',
+      currency TEXT DEFAULT '',
+      start_date TEXT,
+      respond_by TEXT,
+      location TEXT DEFAULT '',
+      remote TEXT DEFAULT '',
+      pros TEXT DEFAULT '',
+      cons TEXT DEFAULT '',
+      notes TEXT DEFAULT '',
+      -- 0–5, entirely the user's own judgement. Deliberately not derived from
+      -- anything: the whole point is to hold the part no number captures.
+      excitement INTEGER,
+      decision TEXT DEFAULT 'considering',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
   `)
   persist()
 }
@@ -398,6 +449,11 @@ function migrate() {
   try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_next_action ON applications(next_action_at)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_push_log_at ON push_log(sent_at DESC)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_calendar_interview ON calendar_links(interview_id)') } catch {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_replies_app ON recruiter_replies(application_id, received_at DESC)') } catch {}
+  // Rejection analysis walks the whole history looking for the stage each
+  // application died at, so it reads status_history ordered by time per row.
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_history_app_at ON status_history(application_id, changed_at)') } catch {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_offers_decision ON offers(decision)') } catch {}
 }
 
 // Convert sql.js result to array of objects
@@ -864,6 +920,8 @@ function deleteApplication(id) {
     run('DELETE FROM status_history WHERE application_id = ?', [id])
     run('DELETE FROM interview_prep WHERE application_id = ?', [id])
     run('DELETE FROM interview_events WHERE application_id = ?', [id])
+    run('DELETE FROM recruiter_replies WHERE application_id = ?', [id])
+    run('DELETE FROM offers WHERE application_id = ?', [id])
   })
   return { success: true }
 }
@@ -877,6 +935,8 @@ function clearAllApplications() {
     run('DELETE FROM interview_events')
     run('DELETE FROM application_snapshots')
     run('DELETE FROM sync_conflicts')
+    run('DELETE FROM recruiter_replies')
+    run('DELETE FROM offers')
   })
   return { success: true }
 }
@@ -890,6 +950,10 @@ function pruneOrphanedRows() {
       run('DELETE FROM interview_prep WHERE application_id NOT IN (SELECT id FROM applications)')
       run('DELETE FROM status_history WHERE application_id NOT IN (SELECT id FROM applications)')
       run('DELETE FROM interview_events WHERE application_id NOT IN (SELECT id FROM applications)')
+      // Reply bodies are the most sensitive rows in the database — someone
+      // else's words about the user. An orphan is not just clutter here.
+      run('DELETE FROM recruiter_replies WHERE application_id NOT IN (SELECT id FROM applications)')
+      run('DELETE FROM offers WHERE application_id NOT IN (SELECT id FROM applications)')
       const after = queryOne('SELECT COUNT(*) as c FROM interview_prep')?.c || 0
       return { removedInterviewPreps: before - after }
     })
@@ -1746,6 +1810,483 @@ function updateClosingDate(id, closingDate) {
 // that band was worth applying to, which is what the threshold should really
 // be tuned against. Skipped rows are excluded — they were never submitted, so
 // they can't have converted.
+// ─── Recruiter replies ───────────────────────────────────────────
+// The inbox check downloads a reply body to classify it. Keeping that body is
+// what lets interview prep speak to the conversation that actually happened
+// rather than to the job ad alone.
+
+// Bodies are for prompting, not archiving. Quoted threads balloon fast, and
+// sql.js rewrites the entire database file on every save.
+const REPLY_BODY_LIMIT = 8000
+
+function saveRecruiterReply({ applicationId, uid, from, subject, body, classifiedAs, receivedAt }) {
+  if (!applicationId) return { success: false, reason: 'applicationId is required' }
+  // INSERT OR REPLACE on (application_id, uid): the inbox may re-read the same
+  // message across passes, and a second copy of one email would weight the
+  // prep prompt towards whichever reply happened to be fetched twice.
+  run(`
+    INSERT OR REPLACE INTO recruiter_replies
+      (application_id, uid, from_address, subject, body, classified_as, received_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `, [
+    applicationId, uid ?? null,
+    String(from || '').slice(0, 320), String(subject || '').slice(0, 500),
+    String(body || '').slice(0, REPLY_BODY_LIMIT),
+    String(classifiedAs || ''), receivedAt || null,
+  ])
+  return { success: true }
+}
+
+function getRecruiterReplies(applicationId, limit = 10) {
+  const n = Number.isFinite(limit) ? Math.max(1, Math.min(50, limit)) : 10
+  return query(
+    `SELECT * FROM recruiter_replies WHERE application_id = ?
+     ORDER BY COALESCE(received_at, created_at) DESC, id DESC LIMIT ${n}`,
+    [applicationId]
+  )
+}
+
+// The correspondence as one block of prompt context, oldest first so the model
+// reads the thread in the order it happened. Returns '' when there is nothing,
+// so callers can fall back to job-description-only prep without branching on
+// a null.
+function getReplyContext(applicationId, { maxChars = 6000 } = {}) {
+  const replies = getRecruiterReplies(applicationId, 6).reverse()
+  if (replies.length === 0) return ''
+  const parts = []
+  let used = 0
+  for (const r of replies) {
+    const when = r.received_at || r.created_at || ''
+    const block = `--- Reply${when ? ` (${when})` : ''}${r.from_address ? ` from ${r.from_address}` : ''}\nSubject: ${r.subject || '(none)'}\n${r.body || ''}`.trim()
+    // Budget the whole context rather than each reply: one long email must not
+    // be able to crowd out the five short ones around it, but neither should
+    // truncation cut a thread off mid-sentence at an arbitrary reply.
+    if (used + block.length > maxChars) break
+    parts.push(block)
+    used += block.length
+  }
+  return parts.join('\n\n')
+}
+
+function deleteRecruiterReplies(applicationId) {
+  run('DELETE FROM recruiter_replies WHERE application_id = ?', [applicationId])
+  return { success: true }
+}
+
+// ─── Rejection analysis ──────────────────────────────────────────
+//
+// "How many rejections" is a number nobody can act on. The actionable question
+// is WHERE applications die, because the two answers point at completely
+// different problems:
+//
+//   rejected without ever reaching an interview  → the application is the
+//                                                  problem (resume, targeting)
+//   rejected after interviewing                  → the application is working
+//                                                  and the interview is not
+//
+// The stage is recovered from status_history rather than stored, for the same
+// reason the Pipeline board derives its columns: a stored stage can disagree
+// with the status shown everywhere else, and this one would be wrong for every
+// application that predates the feature.
+
+function rejectionStageFor(history) {
+  // Reaching 'interview' or 'offer' at ANY point counts, even if the row later
+  // moved back — a rejection after an interview is a late-stage rejection
+  // regardless of what the status timeline did afterwards.
+  return history.some(h => h.status === 'interview' || h.status === 'offer')
+    ? 'post-interview'
+    : 'pre-interview'
+}
+
+function getRejectionAnalysis() {
+  const rejected = query(`
+    SELECT id, company, platform, match_score, resume_id, resume_name,
+           salary_min, salary_max, applied_at
+    FROM applications WHERE status = 'rejected'
+  `)
+  const sent = queryOne(`SELECT COUNT(*) as c FROM applications WHERE ${SENT_ONLY}`)?.c || 0
+  const interviewed = queryOne("SELECT COUNT(*) as c FROM applications WHERE status IN ('interview', 'offer')")?.c || 0
+
+  if (rejected.length === 0) {
+    return {
+      total: 0, sent, interviewed,
+      preInterview: 0, postInterview: 0,
+      byBand: [], byResume: [], byPlatform: [],
+      medianDaysToRejection: null,
+      insights: [],
+    }
+  }
+
+  // One query for every rejected application's history, rather than one query
+  // per row — this runs on every Analytics load and the per-row version was
+  // O(rejections) round trips into sql.js.
+  const ids = rejected.map(r => r.id)
+  const histories = new Map(ids.map(id => [id, []]))
+  for (const chunk of chunked(ids, 400)) {
+    const rows = query(
+      `SELECT application_id, status, changed_at FROM status_history
+       WHERE application_id IN (${chunk.map(() => '?').join(', ')})
+       ORDER BY changed_at ASC, id ASC`,
+      chunk
+    )
+    for (const row of rows) histories.get(row.application_id)?.push(row)
+  }
+
+  const segment = () => ({ total: 0, preInterview: 0, postInterview: 0 })
+  const byBand = new Map()
+  const byResume = new Map()
+  const byPlatform = new Map()
+  const daysToRejection = []
+  let preInterview = 0
+  let postInterview = 0
+
+  for (const app of rejected) {
+    const history = histories.get(app.id) || []
+    const stage = rejectionStageFor(history)
+    if (stage === 'post-interview') postInterview++
+    else preInterview++
+
+    const bandLo = app.match_score == null ? null : Math.min(90, Math.floor(Math.max(0, app.match_score) / 10) * 10)
+    const bandKey = bandLo == null ? 'unscored' : String(bandLo)
+    const resumeKey = app.resume_name || app.resume_id || 'Unlabelled resume'
+    const platformKey = app.platform || 'Unknown'
+
+    for (const [map, key] of [[byBand, bandKey], [byResume, resumeKey], [byPlatform, platformKey]]) {
+      if (!map.has(key)) map.set(key, segment())
+      const bucket = map.get(key)
+      bucket.total++
+      bucket[stage === 'post-interview' ? 'postInterview' : 'preInterview']++
+    }
+
+    // How long the employer took to say no. A pipeline where rejections arrive
+    // in three days behaves very differently from one where they take a month,
+    // and it changes how long "no reply yet" should be left alone.
+    const rejectedAt = [...history].reverse().find(h => h.status === 'rejected')?.changed_at
+    const days = daysBetween(app.applied_at, rejectedAt)
+    if (days != null) daysToRejection.push(days)
+  }
+
+  const toSorted = (map, labelKey) => [...map.entries()]
+    .map(([key, v]) => ({ [labelKey]: key, ...v }))
+    .sort((a, b) => b.total - a.total)
+
+  const result = {
+    total: rejected.length,
+    sent,
+    interviewed,
+    preInterview,
+    postInterview,
+    byBand: [...byBand.entries()]
+      .map(([key, v]) => ({
+        band: key === 'unscored' ? 'Unscored' : `${key}–${Number(key) + 9}%`,
+        sortKey: key === 'unscored' ? -1 : Number(key),
+        ...v,
+      }))
+      .sort((a, b) => b.sortKey - a.sortKey),
+    byResume: toSorted(byResume, 'resume'),
+    byPlatform: toSorted(byPlatform, 'platform'),
+    medianDaysToRejection: median(daysToRejection),
+  }
+  result.insights = rejectionInsights(result)
+  return result
+}
+
+// Turn the counts into the one or two sentences worth reading. Each has to name
+// a next action — a diagnosis with no treatment is just discouragement.
+function rejectionInsights(a) {
+  const out = []
+  const staged = a.preInterview + a.postInterview
+  if (staged < 5) {
+    out.push({
+      kind: 'sample',
+      title: 'Not enough rejections to read a pattern yet',
+      detail: `${staged} recorded. Hiro needs a handful before the split between screening and interview rejections means anything.`,
+    })
+    return out
+  }
+
+  const postShare = Math.round((a.postInterview / staged) * 100)
+  if (postShare >= 60) {
+    out.push({
+      kind: 'stage',
+      title: 'Rejections are happening after the interview, not before it',
+      detail: `${postShare}% of rejections came after reaching interview stage. The applications are working — ${a.postInterview} employers wanted to meet you. Preparation is where the return is now, not the resume.`,
+    })
+  } else if (postShare <= 15) {
+    out.push({
+      kind: 'stage',
+      title: 'Applications are being screened out before anyone speaks to you',
+      detail: `${100 - postShare}% of rejections came without an interview. That points at the resume and the targeting rather than at how you interview.`,
+    })
+  } else {
+    out.push({
+      kind: 'stage',
+      title: `${postShare}% of rejections come after an interview`,
+      detail: `${a.preInterview} screened out, ${a.postInterview} after meeting. Both stages are costing you roles.`,
+    })
+  }
+
+  // A resume that is rejected disproportionately at the screening stage is the
+  // clearest actionable signal in here.
+  const provenResumes = a.byResume.filter(r => r.total >= 5)
+  if (provenResumes.length >= 2) {
+    const worst = [...provenResumes].sort((x, y) =>
+      (y.preInterview / y.total) - (x.preInterview / x.total))[0]
+    const share = Math.round((worst.preInterview / worst.total) * 100)
+    if (share >= 70) {
+      out.push({
+        kind: 'resume',
+        title: `"${worst.resume}" is being screened out most`,
+        detail: `${share}% of its ${worst.total} rejections came before any interview. Compare it against the resume with your best interview rate.`,
+      })
+    }
+  }
+
+  // Rejections concentrated in a high score band mean the scorer disagrees with
+  // the employers, which makes the threshold itself suspect.
+  const highBand = a.byBand.filter(b => b.sortKey >= 80).reduce((n, b) => n + b.total, 0)
+  if (highBand >= 5 && highBand / a.total >= 0.5) {
+    out.push({
+      kind: 'threshold',
+      title: 'Most rejections are high-scoring matches',
+      detail: `${highBand} of ${a.total} rejections scored 80% or above. The match score is not predicting these outcomes — worth a test scan to re-tune the threshold.`,
+    })
+  }
+
+  if (a.medianDaysToRejection != null) {
+    out.push({
+      kind: 'timing',
+      title: `Rejections arrive after about ${a.medianDaysToRejection} day${a.medianDaysToRejection === 1 ? '' : 's'}`,
+      detail: `Median from submission to rejection. Chasing before then is usually early; silence well past it is worth a follow-up.`,
+    })
+  }
+  return out
+}
+
+// ─── Version outcomes ────────────────────────────────────────────
+//
+// The snapshot trail already answers "what changed between v1 and v3". It could
+// not answer the question that decides whether any of it was worth doing —
+// which version got the interview — because a snapshot knew what wrote it and
+// nothing about how it landed.
+//
+// Joining each application's snapshots to its final outcome gives that, grouped
+// by the model that produced them, so two providers can be judged on results
+// rather than on how the diff reads.
+
+function getVersionOutcomes() {
+  const rows = query(`
+    SELECT s.provider, s.model, s.application_id, s.reason,
+           a.status, a.match_score
+    FROM application_snapshots s
+    JOIN applications a ON a.id = s.application_id
+    WHERE s.reason IN ('submitted', 'drafted')
+      AND a.${SENT_ONLY}
+      AND s.provider IS NOT NULL AND s.provider != ''
+  `)
+
+  const groups = new Map()
+  // One application must count once per model, not once per snapshot: a job
+  // re-drafted four times by the same model would otherwise quadruple its own
+  // outcome and swamp everything else in the comparison.
+  const counted = new Set()
+  for (const r of rows) {
+    const key = `${r.provider}${r.model ? ` · ${r.model}` : ''}`
+    const dedupe = `${key} ${r.application_id}`
+    if (counted.has(dedupe)) continue
+    counted.add(dedupe)
+    if (!groups.has(key)) {
+      groups.set(key, { label: key, provider: r.provider, model: r.model || '', sent: 0, interviews: 0, offers: 0, rejected: 0, scoreTotal: 0, scored: 0 })
+    }
+    const g = groups.get(key)
+    g.sent++
+    if (r.status === 'interview') g.interviews++
+    else if (r.status === 'offer') g.offers++
+    else if (r.status === 'rejected') g.rejected++
+    if (r.match_score != null) { g.scoreTotal += r.match_score; g.scored++ }
+  }
+
+  return [...groups.values()]
+    .map(g => ({
+      ...g,
+      converted: g.interviews + g.offers,
+      // Null rather than 0 below the sample floor. A single application at 100%
+      // is not a better model, and rendering it as one invites exactly the
+      // wrong conclusion.
+      interviewRate: g.sent >= 5 ? Math.round(((g.interviews + g.offers) / g.sent) * 100) : null,
+      averageScore: g.scored > 0 ? Math.round(g.scoreTotal / g.scored) : null,
+    }))
+    .sort((a, b) => b.sent - a.sent)
+}
+
+// The same question for one application: which of its saved versions was live
+// when the outcome landed. Ordered oldest first so the panel reads as a story.
+function getApplicationVersionOutcome(applicationId) {
+  const app = queryOne('SELECT id, status, job_title, company FROM applications WHERE id = ?', [applicationId])
+  if (!app) return null
+  const snapshots = query(`
+    SELECT id, reason, taken_at, provider, model, match_score,
+           LENGTH(tailored_resume) as tailored_length,
+           LENGTH(cover_letter) as cover_letter_length
+    FROM application_snapshots WHERE application_id = ?
+    ORDER BY taken_at ASC, id ASC
+  `, [applicationId])
+  const history = query(
+    'SELECT status, changed_at FROM status_history WHERE application_id = ? ORDER BY changed_at ASC, id ASC',
+    [applicationId]
+  )
+  const reached = history.find(h => h.status === 'interview' || h.status === 'offer')
+
+  return {
+    ...app,
+    outcome: app.status,
+    reachedInterviewAt: reached?.changed_at || null,
+    // The version that was live when the interview was won — the last one taken
+    // at or before that moment. Null when the application never got there, which
+    // is itself the answer to "did this version work".
+    decisiveSnapshotId: reached
+      ? ([...snapshots].reverse().find(s => s.taken_at <= reached.changed_at)?.id ?? null)
+      : null,
+    snapshots,
+  }
+}
+
+// ─── Offers ──────────────────────────────────────────────────────
+
+const OFFER_DECISIONS = ['considering', 'accepted', 'declined', 'expired']
+
+function saveOffer(applicationId, data = {}) {
+  if (!applicationId) return { success: false, reason: 'applicationId is required' }
+  const app = queryOne('SELECT id, status FROM applications WHERE id = ?', [applicationId])
+  if (!app) return { success: false, reason: 'That application no longer exists' }
+
+  const int = (v, max = 100000000) => {
+    const n = Number(v)
+    return Number.isFinite(n) ? Math.max(0, Math.min(max, Math.round(n))) : null
+  }
+  const date = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? v : null)
+  const decision = OFFER_DECISIONS.includes(data.decision) ? data.decision : 'considering'
+  const excitement = data.excitement == null ? null : Math.max(0, Math.min(5, Math.round(Number(data.excitement) || 0)))
+
+  run(`
+    INSERT INTO offers
+      (application_id, base_salary, bonus, equity, currency, start_date, respond_by,
+       location, remote, pros, cons, notes, excitement, decision, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(application_id) DO UPDATE SET
+      base_salary = excluded.base_salary, bonus = excluded.bonus, equity = excluded.equity,
+      currency = excluded.currency, start_date = excluded.start_date, respond_by = excluded.respond_by,
+      location = excluded.location, remote = excluded.remote, pros = excluded.pros,
+      cons = excluded.cons, notes = excluded.notes, excitement = excluded.excitement,
+      decision = excluded.decision, updated_at = datetime('now')
+  `, [
+    applicationId, int(data.baseSalary), int(data.bonus, 10000000),
+    String(data.equity || '').slice(0, 200), String(data.currency || '').slice(0, 8),
+    date(data.startDate), date(data.respondBy),
+    String(data.location || '').slice(0, 160), String(data.remote || '').slice(0, 40),
+    String(data.pros || '').slice(0, 4000), String(data.cons || '').slice(0, 4000),
+    String(data.notes || '').slice(0, 4000), excitement, decision,
+  ])
+
+  // Recording an offer against a row that is not yet marked as one is almost
+  // certainly the user telling us it IS one. Promote it rather than leaving the
+  // dashboard disagreeing with the offers board.
+  if (app.status !== 'offer' && decision === 'considering') updateApplicationStatus(applicationId, 'offer')
+  return { success: true }
+}
+
+function deleteOffer(applicationId) {
+  run('DELETE FROM offers WHERE application_id = ?', [applicationId])
+  return { success: true }
+}
+
+// Every offer worth comparing, with the numbers made comparable.
+//
+// Total compensation is base + bonus when a base is known. Where the user has
+// not entered one, the advertised range from the application is shown instead
+// and flagged as advertised — an offer compared against an advert is a
+// comparison worth making, but not one to present as if both were firm.
+function getOffers() {
+  const rows = query(`
+    SELECT o.*, a.job_title, a.company, a.platform, a.job_url, a.salary,
+           a.salary_min, a.salary_max, a.status, a.applied_at, a.comment
+    FROM offers o
+    JOIN applications a ON a.id = o.application_id
+    ORDER BY
+      CASE o.decision WHEN 'considering' THEN 0 WHEN 'accepted' THEN 1 ELSE 2 END,
+      CASE WHEN o.respond_by IS NULL OR o.respond_by = '' THEN 1 ELSE 0 END,
+      o.respond_by ASC,
+      o.updated_at DESC
+  `)
+
+  const today = localDateString()
+  const offers = rows.map(r => {
+    const total = r.base_salary == null ? null : r.base_salary + (r.bonus || 0)
+    return {
+      ...r,
+      applicationId: r.application_id,
+      totalComp: total,
+      // Fall back to the advertised midpoint so a half-filled offer still sorts
+      // and charts sensibly, but say which it is.
+      comparableComp: total ?? midpoint(r.salary_min, r.salary_max),
+      compIsAdvertised: total == null && (r.salary_min != null || r.salary_max != null),
+      daysToRespond: r.respond_by ? daysBetween(today, r.respond_by) : null,
+      expired: !!(r.respond_by && r.respond_by < today && r.decision === 'considering'),
+    }
+  })
+
+  const live = offers.filter(o => o.decision === 'considering')
+  const comps = live.map(o => o.comparableComp).filter(v => v != null)
+  return {
+    offers,
+    // The summary the page leads with: how many decisions are open, what is at
+    // stake, and what expires first.
+    live: live.length,
+    best: comps.length ? Math.max(...comps) : null,
+    spread: comps.length >= 2 ? Math.max(...comps) - Math.min(...comps) : null,
+    nextDeadline: live
+      .filter(o => o.respond_by)
+      .sort((a, b) => String(a.respond_by).localeCompare(String(b.respond_by)))[0] || null,
+  }
+}
+
+function midpoint(lo, hi) {
+  if (lo != null && hi != null) return Math.round((lo + hi) / 2)
+  return lo ?? hi ?? null
+}
+
+function localDateString(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// Whole days between two dates written in any format SQLite or the UI produces.
+// Returns null rather than NaN when either side is missing or unparseable —
+// a null is skipped by every caller, a NaN poisons an average.
+function daysBetween(from, to) {
+  if (!from || !to) return null
+  const parse = (v) => {
+    const text = String(v)
+    const t = new Date(text.includes('T') || !text.includes(' ') ? text : text.replace(' ', 'T') + 'Z').getTime()
+    return Number.isFinite(t) ? t : null
+  }
+  const a = parse(from), b = parse(to)
+  if (a == null || b == null) return null
+  return Math.round((b - a) / 86400000)
+}
+
+function median(values) {
+  if (!values.length) return null
+  const sorted = [...values].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  return sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2)
+}
+
+function chunked(items, size) {
+  const out = []
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
+  return out
+}
+
 function getScoreBandConversion() {
   const rows = query(`
     SELECT match_score, status FROM applications
@@ -2266,6 +2807,33 @@ function getOptimisationInsights() {
   if (Number(usage?.month?.cost || 0) > 0 && Number(stats.totalThisWeek || 0) === 0) {
     suggestions.push({ kind: 'spend', title: 'AI spend without recent submissions', detail: 'Review blocked platforms, held drafts, and your match threshold before the next scan.' })
   }
+
+  // Where applications die is the single most directive signal available, so it
+  // belongs in the headline advice rather than only on its own panel.
+  try {
+    const rejection = getRejectionAnalysis()
+    for (const insight of rejection.insights || []) {
+      if (insight.kind === 'stage' || insight.kind === 'threshold') suggestions.push(insight)
+    }
+  } catch { /* insights are advisory — never let one break the page */ }
+
+  // Which model is actually producing interviews. Only once a provider has
+  // enough sent applications to mean something.
+  try {
+    const versions = getVersionOutcomes().filter(v => v.interviewRate != null)
+    if (versions.length >= 2) {
+      const best = [...versions].sort((a, b) => b.interviewRate - a.interviewRate)[0]
+      const worst = [...versions].sort((a, b) => a.interviewRate - b.interviewRate)[0]
+      if (best.interviewRate > worst.interviewRate) {
+        suggestions.push({
+          kind: 'model',
+          title: `${best.label} documents are converting best`,
+          detail: `${best.interviewRate}% reached interview across ${best.sent} applications, against ${worst.interviewRate}% for ${worst.label}.`,
+        })
+      }
+    }
+  } catch { /* as above */ }
+
   if (!suggestions.length) suggestions.push({ kind: 'sample', title: 'Keep collecting outcomes', detail: 'Hiro will recommend thresholds and resume routing once a segment has at least 10 sent applications.' })
   return suggestions
 }
@@ -2301,6 +2869,10 @@ module.exports = {
   getWeeklyReportData, getStorageInfo,
   getContacts, getDueContacts, saveContact, deleteContact, completeContactReminder, snoozeContactReminder,
   recordCampaignRun, getCampaignAnalytics, getOptimisationInsights,
+  saveRecruiterReply, getRecruiterReplies, getReplyContext, deleteRecruiterReplies,
+  getRejectionAnalysis, rejectionStageFor,
+  getVersionOutcomes, getApplicationVersionOutcome,
+  saveOffer, deleteOffer, getOffers, OFFER_DECISIONS,
   getStatusHistory,
   backupNow, maybeBackup, listBackups, restoreBackup, drillBackups, getBackupDrillStatus,
   setEncryption, getEncryptionStatus,

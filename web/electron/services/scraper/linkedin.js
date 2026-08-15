@@ -1,5 +1,9 @@
 const { chromium } = require('playwright')
-const { randomDelay, randomUserAgent, buildResumeFile, verifySubmission, confirmSubmission, gotoResultsPage } = require('./utils')
+const { randomDelay, randomUserAgent, buildResumeFile, verifySubmission, confirmSubmission, gotoResultsPage, createSelectorProbe } = require('./utils')
+
+// Which selectors matched on the most recent scrape — see seek.js.
+let lastSelectorReport = null
+function getSelectorReport() { return lastSelectorReport }
 const linkedinSession = require('../linkedinSession')
 const aiAdapter = require('../ai/index')
 const database = require('../database')
@@ -57,6 +61,8 @@ async function scrape(cfg) {
   const jobs = []
   const seen = new Set()
   const pages = Math.min(MAX_PAGES, Math.max(1, Number(cfg.scrapePages) || 1))
+  const probe = createSelectorProbe('LinkedIn')
+  lastSelectorReport = null
 
   try {
     const query = encodeURIComponent(jobKeywords)
@@ -71,27 +77,29 @@ async function scrape(cfg) {
       await gotoResultsPage(page, url, 'LinkedIn')
 
       const jobCards = await page.$$('.jobs-search__results-list li, .base-card, .job-card-container')
+      probe.record('job-card', jobCards.length > 0)
       if (jobCards.length === 0) break
 
       let added = 0
       for (const card of jobCards) {
         try {
-          const title = await card.$eval(
+          const title = probe.seen('cardTitle', await card.$eval(
             '.base-search-card__title, h3.base-search-card__title, .job-card-list__title, .job-card-container__link',
             el => el.textContent.trim()
-          ).catch(() => '')
-          const company = await card.$eval(
+          ).catch(() => ''))
+          const company = probe.seen('cardSubtitle', await card.$eval(
             '.base-search-card__subtitle, h4.base-search-card__subtitle, .job-card-container__company-name',
             el => el.textContent.trim()
-          ).catch(() => '')
+          ).catch(() => ''))
+          // Unprobed: LinkedIn rarely publishes pay on the card at all.
           const salary = await card.$eval(
             '.job-search-card__salary-info, .job-card-container__metadata-item--salary',
             el => el.textContent.trim()
           ).catch(() => '')
-          const href = await card.$eval(
+          const href = probe.seen('cardLink', await card.$eval(
             'a.base-card__full-link, a[href*="/jobs/view/"], a.job-card-list__title',
             el => el.href
-          ).catch(() => '')
+          ).catch(() => ''))
 
           if (title && company && href && !seen.has(href)) {
             seen.add(href)
@@ -105,6 +113,7 @@ async function scrape(cfg) {
       if (pageNum < pages - 1) await randomDelay(2500, 6000)
     }
   } finally {
+    lastSelectorReport = probe.report()
     await browser.close()
   }
 
@@ -377,4 +386,4 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
   }
 }
 
-module.exports = { scrape, getJobDescription, apply }
+module.exports = { scrape, getJobDescription, apply, getSelectorReport }

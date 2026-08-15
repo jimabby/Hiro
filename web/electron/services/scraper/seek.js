@@ -1,5 +1,10 @@
 const { chromium } = require('playwright')
-const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown, verifySubmission, confirmSubmission, gotoResultsPage } = require('./utils')
+const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown, verifySubmission, confirmSubmission, gotoResultsPage, createSelectorProbe } = require('./utils')
+
+// Which selectors matched on the most recent scrape, so automation health can
+// name the one that moved rather than only reporting that something did.
+let lastSelectorReport = null
+function getSelectorReport() { return lastSelectorReport }
 
 // Search results to walk per scan. One page is ~20 listings, and because
 // already-seen job URLs are skipped, a single page stops yielding anything new
@@ -42,6 +47,8 @@ async function scrape(cfg) {
   const jobs = []
   const seen = new Set()
   const pages = Math.min(MAX_PAGES, Math.max(1, Number(cfg.scrapePages) || 1))
+  const probe = createSelectorProbe('Seek')
+  lastSelectorReport = null
 
   try {
     const query = encodeURIComponent(jobKeywords)
@@ -55,6 +62,7 @@ async function scrape(cfg) {
       await gotoResultsPage(page, url, 'Seek')
 
       const jobCards = await page.$$('[data-testid="job-card"]')
+      probe.record('job-card', jobCards.length > 0)
       // Past the last page Seek returns an empty result set — stop rather than
       // requesting the remaining pages for nothing.
       if (jobCards.length === 0) break
@@ -62,10 +70,15 @@ async function scrape(cfg) {
       let added = 0
       for (const card of jobCards) {
         try {
-          const title = await card.$eval('[data-automation="jobTitle"]', el => el.textContent.trim()).catch(() => '')
-          const company = await card.$eval('[data-automation="jobCompany"]', el => el.textContent.trim()).catch(() => '')
+          // Probed individually: the failure that costs the most is the partial
+          // one — cards found, but jobTitle moved, so every listing is discarded
+          // for a missing title and the scan reports a clean zero.
+          const title = probe.seen('jobTitle', await card.$eval('[data-automation="jobTitle"]', el => el.textContent.trim()).catch(() => ''))
+          const company = probe.seen('jobCompany', await card.$eval('[data-automation="jobCompany"]', el => el.textContent.trim()).catch(() => ''))
+          // Not probed: plenty of real listings genuinely have no salary, so a
+          // miss here is not evidence of anything.
           const salary = await card.$eval('[data-automation="jobSalary"]', el => el.textContent.trim()).catch(() => '')
-          const href = await card.$eval('a[data-automation="jobTitle"]', el => el.href).catch(() => '')
+          const href = probe.seen('jobLink', await card.$eval('a[data-automation="jobTitle"]', el => el.href).catch(() => ''))
 
           if (title && company && href && !seen.has(href)) {
             seen.add(href)
@@ -83,6 +96,7 @@ async function scrape(cfg) {
       if (pageNum < pages) await randomDelay(2500, 6000)
     }
   } finally {
+    lastSelectorReport = probe.report()
     await browser.close()
   }
 
@@ -544,4 +558,4 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
   }
 }
 
-module.exports = { scrape, getJobDescription, apply }
+module.exports = { scrape, getJobDescription, apply, getSelectorReport }

@@ -188,6 +188,12 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [resumeExpanded, setResumeExpanded] = useState(false)
   const [interviewQuestions, setInterviewQuestions] = useState(null)
+  // Whether the prep that was just generated actually drew on the employer's
+  // replies. Worth saying out loud — questions built from the correspondence
+  // are a different thing from questions built from the job ad.
+  const [prepUsedReplies, setPrepUsedReplies] = useState(false)
+  const [replies, setReplies] = useState([])
+  const [versionOutcome, setVersionOutcome] = useState(null)
   const [loadingQuestions, setLoadingQuestions] = useState(false)
   const [keywordGap, setKeywordGap] = useState(null)
   const [statusHistory, setStatusHistory] = useState([])
@@ -280,6 +286,11 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
       setCompareFrom(null)
       setComparison(null)
       window.api.getInterviewEvents?.(selected.id).then(e => setAppInterviews(e || [])).catch(() => {})
+      // What the employer wrote back, and which saved version was live when the
+      // outcome landed.
+      window.api.getRecruiterReplies?.(selected.id).then(r => setReplies(r || [])).catch(() => setReplies([]))
+      window.api.getApplicationVersions?.(selected.id).then(v => setVersionOutcome(v || null)).catch(() => setVersionOutcome(null))
+      setPrepUsedReplies(false)
     }
   }, [selected?.id])
 
@@ -577,6 +588,21 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                 <span style={{ color: 'var(--text)' }}> — {h.headline}</span>
                 {h.hasSession === false && (
                   <span style={{ color: 'var(--red)' }}> · not logged in</span>
+                )}
+                {/* The specific selectors that stopped matching. This is the
+                    difference between "something is broken" and a fix — and it
+                    is the only way the partial break is visible at all, where
+                    listings are still found but one field can't be read. */}
+                {h.staleSelectors?.length > 0 && (
+                  <div style={{ marginTop: 4, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>Selectors not matching:</span>
+                    {h.staleSelectors.map(name => (
+                      <code key={name} style={{
+                        fontSize: 11, padding: '1px 6px', borderRadius: 4,
+                        background: 'var(--surface2)', color: 'var(--red)',
+                      }}>{name}</code>
+                    ))}
+                  </div>
                 )}
                 {h.advice && (
                   <div style={{ color: 'var(--text-muted)', marginTop: 2 }}>{h.advice}</div>
@@ -1155,9 +1181,15 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                     setLoadingQuestions(true)
                     const cfg = await window.api.getConfig()
                     const resume = (cfg.resumes || []).find(r => r.id === cfg.defaultResumeId)?.text || cfg.masterResume || ''
-                    const res = await window.api.generateInterviewQuestions(selected.job_description || '', resume)
+                    // Passing the id lets the backend fold in what the employer
+                    // actually wrote — the round, the format, who is on the
+                    // panel. None of that is in the job ad.
+                    const res = await window.api.generateInterviewQuestions(selected.job_description || '', resume, selected.id)
                     setLoadingQuestions(false)
-                    if (res.success) setInterviewQuestions(res.questions)
+                    if (res.success) {
+                      setInterviewQuestions(res.questions)
+                      setPrepUsedReplies(!!res.usedReplies)
+                    }
                   }}>
                   {loadingQuestions ? 'Generating...' : 'Interview Questions'}
                 </button>
@@ -1308,11 +1340,20 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
             {snapshots.length > 0 && (
               <div style={{ marginBottom: 16 }}>
                 <label style={{ marginBottom: 8 }}>Version History</label>
+                {/* Which version was live when the interview was won. The diff
+                    could always show what changed between two versions; this is
+                    the part that says whether the change was worth making. */}
+                {versionOutcome?.decisiveSnapshotId != null && (
+                  <div style={{ fontSize: 11, color: 'var(--green)', marginBottom: 8 }}>
+                    ✓ The version marked below was the one live when this reached {versionOutcome.outcome === 'offer' ? 'offer' : 'interview'}.
+                  </div>
+                )}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {snapshots.map(s => (
                     <div key={s.id} style={{
                       display: 'flex', alignItems: 'center', gap: 10,
                       background: 'var(--surface2)', borderRadius: 8, padding: '8px 10px',
+                      borderLeft: versionOutcome?.decisiveSnapshotId === s.id ? '3px solid var(--green)' : '3px solid transparent',
                     }}>
                       <span className="badge badge-gray" style={{ minWidth: 78, textAlign: 'center' }}>
                         {SNAPSHOT_LABEL[s.reason] || s.reason}
@@ -1320,6 +1361,9 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                       <span style={{ fontSize: 12, color: 'var(--text-muted)', flex: 1 }}>
                         {new Date(String(s.taken_at).replace(' ', 'T') + 'Z').toLocaleString()}
                         {s.model && <> · {s.model}</>}
+                        {versionOutcome?.decisiveSnapshotId === s.id && (
+                          <span style={{ color: 'var(--green)', fontWeight: 600 }}> · won the interview</span>
+                        )}
                       </span>
                       {/* Pick one, then another, to diff the two generations. */}
                       <button
@@ -1535,8 +1579,43 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
               </div>
             )}
 
+            {/* What the employer actually wrote. Sits directly above the prep,
+                because it is the thing the prep should be built from — and
+                because after a week of applications nobody remembers which
+                company said what. */}
+            {replies.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>
+                  What they said <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>({replies.length})</span>
+                </div>
+                {replies.map(r => (
+                  <details key={r.id} style={{ marginBottom: 6, padding: 10, background: 'var(--bg)', borderRadius: 6 }}>
+                    <summary style={{ cursor: 'pointer', fontSize: 13, display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {r.subject || '(no subject)'}
+                      </span>
+                      {r.classified_as && <span className="badge badge-gray" style={{ fontSize: 10 }}>{r.classified_as}</span>}
+                    </summary>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', margin: '6px 0' }}>
+                      {r.from_address}{r.received_at ? ` · ${new Date(r.received_at).toLocaleString()}` : ''}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+                      {r.body || 'No body was captured for this reply.'}
+                    </div>
+                  </details>
+                ))}
+              </div>
+            )}
+
             {interviewQuestions && interviewQuestions.length > 0 && (
-              <InterviewPrepPanel questions={interviewQuestions} applicationId={selected.id} jobDescription={selected.job_description || ''} />
+              <>
+                {prepUsedReplies && (
+                  <div style={{ fontSize: 11, color: 'var(--green)', marginBottom: 6 }}>
+                    ✓ Written from what this employer actually said, not the job ad alone.
+                  </div>
+                )}
+                <InterviewPrepPanel questions={interviewQuestions} applicationId={selected.id} jobDescription={selected.job_description || ''} />
+              </>
             )}
 
             {keywordGap && (

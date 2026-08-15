@@ -31,7 +31,7 @@ const EMPTY_STREAK_FOR_SUSPICION = 3
 // Beyond this, "last successful scrape" stops being reassuring.
 const STALE_SUCCESS_HOURS = 72
 
-function recordScrape(platform, { found = 0, blocked = false, error = null } = {}) {
+function recordScrape(platform, { found = 0, blocked = false, error = null, selectors = null } = {}) {
   try {
     database.recordAutomationEvent({
       platform,
@@ -39,10 +39,28 @@ function recordScrape(platform, { found = 0, blocked = false, error = null } = {
       detail: error || (blocked ? 'Site served a challenge instead of results' : `${found} listing(s)`),
       count: found,
     })
+
+    // Which selectors the scrape actually exercised, and which of them never
+    // matched. Recorded as its own event so the diagnosis can NAME the thing
+    // that moved — "the jobTitle selector matched nothing across 40 cards" is
+    // a fix; "three scans found nothing" is only an alarm.
+    //
+    // A blocked scrape is excluded deliberately: when the site serves a
+    // challenge page, every selector misses, and reporting that as a selector
+    // break would point the fix at the wrong place entirely.
+    if (!blocked && selectors?.stale?.length) {
+      database.recordAutomationEvent({
+        platform,
+        kind: 'selector-stale',
+        detail: selectors.stale.join(', '),
+        count: selectors.stale.length,
+      })
+    }
+
     if (blocked) startCooldown(platform, 'blocked')
     else {
       const diagnosis = diagnose(platform, database.getAutomationEvents(platform, 40))
-      if (diagnosis.status === 'critical' && /found nothing/.test(diagnosis.headline)) {
+      if (diagnosis.status === 'critical' && /found nothing|selector/i.test(diagnosis.headline)) {
         startCooldown(platform, 'selector-suspected')
       }
     }
@@ -156,6 +174,28 @@ function diagnose(platform, events, now = Date.now()) {
       status: 'warning',
       headline: 'Blocked once recently',
       advice: 'One challenge is normal. If it repeats, reduce the daily limit and pages per scan.',
+    }
+  }
+
+  // A named selector that matched nothing is the most specific evidence
+  // available, and it outranks the streak heuristic because it is direct rather
+  // than inferred — and because it catches the case the streak cannot see: the
+  // page still lists jobs, but one field's selector moved, so every listing is
+  // discarded for a missing title and the scan reports a healthy-looking zero.
+  const staleEvent = events.slice(0, 6).find(e => e.kind === 'selector-stale')
+  if (staleEvent) {
+    const names = String(staleEvent.detail || '').split(', ').filter(Boolean)
+    const cardBroken = names.includes('job-card')
+    return {
+      ...base,
+      status: 'critical',
+      staleSelectors: names,
+      headline: cardBroken
+        ? `${platform}'s results markup has changed`
+        : `${platform} selector${names.length === 1 ? '' : 's'} no longer match: ${names.join(', ')}`,
+      advice: cardBroken
+        ? `The container selector for a result card matched nothing, so no listing could be read. ${lastScrapeOk ? `This last worked ${describeAge(lastScrapeOk.at, now)}.` : ''} The scraper needs its card selector updated.`
+        : `Listings were found, but ${names.length === 1 ? 'this field' : 'these fields'} could not be read from any of them — so every listing was discarded and the scan looked empty rather than broken. Update the ${names.join(' / ')} selector${names.length === 1 ? '' : 's'} in services/scraper/${platform.toLowerCase()}.js.`,
     }
   }
 

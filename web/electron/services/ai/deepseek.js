@@ -11,7 +11,7 @@ const scoreMatch = (jobDesc, resume, apiKey) => openai.scoreMatch(jobDesc, resum
 const generateCoverLetter = (jobDesc, resume, apiKey, _geminiModel, tone, template) => openai.generateCoverLetter(jobDesc, resume, apiKey, DEEPSEEK_BASE_URL, tone, template)
 const improveResume = (resumeText, apiKey) => openai.improveResume(resumeText, apiKey, DEEPSEEK_BASE_URL)
 const scoreMatchWithExplanation = (jobDesc, resume, apiKey) => openai.scoreMatchWithExplanation(jobDesc, resume, apiKey, DEEPSEEK_BASE_URL)
-const generateInterviewQuestions = (jobDesc, resume, apiKey) => openai.generateInterviewQuestions(jobDesc, resume, apiKey, DEEPSEEK_BASE_URL)
+const generateInterviewQuestions = (jobDesc, resume, apiKey, _model, replyContext) => openai.generateInterviewQuestions(jobDesc, resume, apiKey, DEEPSEEK_BASE_URL, replyContext)
 const analyzeKeywordGap = (jobDesc, resume, apiKey) => openai.analyzeKeywordGap(jobDesc, resume, apiKey, DEEPSEEK_BASE_URL)
 const generateFollowUpQuestion = (q, a, jd, apiKey) => openai.generateFollowUpQuestion(q, a, jd, apiKey, DEEPSEEK_BASE_URL)
 const generateFollowUpEmail = (jobTitle, company, resume, apiKey) => openai.generateFollowUpEmail(jobTitle, company, resume, apiKey, DEEPSEEK_BASE_URL)

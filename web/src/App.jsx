@@ -8,6 +8,7 @@ import Settings from './pages/Settings'
 import Timeline from './pages/Timeline'
 import Analytics from './pages/Analytics'
 import Workbench from './pages/Workbench'
+import Offers from './pages/Offers'
 import HiroLogo from './components/HiroLogo'
 
 const NAV = [
@@ -15,12 +16,15 @@ const NAV = [
   // Sits second because it is the page with work on it: what is owed and when,
   // rather than what already happened.
   { id: 'pipeline', label: 'Pipeline', icon: '≡', shortcut: '2' },
-  { id: 'review', label: 'Review', icon: '◇', shortcut: '3' },
-  { id: 'attention', label: 'Needs Attention', icon: '⚑', shortcut: '4' },
-  { id: 'timeline', label: 'Timeline', icon: '◷', shortcut: '5' },
-  { id: 'analytics', label: 'Analytics', icon: '◔', shortcut: '6' },
-  { id: 'settings', label: 'Settings', icon: '⚙', shortcut: '7' },
-  { id: 'workbench', label: 'Workbench', icon: '+', shortcut: '8' },
+  // Sits directly after Pipeline: it is the other page with a decision on it,
+  // and the one with a deadline attached to that decision.
+  { id: 'offers', label: 'Offers', icon: '★', shortcut: '3' },
+  { id: 'review', label: 'Review', icon: '◇', shortcut: '4' },
+  { id: 'attention', label: 'Needs Attention', icon: '⚑', shortcut: '5' },
+  { id: 'timeline', label: 'Timeline', icon: '◷', shortcut: '6' },
+  { id: 'analytics', label: 'Analytics', icon: '◔', shortcut: '7' },
+  { id: 'settings', label: 'Settings', icon: '⚙', shortcut: '8' },
+  { id: 'workbench', label: 'Workbench', icon: '+', shortcut: '9' },
 ]
 
 export default function App() {
@@ -281,6 +285,7 @@ export default function App() {
     attention: <NeedsAttention onCountChange={setAttentionCount} showToast={showToast} />,
     timeline: <Timeline />,
     analytics: <Analytics active={page === 'analytics'} />,
+    offers: <Offers active={page === 'offers'} showToast={showToast} onOpenApplication={(id) => { setFocusApp(id); setPage('dashboard') }} />,
     workbench: <Workbench active={page === 'workbench'} showToast={showToast} />,
     settings: <Settings active={page === 'settings'} showToast={showToast} />,
   }

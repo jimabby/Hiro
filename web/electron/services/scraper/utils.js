@@ -822,4 +822,53 @@ async function buildAnalyticsReportPDF(data) {
   })
 }
 
-module.exports = { randomUserAgent, randomDelay, humanType, stripMarkdown, verifySubmission, confirmSubmission, detectBlock, blockReason, BlockedError, gotoResultsPage, buildResumePDF, buildResumeDocx, buildCoverLetterPDF, buildAnalyticsReportPDF, tailorDocx, buildResumeFile }
+// ─── Selector probes ─────────────────────────────────────────────
+//
+// A scraper that stops working does not throw. The markup moves, every
+// selector misses, and the run reports "0 listings" — indistinguishable from a
+// narrow search. Automation health already catches the SHAPE of that (three
+// empty scans in a row) but could only ever say "something is broken", which
+// leaves the user, and whoever fixes it, no better off.
+//
+// A probe records which named selectors matched and which found nothing, so the
+// diagnosis can name the specific one that moved. It also catches the partial
+// break the streak detector misses entirely: cards found, but every title empty,
+// so the run yields nothing while looking perfectly healthy.
+function createSelectorProbe(platform) {
+  const hits = new Map()
+  const attempts = new Map()
+
+  const bump = (map, name) => map.set(name, (map.get(name) || 0) + 1)
+
+  return {
+    platform,
+    // Record one attempt at `name` and whether it produced anything.
+    record(name, matched) {
+      bump(attempts, name)
+      if (matched) bump(hits, name)
+      return matched
+    },
+    // Wrap a value-returning lookup: returns the value, records the outcome.
+    seen(name, value) {
+      this.record(name, value != null && value !== '' && !(Array.isArray(value) && value.length === 0))
+      return value
+    },
+    report() {
+      const selectors = [...attempts.entries()].map(([name, tried]) => ({
+        name,
+        tried,
+        hit: hits.get(name) || 0,
+        // A selector attempted at least a few times that never once matched is
+        // the signal. One miss on one card is just a listing without a salary.
+        stale: tried >= 3 && (hits.get(name) || 0) === 0,
+      }))
+      return {
+        platform,
+        selectors,
+        stale: selectors.filter(s => s.stale).map(s => s.name),
+      }
+    },
+  }
+}
+
+module.exports = { randomUserAgent, randomDelay, humanType, stripMarkdown, verifySubmission, confirmSubmission, detectBlock, blockReason, BlockedError, gotoResultsPage, buildResumePDF, buildResumeDocx, buildCoverLetterPDF, buildAnalyticsReportPDF, tailorDocx, buildResumeFile, createSelectorProbe }

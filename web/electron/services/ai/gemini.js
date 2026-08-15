@@ -1,5 +1,6 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai')
 const { withUsage } = require('./usage')
+const { interviewQuestionsPrompt } = require('./prompts')
 
 function getModel(apiKey, modelName) {
   const genAI = new GoogleGenerativeAI(apiKey)
@@ -128,16 +129,9 @@ function parseJSON(text) {
   return JSON.parse(cleaned)
 }
 
-async function generateInterviewQuestions(jobDescription, masterResume, apiKey, modelName) {
+async function generateInterviewQuestions(jobDescription, masterResume, apiKey, modelName, replyContext) {
   const text = await complete('generateInterviewQuestions', apiKey, modelName, {
-    contents: [{ role: 'user', parts: [{ text: `Generate 8 likely interview questions for this job with a tailored sample answer for each, based on the candidate's actual resume experience.
-Return a JSON array: [{ "question": "...", "answer": "...", "category": "..." }, ...]
-Category must be one of: "behavioral", "technical", "situational", "role-specific".
-Include at least 2 behavioral, 2 technical, and mix the rest.
-Answers should be 2-4 sentences, specific to the candidate's real experience. No markdown in answers.
-
-JOB: ${jobDescription.slice(0, 1000)}
-RESUME: ${masterResume.slice(0, 1200)}` }] }],
+    contents: [{ role: 'user', parts: [{ text: interviewQuestionsPrompt(jobDescription, masterResume, replyContext) }] }],
     generationConfig: { maxOutputTokens: 4096 },
   })
   try { return parseJSON(text) }

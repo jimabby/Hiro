@@ -41,6 +41,37 @@ const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
 let mainWindow
 
+// ─── Last-resort error handling ──────────────────────────────────
+// Node has defaulted to terminating the process on an unhandled rejection since
+// v15. This app is full of deliberately fire-and-forget background work — the
+// scan queue, webhooks, pushes, calendar sync — and a single rejected promise
+// from any of them would take the whole desktop down mid-scan, with the tray
+// icon vanishing and nothing written anywhere explaining why.
+//
+// Nothing here recovers state; it makes the failure survivable and, crucially,
+// diagnosable. A scheduler that keeps running with one broken task is strictly
+// better than one that is gone.
+process.on('unhandledRejection', (reason) => {
+  const detail = reason instanceof Error ? (reason.stack || reason.message) : String(reason)
+  logger.append(`Unhandled promise rejection (background task): ${detail}`)
+  console.error('Unhandled rejection:', reason)
+})
+
+// An uncaught exception leaves the process in an unknown state, so unlike a
+// rejection it is NOT survivable in general — but dying silently is the worst
+// of both. Record it, then let the default behaviour stand.
+process.on('uncaughtException', (err) => {
+  logger.append(`Uncaught exception: ${err?.stack || err?.message || String(err)}`)
+  console.error('Uncaught exception:', err)
+  if (!isDev) {
+    try {
+      dialog.showErrorBox('Hiro hit an unexpected error',
+        `${err?.message || err}\n\nThe activity log at ~/.hiro/logs/hiro.log has the details.`)
+    } catch { /* the dialog is best-effort at this point */ }
+  }
+  app.exit(1)
+})
+
 // Two copies of Hiro means two schedulers, two mobile API servers (the second
 // silently losing the port), and two processes rewriting the same SQLite file —
 // sql.js persists by replacing the WHOLE file, so the loser's writes vanish
@@ -905,11 +936,21 @@ ipcMain.handle('db:getApplicationsByDate', () => database.getApplicationsByDate(
 ipcMain.handle('db:getApplicationsPerDay', (_, days) => database.getApplicationsPerDay(days || 7))
 
 // ─── IPC: AI features ────────────────────────────────────────────
-ipcMain.handle('ai:interviewQuestions', async (_, jobDescription, resumeText) => {
+// `applicationId` is optional. When present, the employer's own replies are
+// pulled in as context — what round it is, who is on the panel, what they said
+// they want to cover. Prep built from the job ad alone ignores everything the
+// employer has actually told us since.
+ipcMain.handle('ai:interviewQuestions', async (_, jobDescription, resumeText, applicationId) => {
   try {
     const cfg = configService.load()
-    const questions = await aiAdapter.generateInterviewQuestions(cfg.aiProvider, cfg.aiApiKey, jobDescription, resumeText, cfg.geminiModel)
-    return { success: true, questions }
+    let replyContext = ''
+    if (applicationId) {
+      try { replyContext = database.getReplyContext(applicationId) } catch { replyContext = '' }
+    }
+    const questions = await aiAdapter.generateInterviewQuestions(
+      cfg.aiProvider, cfg.aiApiKey, jobDescription, resumeText, cfg.geminiModel, replyContext
+    )
+    return { success: true, questions, usedReplies: !!replyContext }
   } catch (err) { return { success: false, error: err.message } }
 })
 

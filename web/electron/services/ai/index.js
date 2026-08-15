@@ -69,8 +69,11 @@ async function scoreMatchWithExplanation(provider, apiKey, jobDescription, maste
   return getAdapter(provider).scoreMatchWithExplanation(jobDescription, masterResume, apiKey, modelFor(provider, geminiModel))
 }
 
-async function generateInterviewQuestions(provider, apiKey, jobDescription, masterResume, geminiModel) {
-  return getAdapter(provider).generateInterviewQuestions(jobDescription, masterResume, apiKey, modelFor(provider, geminiModel))
+// `replyContext` is the employer's own correspondence about this application,
+// when there is any. Optional throughout, so a job with no reply yet still gets
+// ordinary prep from the ad alone.
+async function generateInterviewQuestions(provider, apiKey, jobDescription, masterResume, geminiModel, replyContext) {
+  return getAdapter(provider).generateInterviewQuestions(jobDescription, masterResume, apiKey, modelFor(provider, geminiModel), replyContext)
 }
 
 async function analyzeKeywordGap(provider, apiKey, jobDescription, masterResume, geminiModel) {

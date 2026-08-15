@@ -182,6 +182,164 @@ function FunnelBar({ label, count, total, color }) {
   )
 }
 
+// Two-tone bar: how a segment's rejections split between "screened out" and
+// "rejected after interviewing". The split is the whole point, so it is drawn
+// as one bar rather than two numbers — the proportion is what reads.
+function StageBar({ label, pre, post, max, sublabel }) {
+  const total = pre + post
+  const width = max > 0 ? (total / max) * 100 : 0
+  const preShare = total > 0 ? (pre / total) * 100 : 0
+
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+        <span style={{ color: 'var(--text)' }}>
+          {label}
+          {sublabel && <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>{sublabel}</span>}
+        </span>
+        <span style={{ color: 'var(--text-muted)' }}>{total}</span>
+      </div>
+      <div style={{ height: 8, background: 'var(--border)', borderRadius: 4, overflow: 'hidden', width: `${Math.max(width, 2)}%`, display: 'flex' }}>
+        <div style={{ width: `${preShare}%`, background: 'var(--yellow)' }} title={`${pre} screened out`} />
+        <div style={{ flex: 1, background: 'var(--red)' }} title={`${post} after interview`} />
+      </div>
+    </div>
+  )
+}
+
+// Where applications die. The number of rejections is not actionable; the stage
+// they happen at is, because screening losses and interview losses have
+// completely different fixes.
+function RejectionPanel({ data }) {
+  if (!data) return null
+
+  if (data.total === 0) {
+    return (
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>Where applications end</div>
+        <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          No rejections recorded yet. Once employers start replying, this shows whether applications
+          are being screened out or lost after interviewing — which point at different fixes.
+        </div>
+      </div>
+    )
+  }
+
+  const staged = data.preInterview + data.postInterview
+  const postShare = staged > 0 ? Math.round((data.postInterview / staged) * 100) : 0
+  const maxResume = Math.max(...data.byResume.map(r => r.total), 1)
+  const maxBand = Math.max(...data.byBand.map(b => b.total), 1)
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+        <div style={{ fontWeight: 600, fontSize: 14 }}>Where applications end</div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{data.total} rejection{data.total === 1 ? '' : 's'}</div>
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>
+        Screening losses point at the resume and targeting. Losses after an interview point somewhere else entirely.
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 18 }}>
+        <div style={{ padding: 12, background: 'var(--bg)', borderRadius: 6, borderLeft: '3px solid var(--yellow)' }}>
+          <div style={{ fontSize: 22, fontWeight: 700 }}>{data.preInterview}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>screened out — never interviewed</div>
+        </div>
+        <div style={{ padding: 12, background: 'var(--bg)', borderRadius: 6, borderLeft: '3px solid var(--red)' }}>
+          <div style={{ fontSize: 22, fontWeight: 700 }}>{data.postInterview}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>after interviewing ({postShare}%)</div>
+        </div>
+      </div>
+
+      {data.medianDaysToRejection != null && (
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>
+          Median {data.medianDaysToRejection} day{data.medianDaysToRejection === 1 ? '' : 's'} from submission to rejection.
+        </div>
+      )}
+
+      {data.byResume.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>By resume</div>
+          {data.byResume.slice(0, 6).map(r => (
+            <StageBar key={r.resume} label={r.resume} pre={r.preInterview} post={r.postInterview} max={maxResume} />
+          ))}
+        </div>
+      )}
+
+      {data.byBand.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>By match score</div>
+          {data.byBand.slice(0, 6).map(b => (
+            <StageBar key={b.band} label={b.band} pre={b.preInterview} post={b.postInterview} max={maxBand} />
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 16, fontSize: 11, color: 'var(--text-muted)', marginBottom: 14 }}>
+        <span><span style={{ display: 'inline-block', width: 8, height: 8, background: 'var(--yellow)', borderRadius: 2, marginRight: 5 }} />screened out</span>
+        <span><span style={{ display: 'inline-block', width: 8, height: 8, background: 'var(--red)', borderRadius: 2, marginRight: 5 }} />after interview</span>
+      </div>
+
+      {(data.insights || []).map((i, n) => (
+        <div key={n} style={{ padding: 10, background: 'var(--bg)', borderRadius: 6, marginTop: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 3 }}>{i.title}</div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>{i.detail}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// Which model's documents actually convert. The snapshot diff already showed
+// what changed between versions; this is the part that says whether it mattered.
+function VersionOutcomesPanel({ data }) {
+  if (!data || data.length === 0) return null
+  const rated = data.filter(v => v.interviewRate != null)
+  const best = rated.length ? [...rated].sort((a, b) => b.interviewRate - a.interviewRate)[0] : null
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>Which version won</div>
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
+        Interview rate of the documents each model wrote. One application counts once per model,
+        however many times it was re-drafted.
+      </div>
+
+      {data.map(v => (
+        <div key={v.label} style={{
+          display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0',
+          borderBottom: '1px solid var(--border)',
+        }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {v.label}
+              {best && v.label === best.label && rated.length > 1 && (
+                <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--green)', fontWeight: 700 }}>BEST</span>
+              )}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              {v.sent} sent · {v.interviews} interview{v.interviews === 1 ? '' : 's'} · {v.offers} offer{v.offers === 1 ? '' : 's'}
+              {v.averageScore != null && ` · avg score ${v.averageScore}%`}
+            </div>
+          </div>
+          <div style={{ textAlign: 'right', minWidth: 70 }}>
+            {v.interviewRate == null ? (
+              // Deliberately not a zero. Below the sample floor there is no rate
+              // worth showing, and a "0%" would read as a verdict.
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>too few<br />to judge</div>
+            ) : (
+              <>
+                <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--green)' }}>{v.interviewRate}%</div>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>reached interview</div>
+              </>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export default function Analytics({ active }) {
   const [stats, setStats] = useState(null)
   const [resumeConv, setResumeConv] = useState([])
@@ -196,6 +354,8 @@ export default function Analytics({ active }) {
   const [applyingAdvice, setApplyingAdvice] = useState(false)
   const [bands, setBands] = useState([])
   const [salary, setSalary] = useState(null)
+  const [rejection, setRejection] = useState(null)
+  const [versions, setVersions] = useState([])
 
   useEffect(() => {
     Promise.all([
@@ -217,6 +377,8 @@ export default function Analytics({ active }) {
     window.api.getSalaryStats?.().then(s => setSalary(s || null)).catch(() => {})
     window.api.getResumeConversion?.().then(r => setResumeConv(r || [])).catch(() => {})
     window.api.getAiUsage?.().then(u => setAiUsage(u || null)).catch(() => {})
+    window.api.getRejectionAnalysis?.().then(r => setRejection(r || null)).catch(() => {})
+    window.api.getVersionOutcomes?.().then(v => setVersions(v || [])).catch(() => {})
   }, [active])
 
   useEffect(() => {
@@ -540,6 +702,12 @@ export default function Analytics({ active }) {
           </div>
         </div>
       )}
+
+      {/* Where applications die, and which generated version won. Both sit
+          above the funnel: the funnel says what happened, these say what to
+          do about it. */}
+      <RejectionPanel data={rejection} />
+      <VersionOutcomesPanel data={versions} />
 
       {/* Funnel + Status breakdown */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>

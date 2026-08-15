@@ -22,4 +22,17 @@ module.exports = function registerFeatureHandlers({ ipcMain, scheduler, getWindo
   ipcMain.handle('features:snoozeContact', (_, id, date) => featureHub.snoozeContact(id, date))
   ipcMain.handle('features:campaignAnalytics', () => featureHub.campaignAnalytics())
   ipcMain.handle('features:insights', () => featureHub.insights())
+
+  // Where applications actually die, and which generated version won.
+  ipcMain.handle('features:rejectionAnalysis', () => featureHub.rejectionAnalysis())
+  ipcMain.handle('features:versionOutcomes', () => featureHub.versionOutcomes())
+  ipcMain.handle('features:applicationVersions', (_, id) => featureHub.applicationVersions(id))
+
+  // Offers under consideration.
+  ipcMain.handle('features:offers', () => featureHub.offers())
+  ipcMain.handle('features:saveOffer', (_, id, data) => featureHub.saveOffer(id, data))
+  ipcMain.handle('features:deleteOffer', (_, id) => featureHub.deleteOffer(id))
+
+  // What the employer wrote back, shown alongside interview prep.
+  ipcMain.handle('features:replies', (_, id) => featureHub.replies(id))
 }

@@ -42,7 +42,7 @@ function init(mainWindow) {
   // a large history. Let the window finish starting before doing that I/O.
   setImmediate(() => { runBackupDrillIfDue() })
   // Drain any scans queued (e.g. from the mobile app) while the desktop was off.
-  processQueue()
+  drainQueue()
 }
 
 // Parse a stored "HH:MM" setting, falling back to the default when it's missing
@@ -258,6 +258,13 @@ async function runBatch(batchSize) {
   let batchError = null
   let batchBlocked = []
   let batchPaused = []
+  // Held drafts and scoring failures happen in a batch exactly as they do in a
+  // full scan, but runBatch never recorded them — so on a smart schedule the
+  // dashboard and the phone reported "batch complete" for a run whose entire
+  // output was drafts waiting for approval, or one that scored nothing at all
+  // because the AI was down.
+  let batchHeld = 0
+  let batchScoringFailures = 0
   log(`Starting batch (${batchSize} apps max)...`)
   cloudSync.updateScanStatus(true).catch(() => {})
 
@@ -265,6 +272,9 @@ async function runBatch(batchSize) {
     const result = await applicator.run({ ...cfg, askQuestion: makeAskQuestion(win), batchLimit: batchSize }, { log, notifyAttention })
     if (result?.blocked?.length) batchBlocked = result.blocked
     if (result?.paused?.length) batchPaused = result.paused
+    batchHeld = result?.held || 0
+    batchScoringFailures = result?.scoringFailures || 0
+    if (result?.budgetStopped) batchError = 'AI monthly budget reached — batch stopped early'
   } catch (err) {
     batchError = describeError(err)
     log(`Batch error: ${batchError}`)
@@ -276,11 +286,13 @@ async function runBatch(batchSize) {
       error: batchError,
       blocked: batchBlocked,
       paused: batchPaused,
+      held: batchHeld,
+      scoringFailures: batchScoringFailures,
       source: 'batch',
     }
     cloudSync.updateScanStatus(false).catch(() => {})
     log(batchError ? `Batch failed: ${batchError}` : 'Batch complete.')
-    notify({ type: 'scan-complete', error: batchError, blocked: batchBlocked, paused: batchPaused })
+    notify({ type: 'scan-complete', error: batchError, blocked: batchBlocked, paused: batchPaused, held: batchHeld, scoringFailures: batchScoringFailures })
     webhooks.send('scan-complete', {
       message: batchError
         ? `Batch failed: ${batchError}`
@@ -290,7 +302,7 @@ async function runBatch(batchSize) {
       paused: batchPaused,
     }).catch(() => {})
     cloudSync.sync().catch(() => {})
-    setImmediate(() => { processQueue() })
+    setImmediate(drainQueue)
   }
 }
 
@@ -353,7 +365,7 @@ function restart(mainWindow) {
   stop({ abortRun: false })
   startTasks()
   // Settings may have just completed setup — drain any scans queued before it.
-  processQueue()
+  drainQueue()
 }
 
 async function runNow(mainWindow) {
@@ -387,8 +399,15 @@ function requestScan(opts = {}) {
   }
   configService.update(c => ({ ...c, pendingScans: [...(Array.isArray(c.pendingScans) ? c.pendingScans : []), req] }))
   log(`Scan request queued from ${req.source}${req.keywords ? ` (keywords: ${req.keywords})` : ''}`)
-  processQueue()
+  drainQueue()
   return req
+}
+
+// Every caller of processQueue is fire-and-forget — a cron tick, a finished
+// scan, a phone request. An unhandled rejection from any of them terminates the
+// Electron main process, so the queue must never reject at its callers.
+function drainQueue() {
+  processQueue().catch(err => log(`Scan queue error: ${describeError(err)}`))
 }
 
 // Run queued scan requests one at a time until the queue is empty.
@@ -408,10 +427,20 @@ async function processQueue() {
   // the current scan finishes / setup completes (previously it was discarded).
   if (!result?.ran) return
 
-  const after = configService.update(c => ({
-    ...c,
-    pendingScans: (c.pendingScans || []).filter(r => r.id !== req.id),
-  }))
+  // A failure to write config here (disk full, permissions) must not leave the
+  // request at the head of the queue to be re-run forever, nor propagate out of
+  // a fire-and-forget caller. Report it and stop draining; the next tick
+  // retries.
+  let after
+  try {
+    after = configService.update(c => ({
+      ...c,
+      pendingScans: (c.pendingScans || []).filter(r => r.id !== req.id),
+    }))
+  } catch (err) {
+    log(`Could not clear the finished scan request from the queue: ${describeError(err)}`)
+    return
+  }
   if ((after.pendingScans || []).length > 0) await processQueue()
 }
 
@@ -549,7 +578,7 @@ async function runScan(overrides = {}) {
       // Drain scans queued (e.g. from the phone) while this scan was running.
       // Queue-initiated runs skip this: processQueue continues itself after
       // removing the finished request, and re-entering here would run it twice.
-      if (!overrides.fromQueue) setImmediate(() => { processQueue() })
+      if (!overrides.fromQueue) setImmediate(drainQueue)
     }
   }
   // `ran` means the scan flow executed, error or not — a failed scan must not

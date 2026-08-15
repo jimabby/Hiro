@@ -14,6 +14,7 @@
 - **Reliable AI calls** — model calls are retried with exponential backoff (honouring `Retry-After`), and a permanent failure such as a bad API key is not retried. A job that still can't be scored is **left unsaved and retried next scan** rather than recorded with a fabricated score
 - **Spend cap and cost meter** — per-call token usage and estimated cost are recorded and broken down by operation on the Analytics page. An optional monthly cap is checked *before* each call, so it stops work rather than reporting the overrun afterwards
 - **Block detection** — a CAPTCHA, rate-limit page, or expired login is reported as *blocked* rather than as "found 0 jobs", so a silently throttled scan is visible instead of looking like an empty market
+- **Selector health, by name** — when a site moves its markup the scraper does not crash, it finds nothing and reports a quiet zero. Each scan now records which selectors matched and which never did, so the alert names the specific selector that moved and the file to fix it in. This also catches the break the "three empty scans" heuristic cannot see at all: listings still being found, but one field unreadable, so every listing is discarded and the scan looks perfectly healthy
 - **AI match scoring** — rates each job against your resume (0–100%) with a one-sentence explanation of the score
 - **Resume tailoring** — AI rewrites your resume to match each job description (without changing facts)
 - **Cover letter generation** — AI writes a tailored cover letter with configurable tone (Professional / Casual / Confident) and optional custom template
@@ -74,17 +75,33 @@ actually loses people offers: **what do I owe, and when?**
 - **Held and skipped drafts are excluded** — nothing was ever sent, so there is nothing to chase
 - Follow-ups are editable **from the phone** too, and an overdue one can push a notification
 
+### Offers
+
+Every other page answers "what happened". This one exists for the few days where
+the answer is already yes and the question is *which* yes — the moment the whole
+pipeline was for, and the one the rest of the app had nothing to say about.
+
+- **Side by side** — base, bonus, equity, start date, location and remote arrangement for every live offer, with total compensation computed so two offers structured differently are actually comparable
+- **Never an advert dressed as an offer** — where no offer figure has been entered, the advertised range from the application is shown so the row still sorts and compares, but it is labelled as advertised. Presenting the two as the same thing is the one failure here that would actively mislead
+- **The deadline that expires first is hoisted to the top**, and coloured by how close it is. An offer with two days left and one with three weeks left should not look the same
+- **For and against, and an excitement rating** — the part no number captures, kept next to the parts that are all number
+- **Decided offers stay on the board** — a declined offer is still part of the record of what was on the table, but it leaves the "best on the table" figure
+
 ### Job Detail Panel
 - **Match explanation** — one-sentence AI summary of why the job scored the way it did
-- **Interview Questions** — generate 8 likely interview questions for jobs in "Interview" status
+- **Interview Questions** — generate 8 likely interview questions for jobs in "Interview" status. When the employer has written back, the questions are built from **what they actually said** — the round, the format, who is on the panel, the topics they named — rather than from the job ad alone, which knows none of that
+- **What they said** — the recruiter's own replies, kept alongside the application. The inbox check already downloaded them to classify the status; they are now retained, so after a week of applications you do not have to go hunting for which company said what
 - **Keyword Gap** — see which skills from the job posting are missing from or present in your resume
 - **Blacklist Company** — instantly exclude a company from all future scans
+- **Which version won** — the version history already showed what changed between two drafts; the version that was live when the application reached interview is now marked, so a rewrite can be judged on its result rather than on how the diff reads
 - **Full tailored resume and screening Q&A** — download resume as DOCX
 
 ### Analytics & Timeline
 - **Analytics page** — SVG bar chart of applications over the last 7 days, platform donut chart, by-status breakdown, response and interview rates, advertised-salary spread (median / average / range, annualised), and a match-score histogram with your apply threshold marked (for tuning it alongside Test Scan)
 - **Interview rate by match score** — what share of each score band actually reached interview or offer. The histogram shows where your threshold sits; this shows whether it belongs there. Bands with too few applications to be meaningful are greyed out rather than shown as a confident 0% or 100%
 - **Which resume converts** — interview rate, response rate and average match score per resume actually sent. Routing rules send different jobs to different resumes; this is the evidence for keeping or dropping each rule instead of assuming it helps. Rates from fewer than 10 applications are marked as not yet meaningful
+- **Where applications end** — the split that decides what to work on: rejected *before* anyone interviewed you (the resume and targeting are the problem) versus rejected *after* interviewing (they are not). Broken down by resume and by score band, with the median time employers take to say no. The stage is derived from the status history, never stored, so it can't disagree with the status shown elsewhere
+- **Which version won** — interview rate of the documents each AI model wrote, so two providers are judged on results rather than on how their output reads. One application counts once per model however many times it was re-drafted, and a sample too small to mean anything reports no rate at all rather than a confident 0%
 - **AI usage and cost** — spend today and this month, token counts, and a breakdown by operation (scoring, tailoring, cover letters), so an expensive scan is visible before the bill is
 - **Timeline page** — collapsible day-by-day history of all applications grouped by platform
 
@@ -123,7 +140,7 @@ actually loses people offers: **what do I owe, and when?**
 - **App Store-ready** — in-app account deletion, privacy policy, EAS build config (see [app/README.md](app/README.md))
 - **Two ways to connect:**
   - **Local network (default)** — one-time pairing gives the phone its own OS-keychain-wrapped secret; subsequent API messages are signed, replay-protected, and AES-256-GCM encrypted
-  - **Cloud sync (optional)** — sign in to a Supabase account on both desktop and phone to mirror applications, interviews, and attention jobs to the cloud. Sensitive application text is encrypted before upload and row-level security isolates accounts. See [supabase/SETUP.md](supabase/SETUP.md)
+  - **Cloud sync (optional)** — sign in to a Supabase account on both desktop and phone to mirror applications, interviews, and attention jobs to the cloud. Application documents are encrypted on the device before upload with a key the server never receives, and row-level security isolates accounts. See [supabase/SETUP.md](supabase/SETUP.md) and *End-to-end encryption* below
 
 ---
 
@@ -357,6 +374,40 @@ everything.
 If you opt in to **Cloud Sync**, your applications are also mirrored to **your own**
 Supabase project (which you create and control). Row Level Security restricts the
 data to your account. Cloud sync is off until you sign in.
+
+#### End-to-end encryption
+
+Your resumes, cover letters, job descriptions, screening answers and recruiter
+addresses are encrypted on the device before they are uploaded. The key is derived
+from your password and never leaves the machine.
+
+That last part used to be less true than it sounds, and the difference matters.
+Earlier versions derived the encryption key straight from the password that was
+*also* sent to Supabase to sign in — so the server held everything needed to
+re-derive the key, and "end-to-end encrypted" was not true against the one party
+the encryption exists to defend against.
+
+The password is now stretched once (PBKDF2-SHA256, 200,000 rounds, salted with
+the account address so both devices reach the same result with nothing to
+exchange), then split by HKDF into two independent keys:
+
+| | Where it goes | What it does |
+|---|---|---|
+| **Auth secret** | Sent to Supabase in place of your password | Signs you in. The server stores its own hash of it. It is not your password and cannot be turned back into one |
+| **Data key** | Never leaves the device | Encrypts the documents (AES-256-GCM) |
+
+Knowing the auth secret does not yield the data key — HKDF's outputs are
+independent given distinct context strings — so a full compromise of the Supabase
+project yields ciphertext and nothing else.
+
+**Existing accounts upgrade themselves.** The first desktop sign-in after updating
+tries the derived secret, falls back to your raw password, and immediately rotates
+the account password to the derived secret. That fallback is the only moment the
+raw password is ever sent, it happens once, and the rotation closes it for good.
+Payloads written under the old scheme are refused rather than read — the desktop's
+local database holds the plaintext and re-uploads them under the new key on the
+next sync, so nothing is lost, and briefly-unreadable is the correct behaviour for
+data encrypted with a key the server once could derive.
 
 Every device that signs in — desktop and phone — registers itself on the account, so
 Settings → Cloud Sync lists what is attached, when each session started, and when it

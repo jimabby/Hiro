@@ -203,8 +203,35 @@ async function checkInbox() {
                 if (matched) newStatus = matched
               } catch { /* keep keyword result */ }
             }
+            // An interview or offer reply is exactly the one worth keeping in
+            // full, and the keyword path may have reached that verdict without
+            // ever downloading the body. Fetch it now, before it is stored —
+            // the interview-time parser below needs it anyway.
+            if (!body && (newStatus === 'interview' || newStatus === 'offer')) {
+              body = await fetchBodySnippet(client, match.uid)
+            }
+
             database.updateApplicationStatus(app.id, newStatus)
             database.setLastReplyUid(app.id, match.uid)
+
+            // Keep what they actually wrote. It was already downloaded to
+            // classify the reply and was then discarded — and it is the only
+            // record of the interview format, the panel, and the round, none of
+            // which the job ad knows. Interview prep reads it from here.
+            //
+            // Best-effort: an inbox check must never fail because a body could
+            // not be stored.
+            try {
+              database.saveRecruiterReply({
+                applicationId: app.id,
+                uid: match.uid,
+                from: match.from,
+                subject: match.subject,
+                body,
+                classifiedAs: newStatus,
+                receivedAt: match.date ? new Date(match.date).toISOString() : null,
+              })
+            } catch { /* the reply log is a bonus, never a blocker */ }
 
             // The sender of a real reply is the best follow-up address there
             // is — a human who has already read the application. Without this,

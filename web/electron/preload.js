@@ -22,6 +22,13 @@ contextBridge.exposeInMainWorld('api', {
   snoozeContactReminder: (id, date) => ipcRenderer.invoke('features:snoozeContact', id, date),
   getCampaignAnalytics: () => ipcRenderer.invoke('features:campaignAnalytics'),
   getOptimisationInsights: () => ipcRenderer.invoke('features:insights'),
+  getRejectionAnalysis: () => ipcRenderer.invoke('features:rejectionAnalysis'),
+  getVersionOutcomes: () => ipcRenderer.invoke('features:versionOutcomes'),
+  getApplicationVersions: (id) => ipcRenderer.invoke('features:applicationVersions', id),
+  getOffers: () => ipcRenderer.invoke('features:offers'),
+  saveOffer: (id, data) => ipcRenderer.invoke('features:saveOffer', id, data),
+  deleteOffer: (id) => ipcRenderer.invoke('features:deleteOffer', id),
+  getRecruiterReplies: (id) => ipcRenderer.invoke('features:replies', id),
 
   // Automation
   startAutomation: () => ipcRenderer.invoke('automation:start'),
@@ -99,7 +106,9 @@ contextBridge.exposeInMainWorld('api', {
   getApplicationsPerDay: (days) => ipcRenderer.invoke('db:getApplicationsPerDay', days),
 
   // AI features
-  generateInterviewQuestions: (jobDesc, resume) => ipcRenderer.invoke('ai:interviewQuestions', jobDesc, resume),
+  // applicationId is optional; when given, the employer's own replies inform
+  // the questions instead of the job ad alone.
+  generateInterviewQuestions: (jobDesc, resume, applicationId) => ipcRenderer.invoke('ai:interviewQuestions', jobDesc, resume, applicationId),
   generateInterviewFollowUp: (question, userAnswer, jobDescription) => ipcRenderer.invoke('ai:interviewFollowUp', question, userAnswer, jobDescription),
   analyzeKeywordGap: (jobDesc, resume) => ipcRenderer.invoke('ai:keywordGap', jobDesc, resume),
   blacklistCompany: (company) => ipcRenderer.invoke('config:blacklistCompany', company),
