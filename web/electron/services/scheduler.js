@@ -191,22 +191,49 @@ function setupSmartSchedule(cfg) {
   const totalMinutes = endMinutes - startMinutes
   if (totalMinutes <= 0 || numBatches <= 0) return
 
-  const interval = Math.floor(totalMinutes / numBatches)
+  // The window cannot hold more batches than it has minutes. Past that point
+  // `interval` floors to 0, every batch is planned for the same moment, and
+  // because runBatch() refuses to start while another is running, all but the
+  // first are silently dropped — a daily limit of 600 at a batch size of 1
+  // produced 600 timers on 15 distinct times, all inside the first quarter
+  // hour, and applied almost nothing.
+  //
+  // The daily limit is the volume the user asked for and the window is the
+  // constraint they set, so neither is discarded: fewer, larger batches carry
+  // the same total across the same span.
+  const plannedBatches = Math.max(1, Math.min(numBatches, totalMinutes))
+  const perBatch = plannedBatches === numBatches
+    ? batchSize
+    : Math.ceil(totalLimit / plannedBatches)
+  if (plannedBatches !== numBatches) {
+    log(`Smart schedule: ${numBatches} batches of ${batchSize} will not fit between `
+      + `${cfg.smartScheduleStartTime || '09:00'} and ${cfg.smartScheduleEndTime || '17:00'}; `
+      + `using ${plannedBatches} batches of ${perBatch} instead`)
+  }
+
+  const interval = Math.floor(totalMinutes / plannedBatches)
+
+  // Jitter has to stay smaller than the gap it is perturbing. At ±15 minutes on
+  // a 1-minute interval, batches overtake each other and pile onto the same
+  // minute, which is the same collapse by another route. Half the interval is
+  // the most that keeps every batch inside its own slot; the default 48-minute
+  // interval is unaffected by this.
+  const effectiveJitter = Math.max(0, Math.min(jitter, Math.floor(interval / 2)))
 
   // Schedule a daily cron at start time to set up today's batches
   scanTask = cron.schedule(`${startM} ${startH} * * 1-5`, () => {
-    scheduleTodayBatches(numBatches, interval, startMinutes, jitter, batchSize)
+    scheduleTodayBatches(plannedBatches, interval, startMinutes, effectiveJitter, perBatch, endMinutes)
   })
 
   // Also schedule for today if we haven't passed start time
   const now = new Date()
   const nowMinutes = now.getHours() * 60 + now.getMinutes()
   if (nowMinutes < endMinutes && now.getDay() >= 1 && now.getDay() <= 5) {
-    scheduleTodayBatches(numBatches, interval, startMinutes, jitter, batchSize)
+    scheduleTodayBatches(plannedBatches, interval, startMinutes, effectiveJitter, perBatch, endMinutes)
   }
 }
 
-function scheduleTodayBatches(numBatches, interval, startMinutes, jitter, batchSize) {
+function scheduleTodayBatches(numBatches, interval, startMinutes, jitter, batchSize, endMinutes) {
   // Clear existing batch timeouts
   for (const t of batchTimeouts) clearTimeout(t)
   batchTimeouts = []
@@ -217,8 +244,12 @@ function scheduleTodayBatches(numBatches, interval, startMinutes, jitter, batchS
 
   for (let i = 0; i < numBatches; i++) {
     const baseMinutes = startMinutes + i * interval
-    const jitterOffset = Math.floor(Math.random() * jitter * 2) - jitter
-    const scheduledMinutes = Math.max(startMinutes, baseMinutes + jitterOffset)
+    const jitterOffset = jitter > 0 ? Math.floor(Math.random() * jitter * 2) - jitter : 0
+    // Clamped at BOTH ends. Only the lower bound was enforced, so jitter on the
+    // last batch pushed it past the finish time the user configured — a
+    // 09:00–09:30 window scheduled its final batch at 09:41.
+    let scheduledMinutes = Math.max(startMinutes, baseMinutes + jitterOffset)
+    if (endMinutes != null) scheduledMinutes = Math.min(endMinutes, scheduledMinutes)
 
     if (scheduledMinutes <= nowMinutes) continue // skip batches in the past
 
@@ -234,8 +265,19 @@ function scheduleTodayBatches(numBatches, interval, startMinutes, jitter, batchS
     batchTimeouts.push(timeout)
   }
 
+  // Jitter can reorder adjacent batches, so the planned times are not
+  // necessarily generated in order — and a schedule printed out of sequence
+  // reads as a bug in the scheduler rather than as jitter doing its job.
+  batchSchedule.sort()
+
   if (batchSchedule.length > 0) {
-    log(`Smart schedule: ${batchSchedule.length} batches planned — ${batchSchedule.join(', ')}`)
+    // The full list is unreadable once there are dozens of them, and the log is
+    // size-capped — say how many and where they run, then the first few.
+    const preview = batchSchedule.length > 12
+      ? `${batchSchedule.slice(0, 12).join(', ')}, …`
+      : batchSchedule.join(', ')
+    log(`Smart schedule: ${batchSchedule.length} batches of ${batchSize} planned `
+      + `between ${batchSchedule[0]} and ${batchSchedule[batchSchedule.length - 1]} — ${preview}`)
   }
 }
 

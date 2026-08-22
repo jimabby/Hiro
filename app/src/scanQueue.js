@@ -52,12 +52,21 @@ export function flush(client) {
     if (list.length === 0) return 0
     let delivered = 0
     const remaining = []
+    // Stop at the first failure and keep the rest queued, rather than trying
+    // every one. A flush runs on reconnect and on pull-to-refresh, and each
+    // request carries an 8-second timeout — so against a desktop that is simply
+    // not there, ten queued scans meant eighty seconds of the refresh spinner
+    // before the phone gave up. One failure already answers the only question
+    // that matters here, which is whether the desktop is reachable at all.
+    let reachable = true
     for (const req of list) {
+      if (!reachable) { remaining.push(req); continue }
       try {
         await client.requestScan({ keywords: req.keywords, location: req.location })
         delivered++
       } catch {
         remaining.push(req)
+        reachable = false
       }
     }
     await writePending(remaining)

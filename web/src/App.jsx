@@ -308,8 +308,8 @@ export default function App() {
     // where the whole detail view already lives — rather than duplicating it.
     pipeline: <Pipeline active={page === 'pipeline'} onOpenApplication={(id) => { setFocusApp(id); setPage('dashboard') }} />,
     review: <Review active={page === 'review'} onCountChange={setHeldCount} showToast={showToast} />,
-    attention: <NeedsAttention onCountChange={setAttentionCount} showToast={showToast} />,
-    timeline: <Timeline />,
+    attention: <NeedsAttention active={page === 'attention'} onCountChange={setAttentionCount} showToast={showToast} />,
+    timeline: <Timeline active={page === 'timeline'} />,
     analytics: <Analytics active={page === 'analytics'} />,
     offers: <Offers active={page === 'offers'} showToast={showToast} onOpenApplication={(id) => { setFocusApp(id); setPage('dashboard') }} />,
     workbench: <Workbench active={page === 'workbench'} showToast={showToast} />,
@@ -329,7 +329,7 @@ export default function App() {
           scrolling column passes behind. It samples the ambient wash directly,
           which is the one place in the app where the material is unmistakable. */}
       <nav data-testid="nav" style={{
-        width: 224, flexShrink: 0,
+        width: 236, flexShrink: 0,
         background: 'var(--glass)',
         backdropFilter: 'var(--blur)',
         WebkitBackdropFilter: 'var(--blur)',

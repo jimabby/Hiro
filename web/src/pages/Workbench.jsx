@@ -24,7 +24,7 @@ export default function Workbench({ active, showToast }) {
     setCampaigns(c || []); setContacts(p || []); setDueContacts(due || [])
     setInsights(tips || []); setAnalytics(stats || []); setResumes(cfg?.resumes || [])
   }
-  useEffect(() => { if (active) load().catch(err => showToast?.(err.message, 'error')) }, [active])
+  useEffect(() => { if (active) load().catch(err => showToast?.(err.message, 'error')) }, [active, showToast])
   if (!active) return null
 
   const field = (state, setState, key, props = {}) => (

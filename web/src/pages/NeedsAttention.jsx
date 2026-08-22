@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 
 // Application deadline parsed from the job ad. Colour tracks urgency, since
 // the whole point of surfacing it here is to answer "which of these do I have
@@ -18,7 +18,7 @@ function ClosingBadge({ date }) {
   )
 }
 
-export default function NeedsAttention({ onCountChange, showToast }) {
+export default function NeedsAttention({ active, onCountChange, showToast }) {
   const [jobs, setJobs] = useState([])
   const [selected, setSelected] = useState(null)
   const [applying, setApplying] = useState(null)
@@ -30,7 +30,27 @@ export default function NeedsAttention({ onCountChange, showToast }) {
   const [selectedIds, setSelectedIds] = useState(new Set())
   const logEndRef = useRef(null)
 
-  useEffect(() => { load() }, [])
+  // useCallback, so the effect below can depend on it honestly rather than
+  // running once and pretending nothing it reads will ever change.
+  const load = useCallback(async () => {
+    try {
+      const data = await window.api.getAttentionJobs()
+      setJobs(data)
+      onCountChange(data.length)
+    } catch (err) {
+      showToast?.(`Failed to load attention jobs: ${err.message}`, 'error')
+    }
+  }, [onCountChange, showToast])
+
+  // Reload every time the page is shown, not once on mount.
+  //
+  // Every page in this app stays mounted and is merely hidden, so mounting
+  // happens exactly once — at startup. This page had no `active` prop at all
+  // and loaded on an empty dependency array, so the list it showed was the list
+  // as it stood when the app launched. Meanwhile a scan finishing pushes a
+  // notification that increments the sidebar badge, so the badge would read 3
+  // while the page itself showed nothing, until the app was restarted.
+  useEffect(() => { if (active !== false) load() }, [active, load])
 
   useEffect(() => {
     const off = window.api.onAttentionLog((msg) => {
@@ -68,15 +88,7 @@ export default function NeedsAttention({ onCountChange, showToast }) {
     return result
   }, [jobs, search, platformFilter, sortBy])
 
-  async function load() {
-    try {
-      const data = await window.api.getAttentionJobs()
-      setJobs(data)
-      onCountChange(data.length)
-    } catch (err) {
-      showToast?.(`Failed to load attention jobs: ${err.message}`, 'error')
-    }
-  }
+
 
   async function dismiss(id) {
     try {

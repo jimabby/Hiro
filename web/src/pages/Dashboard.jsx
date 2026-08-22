@@ -242,6 +242,11 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
     // Same cadence: a scan that has just finished is exactly when the verdict
     // changes, and a stale panel is worse than none.
     window.api.getAutomationHealth?.().then(h => setAutomationHealth(h || [])).catch(() => {})
+    // `scanInfo` is read by the guard above but deliberately not a dependency:
+    // this effect sets it, so depending on it would re-run the effect on its own
+    // result forever. The guard only needs "have we ever loaded", which the
+    // value from the previous run answers correctly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, scanRunning])
 
   useEffect(() => {
@@ -292,6 +297,11 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
       window.api.getApplicationVersions?.(selected.id).then(v => setVersionOutcome(v || null)).catch(() => setVersionOutcome(null))
       setPrepUsedReplies(false)
     }
+    // Keyed on the selected row's id alone, on purpose. The effect reads
+    // `selected.job_description` to decide whether the full row still needs
+    // fetching — and it is the fetch itself that fills that field in, so
+    // depending on it would re-run this the moment it succeeded.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id])
 
   // Opened from another page (the Pipeline board). A bare { id } is enough: the
@@ -738,15 +748,36 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
         </div>
       )}
 
+      {/* Upcoming interviews and the activity log, side by side.
+          These were a full-width card each, stacked, directly above the
+          applications table — roughly 640px of vertical space before the
+          working surface of the page began, which put the table below the fold
+          on a laptop. Neither needs the full width: the interviews list is
+          short rows, and the log is a fixed-height console. Paired, they cost
+          the height of the taller one instead of the sum of both.
+
+          The log is deliberately still ABOVE the table rather than banished
+          below it — it is what you watch while a scan runs, and a diagnostic
+          you have to scroll past 25 table rows to find is one nobody reads. */}
+      {(interviews.length > 0 || logs.length > 0) && (
+        <div style={{
+          display: 'grid', gap: 16, marginBottom: 24, alignItems: 'start',
+          // Each column keeps a real minimum so the pair collapses to a single
+          // column on a narrow window rather than crushing both.
+          gridTemplateColumns: interviews.length > 0 && logs.length > 0
+            ? 'repeat(auto-fit, minmax(380px, 1fr))'
+            : '1fr',
+        }}>
       {/* Upcoming interviews — detected from recruiter replies, or added by hand */}
       {interviews.length > 0 && (
-        <div className="card" style={{ marginBottom: 24, borderLeft: '3px solid var(--green)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <span style={{ fontWeight: 600, fontSize: 14 }}>Upcoming Interviews</span>
+        <div className="card" style={{ borderLeft: '3px solid var(--green)', minWidth: 0 }}>
+          {/* Title and action on one line, explanation on its own beneath.
+              This card now shares a row rather than spanning the page, and the
+              caption is longer than the title — inline, it squeezed the heading
+              into two wrapped lines and still did not fit. */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, marginBottom: 2 }}>
+            <span style={{ fontWeight: 600, fontSize: 14, whiteSpace: 'nowrap' }}>Upcoming Interviews</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                detected from recruiter replies — click a row to open the application
-              </span>
               {/* Hiro already knows when these are; this hands them to the
                   calendar the user actually lives in. */}
               <button className="btn btn-ghost" style={{ fontSize: 11, padding: '3px 8px', flexShrink: 0 }}
@@ -765,6 +796,9 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                 </span>
               )}
             </div>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 12 }}>
+            detected from recruiter replies — click a row to open the application
           </div>
           {interviews.map(iv => {
             const when = new Date(iv.scheduled_at.replace(' ', 'T'))
@@ -822,10 +856,9 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
           })}
         </div>
       )}
-
       {/* Log */}
       {logs.length > 0 && (
-        <div className="card" style={{ marginBottom: 24 }}>
+        <div className="card" style={{ minWidth: 0 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: logCollapsed ? 0 : 10 }}>
             <button onClick={() => setLogCollapsed(c => !c)} style={{
               background: 'none', border: 'none', cursor: 'pointer', padding: 0,
@@ -850,6 +883,8 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
           {!logCollapsed && <div className="log-box" ref={logRef}>{logs.join('\n')}</div>}
         </div>
       )}
+        </div>
+      )}
 
       {/* Applications */}
       <div className="card">
@@ -869,7 +904,15 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
             { value: 'skipped', label: 'Skipped' },
           ]
           return (
-            <div style={{ display: 'flex', gap: 2, marginBottom: 16, borderBottom: '1px solid var(--border)', paddingBottom: 0 }}>
+            // flexWrap, because nine tabs do not fit. Without it the last one
+            // ("Skipped") pushed past the card, and because nothing between here
+            // and <main> clips, the ENTIRE page gained a horizontal scrollbar at
+            // any window narrower than about 1200px — the sidebar and all.
+            // Wrapping to a second row costs one line and only when needed.
+            <div style={{
+              display: 'flex', flexWrap: 'wrap', gap: 2, marginBottom: 16,
+              borderBottom: '1px solid var(--border)', paddingBottom: 0,
+            }}>
               {TAB_STATUSES.map(tab => {
                 const count = tab.value ? apps.filter(a => a.status === tab.value).length : apps.length
                 const active = filter.status === tab.value

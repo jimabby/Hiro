@@ -14,6 +14,7 @@
 const js = require('@eslint/js')
 const globals = require('globals')
 const react = require('eslint-plugin-react')
+const reactHooks = require('eslint-plugin-react-hooks')
 
 module.exports = [
   {
@@ -126,15 +127,30 @@ module.exports = [
         ecmaFeatures: { jsx: true },
       },
     },
-    // Only the two rules that teach no-unused-vars to see JSX. Without them
-    // every component defined and then rendered reads as dead code, which is
-    // 80 false positives and a linter nobody trusts. The rest of the React
+    // Only the two React rules that teach no-unused-vars to see JSX. Without
+    // them every component defined and then rendered reads as dead code, which
+    // is 80 false positives and a linter nobody trusts. The rest of the React
     // plugin is opinion this codebase has not asked for.
-    plugins: { react },
+    //
+    // react-hooks is the exception, and it earns its place on the same standard
+    // as everything else here: both rules catch things a careful reviewer would
+    // also flag as bugs, and neither is a style opinion.
+    //   rules-of-hooks — a hook called conditionally corrupts React's internal
+    //     hook order. It is always a bug and never a preference.
+    //   exhaustive-deps — a dependency array missing a value the effect reads
+    //     is a stale closure: the effect keeps using the first render's value
+    //     forever. This is exactly the class of bug that produces "the UI is
+    //     showing an old number and nobody can reproduce it".
+    // exhaustive-deps is a warning rather than an error: a handful of the
+    // effects here intentionally run on a narrower trigger than what they read,
+    // and those are judgement calls that deserve a comment, not a build break.
+    plugins: { react, 'react-hooks': reactHooks },
     rules: {
       ...js.configs.recommended.rules,
       'react/jsx-uses-vars': 'error',
       'react/jsx-uses-react': 'error',
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn',
       'no-unused-vars': ['error', { args: 'none', varsIgnorePattern: '^_' }],
       'no-empty': ['error', { allowEmptyCatch: true }],
       'no-constant-binary-expression': 'error',

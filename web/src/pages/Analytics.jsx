@@ -83,7 +83,14 @@ function ScoreHistogram({ apps, threshold }) {
     buckets[Math.min(9, Math.floor(s / 10))].count++
   }
   const max = Math.max(...buckets.map(b => b.count), 1)
-  const chartH = 120, barW = 34, gap = 8
+  // Bar geometry is in viewBox units, and `meet` scales the whole drawing to
+  // fit the SVG box while preserving its aspect ratio. At barW 34 the drawing
+  // was 412 units wide against a card of roughly 1150px, so the histogram was
+  // scaled down to about a third of the space it was given and floated in the
+  // middle of an otherwise empty card. Sizing the drawing near the width it
+  // will actually occupy lets it fill the card — and keeps the labels at their
+  // intended size instead of shrinking them along with everything else.
+  const chartH = 120, barW = 92, gap = 16
   const width = 10 * (barW + gap) - gap
   const thrX = Math.min((threshold / 100) * width, width)
 
@@ -126,7 +133,14 @@ function ConversionChart({ bands, threshold }) {
     )
   }
 
-  const chartH = 120, barW = 34, gap = 8
+  // Bar geometry is in viewBox units, and `meet` scales the whole drawing to
+  // fit the SVG box while preserving its aspect ratio. At barW 34 the drawing
+  // was 412 units wide against a card of roughly 1150px, so the histogram was
+  // scaled down to about a third of the space it was given and floated in the
+  // middle of an otherwise empty card. Sizing the drawing near the width it
+  // will actually occupy lets it fill the card — and keeps the labels at their
+  // intended size instead of shrinking them along with everything else.
+  const chartH = 120, barW = 92, gap = 16
   const width = 10 * (barW + gap) - gap
   const thrX = Math.min((threshold / 100) * width, width)
   const maxRate = Math.max(...withData.map(b => b.conversionRate || 0), 1)
@@ -227,8 +241,15 @@ function RejectionPanel({ data }) {
 
   const staged = data.preInterview + data.postInterview
   const postShare = staged > 0 ? Math.round((data.postInterview / staged) * 100) : 0
-  const maxResume = Math.max(...data.byResume.map(r => r.total), 1)
-  const maxBand = Math.max(...data.byBand.map(b => b.total), 1)
+  // Read through defaults, like `(experiment.arms || [])` below. The guards
+  // above establish that `data` exists and has rejections in it; they say
+  // nothing about these two fields, and a payload missing either used to throw
+  // out of render — which, before this app had an error boundary, took the
+  // whole window down rather than this one panel.
+  const byResume = data.byResume || []
+  const byBand = data.byBand || []
+  const maxResume = Math.max(...byResume.map(r => r.total), 1)
+  const maxBand = Math.max(...byBand.map(b => b.total), 1)
 
   return (
     <div className="card" style={{ marginBottom: 16 }}>
@@ -257,19 +278,19 @@ function RejectionPanel({ data }) {
         </div>
       )}
 
-      {data.byResume.length > 0 && (
+      {byResume.length > 0 && (
         <div style={{ marginBottom: 16 }}>
           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>By resume</div>
-          {data.byResume.slice(0, 6).map(r => (
+          {byResume.slice(0, 6).map(r => (
             <StageBar key={r.resume} label={r.resume} pre={r.preInterview} post={r.postInterview} max={maxResume} />
           ))}
         </div>
       )}
 
-      {data.byBand.length > 0 && (
+      {byBand.length > 0 && (
         <div style={{ marginBottom: 16 }}>
           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>By match score</div>
-          {data.byBand.slice(0, 6).map(b => (
+          {byBand.slice(0, 6).map(b => (
             <StageBar key={b.band} label={b.band} pre={b.preInterview} post={b.postInterview} max={maxBand} />
           ))}
         </div>
@@ -549,7 +570,7 @@ export default function Analytics({ active }) {
             </div>
 
             <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
-              {advice.curve.map(c => (
+              {(advice.curve || []).map(c => (
                 <div key={c.threshold} style={{
                   fontSize: 11, padding: '4px 8px', borderRadius: 6,
                   background: c.threshold === advice.recommended ? 'var(--accent)' : 'var(--surface)',
@@ -754,7 +775,7 @@ export default function Analytics({ active }) {
                 </tr>
               </thead>
               <tbody>
-                {aiUsage.byOperation.map(o => (
+                {(aiUsage.byOperation || []).map(o => (
                   <tr key={o.operation} style={{ borderTop: '1px solid var(--border)' }}>
                     <td style={{ padding: '6px 8px 6px 0' }}>{o.operation}</td>
                     <td style={{ padding: '6px 8px', textAlign: 'right', color: 'var(--text-muted)' }}>{o.calls}</td>

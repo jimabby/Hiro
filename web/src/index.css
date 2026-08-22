@@ -381,7 +381,10 @@ label { display: block; color: var(--text-muted); font-size: 12px; margin-bottom
 /* ─── Stat card ────────────────────────────────────────────────────
    The one place the app gets to be big and quiet: a large, tightly tracked
    figure over a small label is the whole hierarchy. */
-.stat-card { text-align: center; }
+/* Tighter than a general card. Six of these sit in one row above the working
+   surface of the Dashboard, and at the default 20px card padding that row cost
+   more vertical space than the numbers in it justified. */
+.stat-card { text-align: center; padding: 15px 14px; }
 .stat-value {
   font-size: 34px; font-weight: 600; color: var(--text);
   letter-spacing: -0.035em; line-height: 1.15;
@@ -525,7 +528,7 @@ input[type="checkbox"] {
   border-radius: var(--radius); padding: 12px;
   font-family: var(--font-mono);
   font-size: 12px; line-height: 1.65;
-  color: #7dd3fc; height: 200px; overflow-y: auto;
+  color: #7dd3fc; height: 176px; overflow-y: auto;
   white-space: pre-wrap; word-break: break-word;
   box-shadow: inset 0 1px 6px rgba(0, 0, 0, 0.4);
 }
@@ -641,8 +644,15 @@ input[type="checkbox"] {
   box-shadow: var(--shadow-sm), var(--highlight);
 }
 .nav-item .nav-icon {
-  font-size: 14px; width: 20px; text-align: center;
+  font-size: 14px; width: 20px; text-align: center; flex-shrink: 0;
   opacity: 0.55; transition: opacity 0.18s var(--ease), color 0.18s var(--ease);
+}
+/* The label must not wrap. "Needs Attention" plus its count badge and the
+   (invisible-until-hover, but still space-taking) shortcut hint overflowed the
+   rail and broke the item onto two lines, which made that one row taller than
+   every other and pushed the whole list out of rhythm. */
+.nav-item > span:not(.nav-icon):not(.kbd) {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .nav-item-active .nav-icon { opacity: 1; color: var(--accent); }
 .nav-item:hover .nav-icon { opacity: 1; }

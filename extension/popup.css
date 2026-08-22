@@ -1,12 +1,67 @@
-:root { color-scheme: dark; font: 13px system-ui, sans-serif; background: #11131a; color: #eef1f7; }
+/* Mirrors the desktop app's palette (web/src/index.css) and the phone's
+   (app/src/theme.js). Three surfaces, one product — a companion in a slightly
+   different grey reads as a knock-off, and this one sits right next to the
+   desktop window it pairs with.
+
+   The desktop's surfaces are translucent glass over an ambient wash. A 360px
+   browser popup has nothing behind it to sample, so these use the opaque values
+   the desktop itself falls back to where backdrop-filter is unavailable (the
+   `@supports not` block at the end of index.css) — the same colours, arrived at
+   the same way. The popup is one card, so it takes the card material as its
+   ground rather than the near-black page floor. */
+:root {
+  color-scheme: dark;
+  font: 13px -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  background: #161925;
+  color: #f0f2f8;
+  letter-spacing: -0.006em;
+}
 body { width: 360px; margin: 0; padding: 16px; box-sizing: border-box; }
 header { display: flex; align-items: baseline; gap: 8px; margin-bottom: 14px; }
-header strong { color: #8b7cff; font-size: 24px; } header span, p { color: #9ca3b3; }
-label { display: block; color: #b9c0ce; margin: 8px 0; }
-input, textarea { width: 100%; box-sizing: border-box; margin-top: 4px; border: 1px solid #353a49; border-radius: 7px; background: #1b1e28; color: inherit; padding: 8px; }
-textarea { min-height: 95px; resize: vertical; }
+/* The wordmark takes the text colour, not the accent — same as the desktop
+   sidebar, where the accent is reserved for the active item and primary action. */
+header strong { color: #f0f2f8; font-size: 19px; font-weight: 650; letter-spacing: -0.03em; }
+header span, p { color: #9aa3b8; }
+label { display: block; color: #9aa3b8; margin: 8px 0; font-size: 12px; font-weight: 500; }
+input, textarea {
+  width: 100%; box-sizing: border-box; margin-top: 4px;
+  border: 1px solid #2e3038; border-radius: 8px;
+  background: #1f2230; color: #f0f2f8; padding: 8px 10px;
+  font: inherit; font-size: 13px;
+  transition: border-color .18s cubic-bezier(.32,.72,0,1), box-shadow .18s cubic-bezier(.32,.72,0,1);
+}
+input:hover, textarea:hover { border-color: #3d3f47; }
+input:focus, textarea:focus {
+  outline: none; border-color: #6d75f6;
+  box-shadow: 0 0 0 3.5px rgba(109, 117, 246, .18);
+}
+textarea { min-height: 95px; resize: vertical; line-height: 1.55; }
 .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-button { width: 100%; border: 0; border-radius: 7px; padding: 9px; margin-top: 8px; background: #7567e8; color: white; font-weight: 650; cursor: pointer; }
-button.secondary { background: transparent; border: 1px solid #353a49; color: #b9c0ce; }
-button:disabled { opacity: .55; cursor: wait; }
-#message { min-height: 18px; margin-bottom: 0; } #message.error { color: #ff7f87; } #message.success { color: #66d39a; }
+button {
+  width: 100%; border: 1px solid transparent; border-radius: 10px;
+  padding: 9px; margin-top: 8px;
+  /* One-stop lift, doing the job of a specular highlight rather than reading as
+     a gradient — the same treatment as .btn-primary on the desktop. */
+  background: linear-gradient(180deg, #7f86f8 0%, #6d75f6 100%);
+  color: #fff; font: inherit; font-weight: 600; letter-spacing: -0.01em; cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.22);
+  transition: background .18s cubic-bezier(.32,.72,0,1), transform .12s cubic-bezier(.32,.72,0,1);
+}
+button:hover:not(:disabled) { background: linear-gradient(180deg, #6d75f6 0%, #5a63e8 100%); }
+button:active:not(:disabled) { transform: scale(.975); }
+button.secondary {
+  background: rgba(255,255,255,.07); border-color: #2e3038; color: #9aa3b8;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.07);
+}
+button.secondary:hover:not(:disabled) { background: rgba(255,255,255,.11); color: #f0f2f8; border-color: #3d3f47; }
+button:disabled { opacity: .4; cursor: wait; }
+#message { min-height: 18px; margin-bottom: 0; margin-top: 10px; font-size: 12px; }
+#message.error { color: #f97066; }
+#message.success { color: #32d583; }
+
+/* The pulse and transitions above are decoration; this setting exists to stop
+   exactly that. Matches the desktop's own reduced-motion block. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+  button:active:not(:disabled) { transform: none; }
+}

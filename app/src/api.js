@@ -1,5 +1,7 @@
 // HTTP client for the Hiro desktop companion API (web/electron/services/mobileApi.js)
 import { encryptPayload, decryptPayload, signedHeaders } from './secureProtocol'
+// Pure, CommonJS, and separately tested — see src/httpJson.js.
+import { readJson } from './httpJson'
 
 const TIMEOUT_MS = 8000
 
@@ -18,7 +20,7 @@ export async function pairWithDesktop({ host, port, code, deviceName, platform }
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code, deviceName, platform }),
     })
-    const body = await res.json()
+    const body = await readJson(res)
     if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`)
     return body // { token, device, host }
   } catch (err) {
@@ -62,7 +64,7 @@ export class HiroClient {
           ...(options.headers || {}),
         },
       })
-      const envelope = await res.json()
+      const envelope = await readJson(res)
       // The desktop can only encrypt a reply once it has verified the request
       // signature, so everything it rejects BEFORE that point — 403 from a
       // non-private address, 429 from the lockout, 401 from an expired device

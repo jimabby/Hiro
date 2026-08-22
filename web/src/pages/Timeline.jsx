@@ -21,7 +21,7 @@ function relativeDate(dateStr) {
   return d.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' })
 }
 
-export default function Timeline() {
+export default function Timeline({ active }) {
   const [byDate, setByDate] = useState({})
   const [expanded, setExpanded] = useState(null)
   const [dayJobs, setDayJobs] = useState([])
@@ -30,7 +30,12 @@ export default function Timeline() {
   const [expandAll, setExpandAll] = useState(false)
   const [expandedJobs, setExpandedJobs] = useState({})
 
+  // Reloads every time the page is shown, not once on mount. Pages stay mounted
+  // here, so mounting happens once at startup — this page used to show the
+  // application history as it stood when the app launched, and a scan that ran
+  // an hour later simply did not appear on the timeline of that day.
   useEffect(() => {
+    if (active === false) return
     window.api.getApplicationsByDate().then(rows => {
       const grouped = {}
       rows.forEach(r => {
@@ -39,7 +44,7 @@ export default function Timeline() {
       })
       setByDate(grouped)
     })
-  }, [])
+  }, [active])
 
   async function toggleDay(date) {
     if (expandAll) {
