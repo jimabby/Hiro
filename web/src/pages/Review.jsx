@@ -278,7 +278,7 @@ export default function Review({ active, showToast, onCountChange }) {
       {/* Draft detail — what would actually be sent */}
       {detail && (
         <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Draft detail" style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+          position: 'fixed', inset: 0, background: 'var(--scrim)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: 24,
         }}>
           <div className="card modal-content" style={{ width: 780, maxHeight: '85vh', overflowY: 'auto' }}>
@@ -360,7 +360,7 @@ export default function Review({ active, showToast, onCountChange }) {
 
       {confirmReject && (
         <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Confirm rejection" style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+          position: 'fixed', inset: 0, background: 'var(--scrim)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300,
         }}>
           <div className="card modal-content" style={{ width: 440 }}>

@@ -573,7 +573,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
       {automationHealth.some(h => h.status === 'critical' || h.status === 'warning') && (
         <div className="card" style={{
           marginBottom: 16, padding: '12px 16px',
-          borderLeft: `3px solid ${automationHealth.some(h => h.status === 'critical') ? 'var(--red)' : 'var(--yellow, #eab308)'}`,
+          borderLeft: `3px solid ${automationHealth.some(h => h.status === 'critical') ? 'var(--red)' : 'var(--yellow)'}`,
         }}>
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Automation health</div>
           {automationHealth
@@ -582,7 +582,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
             .map(h => (
               <div key={h.platform} style={{ marginBottom: 8, fontSize: 12 }}>
                 <span style={{
-                  color: h.status === 'critical' ? 'var(--red)' : 'var(--yellow, #eab308)',
+                  color: h.status === 'critical' ? 'var(--red)' : 'var(--yellow)',
                   fontWeight: 600,
                 }}>{h.platform}</span>
                 <span style={{ color: 'var(--text)' }}> — {h.headline}</span>
@@ -1106,7 +1106,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
       {/* Detail modal */}
       {selected && (
         <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Application detail" style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+          position: 'fixed', inset: 0, background: 'var(--scrim)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
         }} onClick={() => setSelected(null)}>
           <div className="card modal-content" style={{ width: '70vw', maxWidth: 900, maxHeight: '85vh', overflow: 'auto' }}
@@ -1414,8 +1414,8 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                         }}>
                           {comparison.diff.map((part, i) => (
                             <div key={i} style={{
-                              color: part.type === 'added' ? 'var(--success, #4ade80)'
-                                : part.type === 'removed' ? 'var(--danger, #f87171)'
+                              color: part.type === 'added' ? 'var(--success)'
+                                : part.type === 'removed' ? 'var(--danger)'
                                 : 'var(--text-muted)',
                             }}>
                               {part.type === 'added' ? '+ ' : part.type === 'removed' ? '− ' : '  '}{part.line}
@@ -1462,8 +1462,8 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                         }}>
                           {openSnapshot.diff.diff.map((part, i) => (
                             <div key={i} style={{
-                              color: part.type === 'added' ? 'var(--success, #4ade80)'
-                                : part.type === 'removed' ? 'var(--danger, #f87171)'
+                              color: part.type === 'added' ? 'var(--success)'
+                                : part.type === 'removed' ? 'var(--danger)'
                                 : 'var(--text-muted)',
                             }}>
                               {part.type === 'added' ? '+ ' : part.type === 'removed' ? '− ' : '  '}{part.line}
@@ -1686,7 +1686,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
 
       {pdfModal && (
         <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Document preview" style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
+          position: 'fixed', inset: 0, background: 'var(--scrim)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300,
         }}>
           <div className="modal-content" style={{

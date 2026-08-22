@@ -138,9 +138,13 @@ export default function Setup({ onComplete }) {
   })()
 
   return (
+    // Deliberately transparent, not `var(--bg)`: the ambient wash is painted on
+    // the document behind this, and repainting the flat floor here would cover
+    // it — the wizard would be the one screen in the app with no depth to it,
+    // and it is the first screen anyone sees.
     <div style={{
       height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: 'var(--bg)',
+      background: 'transparent', overflowY: 'auto', padding: '32px 0',
     }}>
       <div style={{ width: 540 }}>
         {/* Header */}

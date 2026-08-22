@@ -120,6 +120,21 @@ async function main() {
   // still on the table, so it must ignore it.
   check('a declined offer does not set the best figure', decided.best, 180000)
 
+  // Reaching the offer stage is a fact about the application; the decision made
+  // about the offer is a separate field. Recording an already-decided offer used
+  // to leave the row at its previous status, so the Pipeline board filed an
+  // accepted offer under Interview and every by-status offer analytic missed it.
+  for (const decision of ['accepted', 'declined', 'expired']) {
+    const row = add(`https://example.com/decided-${decision}`)
+    db.updateApplicationStatus(row, 'interview')
+    db.saveOffer(row, { baseSalary: 200000, decision })
+    check(`recording an ${decision} offer still marks the application as an offer`,
+      db.getApplication(row).status, 'offer')
+    // Removed again so the board counts asserted below stay about the two
+    // offers this test set up deliberately.
+    db.deleteApplication(row)
+  }
+
   // Deleting the application takes its offer with it.
   db.deleteApplication(b)
   check('deleting an application removes its offer', db.getOffers().offers.length, 1)

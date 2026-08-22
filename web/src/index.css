@@ -1,138 +1,338 @@
+/* ═══════════════════════════════════════════════════════════════════
+   Hiro — glass design system
+
+   The material model, in one place, because everything below follows from it:
+
+   1. A single ambient wash is painted once, behind everything (body::before).
+      It is the only saturated colour in the app. Nothing else invents a
+      background gradient — they would fight it and the depth cue would go.
+   2. Chrome floats over that wash on translucent glass and samples it with
+      backdrop-filter. That is what makes the surface read as a material with
+      something behind it rather than a grey rectangle.
+   3. Glass is for CHROME ONLY — sidebar, cards, modals, toasts, popovers.
+      Never for repeated leaf elements. A backdrop-filter is a per-element
+      offscreen pass; 25 table rows each blurring the page is a measurable
+      frame cost for an effect nobody can see behind an opaque row anyway.
+      Leaves use flat translucent fills, which composite for free.
+
+   Every colour is a token, defined once on :root and overridden once under
+   [data-theme="light"]. No component hardcodes a hex.
+   ═══════════════════════════════════════════════════════════════════ */
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg: #0e1016;
-  --surface: #171a23;
-  --surface2: #212533;
-  --surface3: #2b3042;
-  --border: #2e3245;
-  --border-strong: #3d4258;
-  --accent: #6366f1;
-  --accent-hover: #4f52d4;
-  --accent-soft: rgba(99, 102, 241, 0.16);
-  --green: #22c55e;
-  --yellow: #eab308;
-  --red: #ef4444;
-  --text: #e2e8f0;
-  --text-muted: #94a3b8;
-  --text-faint: #64748b;
-  --radius: 10px;
-  --radius-sm: 7px;
-  --radius-lg: 14px;
-  /* Elevation. Three steps only — resting surface, raised, and floating —
-     so a card, a hover and a modal are never ambiguous about which is on top. */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
-  --shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
-  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.55);
-  --ring: 0 0 0 3px rgba(99, 102, 241, 0.4);
-  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  /* ─── Ground ─────────────────────────────────────────────────────
+     --bg is the flat floor; the wash sits on top of it. --bg-tint-* are the
+     two blooms in that wash, kept as tokens so the light theme can swap
+     their hue without touching the gradient geometry. */
+  --bg: #07080c;
+  /* Deliberately strong. These are seen through ~60%-opaque glass and then
+     again through a 20px blur, and each of those roughly halves the apparent
+     saturation — a tint that looks right as a raw swatch disappears entirely
+     by the time it reaches the eye, which is exactly what happened at 0.16. */
+  --bg-tint-a: rgba(99, 102, 241, 0.34);
+  --bg-tint-b: rgba(56, 189, 248, 0.20);
+  --bg-tint-c: rgba(168, 85, 247, 0.18);
+
+  /* ─── Glass materials ────────────────────────────────────────────
+     Three weights, matching the three elevation steps. Thicker glass sits
+     higher: a modal must obscure the page under it, a card must not obscure
+     the wash it is floating on, or the depth reads as flat. */
+  --glass: rgba(26, 29, 41, 0.55);
+  --glass-raised: rgba(38, 42, 58, 0.66);
+  --glass-thick: rgba(24, 26, 37, 0.86);
+  --blur: saturate(180%) blur(20px);
+  --blur-thick: saturate(180%) blur(40px);
+
+  /* Opaque fallbacks. Used where glass is wrong (leaf elements, and any
+     surface whose backdrop is already an opaque parent) — a translucent fill
+     over an opaque card just looks washed out, it does not read as glass. */
+  --surface: rgba(255, 255, 255, 0.045);
+  --surface2: rgba(255, 255, 255, 0.07);
+  --surface3: rgba(255, 255, 255, 0.11);
+  /* The tinted callout ground. This token was referenced by the local-model
+     notes in Setup and Settings but never defined — those boxes rendered with
+     no background at all. */
+  --bg-subtle: rgba(255, 255, 255, 0.05);
+
+  /* ─── Edges ──────────────────────────────────────────────────────
+     A hairline, not a line. Apple's materials are separated by a 1px rgba
+     edge that reads as the lit rim of a pane of glass, not as a drawn border;
+     --highlight is that rim, applied as an inset shadow along the top. */
+  --border: rgba(255, 255, 255, 0.11);
+  --border-strong: rgba(255, 255, 255, 0.19);
+  --highlight: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+
+  /* ─── Accent ─────────────────────────────────────────────────────── */
+  --accent: #6d75f6;
+  --accent-hover: #7f86f8;
+  --accent-press: #5a63e8;
+  --accent-soft: rgba(109, 117, 246, 0.18);
+  --accent-glow: rgba(109, 117, 246, 0.35);
+
+  /* ─── Semantic ───────────────────────────────────────────────────
+     --success / --danger / --amber are aliases the pages already reach for
+     (the resume diff, the pipeline "nothing planned" note, the follow-up
+     warnings). They were never defined, so those call sites silently fell
+     through to a hardcoded dark-theme hex or to plain muted grey. */
+  --green: #32d583;
+  --yellow: #fdb022;
+  --red: #f97066;
+  --success: var(--green);
+  --danger: var(--red);
+  --amber: var(--yellow);
+
+  --green-soft: rgba(50, 213, 131, 0.16);
+  --yellow-soft: rgba(253, 176, 34, 0.16);
+  --red-soft: rgba(249, 112, 102, 0.16);
+
+  /* ─── Type ───────────────────────────────────────────────────────── */
+  --text: #f0f2f8;
+  --text-muted: #9aa3b8;
+  --text-faint: #6b7488;
+  --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text',
+          'Segoe UI', Inter, system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+
+  /* ─── Geometry ───────────────────────────────────────────────────
+     Larger than the old scale. A glass pane with a tight corner reads as a
+     cut-out; the softness is part of what makes it read as a material. */
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+  --pill: 980px;
+
+  /* ─── Elevation ──────────────────────────────────────────────────
+     Three steps only — resting, raised, floating — so a card, a hover and a
+     modal are never ambiguous about which is on top. Wide and soft rather
+     than dark and tight: a hard shadow under a translucent pane looks like a
+     sticker, because real glass scatters what it occludes. */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.28), 0 1px 1px rgba(0, 0, 0, 0.16);
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.34), 0 1px 3px rgba(0, 0, 0, 0.22);
+  --shadow-lg: 0 24px 68px rgba(0, 0, 0, 0.58), 0 4px 14px rgba(0, 0, 0, 0.34);
+
+  --ring: 0 0 0 3.5px var(--accent-soft), 0 0 0 1px var(--accent);
+
+  /* Modal scrim. Lighter than the flat 70–85% black the dialogs used to paint
+     inline: .modal-overlay now blurs the page as well, and a scrim that opaque
+     leaves nothing to blur — the depth-of-field cue that says "the page is
+     still there, just out of focus" is lost, and it reads as a black screen. */
+  --scrim: rgba(6, 7, 12, 0.55);
+
+  /* Standard ease, and a gentle overshoot for things that appear. */
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.5, 1);
 }
 
 [data-theme="light"] {
-  --bg: #f6f7fb;
-  --surface: #ffffff;
-  --surface2: #f1f5f9;
-  --surface3: #e2e8f0;
-  --border: #e2e8f0;
-  --border-strong: #cbd5e1;
+  --bg: #eef0f6;
+  --bg-tint-a: rgba(99, 102, 241, 0.17);
+  --bg-tint-b: rgba(56, 189, 248, 0.16);
+  --bg-tint-c: rgba(168, 85, 247, 0.11);
+
+  --glass: rgba(255, 255, 255, 0.66);
+  --glass-raised: rgba(255, 255, 255, 0.80);
+  --glass-thick: rgba(252, 252, 254, 0.92);
+
+  --surface: rgba(15, 23, 42, 0.028);
+  --surface2: rgba(15, 23, 42, 0.052);
+  --surface3: rgba(15, 23, 42, 0.085);
+  --bg-subtle: rgba(15, 23, 42, 0.035);
+
+  --border: rgba(15, 23, 42, 0.10);
+  --border-strong: rgba(15, 23, 42, 0.18);
+  --highlight: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+
   --accent: #5457e5;
-  --accent-hover: #4144cc;
-  --accent-soft: rgba(84, 87, 229, 0.1);
-  --green: #16a34a;
+  --accent-hover: #4a4dd8;
+  --accent-press: #4144cc;
+  --accent-soft: rgba(84, 87, 229, 0.13);
+  --accent-glow: rgba(84, 87, 229, 0.28);
+
+  /* Darkened from the dark-theme values: the mid-tone greens and ambers that
+     glow against near-black fail contrast on a white ground. */
+  --green: #0f9d58;
   --yellow: #b45309;
   --red: #dc2626;
-  --text: #1e293b;
-  --text-muted: #5b6b80;
-  --text-faint: #94a3b8;
+  --green-soft: rgba(15, 157, 88, 0.13);
+  --yellow-soft: rgba(180, 83, 9, 0.13);
+  --red-soft: rgba(220, 38, 38, 0.12);
+
+  --text: #10162a;
+  --text-muted: #57637a;
+  --text-faint: #8c96a9;
+
   --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
-  --shadow: 0 2px 8px rgba(15, 23, 42, 0.07);
-  --shadow-lg: 0 16px 48px rgba(15, 23, 42, 0.18);
-  --ring: 0 0 0 3px rgba(84, 87, 229, 0.28);
+  --shadow: 0 4px 16px rgba(15, 23, 42, 0.09), 0 1px 3px rgba(15, 23, 42, 0.05);
+  --shadow-lg: 0 24px 68px rgba(15, 23, 42, 0.20), 0 4px 14px rgba(15, 23, 42, 0.10);
+
+  --scrim: rgba(24, 28, 45, 0.30);
+}
+
+/* ─── Ground & the ambient wash ────────────────────────────────────
+   The flat floor goes on <html>, not <body>, and the wash is a fixed layer
+   behind the body's content. That ordering is load-bearing: a background set
+   on <body> when <html> has none is propagated up to the canvas, and a
+   z-index:-1 pseudo-element would then paint *over* it in some passes and
+   under it in others. Anchoring the floor to <html> makes the stack
+   unambiguous — floor, wash, content — which is what every backdrop-filter
+   below is sampling through. */
+html {
+  background: var(--bg);
+  transition: background 0.4s var(--ease);
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: var(--bg);
+  font-family: var(--font);
+  background: transparent;
   color: var(--text);
   font-size: 14px;
   line-height: 1.5;
   height: 100vh;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
-  transition: background 0.3s var(--ease), color 0.3s var(--ease);
+  letter-spacing: -0.006em;
+  transition: background 0.4s var(--ease), color 0.4s var(--ease);
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  /* Exactly the viewport, not an oversized box. The gradients are positioned
+     in percentages of this element, so insetting it past the edges pushes the
+     bottom bloom off-screen — which is where it went the first time. Fading to
+     transparent means there is no edge to hide, so there is nothing to gain by
+     making it bigger. */
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(78% 58% at 8% -6%, var(--bg-tint-a) 0%, transparent 70%),
+    radial-gradient(66% 52% at 96% 8%, var(--bg-tint-b) 0%, transparent 68%),
+    radial-gradient(74% 60% at 62% 104%, var(--bg-tint-c) 0%, transparent 70%);
+  transition: background 0.4s var(--ease);
 }
 
 #root { height: 100vh; display: flex; flex-direction: column; }
 
+/* ─── Headings ─────────────────────────────────────────────────────
+   The pages set their own sizes inline; what they cannot set from there is a
+   consistent optical rhythm. Negative tracking that scales with size is the
+   single biggest thing separating a system font used well from one dropped in
+   at defaults — large text set at 0 tracking always reads loose. */
+h1, h2, h3, h4 { font-weight: 600; letter-spacing: -0.022em; line-height: 1.25; }
+h1 { letter-spacing: -0.032em; }
+
 /* Numeric columns (match %, salary, counts) line up only with tabular figures. */
 .tnum, .stat-value, td.num, th.num { font-variant-numeric: tabular-nums; }
 
-/* Scrollbar */
-::-webkit-scrollbar { width: 10px; height: 10px; }
+/* ─── Scrollbar ────────────────────────────────────────────────────
+   Overlay-style: invisible until the pointer is in the region, which is what
+   the platform does and what keeps a dense table from looking fenced in. */
+::-webkit-scrollbar { width: 12px; height: 12px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: var(--border-strong); border-radius: 6px;
-  border: 3px solid transparent; background-clip: padding-box;
+  background: var(--border-strong); border-radius: var(--pill);
+  border: 3.5px solid transparent; background-clip: padding-box;
+  transition: background 0.2s var(--ease);
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-faint); background-clip: padding-box; }
 ::-webkit-scrollbar-corner { background: transparent; }
 
-/* Keyboard focus. Every interactive control gets the same ring, so tabbing
-   through the app never leaves you guessing where you are. Pointer clicks are
-   unaffected — :focus-visible only fires for keyboard and assistive input. */
+/* ─── Focus ────────────────────────────────────────────────────────
+   Every interactive control gets the same halo, so tabbing through the app
+   never leaves you guessing where you are. Pointer clicks are unaffected —
+   :focus-visible only fires for keyboard and assistive input. */
 :focus-visible {
   outline: none;
   box-shadow: var(--ring);
   border-radius: var(--radius-sm);
 }
 
-/* Buttons */
+/* ═══ Glass primitive ══════════════════════════════════════════════
+   The one place the material is defined. Everything that floats composes
+   this rather than restating the recipe, so retuning the material is a
+   single edit. */
+.glass {
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm), var(--highlight);
+}
+
+/* ─── Buttons ──────────────────────────────────────────────────────── */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   padding: 8px 16px; border-radius: var(--radius);
   cursor: pointer; font-size: 13px; font-weight: 500;
   font-family: inherit; line-height: 1.4; white-space: nowrap;
-  /* A bare `.btn` used to fall through to the browser's default button
-     chrome — a light grey slab in the middle of a dark app. It now renders
-     as the neutral solid variant, which is what those call sites wanted. */
-  background: var(--surface3); color: var(--text);
-  border: 1px solid var(--border-strong);
-  transition: background 0.15s var(--ease), border-color 0.15s var(--ease),
-              color 0.15s var(--ease), transform 0.1s var(--ease), box-shadow 0.15s var(--ease);
+  letter-spacing: -0.01em;
+  /* A bare `.btn` used to fall through to the browser's default chrome — a
+     light grey slab in the middle of a dark app. It renders as the neutral
+     translucent variant, which is what those call sites wanted. */
+  background: var(--surface2); color: var(--text);
+  border: 1px solid var(--border);
+  box-shadow: var(--highlight);
+  transition: background 0.18s var(--ease), border-color 0.18s var(--ease),
+              color 0.18s var(--ease), transform 0.12s var(--ease), box-shadow 0.18s var(--ease);
 }
-.btn:hover:not(:disabled) { border-color: var(--text-faint); }
-.btn:active:not(:disabled) { transform: translateY(1px); }
-.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn:hover:not(:disabled) { background: var(--surface3); border-color: var(--border-strong); }
+.btn:active:not(:disabled) { transform: scale(0.975); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* The gradient is a one-stop lift, not a visible ramp: it is doing the job of
+   a specular highlight on a curved surface, and reads as "lit", not "striped". */
 .btn-primary {
-  background: var(--accent); color: #fff; border-color: transparent;
-  box-shadow: var(--shadow-sm);
+  background: linear-gradient(180deg, var(--accent-hover) 0%, var(--accent) 100%);
+  color: #fff; border-color: transparent;
+  box-shadow: var(--shadow-sm), inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
-.btn-primary:hover:not(:disabled) { background: var(--accent-hover); border-color: transparent; box-shadow: var(--shadow); }
+.btn-primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, var(--accent) 0%, var(--accent-press) 100%);
+  border-color: transparent;
+  box-shadow: var(--shadow), 0 0 0 4px var(--accent-soft), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
 
-.btn-ghost { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
+.btn-ghost { background: transparent; color: var(--text-muted); border-color: var(--border); box-shadow: none; }
 .btn-ghost:hover:not(:disabled) { background: var(--surface2); color: var(--text); border-color: var(--border-strong); }
 
-.btn-danger { background: var(--red); color: #fff; border-color: transparent; }
-.btn-danger:hover:not(:disabled) { filter: brightness(1.08); }
+.btn-danger {
+  background: linear-gradient(180deg, var(--red) 0%, var(--red) 100%);
+  color: #fff; border-color: transparent;
+  box-shadow: var(--shadow-sm), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+.btn-danger:hover:not(:disabled) { filter: brightness(1.08); box-shadow: var(--shadow), 0 0 0 4px var(--red-soft); }
 
 /* Compact variant for the dense toolbars inside cards and table rows. */
 .btn-sm { padding: 4px 10px; font-size: 11px; border-radius: var(--radius-sm); }
 
-/* Inputs */
+/* ─── Inputs ───────────────────────────────────────────────────────── */
 input, textarea, select {
-  background: var(--surface2); border: 1px solid var(--border);
+  background: var(--surface); border: 1px solid var(--border);
   color: var(--text); border-radius: var(--radius); padding: 8px 12px;
   font-size: 13px; width: 100%; outline: none; font-family: inherit;
-  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease), background 0.15s var(--ease);
+  box-shadow: var(--highlight);
+  transition: border-color 0.18s var(--ease), box-shadow 0.18s var(--ease), background 0.18s var(--ease);
 }
-input:hover:not(:disabled), textarea:hover:not(:disabled), select:hover:not(:disabled) { border-color: var(--border-strong); }
-input:focus, textarea:focus, select:focus { border-color: var(--accent); box-shadow: var(--ring); }
-input:disabled, textarea:disabled, select:disabled { opacity: 0.55; cursor: not-allowed; }
+input:hover:not(:disabled), textarea:hover:not(:disabled), select:hover:not(:disabled) {
+  border-color: var(--border-strong); background: var(--surface2);
+}
+input:focus, textarea:focus, select:focus {
+  border-color: var(--accent); background: var(--surface2); box-shadow: var(--ring);
+}
+input:disabled, textarea:disabled, select:disabled { opacity: 0.5; cursor: not-allowed; }
 input::placeholder, textarea::placeholder { color: var(--text-faint); }
 select { cursor: pointer; }
-select option { background: var(--surface2); color: var(--text); }
+/* The native popup is an OS window, not part of the page — it cannot be
+   translucent, so it needs a genuinely opaque colour or options render on
+   whatever the platform picks. */
+select option { background: #1a1d29; color: #f0f2f8; }
+[data-theme="light"] select option { background: #ffffff; color: #10162a; }
 textarea { resize: vertical; min-height: 80px; line-height: 1.6; }
 
 label { display: block; color: var(--text-muted); font-size: 12px; margin-bottom: 4px; font-weight: 500; }
@@ -140,60 +340,90 @@ label { display: block; color: var(--text-muted); font-size: 12px; margin-bottom
 .form-group { display: flex; flex-direction: column; gap: 4px; margin-bottom: 16px; }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 
-/* Cards */
+/* ─── Cards ────────────────────────────────────────────────────────
+   The workhorse surface, and the app's primary use of the material. */
 .card {
-  background: var(--surface); border: 1px solid var(--border);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg); padding: 20px;
-  box-shadow: var(--shadow-sm);
-  transition: background 0.3s var(--ease), border-color 0.2s var(--ease), box-shadow 0.2s var(--ease), transform 0.15s var(--ease);
+  box-shadow: var(--shadow-sm), var(--highlight);
+  transition: background 0.3s var(--ease), border-color 0.2s var(--ease),
+              box-shadow 0.25s var(--ease), transform 0.25s var(--ease);
 }
 /* Opt-in for cards that are themselves a click target (pipeline cards,
    timeline days) — a flat card that moves on hover reads as pressable. */
 .card-interactive { cursor: pointer; }
-.card-interactive:hover { border-color: var(--border-strong); box-shadow: var(--shadow); transform: translateY(-1px); }
-
-/* Badges */
-.badge {
-  display: inline-block; padding: 2px 8px; border-radius: 20px;
-  font-size: 11px; font-weight: 600; text-transform: uppercase;
-  letter-spacing: 0.03em; white-space: nowrap;
+.card-interactive:hover {
+  background: var(--glass-raised);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow), var(--highlight);
+  transform: translateY(-2px);
 }
-.badge-green { background: rgba(34,197,94,0.15); color: var(--green); }
-.badge-yellow { background: rgba(234,179,8,0.15); color: var(--yellow); }
-.badge-red { background: rgba(239,68,68,0.15); color: var(--red); }
-.badge-blue { background: var(--accent-soft); color: var(--accent); }
-.badge-gray { background: var(--surface2); color: var(--text-muted); }
-[data-theme="light"] .badge-yellow { background: rgba(180,83,9,0.12); }
+.card-interactive:active { transform: translateY(-2px) scale(0.995); }
 
-/* Stat card */
+/* ─── Badges ───────────────────────────────────────────────────────
+   Flat translucent fills, no blur: these appear once per table row and the
+   blur would be an offscreen pass per badge for an effect nobody can see. */
+.badge {
+  display: inline-block; padding: 2.5px 9px; border-radius: var(--pill);
+  font-size: 10.5px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.04em; white-space: nowrap;
+  border: 1px solid transparent;
+}
+.badge-green { background: var(--green-soft); color: var(--green); border-color: var(--green-soft); }
+.badge-yellow { background: var(--yellow-soft); color: var(--yellow); border-color: var(--yellow-soft); }
+.badge-red { background: var(--red-soft); color: var(--red); border-color: var(--red-soft); }
+.badge-blue { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-soft); }
+.badge-gray { background: var(--surface2); color: var(--text-muted); border-color: var(--border); }
+
+/* ─── Stat card ────────────────────────────────────────────────────
+   The one place the app gets to be big and quiet: a large, tightly tracked
+   figure over a small label is the whole hierarchy. */
 .stat-card { text-align: center; }
-.stat-card .stat-value { font-size: 32px; font-weight: 700; color: var(--text); letter-spacing: -0.02em; }
-.stat-card .stat-label { color: var(--text-muted); font-size: 12px; margin-top: 4px; }
+.stat-value {
+  font-size: 34px; font-weight: 600; color: var(--text);
+  letter-spacing: -0.035em; line-height: 1.15;
+}
+/* Unscoped from .stat-card on purpose: Workbench uses .stat-label on its own,
+   as the kind tag above each insight, and scoped to .stat-card it rendered
+   there as unstyled body text. */
+.stat-label {
+  color: var(--text-muted); font-size: 10.5px;
+  font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+}
+.stat-card .stat-label { margin-top: 5px; }
 
-/* Table */
+/* ─── Table ────────────────────────────────────────────────────────── */
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
 th {
   text-align: left; padding: 10px 12px; color: var(--text-muted);
-  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+  font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
   border-bottom: 1px solid var(--border);
 }
-td { padding: 10px 12px; border-bottom: 1px solid var(--border); color: var(--text); font-size: 13px; }
+td { padding: 11px 12px; border-bottom: 1px solid var(--border); color: var(--text); font-size: 13px; }
 tr:last-child td { border-bottom: none; }
-tbody tr { transition: background 0.12s var(--ease); }
+tbody tr { transition: background 0.14s var(--ease); }
 tr:hover td { background: var(--surface2); }
 
-/* Toast / notification */
+/* ─── Toast ────────────────────────────────────────────────────────
+   Floating chrome — the thickest glass in the app, because it appears over
+   arbitrary content and still has to be readable. */
 .toast-stack {
   position: fixed; bottom: 24px; right: 24px; z-index: 9999;
   display: flex; flex-direction: column-reverse; gap: 10px;
   max-width: 420px; pointer-events: none;
 }
 .toast {
-  background: var(--surface2); border: 1px solid var(--border);
+  background: var(--glass-thick);
+  -webkit-backdrop-filter: var(--blur-thick);
+  backdrop-filter: var(--blur-thick);
+  border: 1px solid var(--border);
   border-radius: var(--radius); padding: 12px 14px 12px 16px;
-  box-shadow: var(--shadow-lg);
-  animation: slideIn 0.22s var(--ease);
+  box-shadow: var(--shadow-lg), var(--highlight);
+  animation: slideIn 0.32s var(--ease-spring);
   display: flex; align-items: flex-start; gap: 10px;
   font-size: 13px; pointer-events: auto;
 }
@@ -202,7 +432,9 @@ tr:hover td { background: var(--surface2); }
 .toast-close {
   flex-shrink: 0; background: none; border: none; color: var(--text-faint);
   cursor: pointer; font-size: 15px; line-height: 1; padding: 2px 4px;
-  border-radius: 4px; transition: color 0.15s var(--ease), background 0.15s var(--ease);
+  border-radius: 50%; width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: color 0.15s var(--ease), background 0.15s var(--ease);
 }
 .toast-close:hover { color: var(--text); background: var(--surface3); }
 .toast-success { border-left: 3px solid var(--green); }
@@ -211,46 +443,47 @@ tr:hover td { background: var(--surface2); }
 .toast-error .toast-icon { color: var(--red); }
 .toast-info { border-left: 3px solid var(--accent); }
 .toast-info .toast-icon { color: var(--accent); }
-@keyframes slideIn { from { transform: translateY(12px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes slideIn {
+  from { transform: translateY(16px) scale(0.96); opacity: 0; }
+  to { transform: translateY(0) scale(1); opacity: 1; }
+}
 
 /* Pulse animation for scanning status */
 @keyframes pulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  50% { opacity: 0.35; }
 }
-.pulse { animation: pulse 1.5s ease-in-out infinite; }
+.pulse { animation: pulse 1.8s var(--ease) infinite; }
 
 /* Skeleton placeholder — a shaped grey block beats the word "Loading…" for
    telling you what is about to arrive. */
 @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 .skeleton {
   border-radius: var(--radius-sm);
-  background: linear-gradient(90deg, var(--surface2) 25%, var(--surface3) 50%, var(--surface2) 75%);
+  background: linear-gradient(90deg, var(--surface) 25%, var(--surface3) 50%, var(--surface) 75%);
   background-size: 200% 100%;
-  animation: shimmer 1.4s linear infinite;
+  animation: shimmer 1.6s linear infinite;
 }
 
-/* Empty state */
-.empty-state {
-  text-align: center; padding: 48px 24px; color: var(--text-muted);
-}
-.empty-state .empty-icon { font-size: 30px; opacity: 0.35; margin-bottom: 10px; }
-.empty-state .empty-title { font-size: 14px; color: var(--text); margin-bottom: 6px; }
-.empty-state .empty-hint { font-size: 12px; max-width: 420px; margin: 0 auto; line-height: 1.6; }
+/* ─── Empty state ──────────────────────────────────────────────────── */
+.empty-state { text-align: center; padding: 56px 24px; color: var(--text-muted); }
+.empty-state .empty-icon { font-size: 32px; opacity: 0.3; margin-bottom: 12px; }
+.empty-state .empty-title { font-size: 14px; color: var(--text); margin-bottom: 6px; font-weight: 600; letter-spacing: -0.01em; }
+.empty-state .empty-hint { font-size: 12px; max-width: 420px; margin: 0 auto; line-height: 1.65; }
 
 /* Sortable table headers */
 th.sortable { cursor: pointer; user-select: none; transition: color 0.15s var(--ease); }
 th.sortable:hover { color: var(--text); }
 
-/* Chip (removable tag) */
+/* ─── Chip (removable tag) ─────────────────────────────────────────── */
 .chip {
   display: inline-flex; align-items: center; gap: 4px;
   background: var(--surface2); border: 1px solid var(--border);
-  border-radius: 16px; padding: 3px 10px 3px 12px;
+  border-radius: var(--pill); padding: 3px 10px 3px 12px;
   font-size: 12px; color: var(--text);
-  transition: border-color 0.15s var(--ease);
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
 }
-.chip:hover { border-color: var(--border-strong); }
+.chip:hover { border-color: var(--border-strong); background: var(--surface3); }
 .chip-remove {
   background: none; border: none; color: var(--text-muted);
   cursor: pointer; padding: 0; font-size: 14px; line-height: 1;
@@ -262,92 +495,163 @@ th.sortable:hover { color: var(--text); }
 
 /* Checkbox styling */
 input[type="checkbox"] {
-  width: auto; accent-color: var(--accent); cursor: pointer;
+  width: auto; accent-color: var(--accent); cursor: pointer; box-shadow: none;
 }
 
-/* Pagination */
+/* ─── Pagination ───────────────────────────────────────────────────── */
 .pagination {
   display: flex; align-items: center; justify-content: center;
   gap: 4px; margin-top: 16px;
 }
 .pagination button {
   background: none; border: 1px solid var(--border);
-  color: var(--text-muted); border-radius: 6px; padding: 4px 10px;
+  color: var(--text-muted); border-radius: var(--radius-sm); padding: 4px 10px;
   cursor: pointer; font-size: 12px; font-variant-numeric: tabular-nums;
   transition: background 0.15s var(--ease), color 0.15s var(--ease), border-color 0.15s var(--ease);
 }
 .pagination button:hover:not(:disabled) { background: var(--surface2); color: var(--text); border-color: var(--border-strong); }
 .pagination button:disabled { opacity: 0.4; cursor: not-allowed; }
-.pagination button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.pagination button.active {
+  background: var(--accent); color: #fff; border-color: transparent;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
 
-/* Log */
+/* ─── Log console ──────────────────────────────────────────────────
+   Stays dark in light mode on purpose — a terminal reads as a terminal —
+   and stays opaque, because monospace body text over a blurred backdrop is
+   exactly where legibility goes. */
 .log-box {
-  background: #0a0c12; border: 1px solid var(--border);
+  background: #08090e; border: 1px solid var(--border);
   border-radius: var(--radius); padding: 12px;
-  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-  font-size: 12px; line-height: 1.6;
+  font-family: var(--font-mono);
+  font-size: 12px; line-height: 1.65;
   color: #7dd3fc; height: 200px; overflow-y: auto;
   white-space: pre-wrap; word-break: break-word;
+  box-shadow: inset 0 1px 6px rgba(0, 0, 0, 0.4);
 }
-/* The console stays dark in light mode on purpose — a terminal reads as a
-   terminal — but at the old contrast the text was barely legible. */
 [data-theme="light"] .log-box {
   background: #10151f;
-  border-color: #1e293b;
+  border-color: rgba(15, 23, 42, 0.22);
   color: #a5e4ff;
 }
 
-/* Modal */
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
+/* ─── Modal ────────────────────────────────────────────────────────
+   The overlay does the blurring so the dialog itself does not have to blur a
+   surface that is already obscured. Pages set their own overlay tint inline;
+   this supplies the depth-of-field behind it. */
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes scaleIn {
-  from { transform: scale(0.97) translateY(6px); opacity: 0; }
+  from { transform: scale(0.94) translateY(10px); opacity: 0; }
   to { transform: scale(1) translateY(0); opacity: 1; }
 }
 .modal-overlay {
-  animation: fadeIn 0.15s var(--ease);
-  backdrop-filter: blur(2px);
+  animation: fadeIn 0.2s var(--ease);
+  -webkit-backdrop-filter: saturate(140%) blur(14px);
+  backdrop-filter: saturate(140%) blur(14px);
 }
 .modal-content {
-  animation: scaleIn 0.18s var(--ease);
-  box-shadow: var(--shadow-lg);
+  animation: scaleIn 0.28s var(--ease-spring);
+  background: var(--glass-thick);
+  -webkit-backdrop-filter: var(--blur-thick);
+  backdrop-filter: var(--blur-thick);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg), var(--highlight);
 }
 
 /* Kbd shortcut hint */
 .kbd {
   display: inline-block; background: var(--surface2); border: 1px solid var(--border);
-  border-radius: 4px; padding: 0px 5px; font-size: 10px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  color: var(--text-faint); line-height: 18px; margin-left: 4px;
+  border-radius: 5px; padding: 0px 5px; font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-faint); line-height: 17px; margin-left: 4px;
 }
 
-/* Sidebar navigation */
+/* ═══ Page utilities ═══════════════════════════════════════════════
+   Workbench is written against these six class names — .page, .page-header,
+   .text-muted, .list-row, .stats-grid and .input — and not one of them existed
+   in this stylesheet. The page rendered with no header rhythm, no grid on the
+   insights row (three cards stacked full-width), and every "muted" caption at
+   full body colour, so the whole page sat at one flat emphasis while the other
+   nine pages had a hierarchy.
+   Defining them here rather than rewriting Workbench's markup: the names are
+   the right names, the other pages build the same three shapes inline, and
+   having them as classes means the next page gets them for free. */
+
+.page { display: block; }
+
+.page-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 16px; margin-bottom: 24px;
+}
+.page-header h1 { font-size: 22px; }
+/* The subtitle under a page title. Not .text-muted, because it also needs the
+   spacing — and every page-header in the app has one. */
+.page-header p { color: var(--text-muted); font-size: 13px; margin-top: 5px; }
+
+.text-muted { color: var(--text-muted); }
+
+/* A row in a list inside a card. The last one drops its rule so the list does
+   not end on a line with nothing under it. */
+.list-row {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.list-row:last-child { border-bottom: none; padding-bottom: 0; }
+.list-row .text-muted { font-size: 12px; margin-top: 2px; }
+
+/* Same auto-fit grid the Dashboard and Analytics build inline. */
+.stats-grid {
+  display: grid; gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+/* `.input` is applied to inputs, selects and textareas that the element
+   selectors above already style. It exists so that markup carrying it is not
+   silently unstyled, and to give those call sites a way to opt in on an
+   element that is not natively a form control. */
+.input { font-family: inherit; }
+
+/* Card headings. Workbench and the Setup wizard put bare <h2>/<h3> straight
+   inside a card with no inline size, which inherits the browser's 1.5em /
+   1.17em — a card title rendering larger than the page title above it. */
+.card > h2, .card > h3 { margin-bottom: 4px; }
+.card > h2 { font-size: 15px; }
+.card > h3 { font-size: 13.5px; }
+.card > h2 + p, .card > h3 + p { margin-bottom: 12px; font-size: 12.5px; }
+
+/* ─── Sidebar navigation ───────────────────────────────────────────
+   The active item is a translucent selection pill — the platform idiom for a
+   source list — rather than the old rail-and-tint, which had to fight for
+   contrast against a background that now varies across the wash. */
 .nav-item {
   position: relative;
-  background: transparent; border: none; color: var(--text-muted);
-  padding: 9px 12px; border-radius: 8px; cursor: pointer;
+  background: transparent; border: 1px solid transparent; color: var(--text-muted);
+  padding: 8px 12px; border-radius: var(--radius); cursor: pointer;
   text-align: left; font-size: 13px; font-family: inherit;
+  letter-spacing: -0.01em;
   display: flex; align-items: center; gap: 10px; width: 100%;
-  transition: background 0.15s var(--ease), color 0.15s var(--ease);
+  transition: background 0.18s var(--ease), color 0.18s var(--ease),
+              border-color 0.18s var(--ease), box-shadow 0.18s var(--ease);
 }
 .nav-item:hover:not(.nav-item-active) { background: var(--surface2); color: var(--text); }
-.nav-item-active { background: var(--surface2); color: var(--text); font-weight: 600; }
-/* A rail on the active item makes the current page findable at a glance,
-   which a background tint alone does not at this contrast. */
-.nav-item-active::before {
-  content: ''; position: absolute; left: -12px; top: 50%;
-  transform: translateY(-50%); width: 3px; height: 18px;
-  border-radius: 0 3px 3px 0; background: var(--accent);
+.nav-item-active {
+  background: var(--surface3);
+  border-color: var(--border);
+  color: var(--text); font-weight: 600;
+  box-shadow: var(--shadow-sm), var(--highlight);
 }
-.nav-item .nav-icon { font-size: 15px; width: 20px; text-align: center; opacity: 0.6; transition: opacity 0.15s var(--ease); }
-.nav-item-active .nav-icon, .nav-item:hover .nav-icon { opacity: 1; }
-.nav-item .kbd { opacity: 0; transition: opacity 0.15s var(--ease); }
+.nav-item .nav-icon {
+  font-size: 14px; width: 20px; text-align: center;
+  opacity: 0.55; transition: opacity 0.18s var(--ease), color 0.18s var(--ease);
+}
+.nav-item-active .nav-icon { opacity: 1; color: var(--accent); }
+.nav-item:hover .nav-icon { opacity: 1; }
+.nav-item .kbd { opacity: 0; transition: opacity 0.18s var(--ease); }
 .nav-item:hover .kbd, .nav-item-active .kbd { opacity: 1; }
 
-/* Respect the OS "reduce motion" setting. The pulse and shimmer loops in
-   particular run forever and are exactly what that setting exists to stop. */
+/* ─── Reduced motion ───────────────────────────────────────────────
+   The pulse and shimmer loops in particular run forever and are exactly what
+   that OS setting exists to stop. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
@@ -356,4 +660,14 @@ input[type="checkbox"] {
     scroll-behavior: auto !important;
   }
   .card-interactive:hover { transform: none; }
+  .btn:active:not(:disabled) { transform: none; }
+}
+
+/* ─── No backdrop-filter ───────────────────────────────────────────
+   Every surface above degrades to a translucent fill over the wash, which is
+   legible but low-contrast. Where the browser cannot blur, thicken the fills
+   instead so text keeps its contrast ratio. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root { --glass: #1a1d28; --glass-raised: #222634; --glass-thick: #1c1f2b; }
+  [data-theme="light"] { --glass: #ffffff; --glass-raised: #ffffff; --glass-thick: #ffffff; }
 }

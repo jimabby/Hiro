@@ -2371,7 +2371,16 @@ function saveOffer(applicationId, data = {}) {
   // Recording an offer against a row that is not yet marked as one is almost
   // certainly the user telling us it IS one. Promote it rather than leaving the
   // dashboard disagreeing with the offers board.
-  if (app.status !== 'offer' && decision === 'considering') updateApplicationStatus(applicationId, 'offer')
+  //
+  // This deliberately does NOT depend on the decision. It used to also require
+  // `decision === 'considering'`, which meant recording an offer you had
+  // already accepted — the single most important outcome this app tracks — left
+  // the row at 'interview'. The Pipeline board then filed it under Interview,
+  // and every analytic that counts offers by status (which resume converts,
+  // which model version won, campaign conversion) never saw it. Reaching the
+  // offer stage is a fact about the application; what you then decided about
+  // the offer is a separate field, and it is already stored as one.
+  if (app.status !== 'offer') updateApplicationStatus(applicationId, 'offer')
   return { success: true }
 }
 

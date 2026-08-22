@@ -360,7 +360,7 @@ export default function NeedsAttention({ onCountChange, showToast }) {
       {/* Detail modal */}
       {selected && (
         <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Job detail" style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+          position: 'fixed', inset: 0, background: 'var(--scrim)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
         }} onClick={() => setSelected(null)}>
           <div className="card modal-content" style={{ width: 640, maxHeight: '80vh', overflow: 'auto' }}

@@ -58,6 +58,9 @@ contextBridge.exposeInMainWorld('api', {
 
   // Persistent activity log
   getRecentLogs: () => ipcRenderer.invoke('logs:getRecent'),
+  // Used by the per-page error boundary — a render failure is otherwise
+  // invisible in a packaged build, where there is no console to read.
+  logRendererError: (report) => ipcRenderer.invoke('logs:rendererError', report),
   clearLogs: () => ipcRenderer.invoke('logs:clear'),
   openLogFile: () => ipcRenderer.invoke('logs:openFile'),
 

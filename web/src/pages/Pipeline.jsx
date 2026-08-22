@@ -150,7 +150,7 @@ function Card({ item, today, editing, onEdit, onSave, onCancel, onDone, onOpen }
       {/* A row with nothing booked and no recent movement is the one that goes
           missing. Say so rather than leaving it looking the same as the rest. */}
       {!due && item.needsAction && (
-        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--amber, var(--text-muted))' }}>
+        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--amber)' }}>
           Nothing planned, and nothing has happened here in a while.
         </div>
       )}
@@ -247,7 +247,15 @@ export default function Pipeline({ active, onOpenApplication }) {
     )
   }
 
-  const empty = data.items.length === 0
+  // Read through the same defaults the memo above uses. These two reads were
+  // the only unguarded ones on the page, and a payload without `items` or
+  // `stages` threw here rather than rendering an empty board.
+  // `allItems`, not `items`: the stage loop below binds its own `items` per
+  // column, and two different meanings under one name in the same render is
+  // how the wrong count ends up in a heading.
+  const allItems = data.items || []
+  const stages = data.stages || []
+  const empty = allItems.length === 0
 
   return (
     <div data-testid="pipeline">
@@ -297,8 +305,8 @@ export default function Pipeline({ active, onOpenApplication }) {
       )}
 
       {!empty && (
-        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${data.stages.length}, minmax(220px, 1fr))`, gap: 14, overflowX: 'auto' }}>
-          {data.stages.map(stage => {
+        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${stages.length}, minmax(220px, 1fr))`, gap: 14, overflowX: 'auto' }}>
+          {stages.map(stage => {
             const items = byStage[stage.id] || []
             const needing = items.filter(i => !i.next_action_at && i.needsAction).length
             return (

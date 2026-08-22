@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import Setup from './pages/Setup'
 import Dashboard from './pages/Dashboard'
 import Pipeline from './pages/Pipeline'
@@ -10,6 +10,8 @@ import Analytics from './pages/Analytics'
 import Workbench from './pages/Workbench'
 import Offers from './pages/Offers'
 import HiroLogo from './components/HiroLogo'
+import useModalFocus from './hooks/useModalFocus'
+import ErrorBoundary from './components/ErrorBoundary'
 
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: '▦', shortcut: '1' },
@@ -28,7 +30,20 @@ const NAV = [
 ]
 
 export default function App() {
+  // Traps and restores focus for every aria-modal dialog in the app, wherever
+  // it is declared. Mounted here because App outlives every page.
+  useModalFocus()
+
   const [page, setPage] = useState('dashboard')
+  // Every page is rendered into this one scrolling column and merely hidden
+  // when inactive, so there is a single shared scroll offset. Without resetting
+  // it, switching from a scrolled-down Dashboard to a shorter page lands you
+  // partway down that page — or, when the new page is shorter than the offset,
+  // on the empty space below its content, which looks exactly like a page that
+  // failed to load.
+  const mainRef = useRef(null)
+  useEffect(() => { if (mainRef.current) mainRef.current.scrollTop = 0 }, [page])
+
   // Set when another page asks the Dashboard to open a specific application.
   const [focusApp, setFocusApp] = useState(null)
   const [setupDone, setSetupDone] = useState(null)
@@ -310,14 +325,24 @@ export default function App() {
     // renderer tests and by the packaged smoke test (web/test/smoke).
     <div data-testid="app-shell" style={{ display: 'flex', height: '100vh' }}>
       {/* Sidebar */}
+      {/* The sidebar is the app's primary glass surface: a fixed pane the whole
+          scrolling column passes behind. It samples the ambient wash directly,
+          which is the one place in the app where the material is unmistakable. */}
       <nav data-testid="nav" style={{
-        width: 220, background: 'var(--surface)', borderRight: '1px solid var(--border)',
-        display: 'flex', flexDirection: 'column', padding: '20px 12px', gap: 2, flexShrink: 0,
-        transition: 'background 0.3s ease, border-color 0.3s ease',
+        width: 224, flexShrink: 0,
+        background: 'var(--glass)',
+        backdropFilter: 'var(--blur)',
+        WebkitBackdropFilter: 'var(--blur)',
+        borderRight: '1px solid var(--border)',
+        boxShadow: 'var(--highlight)',
+        display: 'flex', flexDirection: 'column', padding: '18px 12px', gap: 2,
+        transition: 'background 0.4s var(--ease), border-color 0.4s var(--ease)',
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px 20px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 12px 22px' }}>
           <HiroLogo size={28} />
-          <span style={{ fontSize: 18, fontWeight: 700, color: 'var(--accent)' }}>Hiro</span>
+          <span style={{
+            fontSize: 19, fontWeight: 650, color: 'var(--text)', letterSpacing: '-0.03em',
+          }}>Hiro</span>
         </div>
 
         {NAV.map(n => {
@@ -339,9 +364,11 @@ export default function App() {
                   // accent colour rather than the red used for jobs that failed.
                   aria-label={`${count} ${n.id === 'review' ? 'awaiting review' : 'needing attention'}`}
                   style={{
-                    background: n.id === 'review' ? 'var(--accent)' : 'var(--red)', color: '#fff', borderRadius: 10,
-                    fontSize: 10, padding: '1px 6px', fontWeight: 700, minWidth: 18, textAlign: 'center',
+                    background: n.id === 'review' ? 'var(--accent)' : 'var(--red)', color: '#fff',
+                    borderRadius: 'var(--pill)',
+                    fontSize: 10, padding: '1.5px 6px', fontWeight: 700, minWidth: 18, textAlign: 'center',
                     fontVariantNumeric: 'tabular-nums',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.25)',
                   }}
                 >{count}</span>
               )}
@@ -350,33 +377,49 @@ export default function App() {
           )
         })}
 
-        <div style={{ marginTop: 'auto', padding: '0 12px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {/* Quick stats */}
+        <div style={{ marginTop: 'auto', padding: '0 4px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {/* Quick stats. Raised glass rather than a flat tint: it sits on the
+              sidebar, so it needs a step of elevation to read as a distinct
+              object rather than a lighter patch of the same pane. */}
           <div style={{
-            background: 'var(--surface2)', borderRadius: 8, padding: '10px 12px',
-            display: 'flex', flexDirection: 'column', gap: 4,
+            background: 'var(--surface2)', border: '1px solid var(--border)',
+            borderRadius: 'var(--radius)', padding: '11px 13px',
+            boxShadow: 'var(--highlight)',
+            display: 'flex', flexDirection: 'column', gap: 2,
           }}>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 500 }}>Today</div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text)' }}>{todayCount} <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-muted)' }}>applied</span></div>
+            <div style={{
+              fontSize: 10.5, color: 'var(--text-muted)', fontWeight: 600,
+              textTransform: 'uppercase', letterSpacing: '0.05em',
+            }}>Today</div>
+            <div style={{
+              fontSize: 24, fontWeight: 600, color: 'var(--text)',
+              letterSpacing: '-0.035em', lineHeight: 1.2, fontVariantNumeric: 'tabular-nums',
+            }}>
+              {todayCount}
+              <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', letterSpacing: 0, marginLeft: 5 }}>applied</span>
+            </div>
           </div>
 
           <div style={{
-            display: 'flex', alignItems: 'center', gap: 6,
+            display: 'flex', alignItems: 'center', gap: 7, padding: '0 2px',
             color: scanRunning ? 'var(--green)' : 'var(--text-muted)', fontSize: 12,
           }}>
+            {/* The halo is what makes a 7px dot register in peripheral vision —
+                it is the only live-status indicator in the chrome. */}
             <span className={scanRunning ? 'pulse' : ''} style={{
               width: 7, height: 7, borderRadius: '50%',
-              background: scanRunning ? 'var(--green)' : 'var(--border)',
+              background: scanRunning ? 'var(--green)' : 'var(--border-strong)',
+              boxShadow: scanRunning ? '0 0 0 3px var(--green-soft)' : 'none',
               flexShrink: 0,
             }} />
-            {scanRunning ? 'Scanning...' : 'Idle'}
+            {scanRunning ? 'Scanning…' : 'Idle'}
           </div>
           {/* Three-way, because "follow the system" is a real preference and a
               two-state toggle cannot express it. */}
           <div role="group" aria-label="Colour theme" style={{
             display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 2,
-            background: 'var(--surface2)', border: '1px solid var(--border)',
-            borderRadius: 8, padding: 2,
+            background: 'var(--surface)', border: '1px solid var(--border)',
+            borderRadius: 'var(--radius)', padding: 3,
           }}>
             {[
               { id: 'light', icon: '☀', label: 'Light' },
@@ -389,12 +432,17 @@ export default function App() {
                 aria-pressed={theme === opt.id}
                 title={`${opt.label} theme`}
                 style={{
-                  background: theme === opt.id ? 'var(--surface)' : 'transparent',
-                  border: 'none', borderRadius: 6, padding: '5px 0',
+                  // The selected segment is a raised chip inside the track —
+                  // the platform's segmented control, which reads as a position
+                  // rather than as three independently shaded buttons.
+                  position: 'relative',
+                  background: theme === opt.id ? 'var(--surface3)' : 'transparent',
+                  border: 'none', borderRadius: 'var(--radius-sm)', padding: '5px 0',
+                  boxShadow: theme === opt.id ? 'var(--shadow-sm), var(--highlight)' : 'none',
                   color: theme === opt.id ? 'var(--text)' : 'var(--text-faint)',
-                  cursor: 'pointer', fontSize: 12, lineHeight: 1.2,
+                  cursor: 'pointer', fontSize: 12, lineHeight: 1.3,
                   fontWeight: theme === opt.id ? 600 : 400,
-                  transition: 'background 0.15s, color 0.15s',
+                  transition: 'background 0.18s var(--ease), color 0.18s var(--ease), box-shadow 0.18s var(--ease)',
                 }}
               >
                 <span aria-hidden="true">{opt.icon}</span>
@@ -409,7 +457,10 @@ export default function App() {
       </nav>
 
       {/* Main content — all pages stay mounted so background tasks (AI improve) survive tab switches */}
-      <main style={{ flex: 1, overflow: 'auto', padding: 28, transition: 'background 0.3s ease' }}>
+      {/* No background of its own — the ambient wash shows through here, and it
+          is what the cards inside are blurring. Painting a surface colour on
+          this column would flatten every card on every page at once. */}
+      <main ref={mainRef} style={{ flex: 1, overflow: 'auto', padding: '30px 32px 44px', background: 'transparent' }}>
         {/* Update banner. Downloading and installing are both explicit — an
             update that restarted the app mid-scan would abandon a
             half-submitted application. */}
@@ -446,9 +497,15 @@ export default function App() {
           </div>
         )}
 
+        {/* One boundary per page, not one around the shell. A render error used
+            to unmount everything — sidebar, nav and all ten pages — leaving a
+            blank window with no message. Scoped here, a page that cannot render
+            says so in its own column and the rest of the app keeps working. */}
         {Object.entries(pages).map(([key, component]) => (
           <div key={key} style={{ display: key === page ? 'block' : 'none' }}>
-            {component}
+            <ErrorBoundary name={NAV.find(n => n.id === key)?.label || key}>
+              {component}
+            </ErrorBoundary>
           </div>
         ))}
       </main>
@@ -472,7 +529,7 @@ export default function App() {
       {resumeModal && (
         <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="resume-modal-title"
           style={{
-            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+            position: 'fixed', inset: 0, background: 'var(--scrim)',
             display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200,
           }}>
           <div className="card modal-content" style={{ width: 420 }}>
@@ -495,7 +552,7 @@ export default function App() {
           answered, and closing the app or walking away counts as "no". */}
       {submitReview && (
         <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="submit-review-title" style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
+          position: 'fixed', inset: 0, background: 'var(--scrim)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 310, padding: 24,
         }}>
           <div className="card modal-content" style={{ width: 620, maxHeight: '85vh', overflowY: 'auto' }}>
@@ -545,7 +602,7 @@ export default function App() {
       {/* Screening question modal — shown mid-apply when AI is unsure */}
       {question && (
         <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="question-modal-title" style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
+          position: 'fixed', inset: 0, background: 'var(--scrim)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300,
         }}>
           <div className="card modal-content" style={{ width: 500 }}>

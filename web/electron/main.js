@@ -606,6 +606,21 @@ ipcMain.handle('automation:thresholdAdvice', () => {
 })
 
 // ─── IPC: Activity log (persistent) ─────────────────────────────
+// A page that failed to render. The renderer's console is not reachable in a
+// packaged build, so the boundary in the UI hands the error here to be written
+// to the same activity log the user can open from the Dashboard — otherwise the
+// only record of a broken page is a screenshot.
+ipcMain.handle('logs:rendererError', (_e, report = {}) => {
+  const clip = (v, n) => String(v ?? '').replace(/\s+/g, ' ').slice(0, n)
+  const page = clip(report.page, 60) || 'unknown page'
+  const message = clip(report.message, 400) || 'unknown error'
+  // The component stack is the part that actually locates the fault, but it is
+  // long — first few frames only, so one broken page cannot flood the log.
+  const where = clip(report.componentStack, 300)
+  logger.append(`UI error on ${page}: ${message}${where ? ` | ${where}` : ''}`)
+  return { success: true }
+})
+
 ipcMain.handle('logs:getRecent', () => logger.tail(500))
 ipcMain.handle('logs:clear', () => logger.clear())
 ipcMain.handle('logs:openFile', async () => {

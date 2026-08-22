@@ -1106,7 +1106,7 @@ export default function Settings({ showToast, active }) {
         </p>
 
         {!cloudStatus?.signedIn && (
-          <p style={{ fontSize: 12, color: 'var(--amber, var(--text-muted))', marginBottom: 12 }}>
+          <p style={{ fontSize: 12, color: 'var(--amber)', marginBottom: 12 }}>
             Cloud sync is not signed in, so there is nowhere for your phone to register.
             Set it up under <strong>Accounts &amp; Schedule → Cloud Sync</strong> first.
           </p>
@@ -1577,7 +1577,7 @@ export default function Settings({ showToast, active }) {
             {/* The token and the data it returns cross the network unencrypted,
                 so the choice of network is a security decision the user has to
                 be able to make knowingly. */}
-            <p style={{ color: 'var(--amber, #d98324)', fontSize: 12, marginTop: 8, marginBottom: 0 }}>
+            <p style={{ color: 'var(--amber)', fontSize: 12, marginTop: 8, marginBottom: 0 }}>
               ⚠ This connection is not encrypted. Use it only on networks you trust —
               on shared or public Wi-Fi, anyone watching the traffic can capture the
               token and read your application data. Turn this off when you're away
@@ -1634,7 +1634,7 @@ export default function Settings({ showToast, active }) {
             {cloudStatus.pendingFirstSync && (
               <div style={{
                 marginTop: 14, padding: 14, borderRadius: 8,
-                background: 'var(--surface2)', borderLeft: '3px solid var(--yellow, #eab308)',
+                background: 'var(--surface2)', borderLeft: '3px solid var(--yellow)',
               }}>
                 <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
                   Sync paused — how should these be combined?
@@ -2887,7 +2887,7 @@ export default function Settings({ showToast, active }) {
 
       {pdfModal && (
         <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
+          position: 'fixed', inset: 0, background: 'var(--scrim)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300,
         }} onClick={() => setPdfModal(null)} onKeyDown={e => { if (e.key === 'Escape') setPdfModal(null) }}>
           <div onClick={e => e.stopPropagation()} style={{
