@@ -68,9 +68,13 @@ function persist() {
   const data = dbCrypto.encodeForWrite(Buffer.from(db.export()), dbCrypto.shouldEncrypt())
   const tmp = DB_PATH + '.tmp'
   try {
-    fs.writeFileSync(tmp, data)
+    // 0600 whether or not encryption at rest is on. This file holds every job
+    // description, tailored resume, cover letter and recruiter address; with
+    // encryption off — the default — the umask alone decided who could read it.
+    fs.writeFileSync(tmp, data, { mode: 0o600 })
     fsyncFile(tmp, 'r+')
     fs.renameSync(tmp, DB_PATH)
+    try { fs.chmodSync(DB_PATH, 0o600) } catch { /* Windows ignores this */ }
     fsyncFile(CONFIG_DIR, 'r')
   } catch (err) {
     try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp) } catch { /* best-effort */ }
@@ -139,6 +143,17 @@ function createTables() {
       question TEXT NOT NULL,
       answer TEXT NOT NULL,
       updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Roles the user has said are not worth re-drafting: a specific job title
+    -- at a specific company that keeps being reposted under new URLs. Never
+    -- populated automatically — see suppressRole().
+    CREATE TABLE IF NOT EXISTS suppressed_roles (
+      role_key TEXT PRIMARY KEY,
+      company TEXT NOT NULL,
+      job_title TEXT NOT NULL,
+      reason TEXT DEFAULT '',
+      created_at TEXT DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS interview_prep (
@@ -414,6 +429,40 @@ function migrate() {
   // stored "[]" as a string because of the legacy double-quoted-string fallback
   // that resolves an unknown identifier to a literal.
   try { db.run("ALTER TABLE applications ADD COLUMN fabrication_flags TEXT DEFAULT '[]'") } catch {}
+
+  // Who wrote a cached screening answer.
+  //
+  // The cache is keyed on the QUESTION alone, so an answer written for one
+  // employer is replayed verbatim to every employer that asks something similar
+  // afterwards. That is the point of it — and it is also why a bad answer in
+  // here does not stay contained. An answer the model produced from an untrusted
+  // job ad has to stay re-checkable; one the user typed themselves is a
+  // statement of fact by the only person entitled to make it, and must never be
+  // second-guessed by a regex.
+  //
+  // Existing rows default to 'ai' — the cautious reading, since answers cached
+  // before this column existed cannot be attributed and the AI path was the
+  // common one. The cost of being wrong is that a user's own old answer is
+  // re-verified once and, if it trips the guard, asked about again.
+  try { db.run("ALTER TABLE screening_cache ADD COLUMN source TEXT DEFAULT 'ai'") } catch {}
+
+  // The timezone the employer actually wrote, and the wall-clock time they
+  // wrote in it.
+  //
+  // `scheduled_at` is, and stays, this machine's local time — everything that
+  // reads it (the dashboard, the reminders, calendar sync, the .ics export)
+  // depends on that. But a recruiter writing "2:00 PM AEDT" to someone in London
+  // has said something the stored value cannot express, and until now the zone
+  // was simply dropped: the time was recorded as 2pm London and the interview
+  // was missed by nine hours.
+  //
+  // Keeping the original alongside the converted value means the UI can show
+  // both — "2:00 PM AEDT · 3:00 AM your time" — which is the only presentation
+  // that lets a user check the conversion rather than trust it. NULL means the
+  // email named no zone, which is the common case and correctly implies "their
+  // clock and yours are assumed to be the same".
+  try { db.run('ALTER TABLE interview_events ADD COLUMN source_zone TEXT') } catch {}
+  try { db.run('ALTER TABLE interview_events ADD COLUMN source_local TEXT') } catch {}
 
   // Indexes for frequent queries
   try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_applied_at ON applications(applied_at DESC)') } catch {}
@@ -1065,7 +1114,7 @@ function getGhostJobs({ minPostings = GHOST_MIN_POSTINGS, minSpanDays = GHOST_MI
 
   const groups = new Map()
   for (const r of rows) {
-    const key = `${r.t} ${r.c}`
+    const key = `${r.t}\0${r.c}`
     if (!groups.has(key)) {
       groups.set(key, { jobTitle: r.job_title, company: r.company, urls: new Set(), seen: [], salary: r.salary || '' })
     }
@@ -1099,7 +1148,75 @@ function getGhostJobs({ minPostings = GHOST_MIN_POSTINGS, minSpanDays = GHOST_MI
     })
   }
   // Most-reposted first; ties broken by how long the employer has been at it.
-  return out.sort((a, b) => b.postings - a.postings || b.spanDays - a.spanDays)
+  const suppressed = new Set(listSuppressedRoles().map(r => r.key))
+  return out
+    .map(g => ({ ...g, suppressed: suppressed.has(roleKey(g.company, g.jobTitle)) }))
+    .sort((a, b) => b.postings - a.postings || b.spanDays - a.spanDays)
+}
+
+// ─── Suppressed roles ────────────────────────────────────────────
+//
+// The analysis above deliberately stops at reporting, and that stays right: a
+// blanket "probably a ghost, blacklisted" would hide real jobs at a real
+// employer on a heuristic about their posting habits.
+//
+// But the cost it names is still being paid. Every repost carries a new URL, so
+// the duplicate check cannot see it, and each reappearance buys another score, a
+// tailored resume and a cover letter for a role the user has already decided is
+// not a vacancy. Reporting that and then doing it again next week is a strange
+// place to stop.
+//
+// So: an explicit, per-ROLE, user-initiated suppression. Narrower than the
+// company blacklist in the way that matters — "this specific role at this
+// company keeps being reposted" says nothing about the company's other
+// openings, and those keep being scanned and applied to as before. Reversible
+// from the same screen, and it records WHY, so a list of them a year later is
+// still legible.
+// The separator is ASCII unit-separator, NOT a NUL.
+//
+// The in-memory grouping keys elsewhere in this file use \0 quite safely, and
+// copying that here was wrong: this key goes through a bound SQL parameter, and
+// SQLite treats an embedded NUL as the end of a text value. Every role at a
+// given company therefore collapsed to the same stored key, so suppressing one
+// role suppressed the whole employer — silently, and in the exact direction
+// (hiding real jobs) that the feature is designed not to do.
+const ROLE_KEY_SEP = '\u001f'
+
+function roleKey(company, jobTitle) {
+  return `${String(company || '').trim().toLowerCase()}${ROLE_KEY_SEP}${String(jobTitle || '').trim().toLowerCase()}`
+}
+
+function suppressRole({ company, jobTitle, reason = 'Repeatedly reposted' }) {
+  const key = roleKey(company, jobTitle)
+  // Strip the separator before testing for emptiness. It is a control character,
+  // not whitespace, so trim() leaves it and a key of nothing-but-separator reads
+  // as a perfectly good key.
+  if (!key.split(ROLE_KEY_SEP).join('').trim()) {
+    return { success: false, reason: 'A company and job title are required.' }
+  }
+  run(
+    `INSERT INTO suppressed_roles (role_key, company, job_title, reason) VALUES (?, ?, ?, ?)
+     ON CONFLICT(role_key) DO UPDATE SET reason = excluded.reason, created_at = datetime('now')`,
+    [key, String(company).trim(), String(jobTitle).trim(), String(reason).slice(0, 200)]
+  )
+  return { success: true }
+}
+
+function unsuppressRole({ company, jobTitle }) {
+  run('DELETE FROM suppressed_roles WHERE role_key = ?', [roleKey(company, jobTitle)])
+  return { success: true }
+}
+
+function listSuppressedRoles() {
+  return query('SELECT role_key as key, company, job_title, reason, created_at FROM suppressed_roles ORDER BY created_at DESC')
+}
+
+// Checked by the applicator before a listing costs anything. Exact
+// company+title match, case- and whitespace-insensitive: a suppression is a
+// statement about one role, and fuzzy-matching it would quietly turn it into a
+// statement about a family of them.
+function isRoleSuppressed(company, jobTitle) {
+  return !!queryOne('SELECT 1 FROM suppressed_roles WHERE role_key = ? LIMIT 1', [roleKey(company, jobTitle)])
 }
 
 // ─── Advertised-pay benchmark ────────────────────────────────────
@@ -1285,7 +1402,7 @@ function applyCloudEdit(id, { status, comment }, cloudUpdatedAt) {
 // window, and filtering here would make a past interview look deleted.
 function getAllInterviewEventsForSync() {
   return query(`
-    SELECT e.id, e.application_id, e.scheduled_at, e.has_time, e.source, e.note,
+    SELECT e.id, e.application_id, e.scheduled_at, e.has_time, e.source, e.note, e.source_zone, e.source_local,
            a.job_title, a.company, a.platform, a.job_url
     FROM interview_events e
     JOIN applications a ON a.id = e.application_id
@@ -1384,17 +1501,26 @@ function getCachedAnswer(question) {
   return queryOne('SELECT answer FROM screening_cache WHERE question_hash = ?', [hash])?.answer || null
 }
 
-function saveCachedAnswer(question, answer) {
+// The cached answer plus who wrote it, for callers that need to decide whether
+// to trust it. getCachedAnswer stays as-is so existing call sites are unchanged.
+function getCachedAnswerRecord(question) {
+  const hash = normalizeQuestion(question)
+  const row = queryOne('SELECT answer, source FROM screening_cache WHERE question_hash = ?', [hash])
+  if (!row?.answer) return null
+  return { answer: row.answer, source: row.source || 'ai' }
+}
+
+function saveCachedAnswer(question, answer, source = 'ai') {
   const hash = normalizeQuestion(question)
   run(
-    `INSERT INTO screening_cache (question_hash, question, answer) VALUES (?, ?, ?)
-     ON CONFLICT(question_hash) DO UPDATE SET answer = excluded.answer, updated_at = datetime('now')`,
-    [hash, question, answer]
+    `INSERT INTO screening_cache (question_hash, question, answer, source) VALUES (?, ?, ?, ?)
+     ON CONFLICT(question_hash) DO UPDATE SET answer = excluded.answer, source = excluded.source, updated_at = datetime('now')`,
+    [hash, question, answer, source === 'user' ? 'user' : 'ai']
   )
 }
 
 function getAllCachedAnswers() {
-  return query('SELECT question, answer, updated_at FROM screening_cache ORDER BY updated_at DESC')
+  return query('SELECT question, answer, source, updated_at FROM screening_cache ORDER BY updated_at DESC')
 }
 
 function deleteCachedAnswer(question) {
@@ -1431,10 +1557,33 @@ const UNSENT_SQL = UNSENT_STATUSES.map(s => `'${s}'`).join(', ')
 const SENT_ONLY = `status NOT IN (${UNSENT_SQL})`
 const UNSENT_ONLY = `status IN (${UNSENT_SQL})`
 
+// The user pulled out: took another offer, or decided against the role after
+// applying. Distinct from every other terminal status, and the distinction is
+// the reason it exists rather than being folded into 'rejected' or 'skipped':
+//
+//   'rejected' would be a lie about who ended it, and it would land in the
+//   rejection-stage analysis — the report whose entire purpose is to say whether
+//   the resume or the interview is the problem. Withdrawals in there are noise
+//   attributed to the candidate's documents.
+//
+//   'skipped' would be a lie about whether it was sent. It was, and it belongs
+//   in the record of what went out.
+//
+// So it counts as SENT — it happened, it cost the spend, it is part of the
+// history — but it is excluded from the rate DENOMINATORS below. A withdrawn
+// application is one where the employer's answer is simply unknown, because the
+// user stopped waiting for it. Counting it as a non-response would mean taking a
+// job somewhere else made your response rate look worse.
+const WITHDRAWN_STATUSES = ['withdrawn']
+const NO_VERDICT_SQL = [...UNSENT_STATUSES, ...WITHDRAWN_STATUSES].map(s => `'${s}'`).join(', ')
+// The denominator for response and interview rates: submitted, and the employer
+// had a real chance to answer.
+const RATE_ELIGIBLE = `status NOT IN (${NO_VERDICT_SQL})`
+
 function getStats() {
   const interviews = queryOne("SELECT COUNT(*) as c FROM applications WHERE status IN ('interview', 'offer')")?.c || 0
   const responded = queryOne(`SELECT COUNT(*) as c FROM applications WHERE status IN (${RESPONDED_SQL})`)?.c || 0
-  const appliedCount = queryOne(`SELECT COUNT(*) as c FROM applications WHERE ${SENT_ONLY}`)?.c || 0
+  const appliedCount = queryOne(`SELECT COUNT(*) as c FROM applications WHERE ${RATE_ELIGIBLE}`)?.c || 0
 
   return {
     // Every "applied" count is SENT_ONLY. They used to be plain COUNT(*), so a
@@ -1577,6 +1726,8 @@ function getApplicationsPerDay(days) {
 // (we gave up waiting) must stay in scope too — previously the inbox only
 // looked at 'applied', so the moment a thread was marked pending it was frozen
 // and a later email actually scheduling an interview was never seen.
+// 'withdrawn' is deliberately absent: the user has left the process, so a later
+// email is not an outcome to re-open the row with.
 const OPEN_STATUSES = ['applied', 'pending', 'no_response']
 
 function getApplicationsAwaitingReply() {
@@ -1692,10 +1843,10 @@ function deleteInterviewPrep(applicationId) {
 // Interviews detected in recruiter replies (or entered by hand), so the user
 // doesn't have to go dig the email back out after Hiro flags the reply.
 
-function addInterviewEvent({ applicationId, scheduledAt, hasTime = true, source = 'manual', note = '' }) {
+function addInterviewEvent({ applicationId, scheduledAt, hasTime = true, source = 'manual', note = '', sourceZone = null, sourceLocal = null }) {
   run(
-    'INSERT INTO interview_events (application_id, scheduled_at, has_time, source, note) VALUES (?, ?, ?, ?, ?)',
-    [applicationId, scheduledAt, hasTime ? 1 : 0, source, note || '']
+    'INSERT INTO interview_events (application_id, scheduled_at, has_time, source, note, source_zone, source_local) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [applicationId, scheduledAt, hasTime ? 1 : 0, source, note || '', sourceZone, sourceLocal]
   )
   return { success: true }
 }
@@ -1703,7 +1854,7 @@ function addInterviewEvent({ applicationId, scheduledAt, hasTime = true, source 
 // Only one auto-detected event per application: a recruiter thread produces
 // several matching emails, and each inbox pass would otherwise add a duplicate.
 // A manually entered time always wins and is never overwritten.
-function upsertDetectedInterview({ applicationId, scheduledAt, hasTime = true, note = '' }) {
+function upsertDetectedInterview({ applicationId, scheduledAt, hasTime = true, note = '', sourceZone = null, sourceLocal = null }) {
   const manual = queryOne(
     "SELECT id FROM interview_events WHERE application_id = ? AND source = 'manual' LIMIT 1",
     [applicationId]
@@ -1716,11 +1867,11 @@ function upsertDetectedInterview({ applicationId, scheduledAt, hasTime = true, n
   )
   if (existing) {
     if (existing.scheduled_at === scheduledAt) return { success: true, skipped: 'unchanged' }
-    run('UPDATE interview_events SET scheduled_at = ?, has_time = ?, note = ? WHERE id = ?',
-      [scheduledAt, hasTime ? 1 : 0, note || '', existing.id])
+    run('UPDATE interview_events SET scheduled_at = ?, has_time = ?, note = ?, source_zone = ?, source_local = ? WHERE id = ?',
+      [scheduledAt, hasTime ? 1 : 0, note || '', sourceZone, sourceLocal, existing.id])
     return { success: true, updated: true }
   }
-  return addInterviewEvent({ applicationId, scheduledAt, hasTime, source: 'inbox', note })
+  return addInterviewEvent({ applicationId, scheduledAt, hasTime, source: 'inbox', note, sourceZone, sourceLocal })
 }
 
 function getInterviewEvents(applicationId) {
@@ -1732,7 +1883,7 @@ function getInterviewEvents(applicationId) {
 // doesn't vanish from the list at midnight-plus-one-second.
 function getUpcomingInterviews(limit = 25) {
   return query(`
-    SELECT e.id, e.application_id, e.scheduled_at, e.has_time, e.source, e.note,
+    SELECT e.id, e.application_id, e.scheduled_at, e.has_time, e.source, e.note, e.source_zone, e.source_local,
            a.job_title, a.company, a.platform, a.status, a.job_url
     FROM interview_events e
     JOIN applications a ON a.id = e.application_id
@@ -1807,7 +1958,9 @@ const PIPELINE_STAGES = [
   { id: 'waiting', label: 'No reply yet', statuses: ['no_response', 'pending'] },
   { id: 'interview', label: 'Interviewing', statuses: ['interview'] },
   { id: 'offer', label: 'Offer', statuses: ['offer'] },
-  { id: 'closed', label: 'Closed', statuses: ['rejected'] },
+  // Withdrawn sits with rejected because both are over — the board answers
+  // "what do I owe and when", and neither of these owes anything.
+  { id: 'closed', label: 'Closed', statuses: ['rejected', 'withdrawn'] },
 ]
 
 // Everything the pipeline board needs in one read: the rows, their stage, and
@@ -1968,7 +2121,7 @@ function getOrphanedCalendarLinks(provider) {
 // A single interview joined to its application, for one-off calendar export.
 function getInterviewEvent(id) {
   return queryOne(`
-    SELECT e.id, e.application_id, e.scheduled_at, e.has_time, e.source, e.note,
+    SELECT e.id, e.application_id, e.scheduled_at, e.has_time, e.source, e.note, e.source_zone, e.source_local,
            a.job_title, a.company, a.platform, a.status, a.job_url
     FROM interview_events e
     JOIN applications a ON a.id = e.application_id
@@ -2272,7 +2425,7 @@ function getVersionOutcomes() {
   const counted = new Set()
   for (const r of rows) {
     const key = `${r.provider}${r.model ? ` · ${r.model}` : ''}`
-    const dedupe = `${key} ${r.application_id}`
+    const dedupe = `${key}\0${r.application_id}`
     if (counted.has(dedupe)) continue
     counted.add(dedupe)
     if (!groups.has(key)) {
@@ -3062,14 +3215,15 @@ module.exports = {
   recordSnapshot, getSnapshots, getSnapshot, getSnapshotDiff, compareSnapshots, restoreSnapshot,
   recordAutomationEvent, getAutomationEvents, clearAutomationEvents,
   recordSyncConflict, getSyncConflicts, countSyncConflicts, clearSyncConflicts, applyConflictResolution,
-  getResumeConversion, getResumeExperimentArms, getGhostJobs, getSalaryBenchmark, percentileFor, recordAiUsage, getAiUsageSummary, getMonthlyAiSpend, pruneAiUsage, clearAiUsage,
+  getResumeConversion, getResumeExperimentArms, getGhostJobs,
+  suppressRole, unsuppressRole, listSuppressedRoles, isRoleSuppressed, getSalaryBenchmark, percentileFor, recordAiUsage, getAiUsageSummary, getMonthlyAiSpend, pruneAiUsage, clearAiUsage,
   UNSENT_STATUSES,
   updateApplicationAfterApply, updateApplicationComment, updateRecruiterEmail, deleteApplication, clearAllApplications,
   getDirtyApplications, getAllApplicationIds, markCloudSynced, markCloudSeen, applyCloudEdit,
   countApplications, markAllDirty, getTombstones, clearTombstones, restoreApplicationFromCloud,
   getAttentionJobs, getAttentionJob, insertAttentionJob, dismissAttentionJob, deleteAttentionJob, clearAllAttentionJobs,
   getAllInterviewEventsForSync,
-  getCachedAnswer, saveCachedAnswer, getAllCachedAnswers, deleteCachedAnswer, clearAllCachedAnswers,
+  getCachedAnswer, getCachedAnswerRecord, saveCachedAnswer, getAllCachedAnswers, deleteCachedAnswer, clearAllCachedAnswers,
   getStats, getTodayCountByPlatform, getTodayAttentionCountByPlatform, getTodayHeldCountByPlatform, getSalaryStats,
   findDuplicateAcrossPlatforms, getApplicationsByDate, getApplicationsPerDay,
   getApplicationsForFollowUp, markFollowUpSent,

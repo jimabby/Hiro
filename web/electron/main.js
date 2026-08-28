@@ -1514,6 +1514,14 @@ ipcMain.handle('analytics:resumeConversion', () => database.getResumeConversion(
 // Listings that keep being reposted — see the note above getGhostJobs.
 ipcMain.handle('analytics:ghostJobs', () => database.getGhostJobs())
 
+// Stop re-drafting one role that keeps being reposted. Always user-initiated:
+// the ghost analysis reports, it never suppresses on its own.
+ipcMain.handle('analytics:suppressRole', (_e, { company, jobTitle, reason }) =>
+  database.suppressRole({ company, jobTitle, reason }))
+ipcMain.handle('analytics:unsuppressRole', (_e, { company, jobTitle }) =>
+  database.unsuppressRole({ company, jobTitle }))
+ipcMain.handle('analytics:suppressedRoles', () => database.listSuppressedRoles())
+
 // Advertised-pay distribution for roles like this one, plus where a figure sits
 // in it. Used by the Offers page.
 ipcMain.handle('analytics:salaryBenchmark', (_, jobTitle, value) => {

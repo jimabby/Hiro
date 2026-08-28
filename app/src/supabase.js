@@ -51,18 +51,28 @@ import { deriveStats, derivePerDay, isUnsent } from './stats'
 import { isDueOrOverdue } from './dates'
 import { decryptCloudPayload } from './cloudCrypto'
 
-const VALID_STATUSES = ['applied', 'interview', 'offer', 'rejected', 'pending', 'no_response', 'skipped', 'held']
+const VALID_STATUSES = ['applied', 'interview', 'offer', 'rejected', 'pending', 'no_response', 'skipped', 'held', 'withdrawn']
 
 // Columns the list/stats screens actually need. Selecting * pulled every
 // cover letter, tailored resume, and job description over cellular on each
 // refresh (the LAN API slims list responses the same way).
-const BASE_COLUMNS = 'id, local_id, job_title, company, platform, salary, match_score, match_explanation, status, applied_at, updated_at, comment'
+// `encrypted_meta` carries the identifying fields — job title, company, URL,
+// salary text, the match explanation and the user's comment — which used to
+// travel in clear. It is a few hundred bytes and is deliberately separate from
+// encrypted_payload (the documents), so this list stays cheap on cellular while
+// still not handing the server the names of every employer applied to.
+const LEGACY_COLUMNS = 'id, local_id, job_title, company, platform, salary, match_score, match_explanation, status, applied_at, updated_at, comment'
 // Added later than the rest. A project that has not re-run schema.sql does not
 // have them, and naming a missing column fails the WHOLE select — which would
 // take the applications list down rather than degrade the follow-up feature. So
 // they are requested separately and dropped on the first failure.
 const PIPELINE_COLUMNS = 'next_action_at, next_action_note'
+const BASE_COLUMNS = `${LEGACY_COLUMNS}, encrypted_meta`
 const SLIM_COLUMNS = `${BASE_COLUMNS}, ${PIPELINE_COLUMNS}`
+// Widest first, then drop one late addition at a time. Each tier is tried once
+// and the working one is remembered, so a project on an older schema pays for
+// the discovery a single time rather than on every refresh.
+const COLUMN_TIERS = [SLIM_COLUMNS, BASE_COLUMNS, LEGACY_COLUMNS]
 const CLOUD_PAGE_SIZE = 500
 
 async function selectAll(buildQuery, pageSize = CLOUD_PAGE_SIZE) {
@@ -97,6 +107,25 @@ export class CloudClient {
     return { ...row, id: row.local_id ?? row.id }
   }
 
+  // Merge a row's encrypted metadata back over its blanked plaintext columns.
+  //
+  // Tolerant in both directions of version skew, which matters because the
+  // desktop and the phone update independently: a row written by an older
+  // desktop has no encrypted_meta and its plaintext columns are already correct,
+  // so this is a no-op. A row this device cannot decrypt keeps whatever the
+  // columns hold rather than failing the whole list — one unreadable row must
+  // never be able to blank the screen.
+  async _withMeta(row) {
+    if (!row?.encrypted_meta) return row
+    try {
+      Object.assign(row, await decryptCloudPayload(row.encrypted_meta) || {})
+    } catch {
+      row.meta_pending = true
+    }
+    delete row.encrypted_meta
+    return row
+  }
+
   async _fetchAll() {
     const fetch = (columns) => selectAll(() => supabase
       .from('applications')
@@ -104,15 +133,28 @@ export class CloudClient {
       .eq('user_id', this.userId)
       .order('applied_at', { ascending: false }))
 
-    let { data, error } = await fetch(this._columns || SLIM_COLUMNS)
-    // PostgREST reports an unknown column as PGRST204 / 42703. Remember the
-    // narrower set so every later read does not pay for the same failure.
-    if (error && (error.code === 'PGRST204' || error.code === '42703' || /next_action/.test(error.message || ''))) {
-      this._columns = BASE_COLUMNS
-      ;({ data, error } = await fetch(BASE_COLUMNS))
+    // PostgREST reports an unknown column as PGRST204 / 42703. Walk down the
+    // tiers until one works, then remember it.
+    const isMissingColumn = (err) => !!err && (
+      err.code === 'PGRST204' || err.code === '42703'
+      || /next_action|encrypted_meta/.test(err.message || '')
+    )
+
+    let data, error
+    if (this._columns) {
+      ;({ data, error } = await fetch(this._columns))
+    } else {
+      for (const tier of COLUMN_TIERS) {
+        ;({ data, error } = await fetch(tier))
+        if (!error) { this._columns = tier; break }
+        if (!isMissingColumn(error)) break
+      }
     }
     if (error) throw new Error(error.message)
-    return (data || []).map(r => this._map(r))
+    // Decryption is per row and async (WebCrypto), so the list is resolved in
+    // one pass rather than lazily per screen — every consumer of _all() expects
+    // plain rows.
+    return Promise.all((data || []).map(async r => this._map(await this._withMeta(r))))
   }
 
   // Dashboard loads stats and the 7-day chart together; each derived from the
@@ -152,6 +194,7 @@ export class CloudClient {
       .maybeSingle()
     if (error) throw new Error(error.message)
     if (!data) return null
+    await this._withMeta(data)
     if (data.encrypted_payload) {
       // A payload under a retired key must not make the whole application
       // unopenable — the title, company, status and score are unencrypted and
@@ -268,11 +311,11 @@ export class CloudClient {
   async getAttention() {
     const { data, error } = await supabase
       .from('attention_jobs')
-      .select('local_id, job_title, company, platform, salary, salary_min, salary_max, job_url, match_score, talking_points, reason, closing_date, found_at')
+      .select('local_id, job_title, company, platform, salary, salary_min, salary_max, job_url, match_score, talking_points, reason, closing_date, found_at, encrypted_meta')
       .eq('user_id', this.userId)
       .order('found_at', { ascending: false })
     if (error) return []
-    return (data || []).map(r => this._map(r))
+    return Promise.all((data || []).map(async r => this._map(await this._withMeta(r))))
   }
 
   // Upcoming interviews, mirrored from the desktop. Filtered to today onward so
@@ -285,16 +328,15 @@ export class CloudClient {
     })()
     const { data, error } = await supabase
       .from('interview_events')
-      .select('local_id, application_local_id, scheduled_at, has_time, source, note, job_title, company, platform')
+      .select('local_id, application_local_id, scheduled_at, has_time, source, source_zone, source_local, note, job_title, company, platform, encrypted_meta')
       .eq('user_id', this.userId)
       .gte('scheduled_at', today)
       .order('scheduled_at', { ascending: true })
       .limit(limit)
     if (error) return []
-    return (data || []).map(r => ({
-      ...r,
-      id: r.local_id,
-      application_id: r.application_local_id,
+    return Promise.all((data || []).map(async (row) => {
+      const r = await this._withMeta(row)
+      return { ...r, id: r.local_id, application_id: r.application_local_id }
     }))
   }
 

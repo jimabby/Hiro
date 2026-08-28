@@ -19,7 +19,14 @@ const RESPONDED_STATUSES = ['interview', 'offer', 'rejected', 'pending']
 // count, chart and rate — mirrors UNSENT_STATUSES on the desktop.
 const UNSENT_STATUSES = ['skipped', 'held']
 
+// The user pulled out. It WAS sent, so it counts in the application totals, but
+// the employer's answer is unknown rather than absent — counting it as a
+// non-response would mean taking a job elsewhere made your response rate look
+// worse. Mirrors WITHDRAWN_STATUSES / RATE_ELIGIBLE on the desktop.
+const WITHDRAWN_STATUSES = ['withdrawn']
+
 const isUnsent = (a) => UNSENT_STATUSES.includes(a.status)
+const isWithdrawn = (a) => WITHDRAWN_STATUSES.includes(a.status)
 
 function startOfDay(d) {
   const x = new Date(d)
@@ -42,6 +49,10 @@ function deriveStats(apps, { now = new Date() } = {}) {
   const weekAgo = today - 6 * 86400000
 
   const sent = rows.filter(a => !isUnsent(a))
+  // The rate denominator is narrower than `sent`: an application the user
+  // withdrew was submitted, and belongs in the totals, but the employer never
+  // got to finish answering it. Mirrors RATE_ELIGIBLE on the desktop.
+  const rateEligible = sent.filter(a => !isWithdrawn(a))
   const interviews = rows.filter(a => a.status === 'interview' || a.status === 'offer').length
   const responded = rows.filter(a => RESPONDED_STATUSES.includes(a.status)).length
 
@@ -61,8 +72,8 @@ function deriveStats(apps, { now = new Date() } = {}) {
     unsentToday: rows.filter(a => isUnsent(a) && appliedTime(a) >= today).length,
     rowsAllTime: rows.length,
     interviews,
-    responseRate: sent.length ? Math.round((responded / sent.length) * 100) : 0,
-    interviewRate: sent.length ? Math.round((interviews / sent.length) * 100) : 0,
+    responseRate: rateEligible.length ? Math.round((responded / rateEligible.length) * 100) : 0,
+    interviewRate: rateEligible.length ? Math.round((interviews / rateEligible.length) * 100) : 0,
     byStatus: Object.entries(byStatus).map(([status, count]) => ({ status, count })),
     byPlatform: Object.entries(byPlatform).map(([platform, count]) => ({ platform, count })),
   }
@@ -90,5 +101,5 @@ function derivePerDay(apps, days = 7, { now = new Date() } = {}) {
 
 module.exports = {
   deriveStats, derivePerDay,
-  RESPONDED_STATUSES, UNSENT_STATUSES, isUnsent, localDateKey,
+  RESPONDED_STATUSES, UNSENT_STATUSES, WITHDRAWN_STATUSES, isUnsent, isWithdrawn, localDateKey,
 }

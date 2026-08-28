@@ -171,6 +171,33 @@ function deviceSecrets(configService, now = Date.now()) {
   })).filter(x => x.token)
 }
 
+// Drop devices whose tokens expired a good while ago.
+//
+// An expired entry is already dead — verifyDeviceToken refuses it and
+// deviceSecrets skips it — but it was never removed, so the list grew for the
+// life of the profile. That is not just untidy: deviceSecrets runs on every
+// signed request and unwraps each surviving tokenEnc through the OS keychain, so
+// a long-lived profile pays a keychain decrypt per dead phone per request, and
+// the Settings device list fills with entries the user cannot act on.
+//
+// The grace period is deliberate. A device that expired yesterday should still
+// be visible, and named, so "why did my phone stop working" has an answer on
+// screen rather than a silent disappearance.
+const EXPIRED_GRACE_MS = 30 * 86400000
+
+function pruneExpiredDevices(configService, now = Date.now()) {
+  const devices = listRaw(configService.load())
+  const keep = devices.filter(d => {
+    if (!d.expiresAt) return true
+    const expiredAt = new Date(d.expiresAt).getTime()
+    if (!Number.isFinite(expiredAt)) return true
+    return now - expiredAt < EXPIRED_GRACE_MS
+  })
+  if (keep.length === devices.length) return { removed: 0 }
+  configService.update({ mobileDevices: keep })
+  return { removed: devices.length - keep.length }
+}
+
 // Record that a device was seen, at most once a minute — this runs on every
 // authenticated request and each write re-serialises the whole config file.
 const TOUCH_INTERVAL_MS = 60 * 1000
@@ -204,6 +231,7 @@ function revokeAll(configService) {
 module.exports = {
   createPairingCode, getActiveCode, clearPairingCode, consumePairingCode,
   issueDeviceToken, verifyDeviceToken, deviceSecrets, listDevices, revokeDevice, revokeAll, touchDevice,
+  pruneExpiredDevices,
   hashToken, normaliseTtlDays,
-  CODE_TTL_MS, DEFAULT_TOKEN_TTL_DAYS,
+  CODE_TTL_MS, DEFAULT_TOKEN_TTL_DAYS, EXPIRED_GRACE_MS,
 }

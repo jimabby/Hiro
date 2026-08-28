@@ -115,6 +115,14 @@ function descriptionFor(ev) {
     ev.company ? `Company: ${ev.company}` : null,
     ev.platform ? `Found via: ${ev.platform}` : null,
     ev.note ? `Email subject: ${ev.note}` : null,
+    // When the employer wrote a timezone, the stored time is a CONVERSION of
+    // what they said. Saying so, and saying what they actually wrote, is the
+    // difference between a user who can check the arithmetic and one who has to
+    // trust it — and this event is the copy they will actually be looking at on
+    // the morning.
+    ev.source_zone && ev.source_local
+      ? `They wrote: ${ev.source_local} ${ev.source_zone} — shown here in your local time.`
+      : null,
     ev.source === 'inbox'
       ? 'Time detected automatically from the recruiter\'s email — double-check it against the original.'
       : null,

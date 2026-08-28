@@ -274,6 +274,10 @@ contextBridge.exposeInMainWorld('api', {
 
   // Listings an employer keeps reposting — probably not real vacancies.
   getGhostJobs: () => ipcRenderer.invoke('analytics:ghostJobs'),
+  // Opt out of re-drafting one reposted role. Per role, not per company.
+  suppressRole: (company, jobTitle, reason) => ipcRenderer.invoke('analytics:suppressRole', { company, jobTitle, reason }),
+  unsuppressRole: (company, jobTitle) => ipcRenderer.invoke('analytics:unsuppressRole', { company, jobTitle }),
+  getSuppressedRoles: () => ipcRenderer.invoke('analytics:suppressedRoles'),
 
   // Advertised pay for comparable roles, and where a figure sits in it.
   getSalaryBenchmark: (jobTitle, value) => ipcRenderer.invoke('analytics:salaryBenchmark', jobTitle, value),

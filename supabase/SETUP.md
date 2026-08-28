@@ -119,3 +119,32 @@ revoking a device revokes its notifications too, with no second place to remembe
 reminder recomputed on every two-minute sync arrives once rather than thirty times
 an hour. The desktop keeps its own copy of this ledger in SQLite — that is the one
 that guarantees send-once, since it must work with no network.
+
+## Re-run `schema.sql` after updating
+
+`schema.sql` is written to be re-runnable — every table is `create table if not
+exists`, every column is `add column if not exists`, and every policy is dropped
+before it is created. Running it again against an existing project is safe and is
+how new columns arrive.
+
+Two additions need it, and both degrade gracefully until you do:
+
+**`encrypted_meta`** (on `applications`, `interview_events`, `attention_jobs`).
+The documents were always encrypted before upload; the fields that *identify* an
+application — job title, company, listing URL, match explanation, your own
+comments — were not. Against the party this encryption exists for, that list is
+the secret. They now travel in a second small envelope, kept apart from the
+documents so the phone's list screen still loads cheaply over cellular.
+
+A desktop on the new build writing to a project without this column will fail its
+push; the phone tries the widest column set first and falls back, so an older
+project keeps working read-side. Run the migration.
+
+**`interview_events.source_zone` / `source_local`.** What timezone the recruiter
+actually wrote, and their wall-clock time in it. `scheduled_at` stays the
+interview in *your* local time — everything that reads it assumes that — and
+these let both apps show "they wrote 14:00 AEDT" beside it, so a conversion can
+be checked rather than trusted.
+
+**`applications.status`** also gains `withdrawn`. The check constraint is dropped
+and recreated, so re-running is what allows the phone and desktop to write it.

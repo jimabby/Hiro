@@ -182,4 +182,42 @@ const reset = () => { store = { mobileDevices: [], mobileTokenTtlDays: 90 }; pai
   check('a missing name gets a default', unnamed.device.name, 'Phone')
 }
 
+// ── Pruning long-dead devices ──────────────────────────────────
+//
+// An expired entry is already inert — verifyDeviceToken refuses it and
+// deviceSecrets skips it — but nothing ever removed one, so the list grew for
+// the life of the profile. deviceSecrets runs on EVERY signed request and
+// unwraps each surviving tokenEnc through the OS keychain, so a long-lived
+// profile paid a keychain decrypt per dead phone per request.
+{
+  reset()
+  const now = Date.now()
+  const day = 86400000
+
+  store.mobileTokenTtlDays = 1
+  pairing.issueDeviceToken(configDouble, { name: 'Old phone' }, now - 400 * day)
+  pairing.issueDeviceToken(configDouble, { name: 'Recently expired' }, now - 3 * day)
+  store.mobileTokenTtlDays = 0 // never expires
+  pairing.issueDeviceToken(configDouble, { name: 'Permanent' }, now)
+  store.mobileTokenTtlDays = 90
+  pairing.issueDeviceToken(configDouble, { name: 'Live phone' }, now)
+
+  check('all four are registered', store.mobileDevices.length, 4)
+
+  const { removed } = pairing.pruneExpiredDevices(configDouble, now)
+  check('only the long-dead one is removed', removed, 1)
+
+  const names = store.mobileDevices.map(d => d.name)
+  check('the long-dead device is gone', names.includes('Old phone'), false)
+  // Deliberate: a device that expired yesterday should still be visible and
+  // named, so "why did my phone stop working" has an answer on screen rather
+  // than a silent disappearance.
+  check('a recently expired device is kept during the grace period',
+    names.includes('Recently expired'), true)
+  check('a never-expiring device is kept', names.includes('Permanent'), true)
+  check('a live device is kept', names.includes('Live phone'), true)
+
+  check('pruning again removes nothing', pairing.pruneExpiredDevices(configDouble, now).removed, 0)
+}
+
 done()

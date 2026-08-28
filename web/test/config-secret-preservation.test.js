@@ -92,4 +92,38 @@ check('no spurious error is reported for readable config', configService.getSecr
 configService.update({ aiApiKey: '' })
 check('a readable secret can be cleared', onDisk().aiApiKey, '')
 
+// ─── The report must not eat itself ──────────────────────────────
+//
+// decryptForLoad used the module-level `secretError` as its own scratch space:
+// it only assigned err.message `if (!secretError)`, then built the final
+// sentence by interpolating `secretError` into itself. So the second load
+// embedded the whole of the first load's message inside the new one, and the
+// third embedded the second:
+//
+//   "1 saved secret (aiApiKey) could not be decrypted because 1 saved secret
+//    (aiApiKey) could not be decrypted because 1 saved secret …"
+//
+// load() runs on nearly every operation in the app — every mobile API request
+// goes through it — so the string grew by ~200 bytes each time, and what the
+// Settings page displayed was unreadable from the second load onwards.
+//
+// Deliberately NOT calling _resetSecretState between the loads: doing that is
+// what let every existing check in this file pass while the bug was live.
+seed({ aiApiKey: 'enc:v1:AAAA', setupComplete: true })
+configService.load()
+const firstReport = configService.getSecretError()
+check('the first load reports the problem', typeof firstReport, 'string')
+
+for (let i = 0; i < 8; i++) configService.load()
+const laterReport = configService.getSecretError()
+check('repeated loads do not grow the message', laterReport.length, firstReport.length)
+check('the message is identical every time', laterReport, firstReport)
+check('the reason is a reason, not a nested report',
+  (laterReport.match(/could not be decrypted because/g) || []).length, 1)
+
+// And it must still clear itself once the secrets become readable again.
+seed({ setupComplete: true })
+configService.load()
+check('a clean load clears a previous report', configService.getSecretError(), null)
+
 done()

@@ -194,6 +194,57 @@ async function signOut() {
   return getStatus()
 }
 
+// ─── What is encrypted, and what cannot be ───────────────────────
+//
+// The documents were encrypted from the start. The identifying fields were not,
+// and the README claimed a compromise of the Supabase project "yields ciphertext
+// and nothing else" — which was not true: job_title, company, job_url,
+// match_explanation, comment, salary and campaign_name all travelled in clear.
+// Against the adversary this encryption exists for — someone who wants to know
+// that you are job-hunting and where — that list IS the secret. The documents
+// are almost the least of it.
+//
+// Two envelopes rather than one, because the phone's list screen has to stay
+// cheap. `encrypted_payload` carries the documents and is read only when a
+// single application is opened; `encrypted_meta` is a few hundred bytes and is
+// fetched with the list, so a phone on cellular still downloads titles and
+// companies rather than every cover letter.
+//
+// What stays in clear, and why each one has to:
+//
+//   local_id, updated_at, held_at   the sync algorithm itself runs on these
+//   status                          the phone filters by it server-side
+//   applied_at, next_action_at      ordering and due-date queries
+//   salary_min / salary_max         the phone sorts and range-filters on them
+//   match_score                     the phone's stats and score filters
+//   platform                        a small, fixed vocabulary (Seek/Indeed/…)
+//   resume_id, campaign_id          opaque local identifiers, not names
+//
+// And one that is in clear for a worse reason, stated rather than hidden:
+//
+//   next_action_note   BOTH devices write it. The phone's Pipeline screen
+//                      updates it with a partial UPDATE and has no way to merge
+//                      into an envelope the desktop authored without a
+//                      read-modify-write that races the desktop's own push.
+//                      Encrypting it from one side only would silently wipe
+//                      whatever the other side had written, which is a worse
+//                      failure than the disclosure. It is the one user-written
+//                      field still readable server-side, and the README says so.
+//
+// So a compromise reveals that someone applied for N jobs, when, through which
+// job boards, how those applications turned out, and any pipeline notes. It does
+// not reveal which employers, which roles, the documents, or the comments. That
+// is a real and much smaller disclosure, and it is now what the README says.
+function encryptMeta(dataKey, fields) {
+  return dataKey ? cloudCrypto.encrypt(dataKey, fields) : null
+}
+
+// Written into a NOT NULL text column whose real value has moved into
+// encrypted_meta. Empty rather than a marker string: an older client that does
+// not know about encrypted_meta shows a blank row, which reads as "this client
+// is out of date", whereas a plausible-looking placeholder reads as data loss.
+const REDACTED = ''
+
 function localToCloud(a) {
   const dataKey = configService.load().cloudDataKey
   const encryptedPayload = dataKey ? cloudCrypto.encrypt(dataKey, {
@@ -201,32 +252,39 @@ function localToCloud(a) {
     cover_letter: a.cover_letter || '', screening_qa: a.screening_qa || '',
     recruiter_email: a.recruiter_email || '',
   }) : null
+  const encryptedMeta = encryptMeta(dataKey, {
+    job_title: a.job_title || '', company: a.company || '',
+    job_url: a.job_url || '', salary: a.salary || '',
+    match_explanation: a.match_explanation || '', comment: a.comment || '',
+    resume_name: a.resume_name || '', campaign_name: a.campaign_name || '',
+  })
   return {
     user_id: user.id,
     local_id: a.id,
-    job_title: a.job_title,
-    company: a.company,
+    job_title: encryptedMeta ? REDACTED : a.job_title,
+    company: encryptedMeta ? REDACTED : a.company,
     platform: a.platform,
-    salary: a.salary || '',
+    salary: encryptedMeta ? REDACTED : (a.salary || ''),
     salary_min: a.salary_min ?? null,
     salary_max: a.salary_max ?? null,
-    job_url: a.job_url || '',
+    job_url: encryptedMeta ? REDACTED : (a.job_url || ''),
     job_description: encryptedPayload ? null : (a.job_description || ''),
     match_score: a.match_score ?? null,
-    match_explanation: a.match_explanation || '',
+    match_explanation: encryptedMeta ? REDACTED : (a.match_explanation || ''),
     tailored_resume: encryptedPayload ? null : (a.tailored_resume || ''),
     cover_letter: encryptedPayload ? null : (a.cover_letter || ''),
     screening_qa: encryptedPayload ? null : (a.screening_qa || ''),
-    comment: a.comment || '',
+    comment: encryptedMeta ? REDACTED : (a.comment || ''),
     recruiter_email: encryptedPayload ? null : (a.recruiter_email || ''),
     encrypted_payload: encryptedPayload,
+    encrypted_meta: encryptedMeta,
     status: a.status || 'applied',
     // Which resume was sent, and whether review mode is still holding this
     // back — the phone needs both to label the row honestly.
     resume_id: a.resume_id || null,
-    resume_name: a.resume_name || null,
+    resume_name: encryptedMeta ? null : (a.resume_name || null),
     campaign_id: a.campaign_id || null,
-    campaign_name: a.campaign_name || null,
+    campaign_name: encryptedMeta ? null : (a.campaign_name || null),
     held_at: a.held_at ? toISO(a.held_at) : null,
     applied_at: toISO(a.applied_at),
     updated_at: toISO(a.updated_at),
@@ -285,6 +343,21 @@ async function pullChanges(c) {
 
   database.batch(() => {
     for (const remote of data || []) {
+      // The identifying fields, if this row was written by a client that
+      // encrypts them. Merged before the documents so a row is whole either way,
+      // and tolerant of both directions of version skew: a row from an older
+      // client has no encrypted_meta and its plaintext columns are already
+      // right, while a row from a newer one has blanked columns that this
+      // restores.
+      if (remote.encrypted_meta) {
+        try {
+          Object.assign(remote, cloudCrypto.decrypt(dataKey, remote.encrypted_meta) || {})
+        } catch (err) {
+          if (!err.obsoleteEnvelope) throw err
+          obsoleteRows++
+        }
+        delete remote.encrypted_meta
+      }
       if (remote.encrypted_payload) {
         // A row this device cannot decrypt is not a reason to abandon the pull.
         // It used to be: the throw escaped the loop and every remaining row —
@@ -442,42 +515,67 @@ async function mirrorTable(c, table, rows, toCloud) {
   return { skipped: false, count: payload.length }
 }
 
+// Both mirrors below denormalise the job title and company onto their rows so
+// the phone can render a list without a join. That is the same disclosure the
+// applications table had, reaching the server by a side door, so both get the
+// same envelope. `note` on an interview is the recruiter's email subject line —
+// which names the company as often as not — and `talking_points` and `reason`
+// are model output about the user, so they travel inside it too.
 async function pushInterviews(c) {
   const rows = database.getAllInterviewEventsForSync()
-  return mirrorTable(c, 'interview_events', rows, (e) => ({
-    user_id: user.id,
-    local_id: e.id,
-    application_local_id: e.application_id,
-    scheduled_at: e.scheduled_at,
-    has_time: e.has_time === 1 || e.has_time === true,
-    source: e.source || 'manual',
-    note: e.note || '',
-    job_title: e.job_title || '',
-    company: e.company || '',
-    platform: e.platform || '',
-    updated_at: new Date().toISOString(),
-  }))
+  const dataKey = configService.load().cloudDataKey
+  return mirrorTable(c, 'interview_events', rows, (e) => {
+    const meta = encryptMeta(dataKey, {
+      note: e.note || '', job_title: e.job_title || '',
+      company: e.company || '', job_url: e.job_url || '',
+    })
+    return {
+      user_id: user.id,
+      local_id: e.id,
+      application_local_id: e.application_id,
+      scheduled_at: e.scheduled_at,
+      has_time: e.has_time === 1 || e.has_time === true,
+      source: e.source || 'manual',
+      source_zone: e.source_zone || null,
+      source_local: e.source_local || null,
+      note: meta ? REDACTED : (e.note || ''),
+      job_title: meta ? REDACTED : (e.job_title || ''),
+      company: meta ? REDACTED : (e.company || ''),
+      platform: e.platform || '',
+      encrypted_meta: meta,
+      updated_at: new Date().toISOString(),
+    }
+  })
 }
 
 async function pushAttentionJobs(c) {
   const rows = database.getAttentionJobs()
-  return mirrorTable(c, 'attention_jobs', rows, (j) => ({
-    user_id: user.id,
-    local_id: j.id,
-    job_title: j.job_title,
-    company: j.company,
-    platform: j.platform,
-    salary: j.salary || '',
-    salary_min: j.salary_min ?? null,
-    salary_max: j.salary_max ?? null,
-    job_url: j.job_url || '',
-    match_score: j.match_score ?? null,
-    talking_points: j.talking_points || '[]',
-    reason: j.reason || '',
-    closing_date: j.closing_date || null,
-    found_at: toISO(j.found_at),
-    updated_at: new Date().toISOString(),
-  }))
+  const dataKey = configService.load().cloudDataKey
+  return mirrorTable(c, 'attention_jobs', rows, (j) => {
+    const meta = encryptMeta(dataKey, {
+      job_title: j.job_title || '', company: j.company || '',
+      job_url: j.job_url || '', salary: j.salary || '',
+      talking_points: j.talking_points || '[]', reason: j.reason || '',
+    })
+    return {
+      user_id: user.id,
+      local_id: j.id,
+      job_title: meta ? REDACTED : j.job_title,
+      company: meta ? REDACTED : j.company,
+      platform: j.platform,
+      salary: meta ? REDACTED : (j.salary || ''),
+      salary_min: j.salary_min ?? null,
+      salary_max: j.salary_max ?? null,
+      job_url: meta ? REDACTED : (j.job_url || ''),
+      match_score: j.match_score ?? null,
+      talking_points: meta ? '[]' : (j.talking_points || '[]'),
+      reason: meta ? REDACTED : (j.reason || ''),
+      closing_date: j.closing_date || null,
+      found_at: toISO(j.found_at),
+      encrypted_meta: meta,
+      updated_at: new Date().toISOString(),
+    }
+  })
 }
 
 // Pick up scan requests the phone queued via the cloud (scan_requests table):

@@ -7,8 +7,7 @@ const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown, verifySubm
 let lastSelectorReport = null
 function getSelectorReport() { return lastSelectorReport }
 const indeedSession = require('../indeedSession')
-const aiAdapter = require('../ai/index')
-const database = require('../database')
+const { resolveAnswer } = require('../screeningAnswers')
 
 // See seek.js — one page of results goes stale within days once already-seen
 // listings are skipped.
@@ -295,34 +294,14 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
       if (cfg.aiProvider && cfg.aiApiKey) {
         // Every answer handed back is recorded on `screeningQa` so the saved
         // application shows what was actually submitted for the user.
+        // Shared with seek.js and linkedin.js — see services/screeningAnswers.js
+        // for why the fabrication check on an answer cannot live in three copies.
         async function getAnswer(questionText, optionHint) {
-          const cached = database.getCachedAnswer(questionText)
-          if (cached) { recordAnswer(questionText, cached, 'cache'); return cached }
-          let aiAnswer = ''
-          try {
-            aiAnswer = await aiAdapter.answerScreeningQuestion(
-              cfg.aiProvider, cfg.aiApiKey,
-              questionText + (optionHint ? ` (options: ${optionHint})` : ''),
-              cfg.jobDescription || '', cfg.masterResume || '', cfg.geminiModel
-            )
-          } catch {}
-          const isUncertain = !aiAnswer || aiAnswer.trim().length < 3 ||
-            /not sure|i don't know|unclear|unsure|cannot determine|not enough information/i.test(aiAnswer)
-          if (isUncertain && cfg.askQuestion) {
-            const prompt = optionHint ? `${questionText} (${optionHint})` : questionText
-            const userAnswer = await cfg.askQuestion(prompt).catch(() => '')
-            if (userAnswer) {
-              database.saveCachedAnswer(questionText, userAnswer)
-              recordAnswer(questionText, userAnswer, 'user')
-              return userAnswer
-            }
-            return ''
-          }
-          if (aiAnswer) {
-            database.saveCachedAnswer(questionText, aiAnswer)
-            recordAnswer(questionText, aiAnswer, 'ai')
-          }
-          return aiAnswer || ''
+          const { answer, source } = await resolveAnswer({
+            question: questionText, optionHint, cfg, log: cfg.log,
+          })
+          if (answer) recordAnswer(questionText, answer, source)
+          return answer
         }
 
         // ── Radio button groups ─────────────────────────────────────────────

@@ -35,11 +35,28 @@ async function fetchBodySnippet(client, uid) {
   }
 }
 
-// Keyword-based reply classifier (no AI needed — fast and reliable)
+// Keyword-based reply classifier (no AI needed — fast and reliable).
+//
+// Rejection is tested FIRST, and that ordering is the whole point. A rejection
+// very often names the thing it is rejecting you from — "Interview outcome —
+// unfortunately unsuccessful", "Following your interview, we've decided not to
+// proceed" — so both patterns match and whichever runs first wins. Reading that
+// as an interview invitation is the worse of the two mistakes by a wide margin:
+// it puts a phantom interview on the dashboard and, when a date is parsed out of
+// the quoted thread below, into the user's calendar.
+//
+// The AI classifier refines this when a provider is configured; this is the
+// fallback that has to stand on its own when one is not.
 function classifySubject(subject) {
   const s = (subject || '').toLowerCase()
-  if (/interview|schedule.*meet|meet.*schedule|invitation|invite|phone screen|video call|zoom|teams meeting|book.*time|pick.*time|available.*chat/i.test(s)) return 'interview'
-  if (/unfortunately|regret|not.*move forward|not.*proceed|unsuccessful|no longer|other candidate|filled.*position|position.*filled|not.*fit|decided.*not/i.test(s)) return 'rejected'
+  // `mov(?:e|ing)` and `progress(?:ing)?` because "we will not be moving
+  // forward" is at least as common a phrasing as "we will not move forward",
+  // and the literal form missed it — so the most standard rejection sentence in
+  // the language fell through to 'pending'.
+  if (/unfortunately|regret|not.*mov(?:e|ing) forward|not.*proceed|not.*progress|unable to (?:offer|proceed|progress)|unsuccessful|no longer|other candidate|filled.*position|position.*filled|not.*fit|decided.*not/i.test(s)) return 'rejected'
+  // "schedule a call" / "set up a chat" are invitations as plainly as
+  // "schedule a meeting" is; only the meeting wording was matched.
+  if (/interview|schedul\w*.*(?:meet|call|chat|time|interview)|meet.*schedule|set up.*(?:call|chat|meeting)|invitation|invite|phone screen|video call|zoom|teams meeting|book.*time|pick.*time|available.*chat/i.test(s)) return 'interview'
   return 'pending' // reply received but unclear — mark as pending for user review
 }
 
@@ -248,6 +265,9 @@ async function checkInbox() {
             // user gets it on the dashboard instead of having to find the
             // email again. Best-effort and always editable in the UI.
             let interviewAt = null
+            // The zone the employer wrote, when they wrote one — carried into the
+            // notification so "interview detected for …" can say whose clock.
+            let interviewZone = null
             if (newStatus === 'interview') {
               if (!body) body = await fetchBodySnippet(client, match.uid)
               const parsed = parseInterviewTime(match.subject, body)
@@ -258,8 +278,15 @@ async function checkInbox() {
                     scheduledAt: parsed.at,
                     hasTime: parsed.hasTime,
                     note: match.subject,
+                    // Set when the email named a timezone. `parsed.at` has
+                    // already been converted to this machine's local time; these
+                    // preserve what the sender actually wrote so the UI can show
+                    // both and the user can check the conversion.
+                    sourceZone: parsed.sourceZone || null,
+                    sourceLocal: parsed.sourceLocal || null,
                   })
                   interviewAt = parsed.at
+                  if (parsed.sourceZone) interviewZone = parsed.sourceZone
                 } catch { /* scheduling is a bonus — never fail the inbox check */ }
               }
             }
@@ -277,6 +304,7 @@ async function checkInbox() {
                 newStatus,
                 subject: match.subject,
                 interviewAt,
+                interviewZone,
               })
             }
           }

@@ -17,7 +17,7 @@ let server = null
 // Must cover every status the desktop can write, or the phone can see a status
 // it isn't allowed to set back. 'pending' comes from the inbox classifier and
 // 'no_response' from the stale sweep; both were missing here.
-const VALID_STATUSES = ['applied', 'interview', 'rejected', 'offer', 'pending', 'no_response', 'skipped', 'held']
+const VALID_STATUSES = ['applied', 'interview', 'rejected', 'offer', 'pending', 'no_response', 'skipped', 'held', 'withdrawn']
 
 // The token is read on every single request. Reading it from disk each time
 // also meant an OS-keychain decrypt per request, so cache it in memory and
@@ -467,7 +467,13 @@ async function handle(req, res) {
 
     return json(res, 404, { error: 'Not found' })
   } catch (err) {
-    return json(res, 500, { error: err.message })
+    // The detail goes to the log, not down the wire. A raw err.message here is
+    // a SQLite error string, a file path inside the user's home directory, or a
+    // stack-shaped fragment naming internals — none of which the phone can act
+    // on, and all of which are free reconnaissance for anything on the LAN that
+    // reached this far. The log is where the user (and only the user) can see it.
+    logger.append(`Mobile API: ${req.method} ${path} failed — ${err?.stack || err?.message || String(err)}`)
+    return json(res, 500, { error: 'The desktop hit an error handling that request. See the activity log for details.' })
   }
 }
 
@@ -478,6 +484,11 @@ function start() {
   const cfg = configService.load()
   const port = cfg.mobileApiPort || 4823
   getToken() // ensure a token exists before the first client connects
+  // Long-dead device entries cost a keychain unwrap on every signed request.
+  try {
+    const { removed } = pairing.pruneExpiredDevices(configService)
+    if (removed) logger.append(`Mobile API: removed ${removed} long-expired device${removed === 1 ? '' : 's'} from the pairing list`)
+  } catch { /* pruning is housekeeping — never block the server on it */ }
 
   const srv = http.createServer((req, res) => { handle(req, res) })
   server = srv

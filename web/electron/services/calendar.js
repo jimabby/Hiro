@@ -117,6 +117,11 @@ function buildEvent(event, stamp) {
     company ? `Company: ${company}` : null,
     event.platform ? `Found via: ${event.platform}` : null,
     event.note ? `Email subject: ${event.note}` : null,
+    // The stored time is a conversion when the employer named a zone — say so
+    // here too, so an exported .ics carries the same check the app shows.
+    event.source_zone && event.source_local
+      ? `They wrote: ${event.source_local} ${event.source_zone} — shown here in your local time.`
+      : null,
     event.source === 'inbox'
       ? 'Time detected automatically from the recruiter\'s email — double-check it against the original.'
       : null,

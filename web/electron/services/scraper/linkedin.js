@@ -5,8 +5,7 @@ const { randomDelay, randomUserAgent, buildResumeFile, verifySubmission, confirm
 let lastSelectorReport = null
 function getSelectorReport() { return lastSelectorReport }
 const linkedinSession = require('../linkedinSession')
-const aiAdapter = require('../ai/index')
-const database = require('../database')
+const { resolveAnswer } = require('../screeningAnswers')
 
 // See seek.js — one page of results goes stale within days once already-seen
 // listings are skipped.
@@ -299,33 +298,12 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
           const currentVal = await input.inputValue().catch(() => '')
           if (currentVal.trim()) continue
 
-          let answer = ''
-          let answerSource = ''
-          const cached = database.getCachedAnswer(questionText)
-          if (cached) {
-            answer = cached
-            answerSource = 'cache'
-          } else {
-            let aiAnswer = ''
-            try {
-              aiAnswer = await aiAdapter.answerScreeningQuestion(
-                cfg.aiProvider, cfg.aiApiKey,
-                questionText, cfg.jobDescription || '', cfg.masterResume || '', cfg.geminiModel
-              )
-            } catch {}
-
-            const isUncertain = !aiAnswer || aiAnswer.trim().length < 3 ||
-              /not sure|i don't know|unclear|unsure|cannot determine|not enough information/i.test(aiAnswer)
-
-            if (isUncertain && cfg.askQuestion) {
-              const userAnswer = await cfg.askQuestion(questionText).catch(() => '')
-              if (userAnswer) { answer = userAnswer; answerSource = 'user'; database.saveCachedAnswer(questionText, userAnswer) }
-            } else if (aiAnswer) {
-              answer = aiAnswer
-              answerSource = 'ai'
-              database.saveCachedAnswer(questionText, aiAnswer)
-            }
-          }
+          // Shared with seek.js and indeed.js — see services/screeningAnswers.js
+          // for why the fabrication check on an answer cannot live in three
+          // copies.
+          const { answer, source: answerSource } = await resolveAnswer({
+            question: questionText, cfg, log: cfg.log,
+          })
 
           if (!answer) continue
           // Recorded so the saved application shows what was submitted for the

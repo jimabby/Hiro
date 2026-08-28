@@ -42,6 +42,10 @@ const SETTABLE_STATUSES = [
   { value: 'rejected', label: 'Rejected' },
   { value: 'pending', label: 'Pending' },
   { value: 'no_response', label: 'No Response' },
+  // You pulled out — took something else, or decided against the role after
+  // applying. Not a rejection (that would misattribute it to the employer and
+  // put it in the rejection-stage analysis) and not skipped (it was sent).
+  { value: 'withdrawn', label: 'Withdrawn' },
 ]
 
 const PAGE_SIZE = 25
@@ -822,6 +826,16 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                     {when.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}
                     {iv.has_time ? ` at ${when.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ' (time not detected)'}
                     {iv.source === 'inbox' && ' · auto-detected'}
+                    {/* The employer named a zone, so the time above is a
+                        conversion. Showing what they wrote is what lets the user
+                        check it — a converted figure they never saw is exactly
+                        the kind of thing you want to be able to verify at a
+                        glance on the morning. */}
+                    {iv.source_zone && iv.source_local && (
+                      <span style={{ display: 'block', color: 'var(--amber, var(--text-muted))' }}>
+                        they wrote {iv.source_local.slice(11, 16)} {iv.source_zone} — converted to your time
+                      </span>
+                    )}
                   </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
@@ -901,6 +915,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
             { value: 'pending', label: 'Pending' },
             { value: 'rejected', label: 'Rejected' },
             { value: 'no_response', label: 'No Response' },
+            { value: 'withdrawn', label: 'Withdrawn' },
             { value: 'skipped', label: 'Skipped' },
           ]
           return (
@@ -1318,6 +1333,11 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                     <span style={{ color: 'var(--text-muted)', fontSize: 11, marginLeft: 8 }}>
                       {iv.source === 'inbox' ? 'auto-detected' : 'added by you'}
                     </span>
+                    {iv.source_zone && iv.source_local && (
+                      <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 2 }}>
+                        They wrote {iv.source_local.slice(11, 16)} {iv.source_zone} — shown above in your local time.
+                      </div>
+                    )}
                   </div>
                   <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }}
                     onClick={async () => {

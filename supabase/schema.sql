@@ -317,3 +317,52 @@ do $$ begin
   alter table public.devices add constraint device_fields_valid
     check (char_length(device_id) <= 200 and char_length(coalesce(name,'')) <= 160 and char_length(coalesce(platform,'')) <= 80) not valid;
 exception when duplicate_object then null; end $$;
+
+-- ─── Encrypted metadata ───────────────────────────────────────────
+-- The documents (job description, tailored resume, cover letter, screening
+-- answers, recruiter address) have always been encrypted on the device before
+-- upload, in `applications.encrypted_payload`. The fields that IDENTIFY an
+-- application were not: job title, company, job URL, the match explanation and
+-- the user's own comment all sat here in clear, as did the denormalised title
+-- and company on interview_events and attention_jobs.
+--
+-- Against the party this encryption exists to defend against — someone who
+-- wants to know that you are job-hunting, and where — that list is the secret.
+-- The documents are almost the least of it.
+--
+-- `encrypted_meta` closes it. It is deliberately a SECOND envelope rather than
+-- an extension of encrypted_payload: the phone's list screen fetches meta for
+-- every row and payload only for the row actually opened, so titles and
+-- companies still arrive over cellular without dragging every cover letter
+-- along. Both use the same device-derived data key; the server holds neither.
+--
+-- The plaintext columns are left in place and written empty. An older client
+-- that does not know about encrypted_meta then shows blank rows — which reads
+-- as "this client is out of date" — rather than a plausible placeholder, which
+-- would read as data loss.
+alter table public.applications     add column if not exists encrypted_meta text;
+alter table public.interview_events add column if not exists encrypted_meta text;
+alter table public.attention_jobs   add column if not exists encrypted_meta text;
+
+-- The timezone the employer wrote, and their wall-clock time in it.
+-- `scheduled_at` is the interview converted to the user's own local time, which
+-- is what every reader of it assumes; these preserve what was actually written
+-- so the apps can show both and the conversion can be checked rather than
+-- trusted. NULL means the email named no zone.
+alter table public.interview_events add column if not exists source_zone text;
+alter table public.interview_events add column if not exists source_local text;
+
+-- 'withdrawn' — the user pulled out after applying (took another offer, or
+-- decided against the role). Deliberately its own status rather than 'rejected'
+-- (which would misattribute the decision to the employer, and would land in the
+-- rejection-stage analysis whose whole purpose is to say whether the resume or
+-- the interview is the problem) or 'skipped' (which would deny it was ever
+-- sent). Both clients count it as sent but exclude it from the response and
+-- interview rate denominators.
+--
+-- The existing constraint has to be replaced rather than added to.
+alter table public.applications drop constraint if exists applications_status_valid;
+do $$ begin
+  alter table public.applications add constraint applications_status_valid
+    check (status in ('applied','interview','offer','rejected','pending','no_response','skipped','held','withdrawn')) not valid;
+exception when duplicate_object then null; end $$;

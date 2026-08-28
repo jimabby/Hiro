@@ -56,6 +56,98 @@ function isValidDay(year, month, day) {
   return d.getFullYear() === year && d.getMonth() === month && d.getDate() === day
 }
 
+// ─── Timezones ───────────────────────────────────────────────────────────
+//
+// A recruiter writes "Thursday 12 March, 2:00 PM AEDT". Until this existed the
+// zone was read past and discarded, the time was stored as a bare wall clock,
+// and calendarSync then stamped it with `Intl.DateTimeFormat().resolvedOptions()
+// .timeZone` — the DESKTOP's zone. For anyone interviewing outside their own
+// timezone (a remote role, an overseas employer, a recruiter in another state)
+// that is not a rounding error: a Sydney 2pm read on a London machine becomes a
+// 2pm London event and the user misses the interview by nine hours.
+//
+// Offsets rather than IANA names on purpose. The abbreviation in an email is
+// what the sender chose to write, and abbreviations are ambiguous across regions
+// — "CST" alone is three different zones. An offset is what the sentence
+// actually pins down, it is what an .ics VEVENT and a Google Calendar dateTime
+// both accept, and it does not pretend to know a political region from three
+// letters. `label` keeps the sender's own wording for display.
+//
+// Australian zones lead the list because Hiro targets Seek and au.indeed; the
+// rest are the ones that turn up in remote hiring.
+const ZONE_OFFSETS = [
+  // [abbreviation, minutes east of UTC]
+  ['AEDT', 660], ['AEST', 600], ['ACDT', 630], ['ACST', 570],
+  ['AWST', 480], ['ACWST', 525], ['NZDT', 780], ['NZST', 720],
+  ['GMT', 0], ['UTC', 0], ['BST', 60], ['WET', 0], ['WEST', 60],
+  ['CET', 60], ['CEST', 120], ['EET', 120], ['EEST', 180],
+  ['IST', 330], ['SGT', 480], ['HKT', 480], ['JST', 540], ['KST', 540],
+  ['EST', -300], ['EDT', -240], ['CST', -360], ['CDT', -300],
+  ['MST', -420], ['MDT', -360], ['PST', -480], ['PDT', -420],
+]
+
+const ZONE_NAMES = ZONE_OFFSETS.map(([name]) => name).join('|')
+
+// "UTC+10", "GMT-5", "UTC+05:30". Tested BEFORE the named zones, because
+// "UTC" and "GMT" are themselves names on that list — matching the name first
+// reads "UTC+05:30" as plain UTC and silently throws away the offset, which is
+// the whole of the information in it.
+const OFFSET_RE = /\b(?:UTC|GMT)\s*([+-])\s*(\d{1,2})(?::?(\d{2}))?/i
+
+const NAMED_RE = new RegExp(`\\b(${ZONE_NAMES})\\b`, 'i')
+
+// A bare "+10:00" / "(-0500)", but only immediately after something that is
+// unmistakably a time — one with a colon, or with am/pm on it.
+//
+// Requiring only "a digit" before the sign was far too loose: "salary
+// 90000-120000" matched, reading `0-1200` as UTC-12:00 and silently shifting an
+// interview by half a day. A loose signed number in an email body is much more
+// often a salary range or a phone number than an offset, so the time it is
+// attached to has to look like one.
+const BARE_OFFSET_RE =
+  /(?:\d{1,2}:\d{2}(?:\s*(?:am|pm))?|\d{1,2}\s*(?:am|pm))\s*\(?\s*([+-])(\d{2}):?(\d{2})\s*\)?(?!\d)/i
+
+function offsetFrom(sign, hoursText, minutesText) {
+  const hours = Number(hoursText)
+  const minutes = Number(minutesText || 0)
+  if (!Number.isFinite(hours) || hours > 14 || minutes >= 60) return null
+  const offsetMinutes = (sign === '-' ? -1 : 1) * (hours * 60 + minutes)
+  return { offsetMinutes, label: formatOffset(offsetMinutes) }
+}
+
+// Returns { offsetMinutes, label } or null.
+function parseTimezone(text) {
+  const body = String(text || '')
+
+  const explicit = OFFSET_RE.exec(body)
+  if (explicit) {
+    const parsed = offsetFrom(explicit[1], explicit[2], explicit[3])
+    if (parsed) return parsed
+  }
+
+  const named = NAMED_RE.exec(body)
+  if (named) {
+    const name = named[1].toUpperCase()
+    const found = ZONE_OFFSETS.find(([n]) => n === name)
+    if (found) return { offsetMinutes: found[1], label: name }
+  }
+
+  const bare = BARE_OFFSET_RE.exec(body)
+  if (bare) {
+    const parsed = offsetFrom(bare[1], bare[2], bare[3])
+    if (parsed) return parsed
+  }
+
+  return null
+}
+
+function formatOffset(minutes) {
+  const sign = minutes < 0 ? '-' : '+'
+  const abs = Math.abs(minutes)
+  const p = (n) => String(n).padStart(2, '0')
+  return `UTC${sign}${p(Math.floor(abs / 60))}:${p(abs % 60)}`
+}
+
 // ─── Time of day ─────────────────────────────────────────────────────────
 // "2pm", "2:30 PM", "14:00", "10.30am". Returns { hour, minute } or null.
 function parseTimeOfDay(text) {
@@ -214,7 +306,31 @@ function parseInterviewTime(subject, body, now = new Date()) {
       if (d.getTime() < startOfDay(now).getTime()) continue
       if (d.getTime() - now.getTime() > 120 * 86400000) continue
       if (time) d.setHours(time.hour, time.minute, 0, 0)
-      return { at: toLocalSql(d, true), hasTime: !!time }
+
+      // A zone only means anything alongside a time — "Thursday AEST" pins
+      // nothing down — and only the zone written in the SAME clause as the time
+      // can be trusted to be about it. An email signature saying "Sydney,
+      // Australia" three paragraphs down is not a statement about this meeting.
+      const zone = time ? parseTimezone(clause) : null
+      // Always stored with a time component, even when none was detected — the
+      // 00:00 is what `has_time: false` exists to qualify, and callers compare
+      // these strings against SQLite datetimes.
+      if (!zone) return { at: toLocalSql(d, true), hasTime: !!time }
+
+      // The sender's wall clock is not ours. Convert to this machine's local
+      // time — which is what every other stored time here means, and what the
+      // dashboard, the reminders and the calendar all assume — and keep the
+      // original alongside so the UI can show "2:00 PM AEDT (4:00 AM your time)"
+      // rather than silently presenting a converted figure the user never saw.
+      const utcMs = Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes())
+        - zone.offsetMinutes * 60000
+      const local = new Date(utcMs)
+      return {
+        at: toLocalSql(local, true),
+        hasTime: true,
+        sourceZone: zone.label,
+        sourceLocal: toLocalSql(d, true),
+      }
     }
   }
   return null
@@ -223,6 +339,7 @@ function parseInterviewTime(subject, body, now = new Date()) {
 module.exports = {
   parseClosingDate,
   parseInterviewTime,
+  parseTimezone,
   // exported for tests
   parseCalendarDate,
   parseTimeOfDay,

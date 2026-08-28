@@ -670,18 +670,35 @@ export default function Analytics({ active }) {
                 <th style={{ padding: '4px 8px 8px', fontWeight: 500 }}>Company</th>
                 <th style={{ padding: '4px 8px 8px', fontWeight: 500, textAlign: 'right' }}>Postings</th>
                 <th style={{ padding: '4px 8px 8px', fontWeight: 500, textAlign: 'right' }}>Over</th>
-                <th style={{ padding: '4px 0 8px 8px', fontWeight: 500, textAlign: 'right' }}>Every</th>
+                <th style={{ padding: '4px 8px 8px', fontWeight: 500, textAlign: 'right' }}>Every</th>
+                <th style={{ padding: '4px 0 8px 8px', fontWeight: 500, textAlign: 'right' }}></th>
               </tr>
             </thead>
             <tbody>
               {ghosts.slice(0, 12).map(g => (
-                <tr key={`${g.jobTitle}|${g.company}`} style={{ borderTop: '1px solid var(--border)' }}>
+                <tr key={`${g.jobTitle}|${g.company}`} style={{
+                  borderTop: '1px solid var(--border)',
+                  opacity: g.suppressed ? 0.5 : 1,
+                }}>
                   <td style={{ padding: '8px 8px 8px 0' }}>{g.jobTitle}</td>
                   <td style={{ padding: '8px', color: 'var(--text-muted)' }}>{g.company}</td>
                   <td style={{ padding: '8px', textAlign: 'right', fontWeight: 600 }}>{g.postings}</td>
                   <td style={{ padding: '8px', textAlign: 'right', color: 'var(--text-muted)' }}>{g.spanDays}d</td>
-                  <td style={{ padding: '8px 0 8px 8px', textAlign: 'right', color: 'var(--text-muted)' }}>
+                  <td style={{ padding: '8px', textAlign: 'right', color: 'var(--text-muted)' }}>
                     {g.averageGapDays == null ? '—' : `~${g.averageGapDays}d`}
+                  </td>
+                  {/* One role, not one company. Reversible from the same button,
+                      because "they are just keeping a pipeline warm" is a guess
+                      the user is entitled to change their mind about. */}
+                  <td style={{ padding: '8px 0 8px 8px', textAlign: 'right' }}>
+                    <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }}
+                      onClick={async () => {
+                        if (g.suppressed) await window.api.unsuppressRole?.(g.company, g.jobTitle)
+                        else await window.api.suppressRole?.(g.company, g.jobTitle, `Reposted ${g.postings}x over ${g.spanDays} days`)
+                        window.api.getGhostJobs?.().then(x => setGhosts(x || [])).catch(() => {})
+                      }}>
+                      {g.suppressed ? 'Resume scanning' : 'Stop drafting'}
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -690,8 +707,15 @@ export default function Analytics({ active }) {
           <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 10, marginBottom: 0 }}>
             Each of these has been advertised at least three times under different URLs over more than
             six weeks. That usually means a pipeline being kept warm, an agency collecting CVs, or a
-            policy requiring the role be posted — not a vacancy waiting for you. Blacklist the company
-            from a job's detail panel if you'd rather stop seeing them.
+            policy requiring the role be posted — not a vacancy waiting for you. Nothing here is acted
+            on automatically: &ldquo;probably a ghost&rdquo; is a judgement about an employer, and
+            silently hiding real jobs on it would be worse than the cost it saves.
+            <br /><br />
+            <strong>Stop drafting</strong> is the narrow version of that decision. It skips this exact
+            role at this exact company on future scans &mdash; before the description fetch and the three
+            model calls, so it actually saves the spend &mdash; while every other opening at the same
+            company keeps being scanned and applied to as normal. Blacklist the company from a job&rsquo;s
+            detail panel if you want the broader version.
           </p>
         </div>
       )}

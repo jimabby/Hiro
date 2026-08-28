@@ -62,6 +62,33 @@ function parseTime(value, fallback) {
   return fallback.split(':').map(Number)
 }
 
+// Snap an "every N hours" setting to an interval that actually divides the day.
+//
+// cron's `*/N` on the hour field steps from 0 and then stops at 23 — it does not
+// wrap. So `*/5` fires at 00, 05, 10, 15, 20 and then waits four hours, not five,
+// for the next midnight. Every N that isn't a divisor of 24 has a short night
+// like that, which for the inbox check means the cadence the user chose is not
+// the cadence they get, silently, once a day.
+//
+// Rounding to the nearest divisor keeps the promise the setting makes: an even
+// spacing at approximately the requested interval.
+//
+// Ties break DOWNWARD — 5 becomes 4, not 6 — because the two directions are not
+// equally wrong here. Checking the inbox more often than asked costs one extra
+// IMAP connection; checking less often delays noticing that a recruiter replied.
+const EVEN_HOUR_INTERVALS = [1, 2, 3, 4, 6, 8, 12, 24]
+
+function evenHourInterval(value) {
+  const requested = Math.min(24, Math.max(1, Number(value) || 2))
+  if (EVEN_HOUR_INTERVALS.includes(requested)) return requested
+  // Strict `<` keeps the earlier (smaller) candidate on a tie.
+  const snapped = EVEN_HOUR_INTERVALS.reduce((best, n) =>
+    Math.abs(n - requested) < Math.abs(best - requested) ? n : best)
+  log(`Inbox check: every ${requested} hours does not divide evenly into a day `
+    + `(cron would leave a short gap at midnight) — using every ${snapped} hours instead.`)
+  return snapped
+}
+
 function startTasks() {
   const cfg = configService.load()
   if (!cfg.setupComplete) return
@@ -111,7 +138,7 @@ function startTasks() {
     try {
       // Recruiter replies don't respect business hours — default to every day.
       const days = cfg.inboxCheckWeekdaysOnly ? '1-5' : '*'
-      const every = Math.min(24, Math.max(1, Number(cfg.inboxCheckHours) || 2))
+      const every = evenHourInterval(cfg.inboxCheckHours)
       inboxTask = cron.schedule(`0 */${every} * * ${days}`, async () => { await runInboxCheck() })
     } catch (err) {
       log(`Could not schedule the inbox check: ${err.message}`)
@@ -792,7 +819,12 @@ async function runInboxCheck() {
     configService.update({ lastInboxCheck: new Date().toISOString() })
     if (result.updated.length > 0) {
       for (const item of result.updated) {
-        const when = item.interviewAt ? ` — interview detected for ${item.interviewAt}` : ''
+        // Name the sender's zone when they gave one. "interview detected for
+        // 2026-03-12 04:00" is alarming and unhelpful on its own; "…(they wrote
+        // 2:00 PM AEDT)" is the sentence that lets the user check it.
+        const when = item.interviewAt
+          ? ` — interview detected for ${item.interviewAt}${item.interviewZone ? ` (they wrote ${item.interviewZone})` : ''}`
+          : ''
         log(`Inbox: ${item.company} replied — status updated to ${item.newStatus}${when}`)
         notify({ type: 'inbox-reply', item })
         nativeNotify('Recruiter reply', `${item.company} replied — status updated to ${item.newStatus}${when}`)
@@ -908,4 +940,6 @@ function getBatchSchedule() {
   return batchSchedule
 }
 
-module.exports = { init, restart, stop, cancelScan, runNow, runDryRun, requestScan, processQueue, getScanInfo, getLastDryRun, runInboxCheck, runFollowUp, runStaleSweep, runContactReminders, runBackupDrill, runBackupDrillIfDue, getStatus, getBatchSchedule, runBatch }
+module.exports = { init, restart, stop, cancelScan, runNow, runDryRun, requestScan, processQueue, getScanInfo, getLastDryRun, runInboxCheck, runFollowUp, runStaleSweep, runContactReminders, runBackupDrill, runBackupDrillIfDue, getStatus, getBatchSchedule, runBatch,
+  // exported for tests
+  evenHourInterval }

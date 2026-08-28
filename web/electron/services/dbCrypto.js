@@ -54,6 +54,24 @@ const SQLITE_MAGIC = Buffer.from('SQLite format 3\0', 'ascii')
 let safeStorage = null
 try { ({ safeStorage } = require('electron')) } catch { /* not in Electron (tests) */ }
 
+// fsync before the rename, and fsync the directory after it — the same rule
+// database.js and config.js already follow, and it was missing here.
+//
+// rename() orders the directory entry but does not force the temp file's bytes
+// to the platter first, so a power loss can land the rename over a file that is
+// still partly zeroes. For db.key that is the worst failure this module has:
+// a key file of zeroes against a database that has already been encrypted is
+// unrecoverable without the printed recovery key. Best-effort — some
+// filesystems refuse fsync on a directory handle.
+function fsyncFile(file, flags) {
+  let fd = null
+  try {
+    fd = fs.openSync(file, flags)
+    fs.fsyncSync(fd)
+  } catch { /* best-effort */ }
+  finally { if (fd !== null) try { fs.closeSync(fd) } catch {} }
+}
+
 // Cached so a burst of writes does not hit the keychain once per write; the
 // keychain call is a few milliseconds and persist() can run in a tight loop.
 let cachedKey = null
@@ -122,7 +140,9 @@ function storeKey(key, { overwrite = false } = {}) {
   const wrapped = safeStorage.encryptString(key.toString('base64')).toString('base64')
   const tmp = KEY_FILE + '.tmp'
   fs.writeFileSync(tmp, JSON.stringify({ version: 1, key: wrapped }), { mode: 0o600 })
+  fsyncFile(tmp, 'r+')
   fs.renameSync(tmp, KEY_FILE)
+  fsyncFile(configService.CONFIG_DIR, 'r')
   // Belt and braces on POSIX: the mode above only applies at creation.
   try { fs.chmodSync(KEY_FILE, 0o600) } catch { /* Windows ignores this */ }
   cachedKey = key
@@ -244,8 +264,13 @@ function rewriteFile(file, encrypt) {
   const plain = isEncrypted(buf) ? decryptBuffer(buf) : buf
   const out = encrypt ? encryptBuffer(plain) : plain
   const tmp = file + '.tmp'
-  fs.writeFileSync(tmp, out)
+  // Same durability and privacy rules as every other write to the profile: the
+  // bytes are forced down before the rename, and the file is the user's alone.
+  fs.writeFileSync(tmp, out, { mode: 0o600 })
+  fsyncFile(tmp, 'r+')
   fs.renameSync(tmp, file)
+  try { fs.chmodSync(file, 0o600) } catch { /* Windows ignores this */ }
+  fsyncFile(path.dirname(file), 'r')
   return true
 }
 

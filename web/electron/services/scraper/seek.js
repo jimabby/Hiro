@@ -35,8 +35,7 @@ function cssEscape(str) {
 }
 
 const seekSession = require('../seekSession')
-const aiAdapter = require('../ai/index')
-const database = require('../database')
+const { resolveAnswer } = require('../screeningAnswers')
 
 async function scrape(cfg) {
   const { jobKeywords, jobLocation, salaryMin } = cfg
@@ -347,36 +346,16 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
         // back is also recorded on `screeningQa` so the finished application
         // shows what was actually submitted on the user's behalf — the detail
         // panel has always had a section for this and it was always empty.
+        // The cache lookup, the model call, the fabrication check and the
+        // fall-back-to-the-user path all live in services/screeningAnswers.js —
+        // three copies of that, one per scraper, is three places for a safety
+        // check to drift.
         async function getAnswer(questionText, optionHint) {
-          const cached = database.getCachedAnswer(questionText)
-          if (cached) { recordAnswer(questionText, cached, 'cache'); return cached }
-          let aiAnswer = ''
-          try {
-            aiAnswer = await aiAdapter.answerScreeningQuestion(
-              cfg.aiProvider, cfg.aiApiKey,
-              questionText + (optionHint ? ` (options: ${optionHint})` : ''),
-              cfg.jobDescription || '',
-              cfg.masterResume || '',
-              cfg.geminiModel
-            )
-          } catch {}
-          const isUncertain = !aiAnswer || aiAnswer.trim().length < 3 ||
-            /not sure|i don't know|unclear|unsure|cannot determine|not enough information/i.test(aiAnswer)
-          if (isUncertain && cfg.askQuestion) {
-            const prompt = optionHint ? `${questionText} (${optionHint})` : questionText
-            const userAnswer = await cfg.askQuestion(prompt).catch(() => '')
-            if (userAnswer) {
-              database.saveCachedAnswer(questionText, userAnswer)
-              recordAnswer(questionText, userAnswer, 'user')
-              return userAnswer
-            }
-            return ''
-          }
-          if (aiAnswer) {
-            database.saveCachedAnswer(questionText, aiAnswer)
-            recordAnswer(questionText, aiAnswer, 'ai')
-          }
-          return aiAnswer || ''
+          const { answer, source } = await resolveAnswer({
+            question: questionText, optionHint, cfg, log: cfg.log,
+          })
+          if (answer) recordAnswer(questionText, answer, source)
+          return answer
         }
 
         // ── Radio button groups (YES/NO eligibility questions) ──────────────

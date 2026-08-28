@@ -8,7 +8,8 @@ const { randomDelay, stripMarkdown } = require('./scraper/utils')
 const { parseClosingDate } = require('./dateParser')
 const automationHealth = require('./automationHealth')
 const resumeExperiment = require('./resumeExperiment')
-const { inspectTailoring, describeFlags } = require('./fabricationGuard')
+const { inspectTailoring, inspectCoverLetter, describeFlags } = require('./fabricationGuard')
+const { detectInjection, describeInjection } = require('./ai/untrusted')
 
 // Pick the resume to use for a given job. A rule matches when any of its
 // comma-separated keywords appears in the job title or description; the first
@@ -289,6 +290,15 @@ async function doRun(cfg, { log, notifyAttention }) {
         continue
       }
 
+      // A role the user marked as one that keeps being reposted. Checked here —
+      // before the description fetch and the three model calls — because the
+      // entire point is not to pay for it again. Company-and-title exact, so
+      // other roles at the same employer are unaffected.
+      if (database.isRoleSuppressed(job.company, job.job_title)) {
+        log(`  Skipping "${job.job_title}" at ${job.company} — you marked this role as repeatedly reposted`)
+        continue
+      }
+
       log(`Processing: ${job.job_title} at ${job.company}`)
 
       // Get full job description
@@ -305,6 +315,24 @@ async function doRun(cfg, { log, notifyAttention }) {
       // means "unknown", and the user can set it by hand later.
       job.closing_date = parseClosingDate(jobDescription)
       if (job.closing_date) log(`  Closes ${job.closing_date}`)
+
+      // Is this ad talking to the model rather than to a candidate?
+      //
+      // Everything downstream of here takes the description as input: the score
+      // that decides whether to submit, the resume, the cover letter, and the
+      // screening answers that get typed into the employer's form. The prompts
+      // fence it (see ai/untrusted.js), but fencing is a mitigation, not a
+      // proof, and this is the one place where being wrong is unrecoverable.
+      //
+      // So an ad carrying model-directed instructions does not get to be
+      // submitted unattended. It is not discarded — the listing may well be a
+      // real job whose description was scraped along with somebody else's
+      // injected boilerplate — it just stops being eligible for the automatic
+      // path and goes to a human with the reason attached.
+      const injection = detectInjection(jobDescription)
+      if (!injection.clean) {
+        log(`  Listing contains model-directed instructions — ${describeInjection(injection.hits)}`)
+      }
 
       // Now that the description is known, routing rules can pick a resume
       // tailored to this specific job.
@@ -426,11 +454,30 @@ async function doRun(cfg, { log, notifyAttention }) {
       // Prompts are guidance, not enforcement. Any newly introduced durable
       // employment fact forces human review even when blanket review mode is
       // disabled or the score clears the auto-submit threshold.
+      //
+      // Three independent reasons to stop, folded into one gate because they all
+      // resolve the same way — a human looks before an employer does:
+      //
+      //   the resume gained a fact the base did not have (diffed)
+      //   the cover letter asserts a credential, date or employer the resume
+      //     does not support (checked whole, since it has no base to diff)
+      //   the listing itself carried instructions aimed at the model
+      //
+      // The third is not evidence that anything went wrong — it is the reason
+      // not to find out the hard way. See ai/untrusted.js.
       const fabrication = inspectTailoring(jobCfg.masterResume, tailoredResume)
-      if (!fabrication.safe) {
-        const detail = describeFlags(fabrication.flags)
+      const letterClaims = inspectCoverLetter(jobCfg.masterResume, coverLetter, {
+        company: job.company, jobTitle: job.job_title,
+      })
+      const reasons = []
+      if (!fabrication.safe) reasons.push(`resume — ${describeFlags(fabrication.flags)}`)
+      if (!letterClaims.safe) reasons.push(`cover letter — ${describeFlags(letterClaims.flags)}`)
+      if (!injection.clean) reasons.push(`listing contains model-directed instructions (${describeInjection(injection.hits)})`)
+
+      if (reasons.length > 0) {
+        const detail = reasons.join('; ')
         if (scraper.supportsAutoApply === false) {
-          job.reason = `Possible fabricated resume facts need review before manual submission: ${detail}`
+          job.reason = `Needs review before manual submission: ${detail}`
           job.job_description = jobDescription || job.job_description || ''
           job.tailored_resume = tailoredResume
           job.cover_letter = coverLetter
@@ -444,16 +491,22 @@ async function doRun(cfg, { log, notifyAttention }) {
           job_title: job.job_title, company: job.company, platform: name,
           salary: job.salary || '', job_url: job.job_url,
           job_description: jobDescription, match_score: matchScore,
-          match_explanation: `${matchExplanation || ''}${matchExplanation ? '\n\n' : ''}Fabrication guard: ${detail}`,
+          match_explanation: `${matchExplanation || ''}${matchExplanation ? '\n\n' : ''}Held for review: ${detail}`,
           base_resume: jobCfg.masterResume || '', provider: jobCfg.aiProvider || '',
           model: jobCfg.geminiModel || '', tailored_resume: tailoredResume,
           cover_letter: coverLetter, screening_qa: [], status: 'held',
           closing_date: job.closing_date, resume_id: jobCfg.activeResumeId,
           resume_name: jobCfg.activeResumeName, recruiter_email: recruiterEmail,
-          fabrication_flags: fabrication.flags,
+          // Every flag from every check, so the Review page can show what was
+          // objected to rather than only that something was.
+          fabrication_flags: [
+            ...fabrication.flags,
+            ...letterClaims.flags.map(f => ({ ...f, kind: `cover-letter ${f.kind}` })),
+            ...injection.hits.map(h => ({ kind: 'listing-injection', value: h.name, line: h.excerpt })),
+          ],
         })
         heldCount++
-        log(`  HELD by fabrication guard — ${detail}`)
+        log(`  HELD for review — ${detail}`)
         await randomDelay(1500, 4000)
         continue
       }
@@ -645,11 +698,33 @@ async function tailorAndApply(job, cfg, log) {
     log(`Cover letter error: ${err.message}`)
   }
 
+  // The same three checks the scan path applies, for the same reason: this
+  // submits to a real employer, and a manual retry from Needs Attention is not
+  // a lesser event than a scheduled one.
   const fabrication = inspectTailoring(cfg.masterResume, tailoredResume)
-  if (!fabrication.safe) {
-    const detail = describeFlags(fabrication.flags)
-    log(`Fabrication guard stopped submission — ${detail}`)
-    return { success: false, heldForFabrication: true, fabricationFlags: fabrication.flags, reason: `Possible fabricated resume facts: ${detail}`, tailoredResume, coverLetter }
+  const letterClaims = inspectCoverLetter(cfg.masterResume, coverLetter, {
+    company: job.company, jobTitle: job.job_title,
+  })
+  const injection = detectInjection(job.job_description || '')
+  const reasons = []
+  if (!fabrication.safe) reasons.push(`resume — ${describeFlags(fabrication.flags)}`)
+  if (!letterClaims.safe) reasons.push(`cover letter — ${describeFlags(letterClaims.flags)}`)
+  if (!injection.clean) reasons.push(`listing contains model-directed instructions (${describeInjection(injection.hits)})`)
+  if (reasons.length > 0) {
+    const detail = reasons.join('; ')
+    log(`Submission stopped for review — ${detail}`)
+    return {
+      success: false,
+      heldForFabrication: true,
+      fabricationFlags: [
+        ...fabrication.flags,
+        ...letterClaims.flags.map(f => ({ ...f, kind: `cover-letter ${f.kind}` })),
+        ...injection.hits.map(h => ({ kind: 'listing-injection', value: h.name, line: h.excerpt })),
+      ],
+      reason: `Needs review before sending: ${detail}`,
+      tailoredResume,
+      coverLetter,
+    }
   }
 
   log('Applying...')

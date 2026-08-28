@@ -81,10 +81,18 @@ const decryptSecret = (value) => {
 
 // Decrypt for load(). Records what could not be read rather than flattening it
 // to '', so save() can put the original back.
+// The reason is held in a LOCAL, not in `secretError` itself. Reusing the
+// module-level variable as the scratch space meant the second load embedded the
+// whole of the first load's message inside the new one — and load() runs on
+// nearly every operation, so the text grew by ~200 bytes each time and read as
+// "…could not be decrypted because 1 saved secret could not be decrypted
+// because…" all the way down. Reset per load; derive the message from scratch.
 function decryptForLoad(config) {
   const out = { ...config }
   const unreadable = []
+  let reason = null
   preservedSecrets.clear()
+  secretError = null
   for (const key of SECRET_KEYS) {
     if (!(key in out)) continue
     const raw = out[key]
@@ -94,11 +102,11 @@ function decryptForLoad(config) {
       preservedSecrets.set(key, raw)
       unreadable.push(key)
       out[key] = ''
-      if (!secretError) secretError = err.message
+      if (!reason) reason = err.message
     }
   }
   secretError = unreadable.length
-    ? `${unreadable.length} saved secret${unreadable.length === 1 ? '' : 's'} (${unreadable.join(', ')}) could not be decrypted because ${secretError}. `
+    ? `${unreadable.length} saved secret${unreadable.length === 1 ? '' : 's'} (${unreadable.join(', ')}) could not be decrypted because ${reason}. `
       + 'They have been left untouched on disk and will work again once the keychain is available. '
       + 'Re-entering a value here replaces the stored one.'
     : null
@@ -376,8 +384,13 @@ const DEFAULTS = {
   encryptDatabase: false,
 }
 
+// The profile directory holds config.json, the database, the backups and the
+// wrapped database key. 0700 rather than the umask default of 0755: on a shared
+// machine everything Hiro owns is private to the user by construction, so a file
+// written without an explicit mode can never be the thing that exposes it.
+// Windows ignores the mode and uses inherited ACLs.
 function ensureDir() {
-  if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
+  if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 })
 }
 
 // Set when load() finds a config file it can't parse. Falling back to DEFAULTS
@@ -425,14 +438,23 @@ function fsyncFile(file, flags) {
 
 // Written via a temp file + rename so a crash or power loss partway through
 // can't leave a truncated config — rename is atomic on NTFS and POSIX alike.
+//
+// 0600, for the same reason dbCrypto writes db.key that way. This file always
+// holds the master resume and the account addresses, and when the OS keychain is
+// unavailable encryptValue is a no-op — so the AI API key, the Gmail app
+// password and the cloud data key sit here in plaintext. That fallback exists so
+// a missing secret service cannot lock the user out; it must not also mean every
+// other account on the machine can read the secrets. `mode` only applies when
+// the temp file is created, so chmod the survivor too.
 function save(config) {
   ensureDir()
   const json = JSON.stringify(encryptForSave(config), null, 2)
   const tmp = CONFIG_FILE + '.tmp'
   try {
-    fs.writeFileSync(tmp, json, 'utf8')
+    fs.writeFileSync(tmp, json, { encoding: 'utf8', mode: 0o600 })
     fsyncFile(tmp, 'r+')
     fs.renameSync(tmp, CONFIG_FILE)
+    try { fs.chmodSync(CONFIG_FILE, 0o600) } catch { /* Windows ignores this */ }
     fsyncFile(CONFIG_DIR, 'r')
     loadError = null
   } catch (err) {
