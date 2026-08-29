@@ -129,6 +129,27 @@ function summarise(platforms, now = Date.now()) {
   return out
 }
 
+// The most recent `limit` events, cut off at the last success of a given kind.
+//
+// `events` arrives newest-first, so everything BEFORE a success in that array
+// happened after it in time. A failure older than the matching success has
+// already been answered and must stop counting.
+//
+// Which success answers which failure is not one rule but two, because scraping
+// and submitting fail independently: a moved result selector is retracted by a
+// scrape that found listings, and an expired login or a broken application form
+// is retracted by an apply that went through. Using 'scrape-ok' for the apply
+// signals would clear a genuinely broken form the moment the search page
+// happened to load.
+function eventsSince(events, limit, successKinds) {
+  const recovered = events.findIndex(e => successKinds.includes(e.kind))
+  const window = recovered === -1 ? events : events.slice(0, recovered)
+  return window.slice(0, limit)
+}
+
+const SCRAPE_OK = ['scrape-ok']
+const APPLY_OK = ['apply-ok']
+
 function diagnose(platform, events, now = Date.now()) {
   const lastScrapeOk = events.find(e => e.kind === 'scrape-ok')
   const lastApplyOk = events.find(e => e.kind === 'apply-ok')
@@ -148,7 +169,7 @@ function diagnose(platform, events, now = Date.now()) {
 
   // Session expiry first: it is the most actionable and it makes every other
   // signal below meaningless while it lasts.
-  if (events.slice(0, 5).some(e => e.kind === 'session-expired')) {
+  if (eventsSince(events, 5, APPLY_OK).some(e => e.kind === 'session-expired')) {
     return {
       ...base,
       status: 'critical',
@@ -159,7 +180,7 @@ function diagnose(platform, events, now = Date.now()) {
 
   // Blocked is not a bug and must not be reported as one — the fix is to wait
   // or slow down, not to check for a broken selector.
-  const recentBlocks = events.slice(0, 5).filter(e => e.kind === 'blocked').length
+  const recentBlocks = eventsSince(events, 5, SCRAPE_OK).filter(e => e.kind === 'blocked').length
   if (recentBlocks >= 2) {
     return {
       ...base,
@@ -182,7 +203,16 @@ function diagnose(platform, events, now = Date.now()) {
   // than inferred — and because it catches the case the streak cannot see: the
   // page still lists jobs, but one field's selector moved, so every listing is
   // discarded for a missing title and the scan reports a healthy-looking zero.
-  const staleEvent = events.slice(0, 6).find(e => e.kind === 'selector-stale')
+  //
+  // Scoped to events NEWER than the last healthy scrape. A stale-selector event
+  // is a fact about a moment, not a standing condition, and nothing ever
+  // retracted it: a fixed scraper went on being reported critical while the
+  // event sat in the recent window, and recordScrape re-armed the six-hour
+  // cooldown on every one of those "critical" verdicts. So a platform that had
+  // fully recovered — twenty listings a scan — kept pausing itself for about six
+  // more scans, which on a daily schedule is the better part of a week. A
+  // successful scrape is the retraction.
+  const staleEvent = eventsSince(events, 6, SCRAPE_OK).find(e => e.kind === 'selector-stale')
   if (staleEvent) {
     const names = String(staleEvent.detail || '').split(', ').filter(Boolean)
     const cardBroken = names.includes('job-card')
@@ -217,7 +247,7 @@ function diagnose(platform, events, now = Date.now()) {
     }
   }
 
-  const selectorMisses = events.slice(0, 10).filter(e => e.kind === 'selector-miss').length
+  const selectorMisses = eventsSince(events, 10, APPLY_OK).filter(e => e.kind === 'selector-miss').length
   if (selectorMisses >= 2) {
     return {
       ...base,
@@ -270,5 +300,6 @@ function describeAge(at, now = Date.now()) {
 module.exports = {
   recordScrape, recordApply, summarise, diagnose, classifyApplyFailure,
   startCooldown, getCooldown,
+  eventsSince,
   EMPTY_STREAK_FOR_SUSPICION, STALE_SUCCESS_HOURS,
 }

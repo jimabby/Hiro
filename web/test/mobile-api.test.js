@@ -12,6 +12,13 @@ const TOKEN = 'a'.repeat(32)
 const PORT = 48231
 const cfg = { mobileApiEnabled: true, mobileApiPort: PORT, mobileApiToken: TOKEN }
 
+const realPairing = require('../electron/services/pairing')
+let deviceSecretCalls = 0
+const pairingSpy = {
+  ...realPairing,
+  deviceSecrets: (...args) => { deviceSecretCalls++; return realPairing.deviceSecrets(...args) },
+}
+
 stub({
   './config': {
     load: () => cfg,
@@ -44,6 +51,10 @@ stub({
   },
   './scheduler': { getScanInfo: () => ({ running: false }), requestScan: () => ({ id: 'x' }), cancelScan: () => {} },
   './logger': { append: () => {}, tail: () => [] },
+  // The real pairing module, with the expensive call counted. deviceSecrets is
+  // what unwraps every registered device token through the OS keychain, so it
+  // stands in for "how much work did this request cost us".
+  './pairing': pairingSpy,
 })
 
 const mobileApi = service('mobileApi.js')
@@ -88,9 +99,42 @@ const post = async (path, body) => {
   // The lockout is per-peer and holds even for a correct token.
   check('valid token also blocked during lockout', await call(TOKEN), 429)
 
+  // A locked-out peer must cost nothing to refuse.
+  //
+  // The lockout used to be checked inside authCheck, which runs AFTER the
+  // signature is verified — and verifying a signature reads the config (a file
+  // parse plus seven keychain unwraps) and then HMACs the request once per
+  // registered device. So the lockout gated the reply and not the work, and
+  // anything on the LAN could keep the desktop busy doing keychain round trips
+  // for the price of sending garbage.
+  deviceSecretCalls = 0
+  const forged = await fetch(`http://127.0.0.1:${PORT}/api/stats`, {
+    headers: {
+      'X-Hiro-Timestamp': String(Date.now()),
+      'X-Hiro-Nonce': 'f'.repeat(32),
+      'X-Hiro-Signature': 'd'.repeat(64),
+    },
+  })
+  check('a forged signature is refused while locked out', forged.status, 429)
+  check('and its signature was never verified', deviceSecretCalls, 0)
+  check('the lockout is still reported as retryable', !!forged.headers.get('Retry-After'), true)
+
   // Re-pairing clears it, so a user fixing a stale token isn't stuck waiting.
   mobileApi.regenerateToken()
   check('regenerating the token clears the lockout', await call(cfg.mobileApiToken), 200)
+
+  // With no lockout in force, a signed request IS verified — the gate above must
+  // not have turned signature checking off altogether.
+  deviceSecretCalls = 0
+  await fetch(`http://127.0.0.1:${PORT}/api/stats`, {
+    headers: {
+      'X-Hiro-Timestamp': String(Date.now()),
+      'X-Hiro-Nonce': 'e'.repeat(32),
+      'X-Hiro-Signature': 'd'.repeat(64),
+    },
+  })
+  check('an unthrottled signed request is still verified', deviceSecretCalls, 1)
+  mobileApi.regenerateToken() // that forged attempt counted as a failure; reset
 
   // ── Routes the phone needs for interviews and pay ───────────────
   const interviews = await get('/api/interviews?limit=5')

@@ -235,4 +235,75 @@ check('an unparseable timestamp does not crash',
   check('an old selector report stops driving the verdict', d.status, 'ok')
 }
 
+// ─── A success retracts the failure it answers ───────────────────
+//
+// Scrolling out of the window was the ONLY way a stale report stopped counting,
+// and the window is six events deep — so a scraper that had been fixed went on
+// being reported critical for six more scans, and recordScrape re-armed the
+// six-hour cooldown on every one of those verdicts. A platform pulling twenty
+// listings a scan kept pausing itself for the better part of a week.
+{
+  const d = health.diagnose('Seek', [
+    ev('scrape-ok', { count: 20 }),
+    ev('scrape-ok', { count: 18 }),
+    ev('scrape-ok', { count: 22 }),
+    ev('selector-stale', { detail: 'jobTitle' }),
+    ev('scrape-empty'),
+  ])
+  check('a fixed selector is not still reported broken', d.status, 'ok')
+  // This is the exact predicate recordScrape re-arms the cooldown on.
+  check('and the platform is not paused again',
+    d.status === 'critical' && /found nothing|selector/i.test(d.headline), false)
+}
+
+// One successful scrape is enough — the fix landed, the evidence says so.
+{
+  const d = health.diagnose('Seek', [
+    ev('scrape-ok', { count: 15 }),
+    ev('selector-stale', { detail: 'salary' }),
+  ])
+  check('a single healthy scrape clears a stale selector report', d.status, 'ok')
+}
+
+// Blocks are transient by nature, so getting results again answers them too.
+{
+  const d = health.diagnose('Seek', [
+    ev('scrape-ok', { count: 11 }),
+    ev('blocked'),
+    ev('blocked'),
+  ])
+  check('results after a block mean we are through it', d.status, 'ok')
+}
+
+// But scraping and submitting fail independently, so a scrape must NOT vouch
+// for the login or the application form. Clearing these on 'scrape-ok' would
+// hide a genuinely broken form the moment the search page happened to load.
+{
+  const d = health.diagnose('Seek', [
+    ev('scrape-ok', { count: 30 }),
+    ev('session-expired'),
+  ])
+  check('a working search does not vouch for the login', d.headline, 'Login has expired')
+}
+{
+  const d = health.diagnose('Seek', [
+    ev('scrape-ok', { count: 30 }),
+    ev('selector-miss'),
+    ev('selector-miss'),
+  ])
+  check('a working search does not vouch for the apply form',
+    /forms are not being completed/.test(d.headline), true)
+}
+// A submission that went through is what answers those.
+{
+  const d = health.diagnose('Seek', [
+    ev('apply-ok'),
+    ev('session-expired'),
+    ev('selector-miss'),
+    ev('selector-miss'),
+    ev('scrape-ok', { count: 30 }),
+  ])
+  check('a successful apply clears both apply-side failures', d.status, 'ok')
+}
+
 done()

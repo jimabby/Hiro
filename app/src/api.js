@@ -2,33 +2,58 @@
 import { encryptPayload, decryptPayload, signedHeaders } from './secureProtocol'
 // Pure, CommonJS, and separately tested — see src/httpJson.js.
 import { readJson } from './httpJson'
+import { openChannel, sealRequest, openResponse } from './pairProtocol'
 
 const TIMEOUT_MS = 8000
+// Pairing stretches the code with 200k rounds of PBKDF2 in JavaScript, which on
+// an older phone is a second or two on top of two network round trips. The
+// ordinary 8s budget is too tight for that.
+const PAIR_TIMEOUT_MS = 30000
 
-// Exchange a one-time pairing code for a token belonging to this phone alone.
-//
-// Unauthenticated by necessity — it is how a token is obtained — so it is the
-// one call that cannot go through HiroClient. The desktop only accepts it from
-// a private-range address, only while a code is live, and only once.
-export async function pairWithDesktop({ host, port, code, deviceName, platform }) {
+async function withTimeout(url, options, ms) {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
+  const timer = setTimeout(() => controller.abort(), ms)
   try {
-    const res = await fetch(`http://${host}:${port}/api/pair`, {
-      method: 'POST',
-      signal: controller.signal,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code, deviceName, platform }),
-    })
-    const body = await readJson(res)
-    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`)
-    return body // { token, device, host }
+    return await fetch(url, { ...options, signal: controller.signal })
   } catch (err) {
     if (err.name === 'AbortError') throw new Error('Connection timed out — is the desktop app running?')
     throw err
   } finally {
     clearTimeout(timer)
   }
+}
+
+// Exchange a one-time pairing code for a token belonging to this phone alone.
+//
+// Unauthenticated by necessity — it is how a token is obtained — so it is the
+// one call that cannot go through HiroClient. The desktop only accepts it from
+// a private-range address, only while a code is live, and only once.
+//
+// Two round trips rather than one, because the reply carries a 90-day credential
+// and this is plain HTTP. The first fetches the desktop's ephemeral public key,
+// authenticated by an HMAC only the holder of the pairing code can check; the
+// second sends the code and receives the token, both encrypted under the agreed
+// key. See src/pairProtocol.js.
+export async function pairWithDesktop({ host, port, code, deviceName, platform }) {
+  const base = `http://${host}:${port}`
+
+  const helloRes = await withTimeout(`${base}/api/pair/hello`, {}, PAIR_TIMEOUT_MS)
+  const hello = await readJson(helloRes)
+  if (!helloRes.ok) throw new Error(hello?.error || `HTTP ${helloRes.status}`)
+
+  // Throws when the tag does not verify — a mistyped code, or something on the
+  // network answering in the desktop's place.
+  const channel = openChannel(hello, code)
+  const sealed = await sealRequest(channel, { code, deviceName, platform })
+
+  const res = await withTimeout(`${base}/api/pair`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(sealed),
+  }, PAIR_TIMEOUT_MS)
+  const body = await readJson(res)
+  if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`)
+  return openResponse(channel, body) // { token, device, host }
 }
 
 export class HiroClient {

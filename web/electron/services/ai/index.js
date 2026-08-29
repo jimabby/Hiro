@@ -90,8 +90,12 @@ async function generateFollowUpQuestion(provider, apiKey, question, userAnswer, 
   return getAdapter(provider).generateFollowUpQuestion(question, userAnswer, jobDescription, apiKey, modelFor(provider, geminiModel))
 }
 
-async function generateFollowUpEmail(provider, apiKey, jobTitle, company, masterResume, geminiModel) {
-  return getAdapter(provider).generateFollowUpEmail(jobTitle, company, masterResume, apiKey, modelFor(provider, geminiModel))
+// `stage` is WHICH follow-up this is — 1 for the first nudge, 2 for the next,
+// and so on. Each stage asks the model for a different letter; a second email
+// that reads exactly like the first tells the reader nobody is paying attention.
+// See ai/prompts.js.
+async function generateFollowUpEmail(provider, apiKey, jobTitle, company, masterResume, geminiModel, stage = 1) {
+  return getAdapter(provider).generateFollowUpEmail(jobTitle, company, masterResume, apiKey, modelFor(provider, geminiModel), stage)
 }
 
 async function classifyReply(provider, apiKey, subject, body, company, geminiModel) {

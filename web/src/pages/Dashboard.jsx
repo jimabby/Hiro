@@ -1,4 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
+// One description of the status vocabulary, shared with Timeline — see
+// src/statuses.js for why these stopped living in each page.
+import { statusBadge, SETTABLE_STATUSES, FILTER_TABS } from '../statuses'
 
 function safeParseJSON(str) {
   try { return JSON.parse(str || '[]') } catch { return [] }
@@ -11,18 +14,6 @@ function stripMd(t) {
     .replace(/^#{1,6}\s+/gm, '').replace(/^-{3,}\s*$/gm, '')
 }
 
-const STATUS_BADGE = {
-  applied: { label: 'Applied', color: 'badge-blue' },
-  interview: { label: 'Interview', color: 'badge-green' },
-  offer: { label: 'Offer', color: 'badge-green' },
-  rejected: { label: 'Rejected', color: 'badge-red' },
-  pending: { label: 'Pending', color: 'badge-yellow' },
-  no_response: { label: 'No Response', color: 'badge-gray' },
-  skipped: { label: 'Skipped', color: 'badge-gray' },
-  // Drafted by review mode but not sent. Amber, because it is waiting on the
-  // user rather than finished.
-  held: { label: 'Held for review', color: 'badge-yellow' },
-}
 
 // Why a version was frozen. Plain words — "drafted" and "submitted" are the
 // difference between what was written and what an employer actually received.
@@ -33,20 +24,6 @@ const SNAPSHOT_LABEL = {
   'before-restore': 'Replaced',
 }
 
-// The statuses a user may set by hand, in the order they appear in every picker.
-// 'skipped' is deliberately absent — it's assigned by the scan, not chosen.
-const SETTABLE_STATUSES = [
-  { value: 'applied', label: 'Applied' },
-  { value: 'interview', label: 'Interview' },
-  { value: 'offer', label: 'Offer' },
-  { value: 'rejected', label: 'Rejected' },
-  { value: 'pending', label: 'Pending' },
-  { value: 'no_response', label: 'No Response' },
-  // You pulled out — took something else, or decided against the role after
-  // applying. Not a rejection (that would misattribute it to the employer and
-  // put it in the rejection-stage analysis) and not skipped (it was sent).
-  { value: 'withdrawn', label: 'Withdrawn' },
-]
 
 const PAGE_SIZE = 25
 
@@ -904,20 +881,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
       <div className="card">
         {/* Status tabs */}
         {(() => {
-          const TAB_STATUSES = [
-            { value: '', label: 'All' },
-            { value: 'applied', label: 'Applied' },
-            // Drafted by review mode, not yet sent. Sits next to Applied so
-            // it's obvious these are waiting rather than done.
-            { value: 'held', label: 'Held' },
-            { value: 'interview', label: 'Interview' },
-            { value: 'offer', label: 'Offer' },
-            { value: 'pending', label: 'Pending' },
-            { value: 'rejected', label: 'Rejected' },
-            { value: 'no_response', label: 'No Response' },
-            { value: 'withdrawn', label: 'Withdrawn' },
-            { value: 'skipped', label: 'Skipped' },
-          ]
+          const TAB_STATUSES = FILTER_TABS
           return (
             // flexWrap, because nine tabs do not fit. Without it the last one
             // ("Skipped") pushed past the card, and because nothing between here
@@ -1173,8 +1137,8 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                   <h2 style={{ fontSize: 18 }}>{selected.job_title}</h2>
-                  <span className={`badge ${STATUS_BADGE[selected.status]?.color || 'badge-gray'}`}>
-                    {STATUS_BADGE[selected.status]?.label || selected.status}
+                  <span className={`badge ${statusBadge(selected.status).color}`}>
+                    {statusBadge(selected.status).label}
                   </span>
                 </div>
                 <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>
@@ -1385,8 +1349,8 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                         width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
                         background: i === statusHistory.length - 1 ? 'var(--accent)' : 'var(--border)',
                       }} />
-                      <span className={`badge ${STATUS_BADGE[h.status]?.color || 'badge-gray'}`} style={{ minWidth: 70, textAlign: 'center' }}>
-                        {STATUS_BADGE[h.status]?.label || h.status}
+                      <span className={`badge ${statusBadge(h.status).color}`} style={{ minWidth: 70, textAlign: 'center' }}>
+                        {statusBadge(h.status).label}
                       </span>
                       <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                         {/* changed_at is stored in UTC — render in local time */}

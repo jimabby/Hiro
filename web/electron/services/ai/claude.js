@@ -1,6 +1,6 @@
 const Anthropic = require('@anthropic-ai/sdk')
 const { withUsage } = require('./usage')
-const { interviewQuestionsPrompt } = require('./prompts')
+const { interviewQuestionsPrompt, followUpEmailPrompt } = require('./prompts')
 const { fence, FENCE_RULES } = require('./untrusted')
 const { parseScore, parseScoreWithExplanation } = require('./scoring')
 
@@ -239,17 +239,11 @@ RESUME: ${masterResume.slice(0, 800)}` }],
   catch { return { missing: [], present: [] } }
 }
 
-async function generateFollowUpEmail(jobTitle, company, masterResume, apiKey) {
+async function generateFollowUpEmail(jobTitle, company, masterResume, apiKey, _model, stage) {
   const text = await complete('generateFollowUpEmail', apiKey, {
     ...SMART,
     max_tokens: 400,
-    messages: [{ role: 'user', content: `Write a brief professional follow-up email for a job application.
-Candidate applied for "${jobTitle}" at "${company}" and is following up to express continued interest.
-2-3 short paragraphs. No markdown. End with candidate's name from the resume.
-Return ONLY the email body text.
-
-RESUME:
-${masterResume.slice(0, 800)}` }],
+    messages: [{ role: 'user', content: followUpEmailPrompt(jobTitle, company, masterResume, stage) }],
   })
   return text
 }

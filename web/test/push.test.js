@@ -213,6 +213,17 @@ async function main() {
   await push.runDueChecks()
   check('the review queue is not announced again in the same window', sent.length, 0)
 
+  // …and it stays quiet when the queue GROWS inside that window. The held count
+  // used to be part of the dedupe key, which quietly undid the rate limit it was
+  // sitting inside: every new draft minted a fresh key, so a scan drafting ten
+  // applications one at a time sent ten notifications where one was allowed.
+  addApplication({ status: 'held', company: 'Second Draft Co' })
+  addApplication({ status: 'held', company: 'Third Draft Co' })
+  sent.length = 0
+  await push.runDueChecks()
+  check('a growing review queue does not re-notify inside the window',
+    sent.flatMap(s => s.messages).filter(m => /waiting for review/.test(m.title)).length, 0)
+
   // ── Follow-ups ────────────────────────────────────────────────
   const dueId = addApplication({ status: 'applied', company: 'Chase Me Ltd' })
   db.setNextAction(dueId, { date: localDate(-1), note: 'Chase the recruiter' })

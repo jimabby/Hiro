@@ -40,7 +40,19 @@ let onRemoteReview = null
 // upload must replace payloads encrypted with the previous derived key before
 // any attempt to decrypt those old cloud rows.
 let pendingRekey = false
+// When the access token currently held stops being accepted. 0 means "no live
+// session". See ensureSession() for why this has to be tracked here rather than
+// left to the client library.
+let sessionExpiresAt = 0
 const CLOUD_PAGE_SIZE = 500
+
+// Refresh this far before the token actually lapses, so a sync that starts just
+// inside the window doesn't have it expire mid-run — pushDirty alone can take
+// several seconds against a large history.
+const SESSION_REFRESH_MARGIN_MS = 5 * 60 * 1000
+// Supabase's default access-token lifetime, used only when a session reports
+// neither expires_at nor expires_in.
+const DEFAULT_SESSION_TTL_MS = 60 * 60 * 1000
 
 // PostgREST projects commonly cap a response at 1,000 rows. A plain select()
 // therefore is not an "all rows" operation, even though it looks like one.
@@ -77,6 +89,7 @@ function getClient() {
     })
     clientKey = key
     user = null // any previous session belongs to the old project/key
+    sessionExpiresAt = 0
   }
   return client
 }
@@ -155,6 +168,7 @@ async function signIn(email, password) {
   const { session: data, dataKey } = await signInWithDerivedSecret(c, email, password)
   user = data.user
   lastError = null
+  sessionExpiresAt = expiryOf(data.session)
   configService.update({
     cloudSyncEnabled: true,
     supabaseEmail: email,
@@ -170,24 +184,65 @@ async function signIn(email, password) {
   return getStatus()
 }
 
-// Restore a session from the stored refresh token (used on app launch).
+// Restore a session from the stored refresh token (used on app launch, and
+// whenever the access token is about to lapse — see ensureSession).
 async function restoreSession() {
   const c = getClient()
   const cfg = configService.load()
   if (!c || !cfg.cloudSyncEnabled || !cfg.supabaseRefreshToken) return false
   const { data, error } = await c.auth.refreshSession({ refresh_token: cfg.supabaseRefreshToken })
-  if (error || !data.session) { lastError = error?.message || 'Session expired'; return false }
+  if (error || !data.session) {
+    lastError = error?.message || 'Session expired'
+    // The token we hold was refused, so the in-memory session is worthless too.
+    // Leaving `user` set is what made this unrecoverable: every later call took
+    // the "already signed in" path and never tried to refresh again.
+    user = null
+    sessionExpiresAt = 0
+    return false
+  }
   user = data.user
   lastError = null
+  sessionExpiresAt = expiryOf(data.session)
   if (data.session.refresh_token && data.session.refresh_token !== cfg.supabaseRefreshToken) {
     configService.update({ supabaseRefreshToken: data.session.refresh_token })
   }
   return true
 }
 
+// When the access token this session is holding stops being accepted, in ms
+// since the epoch. Supabase reports `expires_at` in SECONDS; `expires_in` is the
+// fallback for adapters (and the test doubles) that only carry the duration.
+function expiryOf(session) {
+  const at = Number(session?.expires_at)
+  if (Number.isFinite(at) && at > 0) return at * 1000
+  const seconds = Number(session?.expires_in)
+  if (Number.isFinite(seconds) && seconds > 0) return Date.now() + seconds * 1000
+  // Neither field present. Assume the Supabase default rather than treating the
+  // session as immortal — being wrong this way costs one extra refresh, and
+  // being wrong the other way is the bug this function exists to stop.
+  return Date.now() + DEFAULT_SESSION_TTL_MS
+}
+
+// A live session, refreshing first if the one we hold is spent.
+//
+// The client is deliberately built with autoRefreshToken:false — a background
+// timer inside a library is not something this process wants running against a
+// session it may have signed out of. That makes refreshing OUR job, and it was
+// not being done: restoreSession ran once at launch and was only ever called
+// again when `user` was falsy, which it never became. Supabase access tokens
+// last an hour; this app is designed to sit in the tray for days. So an hour
+// after launch every sync failed with "JWT expired", the two-minute timer kept
+// firing and kept failing, and nothing recovered short of a restart — taking
+// phone sync, push notifications and phone-queued scans down with it.
+async function ensureSession() {
+  if (user && Date.now() < sessionExpiresAt - SESSION_REFRESH_MARGIN_MS) return true
+  return restoreSession()
+}
+
 async function signOut() {
   try { await getClient()?.auth.signOut() } catch {}
   user = null
+  sessionExpiresAt = 0
   sessionStartedAt = null
   stopAuto()
   configService.update({ cloudSyncEnabled: false, supabaseRefreshToken: '', cloudDataKey: '' })
@@ -656,7 +711,7 @@ async function updateScanStatus(running) {
   try {
     const c = getClient()
     if (!c) return
-    if (!user && !(await restoreSession())) return
+    if (!(await ensureSession())) return
     await c.from('scan_status').upsert(
       { user_id: user.id, running, updated_at: new Date().toISOString() },
       { onConflict: 'user_id' }
@@ -693,7 +748,7 @@ async function resolveFirstSync(choice) {
   }
   const c = getClient()
   if (!c) return { success: false, reason: 'Supabase is not configured.' }
-  if (!user && !(await restoreSession())) return { success: false, reason: 'Not signed in.' }
+  if (!(await ensureSession())) return { success: false, reason: 'Not signed in.' }
 
   try {
     if (choice === 'cloud') {
@@ -821,7 +876,7 @@ async function checkRevocation(c) {
 async function listDevices() {
   const c = getClient()
   if (!c) return []
-  if (!user && !(await restoreSession())) return []
+  if (!(await ensureSession())) return []
   const { data, error } = await c
     .from('devices')
     .select('*')
@@ -857,7 +912,7 @@ async function revokeDevice(deviceId) {
   }
   const c = getClient()
   if (!c) return { success: false, reason: 'Supabase is not configured.' }
-  if (!user && !(await restoreSession())) return { success: false, reason: 'Not signed in.' }
+  if (!(await ensureSession())) return { success: false, reason: 'Not signed in.' }
   // The push token goes immediately: that part IS enforceable from here, so a
   // revoked phone stops receiving notifications straight away even if it never
   // comes online to sign itself out.
@@ -881,7 +936,7 @@ async function revokeDevice(deviceId) {
 async function forgetDevice(deviceId) {
   const c = getClient()
   if (!c) return { success: false, reason: 'Supabase is not configured.' }
-  if (!user && !(await restoreSession())) return { success: false, reason: 'Not signed in.' }
+  if (!(await ensureSession())) return { success: false, reason: 'Not signed in.' }
   const { error } = await c.from('devices').delete().eq('user_id', user.id).eq('device_id', deviceId)
   if (error) return { success: false, reason: error.message }
   // Forget it locally too, or the next sync would announce it as a new device.
@@ -902,7 +957,7 @@ async function forgetDevice(deviceId) {
 async function signOutEverywhere() {
   const c = getClient()
   if (!c) return { success: false, reason: 'Supabase is not configured.' }
-  if (!user && !(await restoreSession())) return { success: false, reason: 'Not signed in.' }
+  if (!(await ensureSession())) return { success: false, reason: 'Not signed in.' }
   try {
     // Clear the registry and every push token first: after the sign-out this
     // client has no authority to write to those rows.
@@ -962,7 +1017,7 @@ async function announceNewDevices(devices) {
 async function getPushTargets() {
   const c = getClient()
   if (!c) return []
-  if (!user && !(await restoreSession())) return []
+  if (!(await ensureSession())) return []
   const { data, error } = await c
     .from('devices')
     .select('device_id, push_token, push_enabled, revoked_at')
@@ -976,7 +1031,7 @@ async function getPushTargets() {
 async function clearPushToken(deviceId) {
   const c = getClient()
   if (!c) return { success: false }
-  if (!user && !(await restoreSession())) return { success: false }
+  if (!(await ensureSession())) return { success: false }
   const { error } = await c.from('devices').update({ push_token: null })
     .eq('user_id', user.id).eq('device_id', deviceId)
   return { success: !error }
@@ -988,7 +1043,7 @@ async function sync() {
   try {
     const c = getClient()
     if (!c) return getStatus()
-    if (!user && !(await restoreSession())) return getStatus()
+    if (!(await ensureSession())) return getStatus()
 
     // Before anything is read or written: has this device been cut off? Syncing
     // first and checking afterwards would push a revoked device's data up one
@@ -1068,4 +1123,7 @@ module.exports = {
   resolveFirstSync, selectAll,
   listDevices, revokeDevice, forgetDevice, signOutEverywhere,
   getPushTargets, clearPushToken,
+  // exported for tests
+  ensureSession, expiryOf,
+  _resetSession: () => { user = null; sessionExpiresAt = 0 },
 }

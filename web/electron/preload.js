@@ -154,6 +154,7 @@ contextBridge.exposeInMainWorld('api', {
   deleteCachedAnswer: (question) => ipcRenderer.invoke('db:deleteCachedAnswer', question),
   updateCachedAnswer: (question, answer) => ipcRenderer.invoke('db:updateCachedAnswer', question, answer),
   clearAllCachedAnswers: () => ipcRenderer.invoke('db:clearAllCachedAnswers'),
+  confirmCachedAnswer: (question) => ipcRenderer.invoke('db:confirmCachedAnswer', question),
   getStorageInfo: () => ipcRenderer.invoke('db:getStorageInfo'),
 
   // Interview schedule
@@ -200,6 +201,14 @@ contextBridge.exposeInMainWorld('api', {
 
   // Settings export / import (encrypted bundle)
   exportConfig: (passphrase, includeSecrets) => ipcRenderer.invoke('config:export', passphrase, includeSecrets),
+  // The whole job search as portable data — every application, the documents
+  // that went out, and the replies that came back. Distinct from exportConfig
+  // (settings only) and from the SQLite backups (unreadable without this
+  // machine's keychain when encryption at rest is on).
+  exportDataPreview: () => ipcRenderer.invoke('data:exportPreview'),
+  exportData: (passphrase) => ipcRenderer.invoke('data:export', passphrase),
+  chooseDataImport: () => ipcRenderer.invoke('data:chooseImport'),
+  importData: (passphrase) => ipcRenderer.invoke('data:import', passphrase),
   inspectConfigImport: (passphrase) => ipcRenderer.invoke('config:inspectImport', passphrase),
   applyConfigImport: () => ipcRenderer.invoke('config:applyImport'),
 

@@ -56,13 +56,35 @@ async function showImporter(conn) {
   await fillCurrentJob()
 }
 
+// Two round trips, because the reply carries a long-lived device token over
+// plain HTTP: the first fetches the desktop's ephemeral public key (authenticated
+// by an HMAC only the holder of the pairing code can check), the second sends the
+// code and receives the token, both encrypted under the agreed key. See
+// pairChannel.js.
 $('pair').addEventListener('click', async () => {
   $('pair').disabled = true; message('Pairing…')
   try {
     const host = await requestDesktopPermission($('host').value), port = Number($('port').value) || 4823
-    const res = await fetch(`http://${host}:${port}/api/pair`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: $('code').value.trim(), deviceName: 'Browser extension', platform: 'extension' }) })
+    const code = $('code').value.trim()
+    const base = `http://${host}:${port}`
+
+    const helloRes = await fetch(`${base}/api/pair/hello`)
+    const hello = await helloRes.json()
+    if (!helloRes.ok) throw new Error(hello.error || `Pairing failed (${helloRes.status})`)
+
+    // Throws when the tag does not verify — a mistyped code, or something on the
+    // network answering in the desktop's place.
+    const channel = await HiroPairChannel.openChannel(hello, code)
+    const sealed = await HiroPairChannel.sealRequest(channel, {
+      code, deviceName: 'Browser extension', platform: 'extension',
+    })
+
+    const res = await fetch(`${base}/api/pair`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sealed),
+    })
     const body = await res.json(); if (!res.ok) throw new Error(body.error || `Pairing failed (${res.status})`)
-    const conn = { host, port, token: body.token }
+    const paired = await HiroPairChannel.openResponse(channel, body)
+    const conn = { host, port, token: paired.token }
     await chrome.storage.session.set({ hiroConnection: conn })
     await showImporter(conn); message('Paired for this browser session.', 'success')
   } catch (err) { message(err.message, 'error') } finally { $('pair').disabled = false }

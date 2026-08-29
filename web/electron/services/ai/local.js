@@ -61,7 +61,7 @@ const improveResume = (resumeText, apiKey, model) => openai.improveResume(resume
 const generateInterviewQuestions = (jobDesc, resume, apiKey, model, replyContext) => openai.generateInterviewQuestions(jobDesc, resume, key(apiKey), flavourFor(model), replyContext)
 const generateFollowUpQuestion = (q, a, jd, apiKey, model) => openai.generateFollowUpQuestion(q, a, jd, key(apiKey), flavourFor(model))
 const analyzeKeywordGap = (jobDesc, resume, apiKey, model) => openai.analyzeKeywordGap(jobDesc, resume, key(apiKey), flavourFor(model))
-const generateFollowUpEmail = (jobTitle, company, resume, apiKey, model) => openai.generateFollowUpEmail(jobTitle, company, resume, key(apiKey), flavourFor(model))
+const generateFollowUpEmail = (jobTitle, company, resume, apiKey, model, stage) => openai.generateFollowUpEmail(jobTitle, company, resume, key(apiKey), flavourFor(model), stage)
 const classifyReply = (subject, body, company, apiKey, model) => openai.classifyReply(subject, body, company, key(apiKey), flavourFor(model))
 
 module.exports = {

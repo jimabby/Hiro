@@ -4,6 +4,8 @@ const configService = require('./config')
 const dbCrypto = require('./dbCrypto')
 const { CONFIG_DIR } = configService
 const { parseSalaryColumns } = require('./salaryParser')
+const jobFingerprint = require('./jobFingerprint')
+const dataExport = require('./dataExport')
 
 const DB_PATH = path.join(CONFIG_DIR, 'autoapply.db')
 
@@ -391,6 +393,48 @@ function migrate() {
   try { db.run('ALTER TABLE applications ADD COLUMN match_explanation TEXT DEFAULT ""') } catch {}
   try { db.run('ALTER TABLE applications ADD COLUMN follow_up_sent INTEGER DEFAULT 0') } catch {}
   try { db.run('ALTER TABLE applications ADD COLUMN recruiter_email TEXT DEFAULT ""') } catch {}
+  // How many follow-ups have gone out, and when the last one did.
+  //
+  // follow_up_sent was a boolean, so every application got exactly one nudge
+  // ever — which is not how anybody actually chases an application. These two
+  // replace it: the count decides which letter to write (see ai/prompts.js) and
+  // whether there are any left, the timestamp spaces them out. The old column
+  // stays as the seed, so an application already followed up once is at one and
+  // does not get a duplicate first nudge on upgrade.
+  try {
+    db.run('ALTER TABLE applications ADD COLUMN follow_up_count INTEGER DEFAULT 0')
+    db.run('UPDATE applications SET follow_up_count = COALESCE(follow_up_sent, 0)')
+  } catch {}
+  try { db.run('ALTER TABLE applications ADD COLUMN last_follow_up_at TEXT') } catch {}
+  // Set when the user rejects a drafted follow-up. That is a decision about the
+  // whole sequence, not just this letter — redrafting the next stage at someone
+  // who has just declined to chase this employer is exactly the nagging the
+  // stages are supposed to make deliberate.
+  try { db.run('ALTER TABLE applications ADD COLUMN follow_up_stopped INTEGER DEFAULT 0') } catch {}
+  // A fingerprint of the advert's text, so the same listing reposted under a new
+  // URL and a tweaked title is recognised BEFORE it is scored and tailored
+  // again. See jobFingerprint.js for why it is exact rather than fuzzy.
+  //
+  // Backfilled below rather than left null, because the whole value is in
+  // recognising ads already in the history — a hash that only starts from today
+  // catches nothing until the second repost.
+  let addedApplicationHash = false
+  let addedAttentionHash = false
+  try {
+    db.run('ALTER TABLE applications ADD COLUMN description_hash TEXT')
+    addedApplicationHash = true
+  } catch {}
+  try {
+    db.run('ALTER TABLE attention_jobs ADD COLUMN description_hash TEXT')
+    addedAttentionHash = true
+  } catch {}
+  if (addedApplicationHash) backfillFingerprints('applications')
+  if (addedAttentionHash) backfillFingerprints('attention_jobs')
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_applications_desc_hash ON applications(description_hash)') } catch {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_attention_desc_hash ON attention_jobs(description_hash)') } catch {}
+  // Set when a suppression was made from a listing that had a description, so
+  // "this role keeps being reposted" also catches the repost that renames it.
+  try { db.run('ALTER TABLE suppressed_roles ADD COLUMN description_hash TEXT') } catch {}
   // Cloud sync tracking: cloud_dirty marks rows with local changes not yet
   // pushed (defaults 1 so existing rows push once); cloud_updated_at remembers
   // the remote updated_at we last saw, so pulls detect phone edits by equality
@@ -614,6 +658,54 @@ function hasSeenJobUrl(jobUrl) {
   return hasJobUrl(jobUrl) || hasAttentionJobUrl(jobUrl)
 }
 
+// One-off: hash the descriptions already on disk when the column is added.
+//
+// Done in a batch so the whole table costs one database write rather than one
+// per row — sql.js re-serialises the entire file on every write, and a long
+// history would otherwise turn a schema migration into a minutes-long stall at
+// startup.
+function backfillFingerprints(table) {
+  try {
+    const rows = query(`SELECT id, company, job_description FROM ${table}
+                        WHERE description_hash IS NULL AND job_description IS NOT NULL
+                          AND length(job_description) > 0`)
+    if (rows.length === 0) return
+    batch(() => {
+      for (const row of rows) {
+        const hash = jobFingerprint.fingerprint(row.company, row.job_description)
+        if (hash) run(`UPDATE ${table} SET description_hash = ? WHERE id = ?`, [hash, row.id])
+      }
+    })
+  } catch { /* a failed backfill costs recognition of old reposts, not correctness */ }
+}
+
+// Has this exact advert been seen before, under any URL?
+//
+// Returns the earlier row so the caller can say WHICH listing this repeats —
+// "already seen as 'Data Engineer' on 3 March" is actionable in a way that
+// "duplicate" is not. Checks both tables for the same reason hasSeenJobUrl does:
+// a job whose apply failed sits in attention_jobs with no applications row.
+function findJobByContent(company, description) {
+  const hash = jobFingerprint.fingerprint(company, description)
+  if (!hash) return null
+  const applied = queryOne(
+    `SELECT id, job_title, company, job_url, status, applied_at AS seen_at, 'application' AS source
+     FROM applications WHERE description_hash = ? ORDER BY id DESC LIMIT 1`, [hash])
+  if (applied) return applied
+  return queryOne(
+    `SELECT id, job_title, company, job_url, NULL AS status, found_at AS seen_at, 'attention' AS source
+     FROM attention_jobs WHERE description_hash = ? ORDER BY id DESC LIMIT 1`, [hash])
+}
+
+// A suppressed role, matched on the advert's text rather than on its title.
+// This is what catches the repost that renames itself — the case the exact
+// company+title key cannot see by construction.
+function isContentSuppressed(company, description) {
+  const hash = jobFingerprint.fingerprint(company, description)
+  if (!hash) return null
+  return queryOne('SELECT company, job_title, reason FROM suppressed_roles WHERE description_hash = ? LIMIT 1', [hash])
+}
+
 // Has this company been applied to *recently*? Previously this matched any
 // non-skipped row ever, so a single application permanently blacklisted the
 // employer — every later role there was silently skipped. The window is
@@ -645,8 +737,8 @@ function insertApplication(data) {
   const status = data.status || 'applied'
   db.run(`
     INSERT INTO applications
-      (job_title, company, platform, salary, job_url, job_description, match_score, match_explanation, tailored_resume, cover_letter, screening_qa, status, closing_date, salary_min, salary_max, resume_id, resume_name, recruiter_email, held_at, fabrication_flags, campaign_id, campaign_name)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (job_title, company, platform, salary, job_url, job_description, match_score, match_explanation, tailored_resume, cover_letter, screening_qa, status, closing_date, salary_min, salary_max, resume_id, resume_name, recruiter_email, held_at, fabrication_flags, campaign_id, campaign_name, description_hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     data.job_title, data.company, data.platform, data.salary || '',
     data.job_url, data.job_description, data.match_score,
@@ -661,6 +753,9 @@ function insertApplication(data) {
     status === 'held' ? new Date().toISOString() : null,
     JSON.stringify(data.fabrication_flags || []),
     data.campaign_id || null, data.campaign_name || null,
+    // Recorded on the way in, so the next repost of this advert is recognised
+    // before it costs anything. Null when the ad is too short to fingerprint.
+    jobFingerprint.fingerprint(data.company, data.job_description),
   ])
   // Read the new row id BEFORE persist(): db.export() resets last_insert_rowid.
   const newId = queryOne('SELECT last_insert_rowid() as id')?.id
@@ -1194,10 +1289,25 @@ function suppressRole({ company, jobTitle, reason = 'Repeatedly reposted' }) {
   if (!key.split(ROLE_KEY_SEP).join('').trim()) {
     return { success: false, reason: 'A company and job title are required.' }
   }
+  // Take the advert's fingerprint from whatever this role was last seen as, so
+  // the suppression also covers the repost that renames itself — the exact
+  // company+title key cannot catch that by construction, and renaming is how a
+  // repeatedly-reposted listing usually comes back.
+  const seen = queryOne(
+    `SELECT description_hash FROM applications
+     WHERE lower(trim(company)) = ? AND lower(trim(job_title)) = ? AND description_hash IS NOT NULL
+     ORDER BY id DESC LIMIT 1`,
+    [String(company || '').trim().toLowerCase(), String(jobTitle || '').trim().toLowerCase()])
+    || queryOne(
+      `SELECT description_hash FROM attention_jobs
+       WHERE lower(trim(company)) = ? AND lower(trim(job_title)) = ? AND description_hash IS NOT NULL
+       ORDER BY id DESC LIMIT 1`,
+      [String(company || '').trim().toLowerCase(), String(jobTitle || '').trim().toLowerCase()])
   run(
-    `INSERT INTO suppressed_roles (role_key, company, job_title, reason) VALUES (?, ?, ?, ?)
-     ON CONFLICT(role_key) DO UPDATE SET reason = excluded.reason, created_at = datetime('now')`,
-    [key, String(company).trim(), String(jobTitle).trim(), String(reason).slice(0, 200)]
+    `INSERT INTO suppressed_roles (role_key, company, job_title, reason, description_hash) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(role_key) DO UPDATE SET reason = excluded.reason, created_at = datetime('now'),
+       description_hash = COALESCE(excluded.description_hash, suppressed_roles.description_hash)`,
+    [key, String(company).trim(), String(jobTitle).trim(), String(reason).slice(0, 200), seen?.description_hash || null]
   )
   return { success: true }
 }
@@ -1462,8 +1572,8 @@ function insertAttentionJob(data) {
   // object, so the insert threw and the whole feature silently saved nothing.
   run(`
     INSERT INTO attention_jobs
-      (job_title, company, platform, salary, job_url, job_description, match_score, talking_points, reason, closing_date, salary_min, salary_max, campaign_id, campaign_name)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (job_title, company, platform, salary, job_url, job_description, match_score, talking_points, reason, closing_date, salary_min, salary_max, campaign_id, campaign_name, description_hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     data.job_title ?? '', data.company ?? '', data.platform ?? '', data.salary || '',
     data.job_url ?? '', data.job_description ?? '', data.match_score ?? null,
@@ -1471,6 +1581,7 @@ function insertAttentionJob(data) {
     data.closing_date || null,
     parsed.salary_min ?? null, parsed.salary_max ?? null,
     data.campaign_id || null, data.campaign_name || null,
+    jobFingerprint.fingerprint(data.company, data.job_description),
   ])
   return { success: true }
 }
@@ -1505,22 +1616,55 @@ function getCachedAnswer(question) {
 // to trust it. getCachedAnswer stays as-is so existing call sites are unchanged.
 function getCachedAnswerRecord(question) {
   const hash = normalizeQuestion(question)
-  const row = queryOne('SELECT answer, source FROM screening_cache WHERE question_hash = ?', [hash])
+  // updated_at travels with the answer so the caller can tell how long ago it
+  // was last confirmed — these are submitted to employers for as long as they
+  // sit here, and the facts under them move.
+  const row = queryOne('SELECT answer, source, updated_at FROM screening_cache WHERE question_hash = ?', [hash])
   if (!row?.answer) return null
-  return { answer: row.answer, source: row.source || 'ai' }
+  return { answer: row.answer, source: row.source || 'ai', updated_at: row.updated_at || null }
 }
 
-function saveCachedAnswer(question, answer, source = 'ai') {
+// `source` is required, and deliberately has no default.
+//
+// It used to default to 'ai', and the ON CONFLICT clause overwrites it — so a
+// caller that simply forgot the argument DOWNGRADED an answer the user had
+// typed themselves. The fabrication guard only exempts 'user', so the next use
+// re-checked the user's own words against the resume and deleted them for
+// naming a degree or a year the resume does not spell out. A silent default on
+// a field that decides whether something is trusted is a trap; refuse it.
+function saveCachedAnswer(question, answer, source) {
+  if (source !== 'ai' && source !== 'user') {
+    throw new Error(`saveCachedAnswer needs an explicit source of 'ai' or 'user' (got ${JSON.stringify(source)})`)
+  }
   const hash = normalizeQuestion(question)
   run(
     `INSERT INTO screening_cache (question_hash, question, answer, source) VALUES (?, ?, ?, ?)
      ON CONFLICT(question_hash) DO UPDATE SET answer = excluded.answer, source = excluded.source, updated_at = datetime('now')`,
-    [hash, question, answer, source === 'user' ? 'user' : 'ai']
+    [hash, question, answer, source]
   )
 }
 
 function getAllCachedAnswers() {
   return query('SELECT question, answer, source, updated_at FROM screening_cache ORDER BY updated_at DESC')
+}
+
+// "Yes, this is still true." Bumps the date without touching the answer or who
+// wrote it.
+//
+// A cached answer is submitted to employers for as long as it sits here, and the
+// facts underneath it move: "three years of Python" was right when it was typed
+// and is wrong two years later; "available to start immediately" stops being
+// true the day a job is accepted. Nothing ever aged these out, so the oldest
+// answers — the ones most likely to have drifted — were the ones being reused
+// most. Confirming is the cheap half of the fix; Settings showing which are
+// stale is the other half.
+function confirmCachedAnswer(question) {
+  const hash = normalizeQuestion(question)
+  if (!queryOne('SELECT 1 FROM screening_cache WHERE question_hash = ?', [hash])) {
+    return { success: false, reason: 'That answer is no longer cached.' }
+  }
+  run(`UPDATE screening_cache SET updated_at = datetime('now') WHERE question_hash = ?`, [hash])
+  return { success: true }
 }
 
 function deleteCachedAnswer(question) {
@@ -1740,16 +1884,59 @@ function setLastReplyUid(id, uid) {
   run('UPDATE applications SET last_reply_uid = ? WHERE id = ?', [uid ?? null, id])
 }
 
-function getApplicationsForFollowUp(daysOld) {
-  return query(`SELECT * FROM applications a
-                WHERE status = 'applied' AND follow_up_sent = 0
-                AND applied_at <= datetime('now', '-' || ? || ' days')
+// Applications due a follow-up, and which round each is due.
+//
+// Two clocks, not one. The FIRST follow-up is measured from the application —
+// "it has been a week and I have heard nothing". Every one after that is
+// measured from the previous follow-up, because that is the last time this
+// employer heard from the candidate and it is the gap that would read as
+// nagging. Measuring later rounds from the application date instead would fire
+// them all at once the moment the first one went out.
+//
+// `maxCount` of 1 is exactly the old behaviour: one nudge, ever.
+function getApplicationsForFollowUp(daysOld, { maxCount = 1, intervalDays = 14 } = {}) {
+  const rounds = Math.max(1, Math.floor(Number(maxCount) || 1))
+  // 0 is allowed and means "no enforced gap" — the next round is due on the
+  // next pass. That is a coherent thing to ask for and the query should do what
+  // it is told; Settings is where a silly value is talked out of the user.
+  const gap = Math.max(0, Math.floor(Number(intervalDays) || 0))
+  return query(`SELECT *, COALESCE(follow_up_count, 0) + 1 AS follow_up_stage FROM applications a
+                WHERE status = 'applied'
+                AND COALESCE(follow_up_stopped, 0) = 0
+                AND COALESCE(follow_up_count, 0) < ?
+                AND (
+                  (COALESCE(follow_up_count, 0) = 0
+                   AND applied_at <= datetime('now', '-' || ? || ' days'))
+                  OR
+                  (COALESCE(follow_up_count, 0) > 0
+                   AND last_follow_up_at IS NOT NULL
+                   AND last_follow_up_at <= datetime('now', '-' || ? || ' days'))
+                )
                 AND NOT EXISTS (SELECT 1 FROM follow_up_drafts d
-                                WHERE d.application_id = a.id AND d.status = 'held')`, [daysOld])
+                                WHERE d.application_id = a.id AND d.status = 'held')
+                ORDER BY applied_at ASC`, [rounds, daysOld, gap])
 }
 
+// One follow-up has gone out. Advances the round rather than latching a flag, so
+// the next one is spaced from here and asks for a different letter.
 function markFollowUpSent(id) {
-  run('UPDATE applications SET follow_up_sent = 1 WHERE id = ?', [id])
+  run(`UPDATE applications
+       SET follow_up_sent = 1,
+           follow_up_count = COALESCE(follow_up_count, 0) + 1,
+           last_follow_up_at = datetime('now')
+       WHERE id = ?`, [id])
+}
+
+// The user declined a drafted follow-up. Ends the sequence for this application
+// — see the note on follow_up_stopped in migrate().
+function stopFollowUps(id) {
+  run('UPDATE applications SET follow_up_stopped = 1 WHERE id = ?', [id])
+}
+
+// Undo that, for an application the user changes their mind about.
+function resumeFollowUps(id) {
+  run('UPDATE applications SET follow_up_stopped = 0 WHERE id = ?', [id])
+  return { success: true }
 }
 
 function saveFollowUpDraft({ applicationId, recipient, subject, body }) {
@@ -1776,21 +1963,25 @@ function getFollowUpDraft(id) {
 
 // Settle a drafted follow-up, whichever way the user went.
 //
-// Marking the application follow_up_sent belongs HERE rather than in the
-// callers, because it is what stops the draft being written again. Only the
-// 'held' status keeps an application out of getApplicationsForFollowUp, so a
-// draft resolved any other way left follow_up_sent at 0 and the application
-// became due again on the next pass — the AI redrafted a message the user had
-// already declined, every weekday, forever.
+// Advancing the application belongs HERE rather than in the callers, because it
+// is what stops the draft being written again. Only the 'held' status keeps an
+// application out of getApplicationsForFollowUp, so a draft resolved any other
+// way used to leave it due on the next pass — the AI redrafted a message the
+// user had already declined, every weekday, forever.
 //
-// The column reads as "sent", but what it has always gated is whether the
-// follow-up for this application is DECIDED. A rejection is a decision.
+// The two outcomes are no longer the same, though, and that matters once there
+// is more than one round. Approving means this letter went: advance to the next
+// stage and let the interval decide when it is due. Rejecting means the user
+// looked at chasing this employer and said no — so it ends the sequence rather
+// than merely deferring it to the next round, which would be the same nagging
+// with a fortnight's delay.
 function resolveFollowUpDraft(id, status) {
   const draft = queryOne('SELECT application_id FROM follow_up_drafts WHERE id = ?', [id])
   if (!draft) return { success: false, reason: 'Follow-up draft not found' }
   batch(() => {
     run(`UPDATE follow_up_drafts SET status = ?, resolved_at = datetime('now') WHERE id = ?`, [status, id])
-    markFollowUpSent(draft.application_id)
+    if (status === 'sent' || status === 'approved') markFollowUpSent(draft.application_id)
+    else stopFollowUps(draft.application_id)
   })
   return { success: true }
 }
@@ -3207,6 +3398,22 @@ function getOptimisationInsights() {
   return suggestions
 }
 
+// ─── Whole-database export / import ──────────────────────────────
+//
+// The rotating backups copy the SQLite file, which on an encrypted profile is
+// unreadable without this machine's keychain entry — correct for a backup, and
+// useless as the escape hatch for the case where the keychain is what was lost.
+// These two read the job search out as plain data and merge one back in. The
+// schema knowledge lives in dataExport.js; this is just the wiring, so the
+// helpers stay testable without a database.
+function exportAll() {
+  return dataExport.build({ query })
+}
+
+function importAll(data) {
+  return dataExport.merge({ query, queryOne, run, batch }, data)
+}
+
 module.exports = {
   init, batch, pruneOrphanedRows, backfillSalaryColumns,
   getApplications, getApplicationsList, getApplication, hasJobUrl, hasAttentionJobUrl, hasSeenJobUrl,
@@ -3216,7 +3423,8 @@ module.exports = {
   recordAutomationEvent, getAutomationEvents, clearAutomationEvents,
   recordSyncConflict, getSyncConflicts, countSyncConflicts, clearSyncConflicts, applyConflictResolution,
   getResumeConversion, getResumeExperimentArms, getGhostJobs,
-  suppressRole, unsuppressRole, listSuppressedRoles, isRoleSuppressed, getSalaryBenchmark, percentileFor, recordAiUsage, getAiUsageSummary, getMonthlyAiSpend, pruneAiUsage, clearAiUsage,
+  suppressRole, unsuppressRole, listSuppressedRoles, isRoleSuppressed,
+  findJobByContent, isContentSuppressed, getSalaryBenchmark, percentileFor, recordAiUsage, getAiUsageSummary, getMonthlyAiSpend, pruneAiUsage, clearAiUsage,
   UNSENT_STATUSES,
   updateApplicationAfterApply, updateApplicationComment, updateRecruiterEmail, deleteApplication, clearAllApplications,
   getDirtyApplications, getAllApplicationIds, markCloudSynced, markCloudSeen, applyCloudEdit,
@@ -3224,10 +3432,12 @@ module.exports = {
   getAttentionJobs, getAttentionJob, insertAttentionJob, dismissAttentionJob, deleteAttentionJob, clearAllAttentionJobs,
   getAllInterviewEventsForSync,
   getCachedAnswer, getCachedAnswerRecord, saveCachedAnswer, getAllCachedAnswers, deleteCachedAnswer, clearAllCachedAnswers,
+  confirmCachedAnswer,
   getStats, getTodayCountByPlatform, getTodayAttentionCountByPlatform, getTodayHeldCountByPlatform, getSalaryStats,
   findDuplicateAcrossPlatforms, getApplicationsByDate, getApplicationsPerDay,
   getApplicationsForFollowUp, markFollowUpSent,
   saveFollowUpDraft, getFollowUpDrafts, getFollowUpDraft, resolveFollowUpDraft,
+  stopFollowUps, resumeFollowUps,
   getApplicationsAwaitingReply, setLastReplyUid, markStaleApplications, OPEN_STATUSES,
   saveInterviewPrep, getInterviewPrep, deleteInterviewPrep,
   addInterviewEvent, upsertDetectedInterview, getInterviewEvents, getUpcomingInterviews, getInterviewEvent, deleteInterviewEvent,
@@ -3244,6 +3454,7 @@ module.exports = {
   getVersionOutcomes, getApplicationVersionOutcome,
   saveOffer, deleteOffer, getOffers, OFFER_DECISIONS,
   getStatusHistory,
+  exportAll, importAll,
   backupNow, maybeBackup, listBackups, restoreBackup, drillBackups, getBackupDrillStatus,
   setEncryption, getEncryptionStatus,
   exportRecoveryKey: () => dbCrypto.exportRecoveryKey(),

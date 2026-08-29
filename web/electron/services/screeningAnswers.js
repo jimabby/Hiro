@@ -60,6 +60,18 @@ function trim(text, n) {
 
 const UNCERTAIN_RE = /not sure|i don't know|unclear|unsure|cannot determine|not enough information/i
 
+// How old a cached answer is, but only once it is past the configured
+// threshold — otherwise null, so the caller has nothing to say. 0 disables.
+function staleDays(updatedAt, cfg) {
+  const limit = Number(cfg?.screeningAnswerStaleDays ?? 180)
+  if (!Number.isFinite(limit) || limit <= 0 || !updatedAt) return null
+  // SQLite stores 'YYYY-MM-DD HH:MM:SS' in UTC.
+  const at = new Date(String(updatedAt).includes('T') ? updatedAt : `${String(updatedAt).replace(' ', 'T')}Z`)
+  if (Number.isNaN(at.getTime())) return null
+  const days = Math.floor((Date.now() - at.getTime()) / 86400000)
+  return days >= limit ? days : null
+}
+
 function isUncertain(answer) {
   return !answer || String(answer).trim().length < 3 || UNCERTAIN_RE.test(answer)
 }
@@ -76,6 +88,17 @@ async function resolveAnswer({ question, optionHint = '', cfg, log }) {
   // ── Cache ──────────────────────────────────────────────────────
   const cached = database.getCachedAnswerRecord(question)
   if (cached) {
+    // Say so when an answer is old enough to have drifted. NOT a refusal: this
+    // is about to be typed into a form, there may be nobody at the keyboard, and
+    // withholding a probably-correct answer to avoid a possibly-stale one is the
+    // wrong trade at this moment. The place to act on it is Settings → Screening
+    // Answer Cache, calmly; this line is what tells the user it is worth going
+    // there.
+    const age = staleDays(cached.updated_at, cfg)
+    if (age) {
+      log?.(`  Reusing an answer last confirmed ${age} days ago for "${trim(question, 60)}" — `
+        + 'review it in Settings if the facts have changed.')
+    }
     if (cached.source === 'user') return { answer: cached.answer, source: 'cache' }
     const verdict = inspectScreeningAnswer(cfg.masterResume || '', cached.answer)
     if (verdict.safe) return { answer: cached.answer, source: 'cache' }
@@ -131,4 +154,4 @@ async function resolveAnswer({ question, optionHint = '', cfg, log }) {
   return { answer: '', source: '' }
 }
 
-module.exports = { resolveAnswer, ScreeningAnswerRefused, isUncertain }
+module.exports = { resolveAnswer, ScreeningAnswerRefused, isUncertain, staleDays }

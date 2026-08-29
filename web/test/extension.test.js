@@ -8,6 +8,7 @@ const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'u
 const popup = fs.readFileSync(path.join(root, 'popup.js'), 'utf8')
 const protocolSource = fs.readFileSync(path.join(root, 'protocol.js'), 'utf8')
 const protocol = require(path.join(root, 'protocol.js'))
+const pairSource = fs.readFileSync(path.join(root, 'pairChannel.js'), 'utf8')
 const html = fs.readFileSync(path.join(root, 'popup.html'), 'utf8')
 const { check, done } = createChecker()
 
@@ -19,7 +20,16 @@ check('pairing secret is not persisted in local storage', popup.includes('chrome
 check('imports use signed requests', protocolSource.includes('X-Hiro-Signature'), true)
 check('imports use encrypted envelopes', protocolSource.includes('secure: 2'), true)
 check('popup has no inline script blocked by MV3 CSP', /<script(?![^>]*src=)/i.test(html), false)
-check('extension scripts parse', (() => { try { new Function(protocolSource); new Function(popup); return true } catch { return false } })(), true)
+check('extension scripts parse', (() => { try { new Function(protocolSource); new Function(popup); new Function(pairSource); return true } catch { return false } })(), true)
+
+// Pairing is the one exchange that hands over a long-lived credential, and it
+// speaks plain HTTP. It must not do that in the clear.
+check('the pairing channel ships with the extension', fs.existsSync(path.join(root, 'pairChannel.js')), true)
+check('the popup loads it', html.includes('pairChannel.js'), true)
+check('pairing agrees a key rather than sending the code', popup.includes('/api/pair/hello'), true)
+check('the pairing request is encrypted', popup.includes('HiroPairChannel.sealRequest'), true)
+check('the token is read out of an encrypted reply', popup.includes('HiroPairChannel.openResponse'), true)
+check('no cleartext pairing body remains', /body: JSON\.stringify\(\{ code:/.test(popup), false)
 
 ;(async () => {
   const token = 'a'.repeat(64), value = { title: 'Engineer', description: 'Private text' }

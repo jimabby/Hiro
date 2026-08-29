@@ -1,10 +1,30 @@
 import { useState, useEffect, useRef } from 'react'
 import HiroLogo from '../components/HiroLogo'
 
+// How long ago a cached screening answer was last confirmed, in whole days.
+//
+// SQLite writes 'YYYY-MM-DD HH:MM:SS' in UTC and gives no zone suffix, which
+// `new Date()` reads as LOCAL in some runtimes — enough to shift an answer
+// across the staleness threshold on either side of the date line. Null when
+// there is no usable timestamp, so the caller shows an age rather than "NaN
+// days ago".
+function answerAgeDays(updatedAt) {
+  if (!updatedAt) return null
+  const at = new Date(String(updatedAt).includes('T') ? updatedAt : `${String(updatedAt).replace(' ', 'T')}Z`)
+  if (Number.isNaN(at.getTime())) return null
+  return Math.max(0, Math.floor((Date.now() - at.getTime()) / 86400000))
+}
+
+// Mirrors PROVIDERS in electron/services/scraper/ats.js. The hint is the URL a
+// user is actually looking at when they go to copy the slug, so it is written as
+// the careers address rather than the API endpoint behind it.
 const ATS_PROVIDERS = [
   { id: 'greenhouse', label: 'Greenhouse', hint: 'boards.greenhouse.io/SLUG' },
   { id: 'lever', label: 'Lever', hint: 'jobs.lever.co/SLUG' },
   { id: 'ashby', label: 'Ashby', hint: 'jobs.ashbyhq.com/SLUG' },
+  { id: 'workable', label: 'Workable', hint: 'apply.workable.com/SLUG' },
+  { id: 'recruitee', label: 'Recruitee', hint: 'SLUG.recruitee.com' },
+  { id: 'smartrecruiters', label: 'SmartRecruiters', hint: 'jobs.smartrecruiters.com/SLUG' },
 ]
 
 // Company career boards. These serve structured JSON with no login and no bot
@@ -56,7 +76,7 @@ function AtsBoards({ form, set, showToast }) {
     <div className="card" style={{ marginBottom: 16 }}>
       <h3 style={{ marginBottom: 6, fontSize: 15 }}>Company Career Boards</h3>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
-        Watch specific employers directly on Greenhouse, Lever or Ashby. These have no bot defenses
+        Watch specific employers directly on Greenhouse, Lever, Ashby, Workable, Recruitee or SmartRecruiters. These have no bot defenses
         and don't change shape, so they're more reliable than the job aggregators. They can't be
         auto-submitted — matches land in Needs Attention with your tailored resume and cover letter
         ready to paste.
@@ -371,6 +391,162 @@ function BackupsCard({ showToast }) {
 // Encrypted export/import of settings — resumes, criteria, blacklists, rules.
 // The database backups above cover applications; this covers everything else,
 // which otherwise had to be re-entered by hand on a new machine.
+// The whole job search as portable data.
+//
+// Deliberately separate from Settings Transfer above it and from the database
+// backups: those cover the other two thirds of the problem and neither covers
+// this one. A backup is the SQLite file, which on an encrypted profile cannot be
+// opened without this machine's keychain entry — right for a backup, and exactly
+// wrong for the case where the keychain is what was lost.
+function DataTransferCard({ showToast, onImported }) {
+  const [mode, setMode] = useState(null) // 'export' | 'import'
+  const [passphrase, setPassphrase] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [staged, setStaged] = useState(null)
+  const [preview, setPreview] = useState(null)
+
+  function reset() { setMode(null); setPassphrase(''); setStaged(null) }
+
+  async function openExport() {
+    setMode('export')
+    // Say what is about to be written before it is written.
+    try {
+      const res = await window.api.exportDataPreview?.()
+      if (res?.success) setPreview(res.counts)
+    } catch { /* the summary is a courtesy, not a precondition */ }
+  }
+
+  async function doExport() {
+    setBusy(true)
+    try {
+      const res = await window.api.exportData(passphrase)
+      if (res.canceled) return
+      if (res.success) {
+        showToast?.(res.encrypted ? 'Data exported (encrypted)' : 'Data exported as plain JSON', 'success')
+        reset()
+      } else showToast?.(res.error || 'Export failed', 'error')
+    } finally { setBusy(false) }
+  }
+
+  async function doChoose() {
+    setBusy(true)
+    try {
+      const res = await window.api.chooseDataImport()
+      if (res.canceled) return
+      if (res.success) setStaged(res)
+      else showToast?.(res.error || 'Could not read that file', 'error')
+    } finally { setBusy(false) }
+  }
+
+  async function doImport() {
+    setBusy(true)
+    try {
+      const res = await window.api.importData(passphrase)
+      if (res.success) {
+        const added = Object.entries(res.added || {}).filter(([, n]) => n > 0)
+        showToast?.(res.total > 0
+          ? `Imported ${added.map(([t, n]) => `${n} ${t.replace(/_/g, ' ')}`).join(', ')}`
+          : 'Nothing new — everything in that file is already here', 'success')
+        reset()
+        onImported?.()
+      } else showToast?.(res.reason || res.error || 'Import failed', 'error')
+    } finally { setBusy(false) }
+  }
+
+  const summarise = (counts) => Object.entries(counts || {})
+    .filter(([, n]) => n > 0)
+    .map(([table, n]) => `${n} ${table.replace(/_/g, ' ')}`)
+    .join(' · ')
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12, gap: 12 }}>
+        <div>
+          <h3 style={{ fontSize: 15, margin: 0 }}>Data Export</h3>
+          <p style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 4 }}>
+            Every application with the résumé and cover letter that went out, the replies that came
+            back, interviews, contacts and notes — as one portable file. Unlike the backups above,
+            this does not need this machine&apos;s keychain to read, so it is the copy that survives a
+            lost profile. Importing only ever adds; nothing here is deleted or overwritten.
+          </p>
+        </div>
+        {!mode && (
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={openExport}>Export</button>
+            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => setMode('import')}>Import</button>
+          </div>
+        )}
+      </div>
+
+      {mode === 'export' && (
+        <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
+          {preview && (
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>
+              This will write {summarise(preview) || 'nothing — there is no history yet'}.
+            </div>
+          )}
+          <div className="form-group" style={{ marginBottom: 10 }}>
+            <label style={{ fontSize: 12 }}>Passphrase (optional)</label>
+            <input type="password" value={passphrase} autoFocus
+              onChange={e => setPassphrase(e.target.value)}
+              placeholder="Leave blank to write readable JSON" />
+            <div style={{ fontSize: 11, color: passphrase ? 'var(--text-muted)' : 'var(--yellow)', marginTop: 4 }}>
+              {passphrase
+                ? 'Encrypted with this passphrase. There is no recovery if you lose it.'
+                : 'Without a passphrase the file is plain JSON — readable by any tool, and by anyone '
+                  + 'who finds it. It contains every résumé, cover letter and recruiter address.'}
+            </div>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={reset} disabled={busy}>Cancel</button>
+            <button className="btn btn-primary" style={{ fontSize: 12 }} onClick={doExport} disabled={busy}>
+              {busy ? 'Exporting…' : 'Choose file and export'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {mode === 'import' && !staged && (
+        <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={reset} disabled={busy}>Cancel</button>
+          <button className="btn btn-primary" style={{ fontSize: 12 }} onClick={doChoose} disabled={busy}>
+            {busy ? 'Reading…' : 'Choose a file'}
+          </button>
+        </div>
+      )}
+
+      {mode === 'import' && staged && (
+        <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
+          <div style={{ fontSize: 12, marginBottom: 10 }}>
+            {staged.exportedAt && (
+              <div style={{ color: 'var(--text-muted)' }}>Exported {new Date(staged.exportedAt).toLocaleString()}</div>
+            )}
+            <div style={{ color: 'var(--text-muted)' }}>Contains {summarise(staged.counts) || 'nothing'}.</div>
+            <div style={{ marginTop: 6 }}>
+              Anything already here is left exactly as it is — only what is missing gets added.
+            </div>
+          </div>
+          {staged.encrypted && (
+            <div className="form-group" style={{ marginBottom: 10 }}>
+              <label style={{ fontSize: 12 }}>Passphrase</label>
+              <input type="password" value={passphrase} autoFocus
+                onChange={e => setPassphrase(e.target.value)}
+                placeholder="Passphrase used at export" />
+            </div>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={reset} disabled={busy}>Cancel</button>
+            <button className="btn btn-primary" style={{ fontSize: 12 }} onClick={doImport}
+              disabled={busy || (staged.encrypted && !passphrase)}>
+              {busy ? 'Importing…' : 'Import'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function SettingsTransferCard({ showToast, onImported }) {
   const [mode, setMode] = useState(null) // 'export' | 'import'
   const [passphrase, setPassphrase] = useState('')
@@ -546,6 +722,15 @@ export default function Settings({ showToast, active }) {
   const [addingResume, setAddingResume] = useState(false)
   const [cachedAnswers, setCachedAnswers] = useState([])
   const [cachedSearch, setCachedSearch] = useState('')
+  // Cached screening answers are submitted to employers for as long as they sit
+  // in the cache, and nothing ever aged them out — so the oldest ones, the ones
+  // most likely to have drifted, were the ones being reused most.
+  const staleAfterDays = Number(form?.screeningAnswerStaleDays ?? 180)
+  const staleAnswers = cachedAnswers.filter(ca => {
+    if (!(staleAfterDays > 0)) return false
+    const age = answerAgeDays(ca.updated_at)
+    return age != null && age >= staleAfterDays
+  })
   const [newBlacklist, setNewBlacklist] = useState('')
   const [newResumeName, setNewResumeName] = useState('')
   const [newResumeText, setNewResumeText] = useState('')
@@ -687,6 +872,16 @@ export default function Settings({ showToast, active }) {
       dailyLimitLinkedIn: clamp(form.dailyLimitLinkedIn, 1, 100, 10),
       blacklistedCompanies: (form.blacklistedCompanies || '').split(',').map(s => s.trim()).filter(Boolean),
       followUpDays: clamp(form.followUpDays, 1, 30, 7),
+      // 1 is the original behaviour — one nudge, ever. The ceiling is 5 because
+      // past that it stops being a follow-up and starts being a nuisance to a
+      // real person's inbox, over the user's name.
+      followUpMaxCount: clamp(form.followUpMaxCount, 1, 5, 2),
+      // At least a week between rounds. The database accepts 0, but a follow-up
+      // the morning after the last one is not a cadence anybody wants and it is
+      // the sort of setting that is easy to type by accident.
+      followUpIntervalDays: clamp(form.followUpIntervalDays, 7, 90, 14),
+      // 0 is meaningful (stop flagging stale answers), so the floor is 0.
+      screeningAnswerStaleDays: clamp(form.screeningAnswerStaleDays, 0, 1095, 180),
       companyCooldownDays: clamp(form.companyCooldownDays, 0, 365, 30),
       smartScheduleBatchSize: clamp(form.smartScheduleBatchSize, 1, 20, 3),
       smartScheduleJitter: clamp(form.smartScheduleJitter, 0, 60, 15),
@@ -1042,13 +1237,38 @@ export default function Settings({ showToast, active }) {
         {form.enableFollowUp && (
           <>
             <div className="form-group">
-              <label>Send follow-up email after how many days of no response</label>
+              <label>Send the first follow-up after how many days of no response</label>
               <input type="number" min={1} max={30} value={form.followUpDays || 7} onChange={e => set('followUpDays', e.target.value)} />
             </div>
+            <div className="form-group">
+              <label>How many follow-ups in total</label>
+              <input type="number" min={1} max={5} value={form.followUpMaxCount ?? 2} onChange={e => set('followUpMaxCount', e.target.value)} />
+              <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+                Each one is written differently — the second leads with something new rather than
+                repeating the first, and later ones read as a closing note rather than another pitch.
+                Set to 1 for a single nudge.
+              </p>
+            </div>
+            {(form.followUpMaxCount ?? 2) > 1 && (
+              <div className="form-group">
+                <label>Days between follow-ups</label>
+                <input type="number" min={7} max={90} value={form.followUpIntervalDays ?? 14} onChange={e => set('followUpIntervalDays', e.target.value)} />
+                <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+                  Counted from the last follow-up, not from the application, so the gap the recruiter
+                  actually experiences is the one set here.
+                </p>
+              </div>
+            )}
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
               <input type="checkbox" style={{ width: 'auto' }} checked={form.reviewFollowUpEmails !== false} onChange={e => set('reviewFollowUpEmails', e.target.checked)} />
               Review each drafted follow-up before it is emailed
             </label>
+            {form.reviewFollowUpEmails !== false && (
+              <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
+                Rejecting a draft stops the whole sequence for that application — not just that one
+                email — so declining once does not bring it back in a fortnight.
+              </p>
+            )}
           </>
         )}
       </div>
@@ -2527,14 +2747,26 @@ export default function Settings({ showToast, active }) {
         {/* Encrypted settings export / import */}
         <SettingsTransferCard showToast={showToast} onImported={() => window.location.reload()} />
 
+        {/* The applications themselves, which neither the settings bundle nor
+            the keychain-bound backups above can move to another machine. */}
+        <DataTransferCard showToast={showToast} onImported={() => window.location.reload()} />
+
         {/* Screening Answer Cache */}
         <div className="card" style={{ marginBottom: 16 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
             <div>
               <h3 style={{ fontSize: 15, margin: 0 }}>Screening Answer Cache</h3>
               <p style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 4 }}>
-                Answers saved from previous applications. These are reused automatically when the same question appears.
+                Answers saved from previous applications. These are reused automatically when the same
+                question appears — including on applications to employers who never asked the original.
               </p>
+              {staleAnswers.length > 0 && (
+                <p style={{ color: 'var(--yellow)', fontSize: 12, marginTop: 6, fontWeight: 500 }}>
+                  {staleAnswers.length} answer{staleAnswers.length === 1 ? '' : 's'} not confirmed in over{' '}
+                  {staleAfterDays} days. Facts move — years of experience, notice periods, availability —
+                  and these keep being submitted until you say otherwise.
+                </p>
+              )}
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
               <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={async () => {
@@ -2560,41 +2792,75 @@ export default function Settings({ showToast, active }) {
                 placeholder="Search questions..."
                 style={{ marginBottom: 12, fontSize: 12 }}
               />
+              {/* Stale first: the whole point is that the oldest answers are the
+                  ones most likely to have drifted, and they were previously
+                  buried under whatever had been used most recently. */}
               <div style={{ maxHeight: 400, overflowY: 'auto' }}>
                 {cachedAnswers
                   .filter(ca => !cachedSearch || ca.question.toLowerCase().includes(cachedSearch.toLowerCase()) || ca.answer.toLowerCase().includes(cachedSearch.toLowerCase()))
-                  .map((ca, i) => (
-                    <div key={i} style={{
-                      padding: 12, background: 'var(--surface2)', borderRadius: 8,
-                      marginBottom: 8, border: '1px solid var(--border)',
-                    }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6, color: 'var(--text)' }}>Q: {ca.question}</div>
-                          <textarea
-                            defaultValue={ca.answer}
-                            onBlur={async (e) => {
-                              const newAnswer = e.target.value.trim()
-                              if (newAnswer && newAnswer !== ca.answer) {
-                                await window.api.updateCachedAnswer(ca.question, newAnswer)
-                                setCachedAnswers(prev => prev.map((c, j) => j === i ? { ...c, answer: newAnswer } : c))
-                                showToast?.('Answer updated', 'success')
-                              }
-                            }}
-                            style={{ width: '100%', fontSize: 12, minHeight: 40, padding: '6px 8px', resize: 'vertical' }}
-                          />
+                  .map((ca, i) => ({ ca, i, age: answerAgeDays(ca.updated_at) }))
+                  .sort((a, b) => (b.age ?? -1) - (a.age ?? -1))
+                  .map(({ ca, i, age }) => {
+                    const stale = staleAfterDays > 0 && age != null && age >= staleAfterDays
+                    return (
+                      <div key={ca.question} style={{
+                        padding: 12, background: 'var(--surface2)', borderRadius: 8,
+                        marginBottom: 8,
+                        border: `1px solid ${stale ? 'var(--yellow)' : 'var(--border)'}`,
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6, color: 'var(--text)' }}>Q: {ca.question}</div>
+                            <textarea
+                              defaultValue={ca.answer}
+                              onBlur={async (e) => {
+                                const newAnswer = e.target.value.trim()
+                                if (newAnswer && newAnswer !== ca.answer) {
+                                  await window.api.updateCachedAnswer(ca.question, newAnswer)
+                                  // Editing IS confirming: the user has just read it
+                                  // and rewritten it, so it is fresh — and it is now
+                                  // theirs rather than the model's.
+                                  setCachedAnswers(prev => prev.map((c, j) => j === i
+                                    ? { ...c, answer: newAnswer, source: 'user', updated_at: new Date().toISOString() }
+                                    : c))
+                                  showToast?.('Answer updated', 'success')
+                                }
+                              }}
+                              style={{ width: '100%', fontSize: 12, minHeight: 40, padding: '6px 8px', resize: 'vertical' }}
+                            />
+                          </div>
+                          <button className="btn btn-ghost" style={{ fontSize: 11, color: 'var(--red)', padding: '2px 6px', flexShrink: 0 }}
+                            title="Delete this cached answer"
+                            onClick={async () => {
+                              await window.api.deleteCachedAnswer(ca.question)
+                              setCachedAnswers(prev => prev.filter((_, j) => j !== i))
+                            }}>✕</button>
                         </div>
-                        <button className="btn btn-ghost" style={{ fontSize: 11, color: 'var(--red)', padding: '2px 6px', flexShrink: 0 }}
-                          onClick={async () => {
-                            await window.api.deleteCachedAnswer(ca.question)
-                            setCachedAnswers(prev => prev.filter((_, j) => j !== i))
-                          }}>✕</button>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: 10, color: stale ? 'var(--yellow)' : 'var(--text-muted)' }}>
+                            Last confirmed {ca.updated_at ? new Date(ca.updated_at).toLocaleDateString() : 'unknown'}
+                            {age != null ? ` · ${age} day${age === 1 ? '' : 's'} ago` : ''}
+                          </span>
+                          {/* Who wrote it decides whether the fabrication guard
+                              re-checks it on every use, so it is worth showing. */}
+                          <span className={ca.source === 'user' ? 'badge badge-blue' : 'badge badge-gray'} style={{ fontSize: 9 }}>
+                            {ca.source === 'user' ? 'yours' : 'AI-written'}
+                          </span>
+                          {stale && (
+                            <button className="btn btn-ghost" style={{ fontSize: 10, padding: '1px 8px' }}
+                              title="Re-date this answer without changing it"
+                              onClick={async () => {
+                                const res = await window.api.confirmCachedAnswer?.(ca.question)
+                                if (res?.success === false) { showToast?.(res.reason, 'error'); return }
+                                setCachedAnswers(prev => prev.map((c, j) => j === i
+                                  ? { ...c, updated_at: new Date().toISOString() } : c))
+                                showToast?.('Marked as still correct', 'success')
+                              }}>Still correct</button>
+                          )}
+                        </div>
                       </div>
-                      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>
-                        Last used: {new Date(ca.updated_at).toLocaleDateString()}
-                      </div>
-                    </div>
-                  ))
+                    )
+                  })
                 }
               </div>
             </>

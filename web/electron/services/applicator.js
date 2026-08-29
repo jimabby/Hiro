@@ -133,7 +133,8 @@ async function doRun(cfg, { log, notifyAttention }) {
   if (cfg.enableSeek) scrapers.push({ name: 'Seek', scraper: seek, limit: cfg.dailyLimitSeek })
   if (cfg.enableIndeed) scrapers.push({ name: 'Indeed', scraper: indeed, limit: cfg.dailyLimitIndeed })
   if (cfg.enableLinkedIn) scrapers.push({ name: 'LinkedIn', scraper: linkedin, limit: cfg.dailyLimitLinkedIn })
-  // Company career boards (Greenhouse / Lever / Ashby). These serve structured
+  // Company career boards (Greenhouse / Lever / Ashby / Workable / Recruitee /
+  // SmartRecruiters). These serve structured
   // JSON with no bot defenses, so they're far steadier than the aggregators —
   // but they can't be auto-submitted, so everything found goes to Needs
   // Attention with its documents already drafted.
@@ -201,7 +202,10 @@ async function doRun(cfg, { log, notifyAttention }) {
 
     let jobs
     try {
-      jobs = await scraper.scrape(cfg)
+      // `log` lets a scraper narrate work the caller cannot otherwise see —
+      // the ATS adapter uses it to say when it is reading descriptions one at a
+      // time, and when it has stopped short of a very long board.
+      jobs = await scraper.scrape(cfg, { log })
       // ATS boards return the description with the listing; hand it forward so
       // getJobDescription is a lookup rather than a second network round trip.
       scraper.primeDescriptions?.(jobs)
@@ -311,6 +315,33 @@ async function doRun(cfg, { log, notifyAttention }) {
       }
 
       job.job_description = jobDescription
+
+      // Have we already paid for this exact advert under a different URL?
+      //
+      // Everything above this point matches on identity the URL or the title
+      // carries, and an employer reposting a listing changes both — the URL
+      // always, the title often ("Data Engineer" comes back as "Data Engineer
+      // (Senior)"). So the checks all miss, and the scan buys a score, a
+      // tailored resume and a cover letter for an advert it has seen before.
+      //
+      // Checked HERE because this is the last free moment: the description has
+      // just been fetched and nothing has been sent to a model yet. The match is
+      // exact rather than fuzzy — see jobFingerprint.js for why skipping a real
+      // job is the expensive mistake and being scored twice is the cheap one.
+      const seenBefore = database.findJobByContent(job.company, jobDescription)
+      if (seenBefore) {
+        log(`  Same advert as "${seenBefore.job_title}"${seenBefore.seen_at ? ` from ${String(seenBefore.seen_at).slice(0, 10)}` : ''} — reposted under a new URL, skipping`)
+        continue
+      }
+
+      // A role the user suppressed, coming back under a new title. The
+      // title-based check above cannot see this one by construction.
+      const suppressedRepost = database.isContentSuppressed(job.company, jobDescription)
+      if (suppressedRepost) {
+        log(`  Skipping "${job.job_title}" at ${job.company} — same advert as "${suppressedRepost.job_title}", which you marked as repeatedly reposted`)
+        continue
+      }
+
       // Application deadline, if the ad states one. Best-effort: null just
       // means "unknown", and the user can set it by hand later.
       job.closing_date = parseClosingDate(jobDescription)

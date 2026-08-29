@@ -7,6 +7,7 @@ const database = require('./database')
 const scheduler = require('./scheduler')
 const logger = require('./logger')
 const featureHub = require('./featureHub')
+const pairChannel = require('./pairChannel')
 
 // LAN HTTP API for the Hiro mobile companion app (app/ in this repo).
 // All data stays on this machine — the phone connects directly over the
@@ -94,10 +95,34 @@ function decryptPayload(token, envelope) {
   return JSON.parse(Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8'))
 }
 
-function authCheck(ip, token) {
-  const now = Date.now()
+// Is this peer currently locked out? Read-only: asking must not itself count as
+// an attempt, because this is consulted BEFORE any verification work is done.
+function lockoutFor(ip, now = Date.now()) {
   const entry = failures.get(ip)
-  if (entry?.until > now) return { ok: false, retryAfter: Math.ceil((entry.until - now) / 1000) }
+  if (entry?.until > now) return { locked: true, retryAfter: Math.ceil((entry.until - now) / 1000) }
+  return { locked: false }
+}
+
+// Count one failed attempt, and start a lockout once there have been enough.
+function recordFailure(ip, now = Date.now()) {
+  const entry = failures.get(ip)
+  // `until: 0` means "counting failures, not locked out" — only a lockout that
+  // has actually expired resets the tally, otherwise the count never grows.
+  let count = entry?.count || 0
+  if (entry?.until && entry.until <= now) count = 0
+  count += 1
+  if (count >= MAX_FAILURES) {
+    failures.set(ip, { count: 0, until: now + LOCKOUT_MS })
+    logger.append(`Mobile API: ${ip} locked out for ${LOCKOUT_MS / 60000} min after ${MAX_FAILURES} failed auth attempts`)
+    return { ok: false, retryAfter: Math.ceil(LOCKOUT_MS / 1000) }
+  }
+  failures.set(ip, { count, until: 0 })
+  return { ok: false }
+}
+
+function authCheck(ip, token) {
+  const lockout = lockoutFor(ip)
+  if (lockout.locked) return { ok: false, retryAfter: lockout.retryAfter }
 
   // A paired device presents its own token. Checked first because it is the
   // path every phone should be on; the shared token stays valid so an install
@@ -115,18 +140,7 @@ function authCheck(ip, token) {
     return { ok: true, legacy: true }
   }
 
-  // `until: 0` means "counting failures, not locked out" — only a lockout that
-  // has actually expired resets the tally, otherwise the count never grows.
-  let count = entry?.count || 0
-  if (entry?.until && entry.until <= now) count = 0
-  count += 1
-  if (count >= MAX_FAILURES) {
-    failures.set(ip, { count: 0, until: now + LOCKOUT_MS })
-    logger.append(`Mobile API: ${ip} locked out for ${LOCKOUT_MS / 60000} min after ${MAX_FAILURES} failed auth attempts`)
-    return { ok: false, retryAfter: Math.ceil(LOCKOUT_MS / 1000) }
-  }
-  failures.set(ip, { count, until: 0 })
-  return { ok: false }
+  return recordFailure(ip)
 }
 
 // Keep the failure map from growing unboundedly on a hostile network.
@@ -224,7 +238,24 @@ async function readBody(req) {
   } catch { throw new Error('Invalid JSON or encrypted payload') }
 }
 
+// Open a confidential channel for a pairing.
+//
+// Returns this pairing window's ephemeral public key, a salt, and an HMAC over
+// both keyed by the pairing code. The client checks that tag against the code
+// the person read off the desktop, which is what stops an active attacker on the
+// LAN substituting their own key. Nothing here is secret — see pairChannel.js.
+function handlePairHello(res) {
+  const hello = pairing.getHello()
+  if (!hello) return json(res, 409, { error: 'No pairing code is active. Generate one on the desktop.' })
+  return json(res, 200, hello)
+}
+
 // Exchange a pairing code for a token belonging to this phone alone.
+//
+// The token is a 90-day credential and this is the message that carries it, so
+// it does not travel in the clear: the request and the reply are both AES-GCM
+// encrypted under a key agreed by ECDH (pairChannel.js). Anything on the network
+// sees two public keys and ciphertext.
 //
 // A wrong code counts against the same lockout as a wrong bearer token, so this
 // endpoint cannot be used to grind through the code space any faster than the
@@ -237,9 +268,36 @@ async function handlePair(req, res, ip) {
     return json(res, 400, { error: err.message })
   }
 
-  const attempt = pairing.consumePairingCode(body.code)
+  // A pre-v2 client pairs in the clear. Still accepted — an installed phone that
+  // has not been updated must not be locked out of setting itself up — but said
+  // out loud, because the token it is about to receive is readable by anything
+  // sharing the network for as long as that exchange takes.
+  const secure = body?.v === pairChannel.PROTOCOL_VERSION
+  let key = null
+  let request = body
+  if (secure) {
+    try {
+      key = pairing.channelKey(body.epk)
+      if (!key) throw new Error('No pairing code is active. Generate one on the desktop.')
+      request = pairChannel.decrypt(key, body.data)
+    } catch (err) {
+      // Undecryptable means the wrong code, a stale pairing window, or something
+      // in the middle — all of which are failed attempts.
+      const check = recordFailure(ip)
+      if (check.retryAfter) {
+        res.setHeader('Retry-After', String(check.retryAfter))
+        return json(res, 429, { error: 'Too many failed attempts — try again later.' })
+      }
+      return json(res, 400, { error: err.message || 'Could not read the pairing request.' })
+    }
+  } else {
+    logger.append('Mobile API: pairing request used the old cleartext protocol — '
+      + 'update the phone app so the device token is not sent unencrypted over the network.')
+  }
+
+  const attempt = pairing.consumePairingCode(request.code)
   if (!attempt.ok) {
-    const check = authCheck(ip, '') // deliberately fails: records the attempt
+    const check = recordFailure(ip)
     if (check.retryAfter) {
       res.setHeader('Retry-After', String(check.retryAfter))
       return json(res, 429, { error: 'Too many failed attempts — try again later.' })
@@ -248,13 +306,15 @@ async function handlePair(req, res, ip) {
   }
 
   const { token, device } = pairing.issueDeviceToken(configService, {
-    name: body.deviceName,
-    platform: body.platform,
+    name: request.deviceName,
+    platform: request.platform,
   })
   failures.delete(ip)
-  logger.append(`Mobile API: paired "${device.name}" (${device.platform})`)
+  logger.append(`Mobile API: paired "${device.name}" (${device.platform})${secure ? '' : ' over the old cleartext protocol'}`)
   // The token is returned exactly once. Only its hash is kept here.
-  return json(res, 200, { token, device, host: os.hostname() })
+  const payload = { token, device, host: os.hostname() }
+  if (!secure) return json(res, 200, payload)
+  return json(res, 200, { v: pairChannel.PROTOCOL_VERSION, data: pairChannel.encrypt(key, payload) })
 }
 
 // Strip heavy text fields from list responses — the phone fetches detail separately
@@ -293,10 +353,29 @@ async function handle(req, res) {
     return json(res, 403, { error: 'Forbidden' })
   }
 
+  // The lockout is checked HERE, before a single byte is verified, and before
+  // the pairing endpoint below.
+  //
+  // It used to sit inside authCheck, which runs after verifySignedRequest — so a
+  // locked-out peer still got its signature checked first, and that check reads
+  // the config (a file parse plus seven OS-keychain unwraps) and then HMACs the
+  // request once per registered device. The lockout therefore gated the REPLY
+  // and not the work: an attacker on the LAN could keep a desktop busy doing
+  // keychain round trips indefinitely, for the cost of sending garbage. Refusing
+  // first makes a locked-out request nearly free to serve.
+  const lockout = lockoutFor(ip)
+  if (lockout.locked) {
+    res.setHeader('Retry-After', String(lockout.retryAfter))
+    return json(res, 429, { error: 'Too many failed attempts — try again later.' })
+  }
+
   // Pairing is the one endpoint that cannot require a token, because it is how
-  // a token is obtained. It is not unprotected: the private-address check above
-  // has already run, the pairing code is single-use and expires in minutes, and
-  // failed attempts feed the same lockout counter as a bad bearer token.
+  // a token is obtained. It is not unprotected: the private-address and lockout
+  // checks above have already run, the pairing code is single-use and expires in
+  // minutes, and failed attempts feed the same counter as a bad bearer token.
+  if (req.method === 'GET' && path === '/api/pair/hello') {
+    return handlePairHello(res)
+  }
   if (req.method === 'POST' && path === '/api/pair') {
     return handlePair(req, res, ip)
   }
@@ -550,8 +629,14 @@ function startPairing() {
   const info = getInfo()
   // What the QR encodes. The phone needs all three or the code is useless — an
   // address it cannot reach is not a pairing.
+  //
+  // The version is bumped to 2 to say the desktop can pair over an encrypted
+  // channel, but the FIELDS are unchanged on purpose: the key material is
+  // fetched from /api/pair/hello rather than carried here, so the typed-code
+  // path and the scanned path run exactly the same protocol, and an older phone
+  // reading this QR still finds the host, port and code it expects.
   const payload = JSON.stringify({
-    v: 1,
+    v: 2,
     host: info.addresses[0] || '127.0.0.1',
     port: info.port,
     code: issued.code,
@@ -570,4 +655,7 @@ module.exports = {
   revokeDevice: (id) => pairing.revokeDevice(configService, id),
   revokeAllDevices: () => pairing.revokeAll(configService),
   start, stop, getInfo, regenerateToken, isPrivateAddress,
+  // exported for tests
+  lockoutFor, recordFailure,
+  _resetThrottle: () => { failures.clear(); seenNonces.clear() },
 }

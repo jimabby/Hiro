@@ -21,6 +21,7 @@
 // credential nobody remembers issuing.
 
 const crypto = require('crypto')
+const pairChannel = require('./pairChannel')
 
 const CODE_TTL_MS = 5 * 60 * 1000
 // One character per byte. 32 divides 256 exactly, so the modulo below is
@@ -34,7 +35,10 @@ const DEFAULT_TOKEN_TTL_DAYS = 90
 // while reading a code off one screen and typing it into another.
 const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
 
-let activeCode = null // { code, expiresAt, used }
+// { code, expiresAt, used, channel }. The channel is the ephemeral P-256 key
+// material for THIS pairing window — see pairChannel.js. It lives and dies with
+// the code, so a captured exchange cannot be replayed against a later one.
+let activeCode = null
 
 function generateCode() {
   const bytes = crypto.randomBytes(CODE_CHARS)
@@ -46,8 +50,25 @@ function generateCode() {
 // Issue a pairing code, replacing any code still outstanding. Only one can be
 // live at a time — two valid codes means one the user has forgotten about.
 function createPairingCode(now = Date.now()) {
-  activeCode = { code: generateCode(), expiresAt: now + CODE_TTL_MS, used: false }
-  return { code: activeCode.code, expiresAt: activeCode.expiresAt, ttlMs: CODE_TTL_MS }
+  const code = generateCode()
+  activeCode = { code, expiresAt: now + CODE_TTL_MS, used: false, channel: pairChannel.createChannel(code) }
+  return { code, expiresAt: activeCode.expiresAt, ttlMs: CODE_TTL_MS }
+}
+
+// What the client needs to open a confidential channel: this window's public
+// key, its salt, and an HMAC over both that only someone holding the pairing
+// code can check. Unauthenticated by necessity — it is what bootstraps the
+// authentication — and it discloses nothing: the public key is public, and the
+// tag is unforgeable without the code.
+function getHello(now = Date.now()) {
+  if (!activeCode || activeCode.used || activeCode.expiresAt <= now) return null
+  return activeCode.channel.hello
+}
+
+// The AES key for an in-flight pairing, from the client's ephemeral public key.
+function channelKey(clientPublicKey, now = Date.now()) {
+  if (!activeCode || activeCode.used || activeCode.expiresAt <= now) return null
+  return pairChannel.sessionKey(activeCode.channel, clientPublicKey)
 }
 
 function getActiveCode(now = Date.now()) {
@@ -66,7 +87,7 @@ function consumePairingCode(submitted, now = Date.now()) {
   if (!activeCode) return { ok: false, reason: 'No pairing code is active. Generate one on the desktop.' }
   if (activeCode.used) return { ok: false, reason: 'That pairing code has already been used.' }
   if (activeCode.expiresAt <= now) return { ok: false, reason: 'That pairing code has expired. Generate a new one.' }
-  if (!constantTimeEqual(String(submitted || '').trim().toUpperCase(), activeCode.code)) {
+  if (!constantTimeEqual(pairChannel.normaliseCode(submitted), activeCode.code)) {
     return { ok: false, reason: 'Incorrect pairing code.' }
   }
   activeCode.used = true
@@ -120,6 +141,7 @@ function issueDeviceToken(configService, { name, platform }, now = Date.now()) {
   }
   const devices = listRaw(cfg).concat(device)
   configService.update({ mobileDevices: devices })
+  clearSecretsCache()
   return { token, device: publicView(device, now) }
 }
 
@@ -164,11 +186,39 @@ function verifyDeviceToken(configService, token, now = Date.now()) {
   return matched ? publicView(matched, now) : null
 }
 
+// The plaintext tokens, for HMAC verification of signed requests.
+//
+// Cached, because this runs on EVERY signed request and each entry costs an OS
+// keychain unwrap — so a phone polling the scan log while a scan runs, or
+// anything on the LAN sending forged signatures, drove one keychain round trip
+// per registered device per request. The cache is keyed on the wrapped tokens
+// themselves, so revoking, pairing or pruning a device changes the key and the
+// old entry is never served; `expiresAt` is folded in too, so a token that
+// lapses between calls is not kept alive by the cache.
+let secretsCache = null // { key, value }
+
+function secretsCacheKey(devices, now) {
+  return devices.map(d => `${d.id}:${d.tokenEnc || ''}:${isExpired(d, now) ? 'x' : 'v'}`).join('|')
+}
+
 function deviceSecrets(configService, now = Date.now()) {
-  return listRaw(configService.load()).filter(d => !isExpired(d, now) && d.tokenEnc).map(d => ({
+  const devices = listRaw(configService.load())
+  const key = secretsCacheKey(devices, now)
+  if (secretsCache && secretsCache.key === key) return secretsCache.value
+  const value = devices.filter(d => !isExpired(d, now) && d.tokenEnc).map(d => ({
     device: publicView(d, now),
     token: configService.decryptSecret ? configService.decryptSecret(d.tokenEnc) : d.tokenEnc,
   })).filter(x => x.token)
+  secretsCache = { key, value }
+  return value
+}
+
+// Dropped whenever the device list is rewritten, so a revocation takes effect on
+// the next request rather than whenever the key happens to change. The key check
+// above would catch it anyway; this makes the intent explicit and means a
+// revoked token is never sitting in memory a moment longer than it has to.
+function clearSecretsCache() {
+  secretsCache = null
 }
 
 // Drop devices whose tokens expired a good while ago.
@@ -195,6 +245,7 @@ function pruneExpiredDevices(configService, now = Date.now()) {
   })
   if (keep.length === devices.length) return { removed: 0 }
   configService.update({ mobileDevices: keep })
+  clearSecretsCache()
   return { removed: devices.length - keep.length }
 }
 
@@ -220,17 +271,21 @@ function revokeDevice(configService, deviceId) {
   const remaining = devices.filter(d => d.id !== deviceId)
   if (remaining.length === devices.length) return { success: false, reason: 'Device not found' }
   configService.update({ mobileDevices: remaining })
+  clearSecretsCache()
   return { success: true }
 }
 
 function revokeAll(configService) {
   configService.update({ mobileDevices: [] })
+  clearSecretsCache()
   return { success: true }
 }
 
 module.exports = {
   createPairingCode, getActiveCode, clearPairingCode, consumePairingCode,
+  getHello, channelKey,
   issueDeviceToken, verifyDeviceToken, deviceSecrets, listDevices, revokeDevice, revokeAll, touchDevice,
+  clearSecretsCache,
   pruneExpiredDevices,
   hashToken, normaliseTtlDays,
   CODE_TTL_MS, DEFAULT_TOKEN_TTL_DAYS, EXPIRED_GRACE_MS,

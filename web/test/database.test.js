@@ -237,6 +237,27 @@ async function main() {
   check('recovery drill detects a corrupt backup', failedDrill.success, false)
   check('corrupt backup is named in the report', failedDrill.results[0].name, drill.results[0].name)
 
+  // ── Screening answers carry who wrote them ──────────────────────
+  // Only 'user' exempts an answer from the fabrication guard, and the guard
+  // DELETES what it rejects — so an answer stored under the wrong source is an
+  // answer that silently disappears the next time it is used. The column used
+  // to default to 'ai', which is how an edit made in Settings (main.js
+  // db:updateCachedAnswer) demoted the user's own words to model output.
+  db.saveCachedAnswer('Highest qualification?', 'Bachelor of Science, 2016', 'user')
+  check('a hand-written answer is stored as the users own',
+    db.getCachedAnswerRecord('Highest qualification?').source, 'user')
+  db.saveCachedAnswer('Years of Python?', 'About six years.', 'ai')
+  check('a model answer is stored as model output',
+    db.getCachedAnswerRecord('Years of Python?').source, 'ai')
+  // Re-saving the user's answer must not quietly demote it.
+  db.saveCachedAnswer('Highest qualification?', 'Bachelor of Science, 2016 (Hons)', 'user')
+  check('editing it again keeps it theirs',
+    db.getCachedAnswerRecord('Highest qualification?').source, 'user')
+  // And the trap itself is closed: there is no default to fall into.
+  let refusedMissingSource = false
+  try { db.saveCachedAnswer('Anything?', 'x') } catch { refusedMissingSource = true }
+  check('an omitted source is refused rather than assumed', refusedMissingSource, true)
+
   done()
 }
 

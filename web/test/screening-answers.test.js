@@ -37,7 +37,7 @@ stub({
   },
 })
 
-const { resolveAnswer, ScreeningAnswerRefused, isUncertain } = service('screeningAnswers')
+const { resolveAnswer, ScreeningAnswerRefused, isUncertain, staleDays } = service('screeningAnswers')
 const { check, done } = createChecker()
 
 const attended = () => ({
@@ -124,6 +124,50 @@ function reset() { cache = new Map(); aiCalls = 0; asked = []; userReply = '' }
   r = await resolveAnswer({ question: 'How many years of Rust?', cfg: unattended() })
   check('an uncertain answer is never submitted verbatim', r.answer, '')
   check('and nothing is cached from it', cache.size, 0)
+
+  // ─── Answers go stale ──────────────────────────────────────────
+  // These are replayed to employers for as long as they sit in the cache, and
+  // the facts under them move — "three years of Python" was true when it was
+  // typed and is wrong two years later. Nothing ever aged them out, so the
+  // oldest answers were the ones being reused most.
+  const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString().replace('T', ' ').slice(0, 19)
+  check('a recent answer is not stale', staleDays(daysAgo(30), { screeningAnswerStaleDays: 180 }), null)
+  check('an old answer reports its age', staleDays(daysAgo(400), { screeningAnswerStaleDays: 180 }), 400)
+  check('the threshold is inclusive', staleDays(daysAgo(180), { screeningAnswerStaleDays: 180 }), 180)
+  check('zero turns the flagging off', staleDays(daysAgo(999), { screeningAnswerStaleDays: 0 }), null)
+  check('a missing timestamp is not reported as stale', staleDays(null, {}), null)
+  check('an unparseable timestamp is not reported as stale', staleDays('whenever', {}), null)
+  // SQLite writes UTC without a zone suffix; reading it as local would shift an
+  // answer across the threshold either side of the date line.
+  check('a SQLite timestamp is read as UTC',
+    staleDays('2020-01-01 00:00:00', { screeningAnswerStaleDays: 1 }) > 1000, true)
+
+  // Staleness NEVER withholds an answer. It is about to be typed into a form,
+  // there may be nobody at the keyboard, and refusing a probably-correct answer
+  // to avoid a possibly-stale one is the wrong trade at that moment — the log
+  // line and the Settings flag are where it gets acted on.
+  reset()
+  const logged = []
+  cache.set('Notice period?', { answer: 'Four weeks', source: 'user', updated_at: daysAgo(400) })
+  r = await resolveAnswer({
+    question: 'Notice period?',
+    cfg: { ...unattended(), screeningAnswerStaleDays: 180 },
+    log: (m) => logged.push(m),
+  })
+  check('a stale answer is still used', r.answer, 'Four weeks')
+  check('but it is called out', logged.some(m => /400 days ago/.test(m)), true)
+  check('and it points at where to fix it', logged.some(m => /Settings/.test(m)), true)
+  check('the model is not consulted for it', aiCalls, 0)
+
+  reset()
+  logged.length = 0
+  cache.set('Notice period?', { answer: 'Four weeks', source: 'user', updated_at: daysAgo(10) })
+  await resolveAnswer({
+    question: 'Notice period?',
+    cfg: { ...unattended(), screeningAnswerStaleDays: 180 },
+    log: (m) => logged.push(m),
+  })
+  check('a fresh answer is used silently', logged.length, 0)
 
   done()
 })()

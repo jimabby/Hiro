@@ -2,7 +2,10 @@
 // one-time code, sign a request, decrypt the response, send an encrypted write,
 // and prove the same nonce cannot be replayed.
 const crypto = require('crypto')
+const path_ = require('path')
 const { stub, service, createChecker } = require('./helpers')
+// The browser extension's own implementation, run in Node.
+const pairChannel = require(path_.join(__dirname, '..', '..', 'extension', 'pairChannel.js'))
 
 const PORT = 48232
 const cfg = { mobileApiEnabled: true, mobileApiPort: PORT, mobileApiToken: 'l'.repeat(32), mobileDevices: [] }
@@ -57,13 +60,40 @@ function headers(token, method, path, raw, timestamp = String(Date.now()), nonce
   try {
     await api.start()
     const pairing = api.startPairing()
-    const pairRes = await fetch(`http://127.0.0.1:${PORT}/api/pair`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: pairing.code, deviceName: 'Test phone', platform: 'test' }),
+
+    // The pairing exchange runs over an encrypted channel, because the reply
+    // carries a 90-day token and this is plain HTTP. The client half here is the
+    // real extension implementation (WebCrypto), so this exercises the same code
+    // a browser runs — see pair-channel.test.js for the three-way agreement.
+    const helloRes = await fetch(`http://127.0.0.1:${PORT}/api/pair/hello`)
+    const hello = await helloRes.json()
+    check('the desktop offers a pairing channel', helloRes.status, 200)
+    check('the hello is unauthenticated but tagged', typeof hello.tag, 'string')
+
+    const channel = await pairChannel.openChannel(hello, pairing.code)
+    const sealed = await pairChannel.sealRequest(channel, {
+      code: pairing.code, deviceName: 'Test phone', platform: 'test',
     })
-    const paired = await pairRes.json()
+    const pairBody = JSON.stringify(sealed)
+    check('the pairing code does not travel in the clear', pairBody.includes(pairing.code), false)
+
+    const pairRes = await fetch(`http://127.0.0.1:${PORT}/api/pair`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: pairBody,
+    })
+    const pairEnvelope = await pairRes.json()
     check('one-time pairing succeeds', pairRes.status, 200)
+    const paired = await pairChannel.openResponse(channel, pairEnvelope)
+    check('the device token does not travel in the clear',
+      JSON.stringify(pairEnvelope).includes(paired.token), false)
     check('desktop keeps only a wrapped device secret', cfg.mobileDevices[0].tokenEnc.startsWith('wrapped:'), true)
+
+    // The code is single-use, so the whole exchange is spent — a captured
+    // request cannot be replayed to mint a second token.
+    const replayPair = await fetch(`http://127.0.0.1:${PORT}/api/pair`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: pairBody,
+    })
+    check('a replayed pairing request is refused', replayPair.status >= 400, true)
+    check('and no second device was created', cfg.mobileDevices.length, 1)
 
     const path = '/api/stats'
     const signed = headers(paired.token, 'GET', path, '')

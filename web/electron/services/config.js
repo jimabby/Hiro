@@ -181,7 +181,17 @@ const DEFAULTS = {
   coverLetterTemplate: '',
   scheduledScanTime: '09:00',
   dailyReportTime: '18:00',
+  // Days after applying before the FIRST follow-up.
   followUpDays: 7,
+  // How many follow-ups an application may get in total. 1 is the old
+  // behaviour: one nudge, ever. 2 is the default because the ordinary pattern
+  // is a note after a week and one more a fortnight later, and the boolean this
+  // replaces made the second one impossible.
+  followUpMaxCount: 2,
+  // Days between follow-ups after the first. Measured from the PREVIOUS
+  // follow-up rather than from the application, or every remaining round would
+  // come due the moment the first one went out.
+  followUpIntervalDays: 14,
   enableFollowUp: false,
   reviewFollowUpEmails: true,
   enableInboxCheck: false,
@@ -320,6 +330,15 @@ const DEFAULTS = {
   automationCooldownHours: 6,
   automationCooldowns: {},
 
+  // ─── Screening answers ─────────────────────────────────────────
+  // Days after which a cached screening answer is shown as needing
+  // re-confirmation. These are submitted to employers over the user's name for
+  // as long as they sit in the cache, and the facts under them move — "three
+  // years of Python" was true when it was typed and is wrong two years later.
+  // Nothing is ever deleted or withheld on age alone; the answer is flagged in
+  // Settings and noted in the log when it is used. 0 turns the flagging off.
+  screeningAnswerStaleDays: 180,
+
   // ─── Recruiter contact extraction ──────────────────────────────
   // Pull a contact address out of the job ad and out of recruiter replies, so
   // auto follow-up has somewhere to send. Without it, follow-up skipped every
@@ -403,14 +422,57 @@ function getLoadError() {
   return loadError
 }
 
+// ─── Load cache ────────────────────────────────────────────────────────────
+//
+// load() is called on nearly every operation in the app: once per mobile-API
+// request, on every Workbench render, on every cloud-status poll, and inside
+// most scheduler ticks. Each call reads and parses the file AND unwraps all
+// seven secret fields through the OS keychain — Keychain on macOS, DPAPI on
+// Windows, libsecret on Linux — which is a few milliseconds of IPC apiece and
+// not something to do dozens of times a second.
+//
+// The cache is validated against the file's mtime and size rather than trusted
+// blindly. This process holds the single-instance lock so it is the only writer,
+// but a config edited by hand while Hiro is running must still be picked up —
+// and a stale settings object is exactly the kind of bug that presents as "I
+// changed the setting and nothing happened".
+//
+// Cached as a frozen snapshot that is COPIED on every read. Callers routinely
+// mutate what load() hands back (scheduler patches a field then saves it), and
+// handing out a shared object would let one caller's edit appear in another's
+// unrelated read.
+let cache = null // { mtimeMs, size, value }
+
+function statSignature() {
+  try {
+    const st = fs.statSync(CONFIG_FILE)
+    return { mtimeMs: st.mtimeMs, size: st.size }
+  } catch { return null }
+}
+
+function invalidate() {
+  cache = null
+}
+
 function load() {
   ensureDir()
   if (!fs.existsSync(CONFIG_FILE)) return { ...DEFAULTS }
+  const sig = statSignature()
+  if (cache && sig && cache.mtimeMs === sig.mtimeMs && cache.size === sig.size) {
+    // Restore the per-load diagnostics the cached parse produced, so a caller
+    // that reads getSecretError() after a cache hit sees the same answer a cold
+    // load would have given it.
+    loadError = cache.loadError
+    secretError = cache.secretError
+    return { ...cache.value }
+  }
   try {
     const raw = fs.readFileSync(CONFIG_FILE, 'utf8')
     const parsed = JSON.parse(raw)
     loadError = null
-    return decryptForLoad({ ...DEFAULTS, ...parsed })
+    const value = decryptForLoad({ ...DEFAULTS, ...parsed })
+    if (sig) cache = { ...sig, value, loadError, secretError }
+    return { ...value }
   } catch (err) {
     // Keep the unreadable file so it can be recovered by hand, and do it only
     // once — a later successful save must not be shadowed by a stale copy.
@@ -419,6 +481,7 @@ function load() {
       if (!fs.existsSync(salvage)) fs.copyFileSync(CONFIG_FILE, salvage)
     } catch { /* best-effort */ }
     loadError = `Settings file could not be read (${err.message}). A copy was kept at ${salvage}; defaults are in use until it is fixed or overwritten.`
+    invalidate()
     return { ...DEFAULTS }
   }
 }
@@ -459,8 +522,14 @@ function save(config) {
     loadError = null
   } catch (err) {
     try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp) } catch { /* best-effort */ }
+    invalidate()
     throw err
   }
+  // Unconditionally, and only after a successful write. The mtime check would
+  // usually catch this on its own, but mtime resolution is coarse enough on some
+  // filesystems that two saves inside the same tick can be indistinguishable —
+  // and the cost of being wrong here is serving settings the user just changed.
+  invalidate()
 }
 
 // Atomic read-modify-write. Background services (scheduler, cloud sync, mobile
@@ -476,8 +545,8 @@ function update(patch) {
 }
 
 module.exports = {
-  load, save, update, getLoadError, getSecretError,
+  load, save, update, getLoadError, getSecretError, invalidate,
   CONFIG_DIR, DEFAULTS, encryptSecret, decryptSecret,
   // exported for tests
-  _resetSecretState: () => { preservedSecrets.clear(); secretError = null },
+  _resetSecretState: () => { preservedSecrets.clear(); secretError = null; invalidate() },
 }

@@ -13,6 +13,10 @@ import { View, Text, TouchableOpacity, StyleSheet } from 'react-native'
 import { CameraView, useCameraPermissions } from 'expo-camera'
 import { colors, radius } from '../theme'
 
+// Pairing QR payload versions this build understands. v1 desktops pair in the
+// clear; v2 desktops offer the encrypted exchange in src/pairProtocol.js.
+const SUPPORTED_QR_VERSIONS = [1, 2]
+
 export default function QrPairScanner({ onScanned, onCancel }) {
   const [permission, requestPermission] = useCameraPermissions()
   // The camera fires repeatedly while the code stays in frame; without this the
@@ -61,7 +65,12 @@ export default function QrPairScanner({ onScanned, onCancel }) {
               return // some other QR code happened to be in frame
             }
             // Only accept a payload that is actually a Hiro pairing QR.
-            if (!payload || payload.v !== 1 || !payload.code || !payload.host) return
+            //
+            // Any version this app knows how to pair with: v1 desktops encode
+            // the same three fields, and the key exchange is fetched from the
+            // desktop rather than carried in the QR, so the version here says
+            // which desktop is on the other end and not which fields to read.
+            if (!payload || !SUPPORTED_QR_VERSIONS.includes(payload.v) || !payload.code || !payload.host) return
             setHandled(true)
             onScanned(payload)
           }}

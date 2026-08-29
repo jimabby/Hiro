@@ -1,15 +1,7 @@
 import { useState, useEffect } from 'react'
+import { statusBadge } from '../statuses'
 
 const PLATFORM_COLORS = { Seek: 'badge-blue', LinkedIn: 'badge-green', Indeed: 'badge-yellow' }
-const STATUS_BADGE = {
-  applied: { label: 'Applied', color: 'badge-blue' },
-  interview: { label: 'Interview', color: 'badge-green' },
-  offer: { label: 'Offer', color: 'badge-green' },
-  rejected: { label: 'Rejected', color: 'badge-red' },
-  pending: { label: 'Pending', color: 'badge-yellow' },
-  no_response: { label: 'No Response', color: 'badge-gray' },
-  skipped: { label: 'Skipped', color: 'badge-gray' },
-}
 
 function relativeDate(dateStr) {
   const d = new Date(dateStr + 'T12:00:00')
@@ -234,8 +226,8 @@ export default function Timeline({ active }) {
                               </td>
                               <td style={{ padding: '6px 8px', fontSize: 13, color: j.match_score >= 80 ? 'var(--green)' : j.match_score >= 60 ? 'var(--yellow)' : 'var(--text-muted)', fontWeight: 600 }}>{j.match_score}%</td>
                               <td style={{ padding: '6px 8px', fontSize: 12 }}>
-                                <span className={`badge ${STATUS_BADGE[j.status]?.color || 'badge-gray'}`}>
-                                  {STATUS_BADGE[j.status]?.label || j.status}
+                                <span className={`badge ${statusBadge(j.status).color}`}>
+                                  {statusBadge(j.status).label}
                                 </span>
                               </td>
                               <td style={{ padding: '6px 8px' }}>

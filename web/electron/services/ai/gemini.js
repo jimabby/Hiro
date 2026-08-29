@@ -1,6 +1,6 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai')
 const { withUsage } = require('./usage')
-const { interviewQuestionsPrompt } = require('./prompts')
+const { interviewQuestionsPrompt, followUpEmailPrompt } = require('./prompts')
 const { fence, FENCE_RULES } = require('./untrusted')
 const { parseScore, parseScoreWithExplanation } = require('./scoring')
 
@@ -178,14 +178,9 @@ RESUME: ${masterResume.slice(0, 800)}`)
   catch { return { missing: [], present: [] } }
 }
 
-async function generateFollowUpEmail(jobTitle, company, masterResume, apiKey, modelName) {
-  const text = await complete('generateFollowUpEmail', apiKey, modelName, `Write a brief professional follow-up email for a job application.
-Candidate applied for "${jobTitle}" at "${company}" and is following up to express continued interest.
-2-3 short paragraphs. No markdown. End with candidate's name from the resume.
-Return ONLY the email body text.
-
-RESUME:
-${masterResume.slice(0, 800)}`)
+async function generateFollowUpEmail(jobTitle, company, masterResume, apiKey, modelName, stage) {
+  const text = await complete('generateFollowUpEmail', apiKey, modelName,
+    followUpEmailPrompt(jobTitle, company, masterResume, stage))
   return text
 }
 

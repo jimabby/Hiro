@@ -31,6 +31,7 @@ const cloudSync = require('./services/cloudSync')
 const registerFeatureHandlers = require('./ipc/featureHandlers')
 const logger = require('./services/logger')
 const configTransfer = require('./services/configTransfer')
+const dataTransfer = require('./services/dataTransfer')
 const tray = require('./services/tray')
 const updater = require('./services/updater')
 const entryUrl = require('./services/entryUrl')
@@ -938,7 +939,12 @@ ipcMain.handle('resume:openDocx', async (_, resumeText, originalPath) => {
 
 // ─── IPC: Export CSV ─────────────────────────────────────────────
 ipcMain.handle('db:exportCSV', async (_, filters) => {
-  const apps = database.getApplications(filters || {})
+  // The list query, not the full one. Every column written below is in
+  // LIST_COLUMNS, and getApplications() is SELECT * — so exporting pulled every
+  // tailored resume, cover letter, base resume and job description through
+  // memory to write fourteen short fields. On a real history that is tens of
+  // megabytes read and discarded.
+  const apps = database.getApplicationsList(filters || {})
   const header = [
     'ID', 'Job Title', 'Company', 'Platform', 'Salary', 'Salary Min (annual)', 'Salary Max (annual)',
     'Match Score', 'Match Explanation', 'Status', 'Comment', 'Applied At', 'Closing Date', 'Job URL',
@@ -1022,8 +1028,22 @@ ipcMain.handle('db:deleteCachedAnswer', (_, question) => database.deleteCachedAn
 
 ipcMain.handle('db:clearAllCachedAnswers', () => database.clearAllCachedAnswers())
 
+// "Still true." Re-dates an answer without changing it, so a cache the user has
+// actually reviewed stops nagging.
+ipcMain.handle('db:confirmCachedAnswer', (_, question) => database.confirmCachedAnswer(question))
+
+// An answer the user typed into Settings is a statement of fact by the only
+// person entitled to make one about themselves, so it is recorded as theirs.
+//
+// The default source is 'ai', and taking it meant an edit here DOWNGRADED the
+// row (ON CONFLICT overwrites source) — so the fabrication guard re-checked the
+// user's own words against the résumé on next use, found "Bachelor" or
+// "clearance" or a year the résumé does not spell out, and DELETED the answer.
+// The correction vanished from this page with no explanation, and the model was
+// asked again. See services/screeningAnswers.js: "A user-typed answer is never
+// questioned."
 ipcMain.handle('db:updateCachedAnswer', (_, question, answer) => {
-  database.saveCachedAnswer(question, answer)
+  database.saveCachedAnswer(question, answer, 'user')
   return { success: true }
 })
 
@@ -1178,6 +1198,83 @@ ipcMain.handle('config:inspectImport', async (_, passphrase) => {
     return { success: true, createdAt: info.createdAt, includesSecrets: info.includesSecrets, summary: info.summary }
   } catch (err) {
     pendingConfigImport = null
+    return { success: false, error: err.message }
+  }
+})
+
+// ─── IPC: Full data export / import ──────────────────────────────
+//
+// Distinct from the settings bundle above and from the rotating backups. The
+// backups are the SQLite file, which on an encrypted profile cannot be read
+// without this machine's keychain entry — right for a backup, useless for the
+// case where the keychain is what was lost. This is the job search itself, as
+// plain data, readable by anything.
+ipcMain.handle('data:exportPreview', () => {
+  try { return { success: true, ...dataTransfer.preview() } }
+  catch (err) { return { success: false, error: err.message } }
+})
+
+ipcMain.handle('data:export', async (_, passphrase) => {
+  try {
+    const bundle = dataTransfer.exportBundle(passphrase || '')
+    const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+      title: 'Export Hiro Data',
+      defaultPath: `hiro-data-${new Date().toISOString().slice(0, 10)}.${bundle.encrypted ? 'hirodata' : 'json'}`,
+      filters: bundle.encrypted
+        ? [{ name: 'Hiro Data Export', extensions: ['hirodata'] }]
+        : [{ name: 'JSON', extensions: ['json'] }],
+    })
+    if (canceled || !filePath) return { canceled: true }
+    // 0600 for the same reason config.json is: unencrypted, this file holds
+    // every résumé, cover letter and recruiter address in the profile.
+    require('fs').writeFileSync(filePath, bundle.text, { encoding: 'utf8', mode: 0o600 })
+    return { success: true, filePath, encrypted: bundle.encrypted, counts: bundle.counts }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+// The chosen file is held between picking and importing so the passphrase is
+// entered once, and so a mistyped passphrase does not mean picking the file
+// again.
+let pendingDataImportPath = null
+
+ipcMain.handle('data:chooseImport', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+    title: 'Import Hiro Data',
+    filters: [{ name: 'Hiro Data Export', extensions: ['hirodata', 'json'] }],
+    properties: ['openFile'],
+  })
+  if (canceled || !filePaths.length) return { canceled: true }
+  pendingDataImportPath = filePaths[0]
+  try {
+    // Read the header without applying anything, so the user is told what the
+    // file holds — and whether it needs a passphrase — before committing.
+    const raw = require('fs').readFileSync(pendingDataImportPath, 'utf8')
+    const read = dataTransfer.readBundle(raw, '')
+    if (read.ok) return { success: true, path: pendingDataImportPath, encrypted: false, counts: read.bundle.counts }
+    if (read.needsPassphrase) {
+      const header = JSON.parse(raw)
+      return { success: true, path: pendingDataImportPath, encrypted: true, counts: header.counts, exportedAt: header.exportedAt }
+    }
+    pendingDataImportPath = null
+    return { success: false, error: read.reason }
+  } catch (err) {
+    pendingDataImportPath = null
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('data:import', (_, passphrase) => {
+  if (!pendingDataImportPath) return { success: false, error: 'Nothing staged — choose a file first.' }
+  try {
+    const raw = require('fs').readFileSync(pendingDataImportPath, 'utf8')
+    const result = dataTransfer.importBundle(raw, passphrase || '')
+    // A wrong passphrase must not discard the chosen file — the user is going
+    // to type it again, not go and find the file again.
+    if (result.success) pendingDataImportPath = null
+    return result
+  } catch (err) {
     return { success: false, error: err.message }
   }
 })
@@ -1489,8 +1586,12 @@ ipcMain.handle('review:approveFollowUp', async (_, id) => {
     return database.resolveFollowUpDraft(id, 'sent')
   } catch (err) { return { success: false, reason: err.message } }
 })
-// Declining is as final as sending. Both settle the draft through the same call
-// precisely so a rejection cannot leave the application due for redrafting.
+// Declining settles the draft too, precisely so a rejection cannot leave the
+// application due for redrafting on the next pass. It is MORE final than
+// sending, now that there is more than one round: sending advances to the next
+// stage, declining ends the sequence — the user looked at chasing this employer
+// and said no, and offering the same thing again in a fortnight is that same
+// answer being ignored.
 ipcMain.handle('review:rejectFollowUp', (_, id) => {
   try {
     const draft = database.getFollowUpDraft(id)
@@ -1553,10 +1654,14 @@ ipcMain.handle('analytics:resumeExperiment', () => {
 ipcMain.handle('ats:testBoard', async (_, provider, slug) => {
   try {
     const ats = require('./services/scraper/ats')
+    // No keywords, so nothing is filtered out and the count is the board's real
+    // size. skipDetails matters for the providers whose descriptions need a
+    // request each: validating a board must not fire forty of them to answer
+    // "does this slug exist".
     const jobs = await ats.scrape({
       atsBoards: [{ provider, slug, label: slug }],
       jobKeywords: '', jobLocation: '',
-    })
+    }, { skipDetails: true })
     return { success: true, count: jobs.length, sample: jobs.slice(0, 3).map(j => j.job_title) }
   } catch (err) {
     return { success: false, error: err.message }

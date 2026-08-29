@@ -1,4 +1,4 @@
-// Do Greenhouse, Lever and Ashby still serve what the ATS scraper parses?
+// Do the career-board APIs still serve what the ATS scraper parses?
 //
 // This is the highest-value contract test in the repo, because it protects the one
 // job source that is supposed to be reliable. The aggregator scrapers fail loudly
@@ -26,6 +26,11 @@ const BOARDS = [
   { provider: 'greenhouse', slug: 'gitlab' },
   { provider: 'lever', slug: 'leverdemo' },
   { provider: 'ashby', slug: 'ashby' },
+  { provider: 'workable', slug: 'zego' },
+  { provider: 'recruitee', slug: 'vandebron' },
+  // The one whose descriptions are not in the list response, so the detail
+  // endpoint is exercised separately below.
+  { provider: 'smartrecruiters', slug: 'Ubisoft2' },
 ]
 
 async function fetchWithTimeout(url, ms = 20000) {
@@ -88,6 +93,32 @@ async function main() {
       parsed.every(j => /^https?:\/\//.test(j.job_url)), true)
     check(`${spec.label}: every job has a stable id`,
       parsed.every(j => j.external_id && j.external_id !== 'undefined'), true)
+
+    // A provider whose list omits descriptions fetches them one at a time. The
+    // detail endpoint is a second contract, and it is the one that would break
+    // silently — the list would keep working and every job would score on its
+    // title alone.
+    if (spec.parseDetail) {
+      const target = parsed.find(j => j.detailUrl)
+      check(`${spec.label}: the list carries a detail URL`, !!target, true)
+      if (target) {
+        const detailRes = await fetchWithTimeout(target.detailUrl)
+        check(`${spec.label}: the detail endpoint responds`, detailRes.status, 200)
+        if (detailRes.ok) {
+          const detail = spec.parseDetail(await detailRes.json())
+          check(`${spec.label}: the detail carries a description`,
+            (detail.job_description || '').length > 50, true)
+          check(`${spec.label}: the detail description is plain text`,
+            /<[a-z][^>]*>/i.test(detail.job_description || ''), false)
+          check(`${spec.label}: the detail supplies a posting URL`,
+            /^https?:\/\//.test(detail.job_url || ''), true)
+          note(`detail description is ${detail.job_description.length} chars`)
+          // Fold it back in so the plain-text assertions below see real text
+          // rather than the empty string the list gave.
+          target.job_description = detail.job_description
+        }
+      }
+    }
 
     // Descriptions are what the model scores against. An empty one is not fatal —
     // some postings really are terse — but ALL of them empty means the field moved.

@@ -271,10 +271,17 @@ async function checkReviewQueue(cfg) {
   // A queue that stays non-empty should be mentioned periodically, not once and
   // never again — bucketing the clock is what turns "send once" into "send at
   // most this often".
+  //
+  // The bucket is the WHOLE key. It used to carry the held count too, which
+  // quietly undid the rate limit it sits inside: every change to the count
+  // minted a fresh key, so a scan drafting ten applications one at a time sent
+  // ten notifications inside the window that was meant to allow one. The count
+  // belongs in the message, not in the identity of the event — "the review queue
+  // is not empty" is the thing being reported once per window.
   const bucket = Math.floor(Date.now() / (everyHours * 3600000))
   await send({
     kind: 'review',
-    dedupeKey: `review:${bucket}:${held}`,
+    dedupeKey: `review:${bucket}`,
     title: `${held} draft${held === 1 ? '' : 's'} waiting for review`,
     body: held === 1
       ? 'One application is drafted and waiting for your approval.'

@@ -717,7 +717,10 @@ async function runFollowUp() {
   const aiAdapter = require('./ai/index')
   let jobs = []
   try {
-    jobs = database.getApplicationsForFollowUp(cfg.followUpDays || 7)
+    jobs = database.getApplicationsForFollowUp(cfg.followUpDays || 7, {
+      maxCount: cfg.followUpMaxCount ?? 2,
+      intervalDays: cfg.followUpIntervalDays ?? 14,
+    })
   } catch (err) {
     log(`Follow-up error: could not load applications — ${err.message}`)
     return
@@ -738,24 +741,34 @@ async function runFollowUp() {
     try {
       const activeResume = (cfg.resumes || []).find(r => r.id === (job.resume_id || cfg.defaultResumeId))?.text
         || cfg.masterResume || ''
+      // Which round this is. The query hands it back so the prompt can ask for a
+      // different letter each time — a second email identical to the first tells
+      // the reader nobody is paying attention.
+      const stage = job.follow_up_stage || 1
       const emailText = await aiAdapter.generateFollowUpEmail(
-        cfg.aiProvider, cfg.aiApiKey, job.job_title, job.company, activeResume, cfg.geminiModel
+        cfg.aiProvider, cfg.aiApiKey, job.job_title, job.company, activeResume, cfg.geminiModel, stage
       )
+      // Said out loud from the second round on, because "a follow-up went out"
+      // and "the third follow-up went out" are not the same event to a user
+      // deciding whether the cadence is too aggressive.
+      const which = stage > 1 ? ` (follow-up ${stage})` : ''
       if (cfg.reviewFollowUpEmails) {
         database.saveFollowUpDraft({
           applicationId: job.id,
           recipient,
-          subject: `Follow-up: ${job.job_title} at ${job.company}`,
+          subject: stage > 1
+            ? `Following up again: ${job.job_title} at ${job.company}`
+            : `Follow-up: ${job.job_title} at ${job.company}`,
           body: emailText,
         })
         drafted++
-        log(`Follow-up drafted for review: ${job.job_title} at ${job.company}`)
+        log(`Follow-up drafted for review${which}: ${job.job_title} at ${job.company}`)
         continue
       }
       await emailService.sendFollowUpEmail({ ...job, recruiter_email: recipient }, emailText, cfg)
       database.markFollowUpSent(job.id)
       sent++
-      log(`Follow-up sent for ${job.job_title} at ${job.company}`)
+      log(`Follow-up sent${which} for ${job.job_title} at ${job.company}`)
     } catch (err) {
       failed++
       log(`Follow-up failed for ${job.job_title} at ${job.company}: ${err.message}`)
