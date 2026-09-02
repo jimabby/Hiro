@@ -51,9 +51,30 @@ async function requestDesktopPermission(host) {
   return hostname
 }
 
+// Show the import form and, separately, try to fill it from the current tab.
+//
+// These are two things and used to be one. fillCurrentJob() throws when the
+// active tab is not a web page ("Open a web job listing first."), and because
+// the pair handler awaited this whole function inside its try, a successful
+// pairing done from a blank tab or the extensions page reported itself as a red
+// error and never printed "Paired". The token was stored and the form was up:
+// nothing had gone wrong except the message.
+//
+// So the fill is best-effort and reports itself, and pairing reports on pairing.
 async function showImporter(conn) {
-  connection = conn; $('pairing').hidden = true; $('importer').hidden = false
-  await fillCurrentJob()
+  connection = conn
+  $('pairing').hidden = true
+  $('importer').hidden = false
+}
+
+// Returns the message to show if the fill could not happen, or null on success.
+async function tryFillCurrentJob() {
+  try {
+    await fillCurrentJob()
+    return null
+  } catch (err) {
+    return err.message
+  }
 }
 
 // Two round trips, because the reply carries a long-lived device token over
@@ -86,7 +107,15 @@ $('pair').addEventListener('click', async () => {
     const paired = await HiroPairChannel.openResponse(channel, body)
     const conn = { host, port, token: paired.token }
     await chrome.storage.session.set({ hiroConnection: conn })
-    await showImporter(conn); message('Paired for this browser session.', 'success')
+    await showImporter(conn)
+    // Pairing succeeded whatever the current tab happens to be. If the fill
+    // could not run, say what to do next rather than reporting the pairing as
+    // failed — the two outcomes used to be indistinguishable.
+    const fillProblem = await tryFillCurrentJob()
+    message(
+      fillProblem ? `Paired for this browser session. ${fillProblem}` : 'Paired for this browser session.',
+      fillProblem ? '' : 'success',
+    )
   } catch (err) { message(err.message, 'error') } finally { $('pair').disabled = false }
 })
 
@@ -106,6 +135,9 @@ $('forget').addEventListener('click', async () => {
 ;(async () => {
   try {
     const { hiroConnection } = await chrome.storage.session.get('hiroConnection')
-    if (hiroConnection) await showImporter(hiroConnection)
+    if (!hiroConnection) return
+    await showImporter(hiroConnection)
+    const fillProblem = await tryFillCurrentJob()
+    if (fillProblem) message(fillProblem)
   } catch (err) { message(err.message, 'error') }
 })()

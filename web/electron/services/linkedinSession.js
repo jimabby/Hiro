@@ -1,4 +1,5 @@
 const { chromium } = require('playwright')
+const { launchOptions } = require('./scraper/utils')
 const fs = require('fs')
 const path = require('path')
 const { CONFIG_DIR } = require('./config')
@@ -47,11 +48,11 @@ function clearCookies() {
 async function loginWithBrowser(onStatus) {
   onStatus('Opening LinkedIn login window...')
 
-  const browser = await chromium.launch({
+  const browser = await chromium.launch(launchOptions({
     headless: false,
     channel: 'chrome',  // Use real Chrome to avoid Google OAuth "insecure browser" block
     args: ['--window-size=1024,700', '--disable-blink-features=AutomationControlled'],
-  })
+  }))
 
   // Everything below runs inside try/finally: if newContext/goto throws (or
   // any other path exits early), the headed Chrome must still be closed —

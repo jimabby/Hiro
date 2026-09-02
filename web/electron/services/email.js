@@ -1,9 +1,6 @@
 const nodemailer = require('nodemailer')
 const configService = require('./config')
-
-function getEmailDomain(address) {
-  return (address || '').split('@')[1]?.toLowerCase() || ''
-}
+const mailProvider = require('./mailProvider')
 
 // Job titles/companies/salaries come from scraped postings and AI output —
 // escape them so a malicious posting can't inject markup into report emails.
@@ -15,37 +12,34 @@ function esc(value) {
     .replace(/"/g, '&quot;')
 }
 
+// The SMTP half of services/mailProvider.js — see that file for why the server
+// table lives there and why there is no longer a silent Gmail fallback.
+//
+// Throws, rather than returning a transport that cannot work, when the address
+// belongs to a provider that no longer accepts password sign-in or to a domain
+// Hiro does not know. Callers below already treat a missing address as "email is
+// not set up and that is fine"; a *misconfigured* one is different and has to be
+// visible.
 function createTransport(cfg) {
-  const domain = getEmailDomain(cfg.gmailAddress)
-  if (domain === 'outlook.com' || domain === 'hotmail.com' || domain === 'live.com' || domain === 'msn.com') {
-    return nodemailer.createTransport({
-      host: 'smtp-mail.outlook.com', port: 587, secure: false,
-      auth: { user: cfg.gmailAddress, pass: cfg.gmailAppPassword },
-      tls: { ciphers: 'SSLv3' },
-    })
-  }
-  if (domain === 'yahoo.com' || domain === 'ymail.com') {
-    return nodemailer.createTransport({
-      host: 'smtp.mail.yahoo.com', port: 465, secure: true,
-      auth: { user: cfg.gmailAddress, pass: cfg.gmailAppPassword },
-    })
-  }
-  if (domain === 'icloud.com' || domain === 'me.com' || domain === 'mac.com') {
-    return nodemailer.createTransport({
-      host: 'smtp.mail.me.com', port: 587, secure: false,
-      auth: { user: cfg.gmailAddress, pass: cfg.gmailAppPassword },
-    })
-  }
-  // Default: Gmail
+  const { smtp } = mailProvider.resolve(cfg)
   return nodemailer.createTransport({
-    service: 'gmail',
-    auth: { user: cfg.gmailAddress, pass: cfg.gmailAppPassword },
+    host: smtp.host,
+    port: smtp.port,
+    secure: smtp.secure,
+    auth: { user: cfg.smtpUser || cfg.gmailAddress, pass: cfg.gmailAppPassword },
   })
 }
 
-async function testConnection(email, password) {
-  const fakeCfg = { gmailAddress: email, gmailAppPassword: password }
-  const transport = createTransport(fakeCfg)
+// Settings → Email's "Test connection". `overrides` carries the custom-server
+// fields as they stand in the form, so the button tests what is on screen rather
+// than what was last saved.
+async function testConnection(email, password, overrides = {}) {
+  const transport = createTransport({
+    ...configService.load(),
+    ...overrides,
+    gmailAddress: email,
+    gmailAppPassword: password,
+  })
   await transport.verify()
 }
 

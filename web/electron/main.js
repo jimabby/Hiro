@@ -532,9 +532,17 @@ ipcMain.handle('ai:test', async (_, provider, apiKey, geminiModel) => {
 })
 
 // ─── IPC: Email test ────────────────────────────────────────────
-ipcMain.handle('email:test', async (_, email, password) => {
+// Which servers a given address resolves to, and why it does not resolve when it
+// does not. Read-only and side-effect free, so Settings can show the answer as
+// the address is typed rather than only when Test Connection is pressed.
+ipcMain.handle('email:describeServers', (_, cfg) =>
+  require('./services/mailProvider').describe({ ...configService.load(), ...(cfg || {}) }))
+
+// `overrides` carries the custom-server fields as they stand in the Settings
+// form, so Test Connection tests what is on screen rather than what was saved.
+ipcMain.handle('email:test', async (_, email, password, overrides) => {
   try {
-    await emailService.testConnection(email, password)
+    await emailService.testConnection(email, password, overrides || {})
     return { success: true }
   } catch (err) {
     return { success: false, error: err.message }
@@ -624,14 +632,29 @@ ipcMain.handle('logs:rendererError', (_e, report = {}) => {
 
 ipcMain.handle('logs:getRecent', () => logger.tail(500))
 ipcMain.handle('logs:clear', () => logger.clear())
+// Open the activity log in whatever the OS uses for text files.
+//
+// When the log is encrypted the file on disk is base64 ciphertext, which is
+// useless in an editor — so a decrypted copy is written to the OS temp
+// directory and that is what opens. Said out loud in the return value, because
+// a plaintext copy of the log now exists outside the profile and the user is
+// the one who decides how long it should live there.
 ipcMain.handle('logs:openFile', async () => {
   try {
-    await shell.openPath(logger.getPath())
-    return { success: true }
+    if (!logger.isEncrypted()) {
+      await shell.openPath(logger.getPath())
+      return { success: true, decryptedCopy: null }
+    }
+    const copy = path.join(require('os').tmpdir(), `hiro-activity-log-${Date.now()}.txt`)
+    logger.writePlainCopy(copy)
+    await shell.openPath(copy)
+    return { success: true, decryptedCopy: copy }
   } catch (err) {
     return { success: false, error: err.message }
   }
 })
+
+ipcMain.handle('logs:status', () => logger.getStatus())
 
 // ─── IPC: LinkedIn ──────────────────────────────────────────────
 ipcMain.handle('linkedin:status', () => ({ loggedIn: linkedinSession.hasCookies() }))
@@ -886,6 +909,24 @@ function resolveResumeOriginal(originalPath, allowedExts) {
 
 // Returns a `hiro-pdf://` URL the renderer can put straight in an iframe. See
 // PDF_SCHEME above for why this is not a data: URI any more.
+// Will an ATS be able to read this resume at all?
+//
+// `originalPath` comes from the renderer, so it goes through the same allow-list
+// resolver every other original-file handler uses — this must never become a way
+// to read an arbitrary file off disk and hand its text back.
+ipcMain.handle('resume:checkParseable', async (_, originalPath, originalExt) => {
+  try {
+    const parseCheck = require('./services/resumeParseCheck')
+    const safe = resolveResumeOriginal(originalPath, parseCheck.SUPPORTED)
+    if (originalPath && !safe) {
+      return { ok: false, unavailable: true, reason: 'That resume file is no longer where Hiro stored it.', findings: [] }
+    }
+    return await parseCheck.inspect(safe, originalExt)
+  } catch (err) {
+    return { ok: false, unavailable: true, reason: err.message, findings: [] }
+  }
+})
+
 ipcMain.handle('resume:getPDFBase64', async (_, resumeText, originalPath, originalExt) => {
   try {
     const fs = require('fs')
@@ -1426,8 +1467,11 @@ ipcMain.handle('db:saveInterviewPrep', (_, applicationId, questions) => {
   return { success: true }
 })
 
+// Each generated question carries whatever the answer bank already holds for it,
+// so the second time a question comes up the answer is already there rather than
+// being worked out from scratch again.
 ipcMain.handle('db:getInterviewPrep', (_, applicationId) => {
-  return database.getInterviewPrep(applicationId)
+  return database.getInterviewPrepWithAnswers(applicationId)
 })
 
 // ─── IPC: Analytics Export ───────────────────────────────────────
@@ -1647,6 +1691,112 @@ ipcMain.handle('analytics:resumeExperiment', () => {
   )
   return { running: true, name: experiment.name || 'Résumé A/B test', startedAt: experiment.startedAt || null, ...summary }
 })
+
+// What the outcomes say the match threshold should be.
+//
+// Distinct from the Test Scan advice, which answers a different question. A dry
+// run says what the scrapers are FINDING; this says what has been CONVERTING.
+// A threshold can be badly placed for either reason and the two do not
+// necessarily agree, so both are shown rather than one being folded into the
+// other. Never applied automatically — see the note on getThresholdRecommendation.
+ipcMain.handle('analytics:thresholdRecommendation', () =>
+  database.getThresholdRecommendation(configService.load().matchThreshold))
+
+// ─── IPC: Negotiating an offer ───────────────────────────────────
+//
+// Everything this needs is already recorded: the offer, the deadline, and what
+// comparable roles were advertised at, drawn from the user's own scan history.
+// The draft is stored on the offer rather than returned and forgotten, because
+// the whole point is that it gets edited before it is sent.
+ipcMain.handle('offer:draftCounter', async (_, applicationId, options = {}) => {
+  try {
+    const cfg = configService.load()
+    if (!cfg.aiProvider || !cfg.aiApiKey) {
+      return { success: false, error: 'Configure an AI provider in Settings first.' }
+    }
+    const offer = database.getOffers().find(o => o.applicationId === Number(applicationId))
+    if (!offer) return { success: false, error: 'That offer is no longer on the board.' }
+
+    // Advertised ranges, and only enough of them to be worth mentioning. Below
+    // the sample floor the prompt is told there is nothing to say rather than
+    // being handed three adverts to reason about — see ai/prompts.js.
+    const benchmark = database.getSalaryBenchmark(offer.job_title)
+    const comparables = benchmark.comparable
+      ? { count: benchmark.sample, low: benchmark.low, high: benchmark.high, median: benchmark.median }
+      : { count: benchmark.sample || 0 }
+
+    const draft = await aiAdapter.generateCounterOffer(cfg.aiProvider, cfg.aiApiKey, {
+      jobTitle: offer.job_title,
+      company: offer.company,
+      offer: {
+        base: offer.base_salary,
+        bonus: offer.bonus,
+        equity: offer.equity,
+        targetBase: options.targetBase ?? offer.target_base,
+        targetBonus: options.targetBonus ?? offer.target_bonus,
+      },
+      comparables,
+      priorities: options.priorities ?? offer.priorities,
+      resumeSummary: cfg.masterResume || '',
+      tone: options.tone,
+    }, cfg.geminiModel)
+
+    database.saveOffer(Number(applicationId), {
+      // Re-saving requires the whole offer, or the non-negotiation columns are
+      // written as null. Read back what is already there and change only what
+      // this handler owns.
+      baseSalary: offer.base_salary, bonus: offer.bonus, equity: offer.equity,
+      currency: offer.currency, startDate: offer.start_date, respondBy: offer.respond_by,
+      location: offer.location, remote: offer.remote, pros: offer.pros, cons: offer.cons,
+      notes: offer.notes, excitement: offer.excitement, decision: offer.decision,
+      targetBase: options.targetBase ?? offer.target_base,
+      targetBonus: options.targetBonus ?? offer.target_bonus,
+      priorities: options.priorities ?? offer.priorities,
+      counterDraft: draft,
+    })
+    return { success: true, draft, comparables }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+// ─── IPC: The interview answer bank ──────────────────────────────
+ipcMain.handle('answers:list', (_, search) => database.listInterviewAnswers({ search }))
+ipcMain.handle('answers:get', (_, question) => database.getInterviewAnswer(question))
+ipcMain.handle('answers:save', (_, payload) => database.saveInterviewAnswer(payload || {}))
+ipcMain.handle('answers:delete', (_, question) => database.deleteInterviewAnswer(question))
+ipcMain.handle('answers:markUsed', (_, question, applicationId) =>
+  database.markInterviewAnswerUsed(question, applicationId))
+
+// A first pass for the user to edit into their own words. Passing an existing
+// answer switches the model from drafting to tightening, and the result is NOT
+// saved here — an unedited draft is not yet anybody's answer, so storing it
+// automatically would put words in the user's mouth.
+ipcMain.handle('answers:draft', async (_, { question, applicationId, existingAnswer } = {}) => {
+  try {
+    const cfg = configService.load()
+    if (!cfg.aiProvider || !cfg.aiApiKey) {
+      return { success: false, error: 'Configure an AI provider in Settings first.' }
+    }
+    const app = applicationId ? database.getApplication(Number(applicationId)) : null
+    const draft = await aiAdapter.draftInterviewAnswer(cfg.aiProvider, cfg.aiApiKey, {
+      question,
+      masterResume: cfg.masterResume || '',
+      jobDescription: app?.job_description || '',
+      existingAnswer,
+    }, cfg.geminiModel)
+    return { success: true, draft }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+// ─── IPC: Application profile ────────────────────────────────────
+// The field list lives in the service so Settings cannot drift from what the
+// matcher actually recognises.
+ipcMain.handle('profile:fields', () => require('./services/applicationProfile').fields())
+ipcMain.handle('profile:completeness', () =>
+  require('./services/applicationProfile').completeness(configService.load()))
 
 // ─── IPC: ATS job boards ─────────────────────────────────────────
 // Validate a board before saving it, so a typo in the slug is caught here

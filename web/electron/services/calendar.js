@@ -8,6 +8,11 @@
 // RFC 5545 with no external dependency: the format is small enough that pulling
 // in a library would be more surface than it saves.
 
+// The zone the recruiter wrote may name more than one real timezone; when it
+// does, the exported event says so rather than presenting the conversion as
+// settled. See AMBIGUOUS_ZONES in dateParser.js.
+const { describeZoneAmbiguity } = require('./dateParser')
+
 const CRLF = '\r\n'
 const PRODID = '-//Hiro//Job Application Tracker//EN'
 
@@ -121,6 +126,7 @@ function buildEvent(event, stamp) {
     // here too, so an exported .ics carries the same check the app shows.
     event.source_zone && event.source_local
       ? `They wrote: ${event.source_local} ${event.source_zone} — shown here in your local time.`
+        + (describeZoneAmbiguity(event.source_zone) ? ` ${describeZoneAmbiguity(event.source_zone)}` : '')
       : null,
     event.source === 'inbox'
       ? 'Time detected automatically from the recruiter\'s email — double-check it against the original.'

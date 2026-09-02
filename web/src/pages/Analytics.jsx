@@ -15,6 +15,134 @@ function formatMoney(n) {
   return `$${n.toLocaleString()}`
 }
 
+// ─── The frame every chart sits in ───────────────────────────────────────
+//
+// An SVG is a picture. To a screen reader these four charts were nothing at
+// all — no name, no description, no content — so the Analytics page, which is
+// almost entirely charts, read as a page of empty boxes. That is the whole
+// value of the page being inaccessible, not a rough edge on it.
+//
+// The fix is the same one that solves a second problem: put the numbers behind
+// every chart one click away, as a real table. It gives assistive technology
+// something to read, it lets anyone check a bar they are unsure of, and it makes
+// the data exportable — which is the third thing people wanted from this page
+// and could only get by re-deriving it from the CSV of applications.
+//
+// So: the SVG is labelled and marked as an image, the table is the accessible
+// alternative, and both are fed from one `rows` prop so they can never disagree.
+
+// RFC 4180 quoting, and the leading-character neutralisation the applications
+// export already does. A company called "=cmd|' /c calc'!A1" is a formula the
+// moment a spreadsheet opens the file, and analytics rows carry company names.
+function csvCell(value) {
+  const text = value == null ? '' : String(value)
+  const guarded = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text
+  return `"${guarded.replace(/"/g, '""')}"`
+}
+
+function toCsv(columns, rows) {
+  const header = columns.map(c => csvCell(c.label)).join(',')
+  const body = rows.map(r => columns.map(c => csvCell(r[c.key])).join(',')).join('\n')
+  return `${header}\n${body}\n`
+}
+
+function downloadCsv(filename, columns, rows) {
+  const blob = new Blob([toCsv(columns, rows)], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  // Revoked on the next tick rather than immediately: some browsers have not
+  // finished reading the blob when click() returns.
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+function ChartFrame({ title, summary, columns, rows, filename, children }) {
+  const [showTable, setShowTable] = useState(false)
+  const tableId = `chart-table-${String(title).toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
+  const hasRows = Array.isArray(rows) && rows.length > 0
+
+  return (
+    <figure style={{ margin: 0 }}>
+      {/* role="img" plus a label is what turns an anonymous SVG into something
+          a screen reader can announce. aria-describedby points at the table when
+          it is open, so the detail is reachable rather than merely present. */}
+      <div role="img" aria-label={summary} aria-describedby={showTable ? tableId : undefined}>
+        {children}
+      </div>
+
+      {hasRows && (
+        <figcaption style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 10 }}>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            style={{ fontSize: 12, padding: '3px 8px' }}
+            aria-expanded={showTable}
+            aria-controls={tableId}
+            onClick={() => setShowTable(v => !v)}
+          >
+            {showTable ? 'Hide data' : 'Show data'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            style={{ fontSize: 12, padding: '3px 8px' }}
+            onClick={() => downloadCsv(filename, columns, rows)}
+          >
+            Export CSV
+          </button>
+        </figcaption>
+      )}
+
+      {/* Rendered but hidden rather than unmounted, so the aria-describedby
+          above always resolves and the table is in the accessibility tree in the
+          same order it appears visually. */}
+      <div id={tableId} hidden={!showTable} style={{ marginTop: 10, overflowX: 'auto' }}>
+        {hasRows && (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <caption style={{ captionSide: 'top', textAlign: 'left', color: 'var(--text-muted)', paddingBottom: 6 }}>
+              {title}
+            </caption>
+            <thead>
+              <tr>
+                {columns.map(c => (
+                  <th key={c.key} scope="col" style={{
+                    textAlign: c.numeric ? 'right' : 'left',
+                    padding: '4px 8px', borderBottom: '1px solid var(--border)', color: 'var(--text-muted)', fontWeight: 600,
+                  }}>{c.label}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={r[columns[0].key] ?? i}>
+                  {columns.map((c, ci) => {
+                    const Cell = ci === 0 ? 'th' : 'td'
+                    return (
+                      <Cell
+                        key={c.key}
+                        {...(ci === 0 ? { scope: 'row' } : {})}
+                        style={{
+                          textAlign: c.numeric ? 'right' : 'left',
+                          padding: '4px 8px', borderBottom: '1px solid var(--border)',
+                          fontWeight: ci === 0 ? 500 : 400,
+                        }}
+                      >{r[c.key] == null ? '—' : String(r[c.key])}</Cell>
+                    )
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </figure>
+  )
+}
+
 function BarChart({ data }) {
   if (!data || data.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No data</div>
   const max = Math.max(...data.map(d => d.count), 1)
@@ -372,6 +500,11 @@ export default function Analytics({ active }) {
   const [timeRange, setTimeRange] = useState(7)
   const [matchThreshold, setMatchThreshold] = useState(80)
   const [advice, setAdvice] = useState(null)
+  // The outcome-based recommendation. `advice` above comes from the last Test
+  // Scan and describes what the scrapers FIND; this describes what has actually
+  // been CONVERTING. They answer different questions and can disagree, so both
+  // are shown rather than one standing in for the other.
+  const [thresholdRec, setThresholdRec] = useState(null)
   const [applyingAdvice, setApplyingAdvice] = useState(false)
   const [bands, setBands] = useState([])
   const [salary, setSalary] = useState(null)
@@ -410,6 +543,7 @@ export default function Analytics({ active }) {
     window.api.getConfig().then(c => setMatchThreshold(c.matchThreshold ?? 80))
     // Recommendation derived from the last Test Scan, if one has run this session.
     window.api.getThresholdAdvice?.().then(a => setAdvice(a?.available ? a : null)).catch(() => {})
+    window.api.getThresholdRecommendation?.().then(r => setThresholdRec(r || null)).catch(() => {})
   }, [])
 
   async function applyRecommended() {
@@ -514,21 +648,42 @@ export default function Analytics({ active }) {
               <option value={30}>30 days</option>
             </select>
           </div>
-          <BarChart data={perDay} />
+          <ChartFrame
+            title={`Applications, last ${timeRange} days`}
+            summary={`Bar chart: applications submitted per day over the last ${timeRange} days. `
+              + `${perDay.reduce((n, d) => n + d.count, 0)} in total, `
+              + `highest ${Math.max(0, ...perDay.map(d => d.count))} in a day.`}
+            columns={[{ key: 'date', label: 'Date' }, { key: 'count', label: 'Applications', numeric: true }]}
+            rows={perDay}
+            filename={`hiro-applications-per-day-${timeRange}d.csv`}
+          >
+            <BarChart data={perDay} />
+          </ChartFrame>
         </div>
         <div className="card">
           <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 12 }}>By Platform</div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
-            <PieChart data={byPlatform} colorMap={PLATFORM_COLORS} />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {byPlatform.map(p => (
-                <div key={p.platform} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-                  <span style={{ width: 10, height: 10, borderRadius: 2, background: PLATFORM_COLORS[p.platform] || 'var(--text-muted)', flexShrink: 0 }} />
-                  {p.platform}: <span style={{ fontWeight: 600 }}>{p.count}</span>
-                </div>
-              ))}
+          <ChartFrame
+            title="Applications by platform"
+            summary={`Donut chart: applications by platform. `
+              + (byPlatform.length
+                ? byPlatform.map(p => `${p.platform} ${p.count}`).join(', ')
+                : 'No applications yet.')}
+            columns={[{ key: 'platform', label: 'Platform' }, { key: 'count', label: 'Applications', numeric: true }]}
+            rows={byPlatform}
+            filename="hiro-applications-by-platform.csv"
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
+              <PieChart data={byPlatform} colorMap={PLATFORM_COLORS} />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {byPlatform.map(p => (
+                  <div key={p.platform} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                    <span style={{ width: 10, height: 10, borderRadius: 2, background: PLATFORM_COLORS[p.platform] || 'var(--text-muted)', flexShrink: 0 }} />
+                    {p.platform}: <span style={{ fontWeight: 600 }}>{p.count}</span>
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
+          </ChartFrame>
         </div>
       </div>
 
@@ -540,7 +695,56 @@ export default function Analytics({ active }) {
             green buckets clear your {matchThreshold}% threshold — tune it in Settings, test with Test Scan
           </span>
         </div>
-        <ScoreHistogram apps={allApps} threshold={matchThreshold} />
+        <ChartFrame
+          title="Match score distribution"
+          summary={`Histogram: how many scanned jobs fall in each 10-point match-score band, `
+            + `with your ${matchThreshold}% apply threshold marked. `
+            + `${allApps.filter(a => a.match_score != null).length} scored jobs.`}
+          columns={[
+            { key: 'band', label: 'Score band' },
+            { key: 'count', label: 'Jobs', numeric: true },
+            { key: 'clears', label: 'Clears threshold' },
+          ]}
+          rows={Array.from({ length: 10 }, (_, i) => {
+            const lo = i * 10
+            const hi = i === 9 ? 100 : i * 10 + 9
+            return {
+              band: `${lo}–${hi}%`,
+              count: allApps.filter(a => a.match_score != null
+                && Math.min(100, Math.max(0, a.match_score)) >= lo
+                && Math.min(100, Math.max(0, a.match_score)) <= hi).length,
+              clears: lo >= matchThreshold ? 'yes' : 'no',
+            }
+          })}
+          filename="hiro-match-score-distribution.csv"
+        >
+          <ScoreHistogram apps={allApps} threshold={matchThreshold} />
+        </ChartFrame>
+
+        {/* What the OUTCOMES say the threshold should be — as opposed to the
+            Test Scan panel below, which says what the scrapers are finding.
+            Deliberately a recommendation and not a button that moves it: this
+            decides which real employers receive real applications, and the
+            reasoning belongs in front of the person making that call. */}
+        {thresholdRec && (
+          <div style={{
+            marginTop: 16, padding: '14px 16px', borderRadius: 8,
+            background: 'var(--surface2)',
+            borderLeft: `3px solid ${thresholdRec.verdict === 'change' ? 'var(--yellow)' : 'var(--border)'}`,
+          }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+              {thresholdRec.headline}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.55 }}>
+              {thresholdRec.detail}
+            </div>
+            {thresholdRec.verdict === 'change' && (
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
+                Change it yourself in Settings — Hiro will not move it for you.
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Threshold recommendation from the last Test Scan. The histogram above
             is drawn from saved applications, which are already filtered by the
@@ -862,18 +1066,29 @@ export default function Analytics({ active }) {
 
         <div className="card">
           <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 12 }}>By Status</div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
-            <PieChart data={byStatus.map(s => ({ ...s, platform: undefined }))} colorMap={STATUS_COLORS} />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {byStatus.map(s => (
-                <div key={s.status} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-                  <span style={{ width: 10, height: 10, borderRadius: 2, background: STATUS_COLORS[s.status] || 'var(--text-muted)', flexShrink: 0 }} />
-                  <span style={{ textTransform: 'capitalize' }}>{s.status}:</span>
-                  <span style={{ fontWeight: 600 }}>{s.count}</span>
-                </div>
-              ))}
+          <ChartFrame
+            title="Applications by status"
+            summary={`Donut chart: applications by status. `
+              + (byStatus.length
+                ? byStatus.map(s => `${s.status} ${s.count}`).join(', ')
+                : 'No applications yet.')}
+            columns={[{ key: 'status', label: 'Status' }, { key: 'count', label: 'Applications', numeric: true }]}
+            rows={byStatus}
+            filename="hiro-applications-by-status.csv"
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
+              <PieChart data={byStatus.map(s => ({ ...s, platform: undefined }))} colorMap={STATUS_COLORS} />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {byStatus.map(s => (
+                  <div key={s.status} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                    <span style={{ width: 10, height: 10, borderRadius: 2, background: STATUS_COLORS[s.status] || 'var(--text-muted)', flexShrink: 0 }} />
+                    <span style={{ textTransform: 'capitalize' }}>{s.status}:</span>
+                    <span style={{ fontWeight: 600 }}>{s.count}</span>
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
+          </ChartFrame>
         </div>
       </div>
     </div>

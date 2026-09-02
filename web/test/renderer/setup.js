@@ -56,7 +56,29 @@ export function makeApi(overrides = {}) {
   return api
 }
 
+// jsdom implements no media queries at all, and App reads one on mount to
+// follow the system colour theme. Without this every test that renders App dies
+// on `window.matchMedia is not a function` — which says nothing about the thing
+// being tested.
+//
+// Reports "not dark", so the theme under test is the deterministic one rather
+// than whatever the machine running the suite happens to prefer.
+function installMatchMedia() {
+  if (typeof window.matchMedia === 'function') return
+  window.matchMedia = (query) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  })
+}
+
 beforeEach(() => {
+  installMatchMedia()
   window.api = makeApi()
 })
 

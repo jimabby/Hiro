@@ -1,5 +1,5 @@
-// Company career boards hosted on Greenhouse, Lever, Ashby, Workable, Recruitee
-// or SmartRecruiters.
+// Company career boards hosted on Greenhouse, Lever, Ashby, Workable, Recruitee,
+// SmartRecruiters, Workday, BambooHR or Personio.
 //
 // The aggregator scrapers (Seek/Indeed/LinkedIn) are the fragile part of this
 // system: they need a logged-in browser, they change their markup, and they
@@ -8,6 +8,13 @@
 // defenses, and doesn't change shape. Watching ten companies you actually want
 // to work for yields better matches per unit of maintenance than any amount of
 // keyword scraping.
+//
+// Not here, deliberately: iCIMS. It publishes no publicly documented JSON board
+// API — the only way in is to parse the rendered careers page, which is exactly
+// the brittleness the paragraph above says this module exists to avoid. An
+// adapter built on it would break on a template change and report the break as
+// "this company has no openings", which is the worst failure shape available
+// here. If iCIMS ships a public endpoint, this is where it goes.
 //
 // These boards cannot be auto-submitted: the application forms are custom per
 // company and often include file uploads and EEO questions. So every match is
@@ -31,6 +38,8 @@ const supportsAutoApply = false
 const PROVIDERS = {
   greenhouse: {
     label: 'Greenhouse',
+    sampleSlug: 'acme',
+    slugHint: 'The name in boards.greenhouse.io/NAME',
     listUrl: (slug) => `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(slug)}/jobs?content=true`,
     parse: (data, slug) => (data.jobs || []).map(j => ({
       job_title: j.title || '',
@@ -45,6 +54,8 @@ const PROVIDERS = {
   },
   lever: {
     label: 'Lever',
+    sampleSlug: 'acme',
+    slugHint: 'The name in jobs.lever.co/NAME',
     listUrl: (slug) => `https://api.lever.co/v0/postings/${encodeURIComponent(slug)}?mode=json`,
     parse: (data, slug) => (Array.isArray(data) ? data : []).map(j => ({
       job_title: j.text || '',
@@ -65,6 +76,8 @@ const PROVIDERS = {
   // Descriptions come with the listing, so this costs one request per company.
   workable: {
     label: 'Workable',
+    sampleSlug: 'acme',
+    slugHint: 'The name in apply.workable.com/NAME',
     listUrl: (slug) => `https://apply.workable.com/api/v1/widget/accounts/${encodeURIComponent(slug)}?details=true`,
     parse: (data, slug) => (data.jobs || []).map(j => ({
       job_title: j.title || '',
@@ -80,6 +93,8 @@ const PROVIDERS = {
   },
   recruitee: {
     label: 'Recruitee',
+    sampleSlug: 'acme',
+    slugHint: 'The name in NAME.recruitee.com',
     listUrl: (slug) => `https://${encodeURIComponent(slug)}.recruitee.com/api/offers/`,
     parse: (data, slug) => (data.offers || []).map(j => ({
       job_title: j.title || '',
@@ -99,6 +114,8 @@ const PROVIDERS = {
   // per-posting API URL the detail fetch uses.
   smartrecruiters: {
     label: 'SmartRecruiters',
+    sampleSlug: 'acme',
+    slugHint: 'The name in jobs.smartrecruiters.com/NAME',
     listUrl: (slug) => `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(slug)}/postings?limit=100`,
     parse: (data, slug) => (data.content || []).map(j => ({
       job_title: j.name || '',
@@ -129,8 +146,124 @@ const PROVIDERS = {
       }
     },
   },
+  // ─── Workday ───────────────────────────────────────────────────
+  //
+  // The largest enterprise ATS by a wide margin, and the reason a lot of real
+  // openings were invisible to Hiro. Two things make it unlike the others here:
+  //
+  //   The list endpoint is a POST with a JSON body, not a GET. Hence `method`
+  //   and `body` on the provider shape.
+  //
+  //   A board is not identified by one slug. It needs the tenant, the data
+  //   centre (wd1/wd2/wd3/wd5/wd103…, which differs per customer and cannot be
+  //   guessed) and the site name. Asking a user for three fields to add one
+  //   board is a bad trade, so `slug` accepts the careers URL itself — the thing
+  //   they already have in the address bar — and everything is parsed out of it.
+  //   `tenant/site` still works for anyone who knows the shorthand.
+  workday: {
+    label: 'Workday',
+    // The only provider whose identifier is a path rather than one token —
+    // see parseWorkday for why it has to be.
+    slugIsPath: true,
+    sampleSlug: 'https://acme.wd3.myworkdayjobs.com/en-US/External',
+    slugHint: 'The full careers URL, e.g. https://acme.wd3.myworkdayjobs.com/en-US/External',
+    method: 'POST',
+    // Workday pages results; one page of 20 is what a scan needs, and asking for
+    // more of a large employer's list only to filter it out is wasted traffic.
+    body: () => ({ appliedFacets: {}, limit: 20, offset: 0, searchText: '' }),
+    listUrl: (slug) => {
+      const { base, tenant, site } = parseWorkday(slug)
+      return `${base}/wday/cxs/${tenant}/${site}/jobs`
+    },
+    parse: (data, slug) => {
+      const { base, tenant, site, locale } = parseWorkday(slug)
+      return (data.jobPostings || []).map(j => ({
+        job_title: j.title || '',
+        company: slug,
+        salary: '',
+        // externalPath already begins with a slash.
+        job_url: j.externalPath ? `${base}/${locale}/${site}${j.externalPath}` : '',
+        job_description: '',
+        location: j.locationsText || '',
+        external_id: String(j.bulletFields?.[0] || j.externalPath || ''),
+        detailUrl: j.externalPath ? `${base}/wday/cxs/${tenant}/${site}${j.externalPath}` : '',
+      }))
+    },
+    parseDetail: (data) => {
+      const info = data?.jobPostingInfo || {}
+      return {
+        job_description: decodeHtml(stripTags(info.jobDescription || '')),
+        // externalUrl is the canonical public posting; the one built above is a
+        // reconstruction and is only the fallback.
+        job_url: info.externalUrl || '',
+      }
+    },
+  },
+
+  // ─── BambooHR ──────────────────────────────────────────────────
+  // Small and mid-size employers. The list is titles and locations only, so
+  // descriptions cost one request each — bounded by MAX_DETAIL_FETCHES like
+  // SmartRecruiters.
+  bamboohr: {
+    label: 'BambooHR',
+    sampleSlug: 'acme',
+    slugHint: 'The name in NAME.bamboohr.com/careers',
+    listUrl: (slug) => `https://${encodeURIComponent(bareSlug(slug))}.bamboohr.com/careers/list`,
+    parse: (data, slug) => {
+      const host = bareSlug(slug)
+      return (data.result || []).map(j => ({
+        job_title: j.jobOpeningName || '',
+        company: data.meta?.companyName || slug,
+        salary: j.compensation || '',
+        job_url: j.id ? `https://${host}.bamboohr.com/careers/${encodeURIComponent(j.id)}` : '',
+        job_description: '',
+        location: [j.location?.city, j.location?.state, j.location?.country]
+          .filter(Boolean).join(', ') || j.atsLocation || '',
+        external_id: String(j.id || ''),
+        detailUrl: j.id
+          ? `https://${host}.bamboohr.com/careers/${encodeURIComponent(j.id)}/detail`
+          : '',
+      }))
+    },
+    parseDetail: (data) => {
+      const opening = data?.result?.jobOpening || data?.result || {}
+      return { job_description: decodeHtml(stripTags(opening.description || '')), job_url: '' }
+    },
+  },
+
+  // ─── Personio ──────────────────────────────────────────────────
+  // Common across European employers, and the descriptions come with the list,
+  // so it costs one request per company like Greenhouse.
+  personio: {
+    label: 'Personio',
+    sampleSlug: 'acme',
+    slugHint: 'The name in NAME.jobs.personio.com',
+    // .com and .de are the same board; .com is the current canonical host.
+    listUrl: (slug) => `https://${encodeURIComponent(bareSlug(slug))}.jobs.personio.com/search.json`,
+    parse: (data, slug) => (Array.isArray(data) ? data : data?.jobs || []).map(j => ({
+      job_title: j.name || j.title || '',
+      company: slug,
+      salary: '',
+      job_url: j.id
+        ? `https://${bareSlug(slug)}.jobs.personio.com/job/${encodeURIComponent(j.id)}`
+        : '',
+      // The description is split into named sections ("Your mission", "Your
+      // profile"), and the requirements usually live in a later one — joining
+      // them all is what keeps the must-haves in front of the scorer.
+      job_description: decodeHtml(stripTags(
+        Array.isArray(j.jobDescriptions)
+          ? j.jobDescriptions.map(d => [d.name, d.value].filter(Boolean).join('\n')).join('\n\n')
+          : (j.description || '')
+      )),
+      location: j.office || j.location || '',
+      external_id: String(j.id || ''),
+    })),
+  },
+
   ashby: {
     label: 'Ashby',
+    sampleSlug: 'acme',
+    slugHint: 'The name in jobs.ashbyhq.com/NAME',
     listUrl: (slug) => `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(slug)}?includeCompensation=true`,
     parse: (data, slug) => (data.jobs || []).map(j => ({
       job_title: j.title || '',
@@ -144,6 +277,79 @@ const PROVIDERS = {
       external_id: String(j.id || ''),
     })),
   },
+}
+
+// A board identifier with any surrounding URL stripped off, so a user can paste
+// what they have rather than having to know which part is the slug.
+function bareSlug(value) {
+  const raw = String(value || '').trim()
+  const withoutScheme = raw.replace(/^https?:\/\//i, '')
+  // "acme.bamboohr.com/careers" and "acme" both mean acme.
+  return withoutScheme.split(/[/?#]/)[0].split('.')[0]
+}
+
+// Workday needs three things the others get from one slug: which data centre the
+// tenant is on, the tenant, and the site. All three are in the careers URL, so
+// that is what this accepts — plus a "tenant/site" shorthand for anyone who
+// knows it.
+//
+// Throws rather than guessing. A wrong data centre is a 404 three days later on
+// a board the user believes is being watched, and the whole point of validating
+// boards at the moment they are added is to make that impossible.
+function parseWorkday(value) {
+  const raw = String(value || '').trim()
+
+  const url = /myworkdayjobs\.com/i.test(raw)
+    ? raw.replace(/^https?:\/\//i, '')
+    : null
+
+  if (url) {
+    const [host, ...segments] = url.split('/').filter(Boolean)
+    const tenant = host.split('.')[0]
+    // The path is either /{locale}/{site}/... or /{site}/...; a locale is
+    // always of the form xx-XX, which nothing else in the path looks like.
+    const locale = /^[a-z]{2}-[A-Z]{2}$/.test(segments[0] || '') ? segments[0] : 'en-US'
+    const site = /^[a-z]{2}-[A-Z]{2}$/.test(segments[0] || '') ? segments[1] : segments[0]
+    if (!tenant || !site) {
+      throw new Error('that Workday address is missing the site name — it should look like '
+        + 'https://acme.wd3.myworkdayjobs.com/en-US/External')
+    }
+    const parsed = { base: `https://${host}`, tenant, site, locale }
+    assertSafeWorkday(parsed)
+    return parsed
+  }
+
+  const parts = raw.split('/').filter(Boolean)
+  if (parts.length < 2) {
+    throw new Error('a Workday board needs the full careers URL (for example '
+      + 'https://acme.wd3.myworkdayjobs.com/en-US/External) — the data centre in it '
+      + '(wd1, wd3, wd5…) differs per employer and cannot be guessed from the company name')
+  }
+  const [tenant, site] = parts
+  const parsed = { base: `https://${tenant}.wd3.myworkdayjobs.com`, tenant, site, locale: 'en-US' }
+  assertSafeWorkday(parsed)
+  return parsed
+}
+
+// Workday is the one provider whose identifier legitimately contains slashes, so
+// it cannot rely on encodeURIComponent to keep its parts from becoming path
+// segments the way the single-token boards do. Each component is checked
+// against what a real tenant, site and host look like instead — which also
+// rejects the "acme/../../v1/admin" shape outright rather than encoding it into
+// something harmless-looking.
+const WORKDAY_HOST = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.myworkdayjobs\.com$/
+const WORKDAY_PART = /^[A-Za-z0-9._-]+$/
+
+function assertSafeWorkday({ base, tenant, site, locale }) {
+  const host = base.replace(/^https:\/\//, '')
+  const ok = WORKDAY_HOST.test(host)
+    && WORKDAY_PART.test(tenant) && WORKDAY_PART.test(site)
+    && /^[a-z]{2}-[A-Z]{2}$/.test(locale)
+    && tenant !== '.' && tenant !== '..' && site !== '.' && site !== '..'
+  if (!ok) {
+    throw new Error('that does not look like a Workday careers address — it should be of the form '
+      + 'https://acme.wd3.myworkdayjobs.com/en-US/External')
+  }
 }
 
 function stripTags(html) {
@@ -169,13 +375,21 @@ function decodeHtml(s) {
 
 const TIMEOUT_MS = 20000
 
-async function fetchJson(url) {
+// `init` carries a method and body for the one provider whose list endpoint is a
+// POST (Workday). Everything else is a plain GET and passes nothing.
+async function fetchJson(url, init = {}) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
   try {
     const res = await fetch(url, {
       signal: controller.signal,
-      headers: { Accept: 'application/json', 'User-Agent': 'Hiro/1.0 (+job-search-assistant)' },
+      method: init.method || 'GET',
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'Hiro/1.0 (+job-search-assistant)',
+        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(init.body ? { body: JSON.stringify(init.body) } : {}),
     })
     // A board that has been renamed or made private returns 404. That's a
     // configuration problem the user must fix, not a transient block.
@@ -265,7 +479,10 @@ async function scrape(cfg, { log, skipDetails = false } = {}) {
   for (const board of boards) {
     const provider = PROVIDERS[board.provider]
     try {
-      const data = await fetchJson(provider.listUrl(board.slug))
+      const data = await fetchJson(provider.listUrl(board.slug), {
+        method: provider.method,
+        body: provider.body ? provider.body(board.slug) : undefined,
+      })
       const parsed = provider.parse(data, board.label || board.slug)
       // Filtered BEFORE any per-job description fetch, so the detail requests
       // below are only made for jobs that survived.
@@ -338,4 +555,5 @@ module.exports = {
   scrape, getJobDescription, apply, primeDescriptions, supportsAutoApply,
   // exported for tests
   PROVIDERS, matchesKeywords, matchesLocation, stripTags, decodeHtml, MAX_DETAIL_FETCHES,
+  parseWorkday, bareSlug,
 }

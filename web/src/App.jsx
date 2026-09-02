@@ -1,15 +1,30 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import Setup from './pages/Setup'
 import Dashboard from './pages/Dashboard'
-import Pipeline from './pages/Pipeline'
-import NeedsAttention from './pages/NeedsAttention'
-import Review from './pages/Review'
-import Settings from './pages/Settings'
-import Timeline from './pages/Timeline'
-import Analytics from './pages/Analytics'
-import Workbench from './pages/Workbench'
-import Offers from './pages/Offers'
 import HiroLogo from './components/HiroLogo'
+
+// Every page except the two that are needed immediately is its own chunk.
+//
+// The renderer shipped as a single 440 KB bundle, all ten pages parsed and
+// evaluated before the first frame — including Settings, which is by some
+// distance the largest and is opened least often. Dashboard is the landing page
+// and Setup gates the whole app, so both stay in the main bundle; the rest load
+// the first time they are opened.
+//
+// This does NOT change the "pages stay mounted" property that several effects in
+// this app rely on (see the note on the Dashboard's scan-info effect). A page
+// enters `mounted` the first time it is visited and never leaves — so its state,
+// its scroll position and its subscriptions survive navigation exactly as they
+// did before. The only thing that changed is that a page you have never opened
+// costs nothing.
+const Pipeline = lazy(() => import('./pages/Pipeline'))
+const NeedsAttention = lazy(() => import('./pages/NeedsAttention'))
+const Review = lazy(() => import('./pages/Review'))
+const Settings = lazy(() => import('./pages/Settings'))
+const Timeline = lazy(() => import('./pages/Timeline'))
+const Analytics = lazy(() => import('./pages/Analytics'))
+const Workbench = lazy(() => import('./pages/Workbench'))
+const Offers = lazy(() => import('./pages/Offers'))
 import useModalFocus from './hooks/useModalFocus'
 import ErrorBoundary from './components/ErrorBoundary'
 
@@ -35,6 +50,14 @@ export default function App() {
   useModalFocus()
 
   const [page, setPage] = useState('dashboard')
+  // Which pages have been opened at least once. A page enters this set and never
+  // leaves, so it stays mounted for the rest of the session — the behaviour the
+  // rest of the app assumes — while one that has never been opened is never
+  // loaded at all. See the lazy() imports above.
+  const [mounted, setMounted] = useState(() => new Set(['dashboard']))
+  useEffect(() => {
+    setMounted(prev => (prev.has(page) ? prev : new Set(prev).add(page)))
+  }, [page])
   // Every page is rendered into this one scrolling column and merely hidden
   // when inactive, so there is a single shared scroll offset. Without resetting
   // it, switching from a scrolled-down Dashboard to a shorter page lands you
@@ -501,10 +524,17 @@ export default function App() {
             to unmount everything — sidebar, nav and all ten pages — leaving a
             blank window with no message. Scoped here, a page that cannot render
             says so in its own column and the rest of the app keeps working. */}
-        {Object.entries(pages).map(([key, component]) => (
+        {Object.entries(pages).filter(([key]) => mounted.has(key)).map(([key, component]) => (
           <div key={key} style={{ display: key === page ? 'block' : 'none' }}>
             <ErrorBoundary name={NAV.find(n => n.id === key)?.label || key}>
-              {component}
+              {/* Per page rather than one boundary around the loop: a shared
+                  Suspense would blank every mounted page while one chunk
+                  loaded. The fallback is deliberately quiet — a chunk read off
+                  local disk is not a wait worth announcing, and a spinner that
+                  flashes for 20ms is worse than nothing. */}
+              <Suspense fallback={<div style={{ padding: 24, color: 'var(--text-muted)', fontSize: 13 }} role="status">Loading…</div>}>
+                {component}
+              </Suspense>
             </ErrorBoundary>
           </div>
         ))}

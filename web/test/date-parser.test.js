@@ -50,11 +50,21 @@ check('closing: empty input', parseClosingDate('', NOW), null)
 check('closing: non-string input', parseClosingDate(null, NOW), null)
 
 // ── Times of day ──────────────────────────────────────────────────
-check('time: 2pm', parseTimeOfDay('at 2pm'), { hour: 14, minute: 0 })
-check('time: 2:30 PM', parseTimeOfDay('at 2:30 PM'), { hour: 14, minute: 30 })
-check('time: 12am is midnight', parseTimeOfDay('at 12am'), { hour: 0, minute: 0 })
-check('time: 12pm is noon', parseTimeOfDay('at 12pm'), { hour: 12, minute: 0 })
-check('time: 24-hour', parseTimeOfDay('at 14:30'), { hour: 14, minute: 30 })
+// The clock reading only. parseTimeOfDay also returns where in the string the
+// time ended, which is how parseInterviewTime finds the zone that qualifies it
+// (see ZONE_PROXIMITY_CHARS) — but that is positional bookkeeping, and pinning
+// it here would make every one of these a test of the input string's layout.
+const clock = (value) => (value ? { hour: value.hour, minute: value.minute } : value)
+
+check('time: 2pm', clock(parseTimeOfDay('at 2pm')), { hour: 14, minute: 0 })
+check('time: 2:30 PM', clock(parseTimeOfDay('at 2:30 PM')), { hour: 14, minute: 30 })
+check('time: 12am is midnight', clock(parseTimeOfDay('at 12am')), { hour: 0, minute: 0 })
+check('time: 12pm is noon', clock(parseTimeOfDay('at 12pm')), { hour: 12, minute: 0 })
+check('time: 24-hour', clock(parseTimeOfDay('at 14:30')), { hour: 14, minute: 30 })
+
+// The index is what the zone window is measured from, so it is worth one check
+// of its own: it points past the end of the time, not at its start.
+check('time: reports where the time ended', parseTimeOfDay('at 2:30 PM').index, 10)
 check('time: bare year is not a time', parseTimeOfDay('in 2026'), null)
 
 // ── Interview times ───────────────────────────────────────────────

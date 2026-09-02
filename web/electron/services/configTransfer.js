@@ -34,6 +34,11 @@ const RUNTIME_KEYS = new Set([
   // OS-level entry is written by the tray service rather than by config alone.
   // Importing it elsewhere would tick the box without registering anything.
   'launchOnLogin', 'startMinimised',
+  // A proxy is a property of the network this machine is on. Carrying one to
+  // another machine would route its traffic through a host it very likely
+  // cannot reach, and the symptom — every scrape failing — looks nothing like
+  // an imported setting.
+  'proxyEnabled', 'proxyServer', 'proxyUsername', 'proxyPassword', 'proxyBypass',
 ])
 
 // Credentials. Excluded unless the user explicitly opts in, so the default
@@ -41,6 +46,10 @@ const RUNTIME_KEYS = new Set([
 const SECRET_KEYS = new Set([
   'aiApiKey', 'gmailAppPassword', 'calendarRefreshToken', 'calendarClientSecret',
   'cloudDataKey',
+  // Also in RUNTIME_KEYS above, and listed here for the same reason cloudDataKey
+  // is in both: if the runtime exclusion is ever relaxed, this must not become
+  // the thing that quietly starts exporting a credential.
+  'proxyPassword',
 ])
 
 function deriveKey(passphrase, salt) {

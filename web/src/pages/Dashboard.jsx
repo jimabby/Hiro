@@ -34,6 +34,59 @@ const CATEGORY_COLORS = {
   'role-specific': 'var(--red)',
 }
 
+// Your own answer to one question, and the bank entry behind it.
+//
+// Kept visually distinct from the generated answer above it on purpose. The
+// generated one is written from the resume and is a starting point; this is what
+// you decided to say, and conflating the two is how someone walks into a panel
+// planning to recite a paragraph a model wrote.
+function MyAnswer({ question, saved, editing, draft, drafting, onEdit, onChange, onDraft, onSave, onCancel }) {
+  if (editing) {
+    return (
+      <div style={{ marginTop: 8 }}>
+        <label htmlFor={`my-answer-${question.slice(0, 24)}`} style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          Your answer — kept for the next time this comes up
+        </label>
+        <textarea
+          id={`my-answer-${question.slice(0, 24)}`}
+          value={draft}
+          onChange={e => onChange(e.target.value)}
+          rows={5}
+          style={{ width: '100%', fontSize: 13, marginTop: 4 }}
+        />
+        <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+          <button className="btn btn-primary" style={{ fontSize: 11 }} onClick={onSave}>Save to bank</button>
+          <button className="btn btn-ghost" style={{ fontSize: 11 }} disabled={drafting} onClick={onDraft}>
+            {drafting ? 'Working…' : draft ? 'Tighten with AI' : 'Draft with AI'}
+          </button>
+          <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={onCancel}>Cancel</button>
+        </div>
+      </div>
+    )
+  }
+
+  if (saved?.answer) {
+    return (
+      <div style={{
+        marginTop: 8, padding: '8px 10px', background: 'var(--surface)',
+        borderRadius: 6, borderLeft: '3px solid var(--green)',
+      }}>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, display: 'flex', justifyContent: 'space-between' }}>
+          <span>Your answer</span>
+          <button className="btn btn-ghost" style={{ fontSize: 11, padding: 0 }} onClick={onEdit}>Edit</button>
+        </div>
+        <div style={{ fontSize: 13, whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{saved.answer}</div>
+      </div>
+    )
+  }
+
+  return (
+    <button className="btn btn-ghost" style={{ fontSize: 11, marginTop: 6 }} onClick={onEdit}>
+      Write your own answer
+    </button>
+  )
+}
+
 function InterviewPrepPanel({ questions, applicationId, jobDescription }) {
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [revealedAnswers, setRevealedAnswers] = useState(new Set())
@@ -42,6 +95,55 @@ function InterviewPrepPanel({ questions, applicationId, jobDescription }) {
   const [loadingFollowUp, setLoadingFollowUp] = useState(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  // Your own answer to each question, from the bank. Keyed by question index.
+  //
+  // The generated answer beside a question is written from the resume and is a
+  // starting point. What you actually decided to say is a different thing, it is
+  // worth keeping, and until the bank existed there was nowhere to put it — so a
+  // STAR story worked out for one panel was worked out again for the next.
+  const [myAnswers, setMyAnswers] = useState({})
+  const [editingAnswer, setEditingAnswer] = useState(null)
+  const [answerDraft, setAnswerDraft] = useState('')
+  const [drafting, setDrafting] = useState(false)
+
+  // The bank's entry for each question, if it has one. getInterviewPrep already
+  // attaches these server-side; this covers questions generated just now, which
+  // have not been through that path.
+  useEffect(() => {
+    let cancelled = false
+    Promise.all(questions.map(item => {
+      const q = typeof item === 'string' ? item : item.question
+      return window.api.getInterviewAnswer?.(q).catch(() => null)
+    })).then(rows => {
+      if (cancelled) return
+      const next = {}
+      rows.forEach((row, i) => { if (row?.answer) next[i] = row })
+      setMyAnswers(next)
+    })
+    return () => { cancelled = true }
+  }, [questions])
+
+  const saveMyAnswer = async (idx, question) => {
+    // Saved as the user's own whatever produced the text: they read it and
+    // pressed save, which is the whole difference between a draft and an answer.
+    await window.api.saveInterviewAnswer?.({ question, answer: answerDraft, source: 'user' })
+    await window.api.markInterviewAnswerUsed?.(question, applicationId)
+    setMyAnswers(prev => ({ ...prev, [idx]: { question, answer: answerDraft, source: 'user' } }))
+    setEditingAnswer(null)
+    setAnswerDraft('')
+  }
+
+  const draftMyAnswer = async (question) => {
+    setDrafting(true)
+    try {
+      const res = await window.api.draftInterviewAnswer?.({
+        question, applicationId, existingAnswer: answerDraft,
+      })
+      if (res?.success) setAnswerDraft(res.draft)
+    } finally {
+      setDrafting(false)
+    }
+  }
 
   const categories = ['all', ...new Set(questions.map(q => (typeof q === 'string' ? 'general' : q.category || 'general')))]
 
@@ -148,6 +250,22 @@ function InterviewPrepPanel({ questions, applicationId, jobDescription }) {
                         <div style={{ fontSize: 13, fontWeight: 500 }}>{followUps[globalIdx]}</div>
                       </div>
                     )}
+
+                    <MyAnswer
+                      question={q}
+                      saved={myAnswers[globalIdx]}
+                      editing={editingAnswer === globalIdx}
+                      draft={answerDraft}
+                      drafting={drafting}
+                      onEdit={() => {
+                        setEditingAnswer(globalIdx)
+                        setAnswerDraft(myAnswers[globalIdx]?.answer || '')
+                      }}
+                      onChange={setAnswerDraft}
+                      onDraft={() => draftMyAnswer(q)}
+                      onSave={() => saveMyAnswer(globalIdx, q)}
+                      onCancel={() => { setEditingAnswer(null); setAnswerDraft('') }}
+                    />
                   </div>
                 )}
               </div>
@@ -261,11 +379,13 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
           if (full) setSelected(prev => (prev?.id === wanted ? { ...prev, ...full } : prev))
         }).catch(() => {})
       }
+      // A plain array, which is what the main process has always returned here.
+      // This used to read `saved.questions` and JSON.parse it — neither of which
+      // an array has — so saved interview prep silently never came back, and
+      // every visit to an application regenerated it from scratch.
       window.api.getInterviewPrep(selected.id).then(saved => {
-        if (saved?.questions) {
-          try { setInterviewQuestions(JSON.parse(saved.questions)) } catch { /* ignore */ }
-        }
-      })
+        if (Array.isArray(saved) && saved.length > 0) setInterviewQuestions(saved)
+      }).catch(() => {})
       window.api.getStatusHistory?.(selected.id).then(h => setStatusHistory(h || [])).catch(() => {})
       window.api.getSnapshots?.(selected.id).then(s => setSnapshots(s || [])).catch(() => setSnapshots([]))
       setOpenSnapshot(null)
@@ -1252,8 +1372,8 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
             </div>
 
             <div style={{ marginBottom: 16 }}>
-              <label style={{ marginBottom: 6 }}>Comment</label>
-              <textarea
+              <label htmlFor="dash-f0" style={{ marginBottom: 6 }}>Comment</label>
+              <textarea id="dash-f0"
                 key={selected.id + '_comment'}
                 defaultValue={selected.comment || ''}
                 placeholder="Add a note about this application..."
@@ -1263,13 +1383,13 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
             </div>
 
             <div style={{ marginBottom: 16 }}>
-              <label style={{ marginBottom: 6 }}>
+              <label htmlFor="dash-f1" style={{ marginBottom: 6 }}>
                 Recruiter Email
                 <span style={{ fontWeight: 400, color: 'var(--text-muted)', marginLeft: 8, fontSize: 12 }}>
                   (follow-up emails go here; leave blank to receive them yourself)
                 </span>
               </label>
-              <input
+              <input id="dash-f1"
                 type="email"
                 key={selected.id}
                 defaultValue={selected.recruiter_email || ''}

@@ -27,6 +27,7 @@
 const crypto = require('crypto')
 const configService = require('./config')
 const database = require('./database')
+const { describeZoneAmbiguity } = require('./dateParser')
 const calendarAuth = require('./calendarAuth')
 const logger = require('./logger')
 const { DEFAULT_DURATION_MINUTES, parseLocalSql } = require('./calendar')
@@ -122,6 +123,7 @@ function descriptionFor(ev) {
     // the morning.
     ev.source_zone && ev.source_local
       ? `They wrote: ${ev.source_local} ${ev.source_zone} — shown here in your local time.`
+        + (describeZoneAmbiguity(ev.source_zone) ? ` ${describeZoneAmbiguity(ev.source_zone)}` : '')
       : null,
     ev.source === 'inbox'
       ? 'Time detected automatically from the recruiter\'s email — double-check it against the original.'

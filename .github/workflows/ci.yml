@@ -89,6 +89,16 @@ jobs:
 
       - run: npm ci --prefix app
 
+      # The mobile app and the browser extension had no linter at all until this
+      # step existed. `expo export` below proves the bundle builds, which catches
+      # a syntax error and a bad import and nothing else — not a variable that
+      # does not exist, not a promise nobody awaits, not an import left behind by
+      # a half-finished rename. Config at the repo root; the desktop keeps its
+      # own under web/.
+      - run: npm ci
+      - name: Lint the mobile app and the extension
+        run: npm run lint
+
       # Proves the lockfile resolves and the Expo config parses against the
       # installed SDK, which is what silently breaks on a dependency bump.
       - run: npx expo config --type public

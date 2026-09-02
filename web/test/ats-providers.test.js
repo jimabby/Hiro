@@ -118,18 +118,152 @@ check('smartrecruiters detail skips absent sections',
 check('smartrecruiters detail survives a malformed response',
   ats.PROVIDERS.smartrecruiters.parseDetail({}).job_description, '')
 
+// ── Workday ──────────────────────────────────────────────────────
+// The largest enterprise ATS, and the only board here whose identifier is a
+// path: the data centre (wd1/wd3/wd5…) differs per employer and is not derivable
+// from the company name, so the careers URL is what gets stored.
+const WORKDAY_BOARD = 'https://acme.wd3.myworkdayjobs.com/en-US/External'
+
+check('workday reads the data centre out of the address',
+  ats.parseWorkday(WORKDAY_BOARD).base, 'https://acme.wd3.myworkdayjobs.com')
+check('workday reads the tenant', ats.parseWorkday(WORKDAY_BOARD).tenant, 'acme')
+check('workday reads the site', ats.parseWorkday(WORKDAY_BOARD).site, 'External')
+check('workday defaults the locale when the URL omits it',
+  ats.parseWorkday('https://acme.wd5.myworkdayjobs.com/Careers').locale, 'en-US')
+check('workday keeps a locale the URL states',
+  ats.parseWorkday('https://acme.wd3.myworkdayjobs.com/en-GB/External').locale, 'en-GB')
+check('workday accepts the tenant/site shorthand',
+  ats.parseWorkday('acme/External').site, 'External')
+// A bare company name cannot work, and failing at the moment the board is added
+// is the whole point of validating boards there.
+check('workday refuses a bare company name', (() => {
+  try { ats.parseWorkday('acme'); return false } catch { return true }
+})(), true)
+
+check('workday posts to the list endpoint', ats.PROVIDERS.workday.method, 'POST')
+check('workday asks for a bounded page',
+  ats.PROVIDERS.workday.body(WORKDAY_BOARD).limit, 20)
+check('workday builds the cxs list url',
+  ats.PROVIDERS.workday.listUrl(WORKDAY_BOARD),
+  'https://acme.wd3.myworkdayjobs.com/wday/cxs/acme/External/jobs')
+
+const workday = ats.PROVIDERS.workday.parse({
+  total: 1,
+  jobPostings: [{
+    title: 'Senior Data Engineer',
+    externalPath: '/job/Sydney/Senior-Data-Engineer_R-4471',
+    locationsText: 'Sydney, NSW',
+    bulletFields: ['R-4471'],
+  }],
+}, WORKDAY_BOARD)[0]
+
+check('workday title is parsed', workday.job_title, 'Senior Data Engineer')
+check('workday builds the human-facing posting url', workday.job_url,
+  'https://acme.wd3.myworkdayjobs.com/en-US/External/job/Sydney/Senior-Data-Engineer_R-4471')
+check('workday records where to fetch the description', workday.detailUrl,
+  'https://acme.wd3.myworkdayjobs.com/wday/cxs/acme/External/job/Sydney/Senior-Data-Engineer_R-4471')
+check('workday has no description in the list', workday.job_description, '')
+check('workday location is kept', workday.location, 'Sydney, NSW')
+check('workday uses the requisition id as its external id', workday.external_id, 'R-4471')
+
+const workdayDetail = ats.PROVIDERS.workday.parseDetail({
+  jobPostingInfo: {
+    jobDescription: '<p>Build pipelines &amp; own them</p><li>SQL</li>',
+    externalUrl: 'https://acme.wd3.myworkdayjobs.com/en-US/External/job/R-4471',
+  },
+})
+check('workday detail strips markup and decodes entities',
+  workdayDetail.job_description, 'Build pipelines & own them\nSQL')
+check('workday detail prefers the canonical posting url',
+  workdayDetail.job_url, 'https://acme.wd3.myworkdayjobs.com/en-US/External/job/R-4471')
+check('workday detail survives a malformed response',
+  ats.PROVIDERS.workday.parseDetail({}).job_description, '')
+
+// ── BambooHR ─────────────────────────────────────────────────────
+const bamboo = ats.PROVIDERS.bamboohr.parse({
+  meta: { companyName: 'Acme Pty Ltd' },
+  result: [{
+    id: 42,
+    jobOpeningName: 'Analytics Engineer',
+    location: { city: 'Melbourne', state: 'VIC', country: 'Australia' },
+  }],
+}, 'acme')[0]
+
+check('bamboohr title is parsed', bamboo.job_title, 'Analytics Engineer')
+check('bamboohr prefers the company name the board states', bamboo.company, 'Acme Pty Ltd')
+check('bamboohr links to the posting', bamboo.job_url, 'https://acme.bamboohr.com/careers/42')
+check('bamboohr records where to fetch the description', bamboo.detailUrl,
+  'https://acme.bamboohr.com/careers/42/detail')
+check('bamboohr location is assembled from its parts', bamboo.location, 'Melbourne, VIC, Australia')
+check('bamboohr falls back to the slug for the company name',
+  ats.PROVIDERS.bamboohr.parse({ result: [{ id: 1, jobOpeningName: 'X' }] }, 'acme')[0].company, 'acme')
+check('bamboohr detail strips markup',
+  ats.PROVIDERS.bamboohr.parseDetail({ result: { jobOpening: { description: '<p>Own the warehouse</p>' } } }).job_description,
+  'Own the warehouse')
+check('bamboohr detail survives a malformed response',
+  ats.PROVIDERS.bamboohr.parseDetail({}).job_description, '')
+// The board identifier is often pasted as a URL rather than typed as a name.
+check('bamboohr accepts a pasted careers url',
+  ats.PROVIDERS.bamboohr.listUrl('https://acme.bamboohr.com/careers'),
+  'https://acme.bamboohr.com/careers/list')
+
+// ── Personio ─────────────────────────────────────────────────────
+const personio = ats.PROVIDERS.personio.parse([{
+  id: 900123,
+  name: 'Backend Engineer',
+  office: 'Berlin',
+  jobDescriptions: [
+    { name: 'Your mission', value: '<p>Ship services</p>' },
+    { name: 'Your profile', value: '<p>5 years of Go</p>' },
+  ],
+}], 'acme')[0]
+
+check('personio title is parsed', personio.job_title, 'Backend Engineer')
+check('personio links to the posting', personio.job_url, 'https://acme.jobs.personio.com/job/900123')
+check('personio office becomes the location', personio.location, 'Berlin')
+// The must-haves live in a later section, so joining every one of them is what
+// keeps them in front of the match scorer.
+check('personio folds every section into the description',
+  personio.job_description, 'Your mission\nShip services\n\nYour profile\n5 years of Go')
+check('personio handles a flat description field',
+  ats.PROVIDERS.personio.parse([{ id: 1, name: 'X', description: '<p>Flat</p>' }], 'acme')[0].job_description,
+  'Flat')
+check('personio tolerates an empty board',
+  ats.PROVIDERS.personio.parse([], 'acme').length, 0)
+
 // ── Every provider agrees on the contract ────────────────────────
 // A provider missing one of these is one that silently yields nothing.
 for (const [id, spec] of Object.entries(ats.PROVIDERS)) {
+  // Every provider declares an identifier that really works for it. Workday's
+  // is a path rather than one token (it needs the data centre and the site as
+  // well as the tenant), so the loop asks each provider for its own example
+  // instead of assuming one shape fits all.
+  const slug = spec.sampleSlug
   check(`${id} declares a label`, typeof spec.label, 'string')
-  check(`${id} builds a list url`, typeof spec.listUrl('acme'), 'string')
-  check(`${id} escapes the slug into its url`, spec.listUrl('a/b').includes('a/b'), false)
+  check(`${id} declares a working sample identifier`, typeof slug, 'string')
+  check(`${id} tells the user what its identifier looks like`, typeof spec.slugHint, 'string')
+  check(`${id} builds a list url`, typeof spec.listUrl(slug), 'string')
+  check(`${id} builds an https url`, spec.listUrl(slug).startsWith('https://'), true)
   check(`${id} parses an empty response without throwing`, (() => {
-    try { return Array.isArray(spec.parse({}, 'acme')) } catch { return false }
+    try { return Array.isArray(spec.parse({}, slug)) } catch { return false }
   })(), true)
   // A provider that needs a detail fetch must be able to read one.
   check(`${id} pairs parseDetail with a detail url`,
     !spec.parseDetail || typeof spec.parseDetail === 'function', true)
+
+  // A slug is user input, and it goes into a URL. For the single-token boards
+  // that means a slash must never survive into the path; for Workday, where the
+  // slash is meaningful, it means the components have to be validated instead.
+  if (spec.slugIsPath) {
+    check(`${id} refuses a traversal in its identifier`, (() => {
+      try { spec.listUrl('acme/../../v1/admin'); return false } catch { return true }
+    })(), true)
+    check(`${id} refuses a host that is not Workday`, (() => {
+      try { spec.listUrl('https://evil.example.com/en-US/External'); return false } catch { return true }
+    })(), true)
+  } else {
+    check(`${id} escapes the slug into its url`, spec.listUrl('a/b').includes('a/b'), false)
+  }
 }
 
 // ── The detail fetch is bounded ──────────────────────────────────

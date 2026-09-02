@@ -16,5 +16,7 @@ const analyzeKeywordGap = (jobDesc, resume, apiKey) => openai.analyzeKeywordGap(
 const generateFollowUpQuestion = (q, a, jd, apiKey) => openai.generateFollowUpQuestion(q, a, jd, apiKey, DEEPSEEK_BASE_URL)
 const generateFollowUpEmail = (jobTitle, company, resume, apiKey, _model, stage) => openai.generateFollowUpEmail(jobTitle, company, resume, apiKey, DEEPSEEK_BASE_URL, stage)
 const classifyReply = (subject, body, company, apiKey) => openai.classifyReply(subject, body, company, apiKey, DEEPSEEK_BASE_URL)
+const generateCounterOffer = (input, apiKey) => openai.generateCounterOffer(input, apiKey, DEEPSEEK_BASE_URL)
+const draftInterviewAnswer = (input, apiKey) => openai.draftInterviewAnswer(input, apiKey, DEEPSEEK_BASE_URL)
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, generateCoverLetter, improveResume, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply }
+module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, generateCoverLetter, improveResume, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply, generateCounterOffer, draftInterviewAnswer }

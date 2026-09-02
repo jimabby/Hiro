@@ -37,6 +37,7 @@
 
 const database = require('./database')
 const aiAdapter = require('./ai/index')
+const applicationProfile = require('./applicationProfile')
 const { inspectScreeningAnswer, describeFlags } = require('./fabricationGuard')
 
 // Thrown when there is nobody to ask and the answer cannot be trusted. The
@@ -78,12 +79,29 @@ function isUncertain(answer) {
 
 // Resolve one question to the string that will be typed into the form.
 //
-// Returns { answer, source } — source is 'cache' | 'ai' | 'user' — or
-// { answer: '', source: '' } when there is nothing safe to say and the field
+// Returns { answer, source } — source is 'profile' | 'cache' | 'ai' | 'user' —
+// or { answer: '', source: '' } when there is nothing safe to say and the field
 // should simply be left alone. Throws ScreeningAnswerRefused when an answer was
 // produced, was not trustworthy, and there was no one to ask.
 async function resolveAnswer({ question, optionHint = '', cfg, log }) {
   const prompt = optionHint ? `${question} (${optionHint})` : question
+
+  // ── The application profile ────────────────────────────────────
+  //
+  // First, ahead of even the cache. These are facts the user stated about
+  // themselves — work rights, notice period, salary expectation — and a fact
+  // stated by its subject outranks a model's answer that was cached six months
+  // ago, which is the only thing it could be displacing.
+  //
+  // Not fabrication-checked, for the same reason a user-typed answer is not:
+  // the check compares a claim against the resume, and a resume is not the
+  // authority on someone's visa status or notice period. The user is. See
+  // applicationProfile.js.
+  const known = applicationProfile.answerFor(question, cfg)
+  if (known) {
+    log?.(`  Answered "${trim(question, 60)}" from your application profile (${known.label}).`)
+    return { answer: known.answer, source: 'profile' }
+  }
 
   // ── Cache ──────────────────────────────────────────────────────
   const cached = database.getCachedAnswerRecord(question)

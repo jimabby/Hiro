@@ -21,6 +21,8 @@ const SECRET_KEYS = [
   'aiApiKey', 'gmailAppPassword', 'supabaseRefreshToken', 'mobileApiToken',
   'calendarRefreshToken', 'calendarClientSecret',
   'cloudDataKey',
+  // Handed to Chromium for proxy authentication, never to a job board.
+  'proxyPassword',
 ]
 const ENC_PREFIX = 'enc:v1:'
 
@@ -143,6 +145,37 @@ const DEFAULTS = {
   localAiModel: 'llama3.1:8b',
   gmailAddress: '',
   gmailAppPassword: '',
+  // Mail servers. 'auto' looks the address domain up in services/mailProvider.js;
+  // 'custom' uses the four fields below verbatim, which is what a personal
+  // domain, a university address or a company mail server needs. There is
+  // deliberately no third state: the old behaviour of quietly using Gmail's
+  // servers for an unknown domain could never work and reported itself as a
+  // wrong password.
+  mailProvider: 'auto',
+  smtpHost: '',
+  smtpPort: 465,
+  smtpSecure: true,
+  // Blank means "the address itself", which is right for almost every provider.
+  // Set it where the login name differs from the address.
+  smtpUser: '',
+  imapHost: '',
+  imapPort: 993,
+  imapSecure: true,
+  imapUser: '',
+  // The facts every application form asks for, answered deterministically
+  // rather than by the model. See services/applicationProfile.js for why these
+  // are the one category of screening question a model should not be near.
+  applicationProfile: {},
+  // Network egress for the scrapers. See scraper/utils.js: automationHealth can
+  // already detect that a platform has started refusing us and back off, but
+  // backing off was the entire toolkit — this is the lever for "route it
+  // somewhere else", and the only thing that makes Hiro usable on a corporate
+  // network whose sole route out is a proxy.
+  proxyEnabled: false,
+  proxyServer: '',
+  proxyUsername: '',
+  proxyPassword: '',
+  proxyBypass: '',
   jobKeywords: '',
   jobLocation: '',
   salaryMin: 0,

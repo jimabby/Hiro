@@ -1,5 +1,5 @@
 const { chromium } = require('playwright')
-const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown, verifySubmission, confirmSubmission, gotoResultsPage, createSelectorProbe } = require('./utils')
+const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown, verifySubmission, confirmSubmission, gotoResultsPage, createSelectorProbe, launchOptions } = require('./utils')
 
 // Which selectors matched on the most recent scrape, so automation health can
 // name the one that moved rather than only reporting that something did.
@@ -39,7 +39,7 @@ const { resolveAnswer } = require('../screeningAnswers')
 
 async function scrape(cfg) {
   const { jobKeywords, jobLocation, salaryMin } = cfg
-  const browser = await chromium.launch({ headless: true })
+  const browser = await chromium.launch(launchOptions({ headless: true }))
   const context = await browser.newContext({ userAgent: randomUserAgent() })
   const page = await context.newPage()
 
@@ -103,7 +103,7 @@ async function scrape(cfg) {
 }
 
 async function getJobDescription(jobUrl) {
-  const browser = await chromium.launch({ headless: true })
+  const browser = await chromium.launch(launchOptions({ headless: true }))
   const context = await browser.newContext({ userAgent: randomUserAgent() })
   const page = await context.newPage()
 
@@ -120,7 +120,7 @@ async function getJobDescription(jobUrl) {
 
 async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
   // Run headed so the user can watch if debugging is needed
-  const browser = await chromium.launch({ headless: false, slowMo: 50 })
+  const browser = await chromium.launch(launchOptions({ headless: false, slowMo: 50 }))
 
   // Restore full Seek session (all cookies + localStorage) from saved storage state
   const storagePath = seekSession.getStoragePath()

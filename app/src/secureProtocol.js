@@ -4,7 +4,6 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js'
 
 const bytesToBase64 = bytes => btoa(Array.from(bytes, b => String.fromCharCode(b)).join(''))
-const base64ToBytes = text => Uint8Array.from(atob(text), c => c.charCodeAt(0))
 const keyBytes = token => sha256(utf8ToBytes(token))
 
 export async function encryptPayload(token, body) {

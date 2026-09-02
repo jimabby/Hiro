@@ -86,6 +86,47 @@ const ZONE_OFFSETS = [
   ['MST', -420], ['MDT', -360], ['PST', -480], ['PDT', -420],
 ]
 
+// Abbreviations that name more than one real zone. The table above has to pick
+// one to convert with, and the pick is the reading most likely to turn up in a
+// job-search inbox — but picking silently is how a Dhaka 2pm becomes a London
+// 2pm and the user finds out by missing the call.
+//
+// So the alternatives travel with the result. The conversion still happens (for
+// a Sydney user reading a London "2pm BST", converting on the likely reading is
+// right far more often than not converting at all), and the caller is told the
+// reading was a choice — so the UI can show "read as UTC+01:00; BST is also used
+// for UTC+06:00" beside the converted time instead of presenting a guess as a
+// fact.
+//
+// The same rule the rest of Hiro follows for a number it cannot stand behind:
+// show the figure, name the uncertainty, never launder one into the other.
+const AMBIGUOUS_ZONES = {
+  BST: [
+    { label: 'British Summer Time', offsetMinutes: 60 },
+    { label: 'Bangladesh Standard Time', offsetMinutes: 360 },
+  ],
+  IST: [
+    { label: 'India Standard Time', offsetMinutes: 330 },
+    { label: 'Irish Standard Time', offsetMinutes: 60 },
+    { label: 'Israel Standard Time', offsetMinutes: 120 },
+  ],
+  CST: [
+    { label: 'US Central Standard Time', offsetMinutes: -360 },
+    { label: 'China Standard Time', offsetMinutes: 480 },
+  ],
+  // Australia writes AEST/AEDT, but a bare "EST" still turns up in Australian
+  // email meaning UTC+10 — and the table above reads it as US Eastern, fifteen
+  // hours the other way. Worth flagging for precisely that reason.
+  EST: [
+    { label: 'US Eastern Standard Time', offsetMinutes: -300 },
+    { label: 'Australian Eastern Standard Time', offsetMinutes: 600 },
+  ],
+  WEST: [
+    { label: 'Western European Summer Time', offsetMinutes: 60 },
+    { label: 'West Africa Summer Time', offsetMinutes: 120 },
+  ],
+}
+
 const ZONE_NAMES = ZONE_OFFSETS.map(([name]) => name).join('|')
 
 // "UTC+10", "GMT-5", "UTC+05:30". Tested BEFORE the named zones, because
@@ -115,9 +156,25 @@ function offsetFrom(sign, hoursText, minutesText) {
   return { offsetMinutes, label: formatOffset(offsetMinutes) }
 }
 
-// Returns { offsetMinutes, label } or null.
-function parseTimezone(text) {
-  const body = String(text || '')
+// How far from the time itself a zone may be written and still count as a
+// statement about that time.
+//
+// parseInterviewTime already narrows to the clause carrying the time, which is
+// what stops a signature block from setting the zone. But a clause can still be
+// a long one, and a zone token forty words downstream of the appointment is not
+// obviously about the appointment. Near the time, it is.
+const ZONE_PROXIMITY_CHARS = 40
+
+// Returns { offsetMinutes, label, ambiguous? } or null.
+//
+// `near` is the index of the time this zone is meant to qualify. Given one, only
+// the window around it is searched; without one the whole string is, which is
+// what the closing-date path and the unit tests want.
+function parseTimezone(text, { near = null, radius = ZONE_PROXIMITY_CHARS } = {}) {
+  const full = String(text || '')
+  const body = near == null
+    ? full
+    : full.slice(Math.max(0, near - radius), near + radius)
 
   const explicit = OFFSET_RE.exec(body)
   if (explicit) {
@@ -129,7 +186,12 @@ function parseTimezone(text) {
   if (named) {
     const name = named[1].toUpperCase()
     const found = ZONE_OFFSETS.find(([n]) => n === name)
-    if (found) return { offsetMinutes: found[1], label: name }
+    if (found) {
+      const alternatives = AMBIGUOUS_ZONES[name]
+      return alternatives
+        ? { offsetMinutes: found[1], label: name, ambiguous: alternatives }
+        : { offsetMinutes: found[1], label: name }
+    }
   }
 
   const bare = BARE_OFFSET_RE.exec(body)
@@ -150,6 +212,8 @@ function formatOffset(minutes) {
 
 // ─── Time of day ─────────────────────────────────────────────────────────
 // "2pm", "2:30 PM", "14:00", "10.30am". Returns { hour, minute } or null.
+// `index` is where in `text` the time ends, so a caller can look for the zone
+// qualifying it nearby rather than anywhere in the sentence.
 function parseTimeOfDay(text) {
   const m = /\b(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)\b/i.exec(text)
   if (m) {
@@ -159,12 +223,12 @@ function parseTimeOfDay(text) {
     if (hour < 1 || hour > 12 || minute > 59) return null
     if (isPm && hour !== 12) hour += 12
     if (!isPm && hour === 12) hour = 0
-    return { hour, minute }
+    return { hour, minute, index: m.index + m[0].length }
   }
   // 24-hour "14:00" / "at 09:30". Require the colon so a bare year or a
   // street number can't be read as a time.
   const m24 = /\b(?:at\s+)?([01]?\d|2[0-3]):([0-5]\d)\b/.exec(text)
-  if (m24) return { hour: Number(m24[1]), minute: Number(m24[2]) }
+  if (m24) return { hour: Number(m24[1]), minute: Number(m24[2]), index: m24.index + m24[0].length }
   return null
 }
 
@@ -311,7 +375,7 @@ function parseInterviewTime(subject, body, now = new Date()) {
       // nothing down — and only the zone written in the SAME clause as the time
       // can be trusted to be about it. An email signature saying "Sydney,
       // Australia" three paragraphs down is not a statement about this meeting.
-      const zone = time ? parseTimezone(clause) : null
+      const zone = time ? parseTimezone(clause, { near: time.index }) : null
       // Always stored with a time component, even when none was detected — the
       // 00:00 is what `has_time: false` exists to qualify, and callers compare
       // these strings against SQLite datetimes.
@@ -330,16 +394,48 @@ function parseInterviewTime(subject, body, now = new Date()) {
         hasTime: true,
         sourceZone: zone.label,
         sourceLocal: toLocalSql(d, true),
+        // Present only when the abbreviation names more than one real zone, so
+        // the UI can say the reading was a choice. See AMBIGUOUS_ZONES.
+        ...(zone.ambiguous ? { zoneAmbiguous: zone.ambiguous } : {}),
       }
     }
   }
   return null
 }
 
+// What else the abbreviation stored on an interview row could have meant.
+// Returns [] for a zone that means exactly one thing, so callers can test it as
+// a plain truthiness check.
+//
+// Derived from the label rather than stored beside it on purpose: the reading
+// is a property of the abbreviation, not of the row, so a row written before
+// AMBIGUOUS_ZONES gained an entry starts being flagged the moment it does —
+// which is the behaviour you want from a list of things you might have got
+// wrong.
+function zoneAmbiguity(label) {
+  const alternatives = AMBIGUOUS_ZONES[String(label || '').toUpperCase()]
+  return alternatives ? alternatives.slice() : []
+}
+
+// One line, for a calendar description or a tooltip. Empty string when the zone
+// is unambiguous, so it can be concatenated without a guard.
+function describeZoneAmbiguity(label) {
+  const alternatives = zoneAmbiguity(label)
+  if (alternatives.length === 0) return ''
+  const chosen = alternatives[0]
+  const others = alternatives.slice(1)
+  return `"${String(label).toUpperCase()}" is used by more than one timezone. `
+    + `Hiro read it as ${chosen.label} (${formatOffset(chosen.offsetMinutes)}); `
+    + `it can also mean ${others.map(a => `${a.label} (${formatOffset(a.offsetMinutes)})`).join(' or ')}. `
+    + 'Check the time with them if it matters.'
+}
+
 module.exports = {
   parseClosingDate,
   parseInterviewTime,
   parseTimezone,
+  zoneAmbiguity,
+  describeZoneAmbiguity,
   // exported for tests
   parseCalendarDate,
   parseTimeOfDay,

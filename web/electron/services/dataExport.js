@@ -30,6 +30,12 @@ const STANDALONE = [
   { table: 'suppressed_roles', key: 'role_key' },
   { table: 'contacts', key: null, unique: ['email', 'company'] },
   { table: 'campaign_runs', key: null },
+  // Answers the user worked out themselves, keyed on the normalised question.
+  // Not attached to any application — the answer to "why are you leaving your
+  // current role" belongs to the candidate, not to whichever employer asked it
+  // first — so it stands on its own here, and losing it on a machine move would
+  // be losing something hand-written.
+  { table: 'interview_answers', key: 'question_key' },
 ]
 
 // Tables whose rows belong to one application.

@@ -1,4 +1,5 @@
 const { ImapFlow } = require('imapflow')
+const mailProvider = require('./mailProvider')
 const configService = require('./config')
 const database = require('./database')
 const aiAdapter = require('./ai/index')
@@ -77,13 +78,10 @@ function parseSqliteUtc(s) {
   return isNaN(d.getTime()) ? null : d
 }
 
-function getImapHost(address) {
-  const domain = (address || '').split('@')[1]?.toLowerCase() || ''
-  if (domain === 'outlook.com' || domain === 'hotmail.com' || domain === 'live.com' || domain === 'msn.com') return 'outlook.office365.com'
-  if (domain === 'yahoo.com' || domain === 'ymail.com') return 'imap.mail.yahoo.com'
-  if (domain === 'icloud.com' || domain === 'me.com' || domain === 'mac.com') return 'imap.mail.me.com'
-  return 'imap.gmail.com'
-}
+// Server selection lives in services/mailProvider.js, shared with the SMTP side.
+// Reading replies and sending reports have to agree about which account this is:
+// a setup that can send but not read presents as "replies are never detected",
+// which is far harder to notice than a connection that simply fails.
 
 async function checkInbox() {
   const cfg = configService.load()
@@ -91,12 +89,13 @@ async function checkInbox() {
     throw new Error('Email address and App Password required. Configure them in Settings.')
   }
 
+  const { imap } = mailProvider.resolve(cfg)
   const client = new ImapFlow({
-    host: getImapHost(cfg.gmailAddress),
-    port: 993,
-    secure: true,
+    host: imap.host,
+    port: imap.port,
+    secure: imap.secure,
     auth: {
-      user: cfg.gmailAddress,
+      user: cfg.imapUser || cfg.smtpUser || cfg.gmailAddress,
       pass: cfg.gmailAppPassword,
     },
     logger: false,

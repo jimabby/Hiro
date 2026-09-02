@@ -1,6 +1,6 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai')
 const { withUsage } = require('./usage')
-const { interviewQuestionsPrompt, followUpEmailPrompt } = require('./prompts')
+const { interviewQuestionsPrompt, followUpEmailPrompt, counterOfferPrompt, interviewAnswerPrompt } = require('./prompts')
 const { fence, FENCE_RULES } = require('./untrusted')
 const { parseScore, parseScoreWithExplanation } = require('./scoring')
 
@@ -184,6 +184,14 @@ async function generateFollowUpEmail(jobTitle, company, masterResume, apiKey, mo
   return text
 }
 
+async function generateCounterOffer(input, apiKey, modelName) {
+  return complete('generateCounterOffer', apiKey, modelName, counterOfferPrompt(input))
+}
+
+async function draftInterviewAnswer(input, apiKey, modelName) {
+  return complete('draftInterviewAnswer', apiKey, modelName, interviewAnswerPrompt(input))
+}
+
 async function improveResume(resumeText, apiKey, modelName) {
   const text = await complete('improveResume', apiKey, modelName, {
     contents: [{ role: 'user', parts: [{ text: `You are an expert resume writer. Improve the following resume to be more impactful, professional, and ATS-friendly.
@@ -219,4 +227,4 @@ ${fence('BODY', body, 1500)}`)
   return (text || '').trim().toLowerCase()
 }
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply }
+module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply, generateCounterOffer, draftInterviewAnswer }

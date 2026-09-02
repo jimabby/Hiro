@@ -16,7 +16,7 @@
 // Matches an HTML document however it starts — a leading BOM or blank lines, a
 // doctype, a bare <html>, or the <meta http-equiv="refresh"> that some portals
 // send instead. Portals are not consistent, so this errs toward recognising one.
-const HTML_START = /^[\s﻿]*<(?:!doctype|html|head|meta|title)\b/i
+const HTML_START = /^[\s\uFEFF]*<(?:!doctype|html|head|meta|title)\b/i
 
 function looksLikeHtml(text) {
   return HTML_START.test(text)

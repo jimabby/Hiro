@@ -1,7 +1,7 @@
 const { chromium } = require('playwright-extra')
 const StealthPlugin = require('puppeteer-extra-plugin-stealth')
 chromium.use(StealthPlugin())
-const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown, verifySubmission, confirmSubmission, gotoResultsPage, createSelectorProbe } = require('./utils')
+const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown, verifySubmission, confirmSubmission, gotoResultsPage, createSelectorProbe, launchOptions } = require('./utils')
 
 // Which selectors matched on the most recent scrape — see seek.js.
 let lastSelectorReport = null
@@ -53,7 +53,7 @@ function extractRecentJob(resumeText) {
 
 async function scrape(cfg) {
   const { jobKeywords, jobLocation, salaryMin } = cfg
-  const browser = await chromium.launch({ headless: true })
+  const browser = await chromium.launch(launchOptions({ headless: true }))
   const context = await browser.newContext({ userAgent: randomUserAgent() })
   const page = await context.newPage()
 
@@ -116,7 +116,7 @@ async function scrape(cfg) {
 }
 
 async function getJobDescription(jobUrl) {
-  const browser = await chromium.launch({ headless: true })
+  const browser = await chromium.launch(launchOptions({ headless: true }))
   const context = await browser.newContext({ userAgent: randomUserAgent() })
   const page = await context.newPage()
 
@@ -134,7 +134,7 @@ async function getJobDescription(jobUrl) {
 }
 
 async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
-  const browser = await chromium.launch({ headless: false, slowMo: 50 })
+  const browser = await chromium.launch(launchOptions({ headless: false, slowMo: 50 }))
 
   const storagePath = indeedSession.getStoragePath()
   const fs = require('fs')

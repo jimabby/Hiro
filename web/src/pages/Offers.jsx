@@ -104,6 +104,150 @@ function Benchmark({ jobTitle, value }) {
   )
 }
 
+// Opening the negotiation.
+//
+// This page could already say what an offer IS and, against the user's own scan
+// history, roughly whether it was any good. It stopped one step short of the
+// moment the whole pipeline was for.
+//
+// Everything the draft needs is already on this row — base, bonus, equity, the
+// deadline, the comparable advertised ranges — so the only new input is what the
+// user actually wants. Two rules, enforced in the prompt (see ai/prompts.js) and
+// stated here so nobody has to take them on trust: it never invents a competing
+// offer, and it never presents the advertised ranges as market data. Both are
+// things a model reaches for unprompted, and both are things the user would then
+// have to live inside during a phone call.
+function NegotiationPanel({ offer, showToast, onSaved }) {
+  const [targetBase, setTargetBase] = useState(offer.target_base ?? '')
+  const [targetBonus, setTargetBonus] = useState(offer.target_bonus ?? '')
+  const [priorities, setPriorities] = useState(offer.priorities || '')
+  const [tone, setTone] = useState('collaborative')
+  const [draft, setDraft] = useState(offer.counter_draft || '')
+  const [busy, setBusy] = useState(false)
+
+  async function generate() {
+    setBusy(true)
+    try {
+      const res = await window.api.draftCounterOffer?.(offer.applicationId, {
+        targetBase: targetBase === '' ? null : Number(targetBase),
+        targetBonus: targetBonus === '' ? null : Number(targetBonus),
+        priorities,
+        tone,
+      })
+      if (res?.success) {
+        setDraft(res.draft)
+        onSaved?.()
+      } else {
+        showToast?.(res?.error || 'Could not draft a reply', 'error')
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function saveEdits() {
+    await window.api.saveOffer?.(offer.applicationId, {
+      ...formFrom(offer),
+      targetBase: targetBase === '' ? null : Number(targetBase),
+      targetBonus: targetBonus === '' ? null : Number(targetBonus),
+      priorities,
+      counterDraft: draft,
+    })
+    onSaved?.()
+    showToast?.('Draft saved', 'success')
+  }
+
+  return (
+    <div style={{ marginTop: 12, padding: '14px 16px', background: 'var(--surface2)', borderRadius: 8 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Negotiate</div>
+      <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.55 }}>
+        Drafts a reply that opens a conversation — it accepts nothing, declines nothing, and never
+        claims you have a competing offer. Your scan history informs how ambitious the ask is; it is
+        never quoted to the employer as market data, because advertised ranges are not what anyone
+        was paid.
+      </p>
+
+      <div className="form-row">
+        <div className="form-group">
+          <label htmlFor={`target-base-${offer.applicationId}`}>Base you want</label>
+          <input
+            id={`target-base-${offer.applicationId}`}
+            type="number" value={targetBase}
+            onChange={e => setTargetBase(e.target.value)}
+            placeholder={offer.base_salary ? String(offer.base_salary) : 'e.g. 160000'}
+          />
+        </div>
+        <div className="form-group">
+          <label htmlFor={`target-bonus-${offer.applicationId}`}>Bonus you want <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: 11 }}>(optional)</span></label>
+          <input
+            id={`target-bonus-${offer.applicationId}`}
+            type="number" value={targetBonus}
+            onChange={e => setTargetBonus(e.target.value)}
+          />
+        </div>
+        <div className="form-group" style={{ maxWidth: 180 }}>
+          <label htmlFor={`tone-${offer.applicationId}`}>Tone</label>
+          <select id={`tone-${offer.applicationId}`} value={tone} onChange={e => setTone(e.target.value)}>
+            <option value="collaborative">Collaborative</option>
+            <option value="direct">Direct</option>
+            <option value="grateful">Appreciative</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="form-group">
+        <label htmlFor={`priorities-${offer.applicationId}`}>What matters most</label>
+        <input
+          id={`priorities-${offer.applicationId}`}
+          value={priorities}
+          onChange={e => setPriorities(e.target.value)}
+          placeholder="e.g. base salary first, then two remote days, then start date"
+          aria-describedby={`priorities-hint-${offer.applicationId}`}
+        />
+        <small id={`priorities-hint-${offer.applicationId}`} style={{ color: 'var(--text-muted)' }}>
+          The draft makes one primary ask and at most two secondary ones — a list of six reads as a
+          negotiation with a spreadsheet rather than with a person.
+        </small>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button className="btn btn-primary" style={{ fontSize: 12 }} disabled={busy} onClick={generate}>
+          {busy ? 'Drafting…' : draft ? 'Draft again' : 'Draft a reply'}
+        </button>
+        {draft && (
+          <>
+            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={saveEdits}>Save draft</button>
+            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => {
+              navigator.clipboard?.writeText(draft)
+              showToast?.('Copied — paste it into your email client')
+            }}>Copy</button>
+          </>
+        )}
+      </div>
+
+      {draft && (
+        <div style={{ marginTop: 10 }}>
+          <label htmlFor={`draft-${offer.applicationId}`} style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            Edit before sending — this is a starting point, not a letter
+          </label>
+          <textarea
+            id={`draft-${offer.applicationId}`}
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            rows={12}
+            style={{ width: '100%', fontSize: 13, marginTop: 4 }}
+          />
+          {offer.counter_drafted_at && (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              Last drafted {new Date(offer.counter_drafted_at).toLocaleString()}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function OfferForm({ form, setForm, onSave, onCancel, saving }) {
   const field = (key, props = {}) => (
     <input
@@ -132,22 +276,22 @@ function OfferForm({ form, setForm, onSave, onCancel, saving }) {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
         <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>
           What is good about it
-          <textarea className="input" style={{ minHeight: 60 }} value={form.pros}
+          <textarea className="input" aria-label="Reasons for" style={{ minHeight: 60 }} value={form.pros}
             onChange={e => setForm({ ...form, pros: e.target.value })} placeholder="Team, scope, learning…" />
         </label>
         <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>
           What is not
-          <textarea className="input" style={{ minHeight: 60 }} value={form.cons}
+          <textarea className="input" aria-label="Reasons against" style={{ minHeight: 60 }} value={form.cons}
             onChange={e => setForm({ ...form, cons: e.target.value })} placeholder="Commute, on-call…" />
         </label>
       </div>
       <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>
         Notes
-        <textarea className="input" style={{ minHeight: 50 }} value={form.notes}
+        <textarea className="input" aria-label="Notes" style={{ minHeight: 50 }} value={form.notes}
           onChange={e => setForm({ ...form, notes: e.target.value })} />
       </label>
       <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'center' }}>
-        <select className="input" style={{ width: 150 }} value={form.decision}
+        <select className="input" aria-label="Decision" style={{ width: 150 }} value={form.decision}
           onChange={e => setForm({ ...form, decision: e.target.value })}>
           {DECISIONS.map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
         </select>
@@ -162,6 +306,7 @@ export default function Offers({ active, showToast, onOpenApplication }) {
   const [data, setData] = useState(null)
   const [candidates, setCandidates] = useState([])
   const [editing, setEditing] = useState(null) // applicationId
+  const [negotiating, setNegotiating] = useState(null) // applicationId
   const [form, setForm] = useState(blankForm)
   const [saving, setSaving] = useState(false)
   const [adding, setAdding] = useState('')
@@ -211,7 +356,7 @@ export default function Offers({ active, showToast, onOpenApplication }) {
         <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 0 }}>Offers</h1>
         {candidates.length > 0 && (
           <div style={{ display: 'flex', gap: 8 }}>
-            <select className="input" style={{ width: 260 }} value={adding} onChange={e => {
+            <select className="input" aria-label="Add an offer for an application" style={{ width: 260 }} value={adding} onChange={e => {
               setAdding(e.target.value)
               setForm({ ...blankForm })
               setEditing(null)
@@ -358,6 +503,14 @@ export default function Offers({ active, showToast, onOpenApplication }) {
                 Open application
               </button>
             )}
+            {/* A declined or accepted offer is history; there is nothing left to
+                negotiate, and offering to would be noise on the one board that
+                should be quiet once a decision is made. */}
+            {o.decision === 'considering' && (
+              <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => {
+                setNegotiating(negotiating === o.applicationId ? null : o.applicationId)
+              }}>{negotiating === o.applicationId ? 'Close' : 'Negotiate'}</button>
+            )}
             <button className="btn btn-ghost" style={{ fontSize: 12, color: 'var(--red)' }} onClick={async () => {
               await window.api.deleteOffer?.(o.applicationId)
               await load()
@@ -369,6 +522,10 @@ export default function Offers({ active, showToast, onOpenApplication }) {
           {editing === o.applicationId && (
             <OfferForm form={form} setForm={setForm} saving={saving}
               onSave={() => save(o.applicationId)} onCancel={() => setEditing(null)} />
+          )}
+
+          {negotiating === o.applicationId && (
+            <NegotiationPanel key={o.applicationId} offer={o} showToast={showToast} onSaved={load} />
           )}
         </div>
       ))}

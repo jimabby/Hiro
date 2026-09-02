@@ -102,4 +102,19 @@ async function classifyReply(provider, apiKey, subject, body, company, geminiMod
   return getAdapter(provider).classifyReply(subject, body, company, apiKey, modelFor(provider, geminiModel))
 }
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply }
+// Draft the reply that opens a negotiation on an offer. See ai/prompts.js for
+// the two things this is forbidden to do — invent leverage, and cite the
+// advertised ranges as market data.
+async function generateCounterOffer(provider, apiKey, input, geminiModel) {
+  const result = await getAdapter(provider).generateCounterOffer(input, apiKey, modelFor(provider, geminiModel))
+  return stripMarkdown(result)
+}
+
+// A first pass at an interview answer, for the user to edit into their own
+// words. `input.existingAnswer` switches it from drafting to tightening.
+async function draftInterviewAnswer(provider, apiKey, input, geminiModel) {
+  const result = await getAdapter(provider).draftInterviewAnswer(input, apiKey, modelFor(provider, geminiModel))
+  return stripMarkdown(result)
+}
+
+module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply, generateCounterOffer, draftInterviewAnswer }

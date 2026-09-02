@@ -1,6 +1,7 @@
 const { chromium } = require('playwright-extra')
 const StealthPlugin = require('puppeteer-extra-plugin-stealth')
 chromium.use(StealthPlugin())
+const { launchOptions } = require('./scraper/utils')
 const fs = require('fs')
 const path = require('path')
 const { CONFIG_DIR } = require('./config')
@@ -25,11 +26,11 @@ function clearCookies() {
 
 async function loginWithBrowser(onStatus) {
   onStatus('Opening Indeed login window...')
-  const browser = await chromium.launch({
+  const browser = await chromium.launch(launchOptions({
     headless: false,
     channel: 'chrome',
     args: ['--window-size=1024,700', '--disable-blink-features=AutomationControlled'],
-  })
+  }))
   // try/finally so the headed Chrome always closes — a throw from
   // newContext/goto (offline, Chrome channel missing) must not leak it.
   try {

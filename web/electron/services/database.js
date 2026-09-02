@@ -382,12 +382,49 @@ function createTables() {
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     );
+
+    -- Your own answers to interview questions, kept once and reused.
+    --
+    -- Interview Questions produced questions and had nowhere to put the answers,
+    -- so a STAR story worked out for one panel was worked out again from scratch
+    -- for the next. Keyed on a normalised form of the question, so the same
+    -- question asked with different punctuation or a different opener is one
+    -- entry rather than several.
+    --
+    -- Not attached to an application, on purpose. The answer to "why are you
+    -- leaving your current role" belongs to the candidate, not to whichever
+    -- employer happened to ask it first. last_used_application_id is
+    -- bookkeeping rather than ownership, and is allowed to dangle.
+    CREATE TABLE IF NOT EXISTS interview_answers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      question_key TEXT UNIQUE NOT NULL,
+      question TEXT NOT NULL,
+      answer TEXT DEFAULT '',
+      -- 'user' or 'ai'. An AI draft the user has not edited is not yet their
+      -- answer, and the UI says so rather than presenting it as ready to give.
+      source TEXT DEFAULT 'user',
+      category TEXT DEFAULT '',
+      times_used INTEGER DEFAULT 0,
+      last_used_at TEXT,
+      last_used_application_id INTEGER,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
   `)
   persist()
 }
 
 function migrate() {
   // Add columns if they don't exist (for existing databases)
+  // What the user wants out of the negotiation, and the draft that opens it.
+  // Stored rather than regenerated so a draft survives closing the panel — the
+  // whole point is that it gets edited before it is sent.
+  try { db.run('ALTER TABLE offers ADD COLUMN target_base INTEGER') } catch {}
+  try { db.run('ALTER TABLE offers ADD COLUMN target_bonus INTEGER') } catch {}
+  try { db.run('ALTER TABLE offers ADD COLUMN priorities TEXT DEFAULT ""') } catch {}
+  try { db.run('ALTER TABLE offers ADD COLUMN counter_draft TEXT DEFAULT ""') } catch {}
+  try { db.run('ALTER TABLE offers ADD COLUMN counter_drafted_at TEXT') } catch {}
+
   try { db.run('ALTER TABLE applications ADD COLUMN cover_letter TEXT DEFAULT ""') } catch {}
   try { db.run('ALTER TABLE applications ADD COLUMN comment TEXT DEFAULT ""') } catch {}
   try { db.run('ALTER TABLE applications ADD COLUMN match_explanation TEXT DEFAULT ""') } catch {}
@@ -1076,6 +1113,7 @@ function clearAllApplications() {
     run('DELETE FROM applications')
     run('DELETE FROM status_history')
     run('DELETE FROM interview_prep')
+    run('DELETE FROM interview_answers')
     run('DELETE FROM interview_events')
     run('DELETE FROM application_snapshots')
     run('DELETE FROM sync_conflicts')
@@ -2692,17 +2730,31 @@ function saveOffer(applicationId, data = {}) {
   const decision = OFFER_DECISIONS.includes(data.decision) ? data.decision : 'considering'
   const excitement = data.excitement == null ? null : Math.max(0, Math.min(5, Math.round(Number(data.excitement) || 0)))
 
+  // The negotiation fields are only overwritten when the caller supplies them,
+  // so the ordinary "save the offer numbers" path cannot wipe a draft the user
+  // is part-way through editing. COALESCE on the excluded value does that in
+  // one statement rather than a read-modify-write.
+  const targetBase = data.targetBase === undefined ? undefined : int(data.targetBase)
+  const targetBonus = data.targetBonus === undefined ? undefined : int(data.targetBonus, 10000000)
+
   run(`
     INSERT INTO offers
       (application_id, base_salary, bonus, equity, currency, start_date, respond_by,
-       location, remote, pros, cons, notes, excitement, decision, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       location, remote, pros, cons, notes, excitement, decision,
+       target_base, target_bonus, priorities, counter_draft, counter_drafted_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(application_id) DO UPDATE SET
       base_salary = excluded.base_salary, bonus = excluded.bonus, equity = excluded.equity,
       currency = excluded.currency, start_date = excluded.start_date, respond_by = excluded.respond_by,
       location = excluded.location, remote = excluded.remote, pros = excluded.pros,
       cons = excluded.cons, notes = excluded.notes, excitement = excluded.excitement,
-      decision = excluded.decision, updated_at = datetime('now')
+      decision = excluded.decision,
+      target_base = COALESCE(excluded.target_base, offers.target_base),
+      target_bonus = COALESCE(excluded.target_bonus, offers.target_bonus),
+      priorities = COALESCE(excluded.priorities, offers.priorities),
+      counter_draft = COALESCE(excluded.counter_draft, offers.counter_draft),
+      counter_drafted_at = COALESCE(excluded.counter_drafted_at, offers.counter_drafted_at),
+      updated_at = datetime('now')
   `, [
     applicationId, int(data.baseSalary), int(data.bonus, 10000000),
     String(data.equity || '').slice(0, 200), String(data.currency || '').slice(0, 8),
@@ -2710,6 +2762,11 @@ function saveOffer(applicationId, data = {}) {
     String(data.location || '').slice(0, 160), String(data.remote || '').slice(0, 40),
     String(data.pros || '').slice(0, 4000), String(data.cons || '').slice(0, 4000),
     String(data.notes || '').slice(0, 4000), excitement, decision,
+    targetBase === undefined ? null : targetBase,
+    targetBonus === undefined ? null : targetBonus,
+    data.priorities === undefined ? null : String(data.priorities || '').slice(0, 1000),
+    data.counterDraft === undefined ? null : String(data.counterDraft || '').slice(0, 20000),
+    data.counterDraft === undefined ? null : new Date().toISOString(),
   ])
 
   // Recording an offer against a row that is not yet marked as one is almost
@@ -2726,6 +2783,106 @@ function saveOffer(applicationId, data = {}) {
   // the offer is a separate field, and it is already stored as one.
   if (app.status !== 'offer') updateApplicationStatus(applicationId, 'offer')
   return { success: true }
+}
+
+// ─── The interview answer bank ───────────────────────────────────
+//
+// Interview Questions produces questions; this is where the answers live.
+//
+// Keyed on a normalised question so trivial rewordings collapse to one entry —
+// punctuation, casing and the "Tell me about"/"Describe" opener all vary between
+// employers asking the identical thing, and an answer bank that stores each
+// variant separately is a list, not a bank.
+const QUESTION_OPENERS = /^(?:can you |could you |please |tell me about |tell us about |describe |walk me through |walk us through |give me an example of |give us an example of |what (?:is|are) )/
+const ANSWER_BANK_LIMIT = 500
+
+function answerKey(question) {
+  return String(question || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/[^a-z0-9 ]/g, '')
+    .trim()
+    .replace(QUESTION_OPENERS, '')
+    .trim()
+    .slice(0, 300)
+}
+
+// The stored answer for a question, or null. Exact on the normalised key: a
+// fuzzy match here would put someone else's answer in front of a real interview
+// question, and being shown nothing is a much cheaper mistake than being shown
+// the wrong thing confidently.
+function getInterviewAnswer(question) {
+  const key = answerKey(question)
+  if (!key) return null
+  return queryOne('SELECT * FROM interview_answers WHERE question_key = ?', [key]) || null
+}
+
+function listInterviewAnswers({ search = '' } = {}) {
+  const rows = query(`
+    SELECT * FROM interview_answers
+    ORDER BY times_used DESC, updated_at DESC
+    LIMIT ${ANSWER_BANK_LIMIT}
+  `)
+  const term = String(search || '').toLowerCase().trim()
+  if (!term) return rows
+  return rows.filter(r =>
+    (r.question || '').toLowerCase().includes(term) || (r.answer || '').toLowerCase().includes(term))
+}
+
+// `source` is 'user' or 'ai'. An AI draft that the user then edits becomes
+// theirs — the UI passes 'user' on an edit — because an unedited draft and an
+// answer someone has actually decided to give are different things and the
+// bank must not present the first as the second.
+function saveInterviewAnswer({ question, answer, source = 'user', category = '' }) {
+  const key = answerKey(question)
+  if (!key) return { success: false, reason: 'A question is required' }
+  const text = String(answer || '').slice(0, 8000)
+  run(`
+    INSERT INTO interview_answers (question_key, question, answer, source, category, updated_at)
+    VALUES (?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(question_key) DO UPDATE SET
+      question = excluded.question,
+      answer = excluded.answer,
+      source = excluded.source,
+      category = CASE WHEN excluded.category = '' THEN interview_answers.category ELSE excluded.category END,
+      updated_at = datetime('now')
+  `, [key, String(question || '').slice(0, 500), text, source === 'ai' ? 'ai' : 'user', String(category || '').slice(0, 40)])
+  return { success: true, key }
+}
+
+function deleteInterviewAnswer(question) {
+  const key = answerKey(question)
+  if (!key) return { success: false }
+  run('DELETE FROM interview_answers WHERE question_key = ?', [key])
+  return { success: true }
+}
+
+// Recorded when an answer is actually pulled up for an interview, so the bank
+// can put the ones that keep coming up at the top.
+function markInterviewAnswerUsed(question, applicationId = null) {
+  const key = answerKey(question)
+  if (!key) return { success: false }
+  run(`UPDATE interview_answers
+       SET times_used = times_used + 1, last_used_at = datetime('now'), last_used_application_id = ?
+       WHERE question_key = ?`, [applicationId, key])
+  return { success: true }
+}
+
+// The generated questions for an application, each carrying whatever the bank
+// already holds for it. This is what makes the bank worth having: the second
+// time a question comes up, the answer is already there.
+//
+// Returns the same shape getInterviewPrep does — a plain array, or null — so
+// callers cannot end up handling two shapes depending on which one they called.
+function getInterviewPrepWithAnswers(applicationId) {
+  const questions = getInterviewPrep(applicationId)
+  if (!Array.isArray(questions)) return questions
+  return questions.map(q => {
+    const saved = getInterviewAnswer(typeof q === 'string' ? q : q?.question)
+    if (!saved?.answer) return q
+    const base = typeof q === 'string' ? { question: q } : q
+    return { ...base, savedAnswer: saved.answer, savedSource: saved.source, savedAt: saved.updated_at }
+  })
 }
 
 function deleteOffer(applicationId) {
@@ -2844,6 +3001,147 @@ function getScoreBandConversion() {
     b.conversionRate = b.applied > 0 ? Math.round((b.converted / b.applied) * 100) : null
   }
   return bands
+}
+
+// ─── What the threshold should be ────────────────────────────────
+//
+// The histogram already shows where the match threshold sits, and the band table
+// already shows which bands actually convert. It stopped one step short of
+// saying the thing both of them imply: that the threshold is in the wrong place.
+//
+// This is a recommendation, never an action. Moving someone's threshold for them
+// changes which real employers receive real applications, and it would do so on
+// the strength of an inference from their own past — which is exactly the sort
+// of number this codebase refuses to launder into a decision elsewhere (see the
+// A/B verdict, and the "advertised, not market rate" rule on the Offers page).
+// So it explains its reasoning and leaves the setting alone.
+//
+// The rules, and what each is guarding against:
+//
+//   Bands under `minBand` applications are ignored entirely. A 100% conversion
+//   rate from two applications is a statement about two applications.
+//
+//   A recommendation to RAISE requires that everything below the proposed line
+//   converts worse than everything above it, across a real sample. Raising a
+//   threshold means declining to apply for jobs, and the cost of being wrong is
+//   invisible — the user never learns about the job they did not apply for.
+//
+//   A recommendation to LOWER requires finding conversion below the current
+//   line that is at least as good as what is above it. That is the case worth
+//   catching: a threshold set too high is silently discarding jobs that were
+//   converting perfectly well.
+//
+//   Where the evidence does not clear the bar, it says so. "Not enough evidence
+//   yet" is the honest and most common answer early on, and it is far more
+//   useful than a confident number derived from eleven applications.
+const THRESHOLD_MIN_BAND = 8
+const THRESHOLD_MIN_TOTAL = 30
+// Percentage points. Below this the two sides are not meaningfully different
+// and moving the threshold is noise-chasing.
+const THRESHOLD_MIN_GAP = 15
+
+function getThresholdRecommendation(currentThreshold, {
+  minBand = THRESHOLD_MIN_BAND,
+  minTotal = THRESHOLD_MIN_TOTAL,
+  minGap = THRESHOLD_MIN_GAP,
+} = {}) {
+  const bands = getScoreBandConversion()
+  const usable = bands.filter(b => b.applied >= minBand)
+  const total = usable.reduce((sum, b) => sum + b.applied, 0)
+  const current = Number.isFinite(Number(currentThreshold)) ? Number(currentThreshold) : null
+
+  const base = { current, sample: total, minBand, minTotal, bands: usable }
+
+  if (total < minTotal) {
+    return {
+      ...base,
+      verdict: 'insufficient',
+      headline: 'Not enough applications yet to say',
+      detail: `A recommendation needs at least ${minTotal} sent applications in bands of `
+        + `${minBand} or more; there are ${total}. Until then the histogram is worth reading `
+        + 'but not worth acting on.',
+    }
+  }
+
+  // Every line we could draw, scored by how cleanly it separates the bands that
+  // convert from the bands that do not. Candidate lines are band boundaries,
+  // because that is the resolution the evidence actually has.
+  const candidates = []
+  for (const boundary of usable.map(b => b.lo).filter(lo => lo > 0)) {
+    const below = usable.filter(b => b.hi < boundary)
+    const above = usable.filter(b => b.lo >= boundary)
+    if (below.length === 0 || above.length === 0) continue
+    const belowSample = below.reduce((n, b) => n + b.applied, 0)
+    const aboveSample = above.reduce((n, b) => n + b.applied, 0)
+    if (belowSample < minBand || aboveSample < minBand) continue
+    const belowRate = Math.round(
+      (below.reduce((n, b) => n + b.converted, 0) / belowSample) * 100)
+    const aboveRate = Math.round(
+      (above.reduce((n, b) => n + b.converted, 0) / aboveSample) * 100)
+    candidates.push({ boundary, belowRate, aboveRate, belowSample, aboveSample, gap: aboveRate - belowRate })
+  }
+
+  if (candidates.length === 0) {
+    return {
+      ...base,
+      verdict: 'insufficient',
+      headline: 'Not enough spread across score bands to say',
+      detail: 'Every application so far sits in too narrow a range of match scores for the '
+        + 'conversion rates to be compared. Widen the search, or lower the threshold and let '
+        + 'a wider range through, and this will have something to work with.',
+    }
+  }
+
+  const best = candidates.reduce((a, b) => (b.gap > a.gap ? b : a))
+
+  // Is the current line already the best one available, or close enough that
+  // moving it is not supported?
+  if (best.gap < minGap) {
+    return {
+      ...base,
+      verdict: 'no-change',
+      headline: 'Your threshold looks about right',
+      detail: `Across ${total} applications, no score line separates what converts from what `
+        + `does not by more than ${best.gap} percentage points. There is no evidence here for `
+        + 'moving it in either direction.',
+    }
+  }
+
+  if (current != null && Math.abs(best.boundary - current) < 10) {
+    return {
+      ...base,
+      verdict: 'no-change',
+      recommended: best.boundary,
+      headline: `Your threshold of ${current}% is where the evidence puts it`,
+      detail: `Applications at ${best.boundary}% and above convert at ${best.aboveRate}% `
+        + `(${best.aboveSample} sent); below it, ${best.belowRate}% (${best.belowSample} sent).`,
+    }
+  }
+
+  const direction = current == null ? 'set' : (best.boundary > current ? 'raise' : 'lower')
+  const headline = {
+    set: `Consider setting your match threshold to ${best.boundary}%`,
+    raise: `Consider raising your match threshold from ${current}% to ${best.boundary}%`,
+    lower: `Consider lowering your match threshold from ${current}% to ${best.boundary}%`,
+  }[direction]
+
+  const consequence = direction === 'lower'
+    ? `Your current threshold is turning down scores that have been converting at ${best.aboveRate}%.`
+    : `Applications below ${best.boundary}% have converted at ${best.belowRate}%, against `
+      + `${best.aboveRate}% above it — the ones below are mostly spend without outcome.`
+
+  return {
+    ...base,
+    verdict: 'change',
+    direction,
+    recommended: best.boundary,
+    headline,
+    detail: `Across ${total} sent applications: ${best.aboveRate}% of those scoring `
+      + `${best.boundary}% or above reached interview or offer (${best.aboveSample} sent), `
+      + `against ${best.belowRate}% below it (${best.belowSample} sent). ${consequence}`,
+    // Never applied automatically. See the note at the top of this function.
+    applied: false,
+  }
 }
 
 // ─── Resume conversion ───────────────────────────────────────────
@@ -3172,11 +3470,31 @@ function setEncryption(enabled) {
   // The setting flips only after the files are already in the target state, so an
   // interrupted switch leaves files the CURRENT setting can still read.
   configService.update({ encryptDatabase: want })
+
+  // "Encrypt local data" has to mean all of it. The activity log is a second
+  // store of the same facts — job titles, employers, recruiter addresses — and
+  // an encrypted database beside a plaintext log of what went into it protects
+  // very little. Converted here rather than exposed as its own switch, because
+  // two settings would let a user believe they had turned this on when they had
+  // turned on half of it. See services/logger.js.
+  let logResult = null
+  try {
+    logResult = logger().setEncryption(want)
+  } catch (err) {
+    logResult = { success: false, error: err.message }
+  }
+
   logger().append(
     `Database encryption ${want ? 'enabled' : 'disabled'} — converted ${result.converted.length} file(s)`
     + (result.failed.length ? `, ${result.failed.length} could not be converted` : '')
+    + (logResult && logResult.success === false
+      ? `. The activity log could NOT be converted: ${logResult.error}`
+      : `, and the activity log`)
   )
-  return { success: true, ...result, enabled: want }
+  // Reported separately rather than folded into success: the database is in the
+  // requested state either way, and a log that could not be converted is
+  // something the user needs told, not something that should undo the switch.
+  return { success: true, ...result, enabled: want, log: logResult }
 }
 
 // Lazy: logger requires config, and requiring it at the top of database.js would
@@ -3439,10 +3757,12 @@ module.exports = {
   saveFollowUpDraft, getFollowUpDrafts, getFollowUpDraft, resolveFollowUpDraft,
   stopFollowUps, resumeFollowUps,
   getApplicationsAwaitingReply, setLastReplyUid, markStaleApplications, OPEN_STATUSES,
-  saveInterviewPrep, getInterviewPrep, deleteInterviewPrep,
+  saveInterviewPrep, getInterviewPrep, deleteInterviewPrep, getInterviewPrepWithAnswers,
+  getInterviewAnswer, listInterviewAnswers, saveInterviewAnswer, deleteInterviewAnswer,
+  markInterviewAnswerUsed, answerKey,
   addInterviewEvent, upsertDetectedInterview, getInterviewEvents, getUpcomingInterviews, getInterviewEvent, deleteInterviewEvent,
   updateInterviewEventTime,
-  updateClosingDate, getScoreBandConversion,
+  updateClosingDate, getScoreBandConversion, getThresholdRecommendation,
   setNextAction, completeNextAction, getDueNextActions, getPipeline, getClosingSoon, PIPELINE_STAGES,
   claimPushKey, getPushLog, prunePushLog,
   getCalendarLink, getCalendarLinks, saveCalendarLink, deleteCalendarLink, getOrphanedCalendarLinks,

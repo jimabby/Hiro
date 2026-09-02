@@ -176,8 +176,8 @@ export default function Setup({ onComplete }) {
             <div>
               <h2 style={{ marginBottom: 20, fontSize: 18 }}>Choose Your AI Provider</h2>
               <div className="form-group">
-                <label>AI Provider</label>
-                <select value={form.aiProvider} onChange={e => set('aiProvider', e.target.value)}>
+                <label htmlFor="sup-f0">AI Provider</label>
+                <select id="sup-f0" value={form.aiProvider} onChange={e => set('aiProvider', e.target.value)}>
                   <option value="claude">Claude (Anthropic)</option>
                   <option value="chatgpt">ChatGPT (OpenAI)</option>
                   <option value="deepseek">DeepSeek</option>
@@ -196,8 +196,8 @@ export default function Setup({ onComplete }) {
                     frontier model gives.
                   </div>
                   <div className="form-group">
-                    <label>Server address</label>
-                    <input
+                    <label htmlFor="sup-f1">Server address</label>
+                    <input id="sup-f1"
                       value={form.localAiBaseUrl || ''}
                       onChange={e => set('localAiBaseUrl', e.target.value)}
                       placeholder="http://localhost:11434/v1"
@@ -207,8 +207,8 @@ export default function Setup({ onComplete }) {
                     </span>
                   </div>
                   <div className="form-group">
-                    <label>Model</label>
-                    <input
+                    <label htmlFor="sup-f2">Model</label>
+                    <input id="sup-f2"
                       value={form.localAiModel || ''}
                       onChange={e => set('localAiModel', e.target.value)}
                       placeholder="e.g. llama3.1:8b"
@@ -217,8 +217,8 @@ export default function Setup({ onComplete }) {
                 </>
               ) : (
                 <div className="form-group">
-                  <label>API Key</label>
-                  <input
+                  <label htmlFor="sup-f3">API Key</label>
+                  <input id="sup-f3"
                     type="password" value={form.aiApiKey}
                     onChange={e => set('aiApiKey', e.target.value)}
                     placeholder="Paste your API key here..."
@@ -227,8 +227,8 @@ export default function Setup({ onComplete }) {
               )}
               {form.aiProvider === 'gemini' && (
                 <div className="form-group">
-                  <label>Gemini Model Name</label>
-                  <input
+                  <label htmlFor="sup-f4">Gemini Model Name</label>
+                  <input id="sup-f4"
                     value={form.geminiModel}
                     onChange={e => set('geminiModel', e.target.value)}
                     placeholder="e.g. gemini-2.5-flash"
@@ -259,12 +259,12 @@ export default function Setup({ onComplete }) {
                 Used to send you job alerts and daily reports. Create an App Password in your email provider's security settings.
               </p>
               <div className="form-group">
-                <label>Email Address</label>
-                <input type="email" value={form.gmailAddress} onChange={e => set('gmailAddress', e.target.value)} placeholder="you@gmail.com / outlook.com / yahoo.com" />
+                <label htmlFor="sup-f5">Email Address</label>
+                <input id="sup-f5" type="email" value={form.gmailAddress} onChange={e => set('gmailAddress', e.target.value)} placeholder="you@gmail.com / outlook.com / yahoo.com" />
               </div>
               <div className="form-group">
-                <label>App Password</label>
-                <input type="password" value={form.gmailAppPassword} onChange={e => set('gmailAppPassword', e.target.value)} placeholder="xxxx xxxx xxxx xxxx" />
+                <label htmlFor="sup-f6">App Password</label>
+                <input id="sup-f6" type="password" value={form.gmailAppPassword} onChange={e => set('gmailAppPassword', e.target.value)} placeholder="xxxx xxxx xxxx xxxx" />
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <button className="btn btn-ghost" onClick={testEmail} disabled={!form.gmailAddress || !form.gmailAppPassword || testing}>
@@ -284,17 +284,17 @@ export default function Setup({ onComplete }) {
             <div>
               <h2 style={{ marginBottom: 20, fontSize: 18 }}>Job Search Criteria</h2>
               <div className="form-group">
-                <label>Job Keywords</label>
-                <input value={form.jobKeywords} onChange={e => set('jobKeywords', e.target.value)} placeholder="e.g. Software Engineer, React Developer" />
+                <label htmlFor="sup-f7">Job Keywords</label>
+                <input id="sup-f7" value={form.jobKeywords} onChange={e => set('jobKeywords', e.target.value)} placeholder="e.g. Software Engineer, React Developer" />
               </div>
               <div className="form-row">
                 <div className="form-group">
-                  <label>Location</label>
-                  <input value={form.jobLocation} onChange={e => set('jobLocation', e.target.value)} placeholder="e.g. Melbourne, Australia" />
+                  <label htmlFor="sup-f8">Location</label>
+                  <input id="sup-f8" value={form.jobLocation} onChange={e => set('jobLocation', e.target.value)} placeholder="e.g. Melbourne, Australia" />
                 </div>
                 <div className="form-group">
-                  <label>Min Salary (AUD/year)</label>
-                  <input type="number" value={form.salaryMin} onChange={e => set('salaryMin', e.target.value)} placeholder="e.g. 80000" />
+                  <label htmlFor="sup-f9">Min Salary (AUD/year)</label>
+                  <input id="sup-f9" type="number" value={form.salaryMin} onChange={e => set('salaryMin', e.target.value)} placeholder="e.g. 80000" />
                 </div>
               </div>
               <div className="form-group">
@@ -321,21 +321,21 @@ export default function Setup({ onComplete }) {
               </div>
               <div className="form-row">
                 <div className="form-group">
-                  <label>Daily Limit — Seek</label>
-                  <input type="number" min={1} max={50} value={form.dailyLimitSeek} onChange={e => set('dailyLimitSeek', e.target.value)} />
+                  <label htmlFor="sup-f10">Daily Limit — Seek</label>
+                  <input id="sup-f10" type="number" min={1} max={50} value={form.dailyLimitSeek} onChange={e => set('dailyLimitSeek', e.target.value)} />
                 </div>
                 <div className="form-group">
-                  <label>Daily Limit — Indeed</label>
-                  <input type="number" min={1} max={50} value={form.dailyLimitIndeed} onChange={e => set('dailyLimitIndeed', e.target.value)} />
+                  <label htmlFor="sup-f11">Daily Limit — Indeed</label>
+                  <input id="sup-f11" type="number" min={1} max={50} value={form.dailyLimitIndeed} onChange={e => set('dailyLimitIndeed', e.target.value)} />
                 </div>
               </div>
               <div className="form-group">
-                <label>Daily Limit — LinkedIn</label>
-                <input type="number" min={1} max={50} value={form.dailyLimitLinkedIn} onChange={e => set('dailyLimitLinkedIn', e.target.value)} style={{ width: '50%' }} />
+                <label htmlFor="sup-f12">Daily Limit — LinkedIn</label>
+                <input id="sup-f12" type="number" min={1} max={50} value={form.dailyLimitLinkedIn} onChange={e => set('dailyLimitLinkedIn', e.target.value)} style={{ width: '50%' }} />
               </div>
               <div className="form-group">
-                <label>Blacklisted Companies (comma-separated)</label>
-                <input value={form.blacklistedCompanies} onChange={e => set('blacklistedCompanies', e.target.value)} placeholder="Company A, Company B" />
+                <label htmlFor="sup-f13">Blacklisted Companies (comma-separated)</label>
+                <input id="sup-f13" value={form.blacklistedCompanies} onChange={e => set('blacklistedCompanies', e.target.value)} placeholder="Company A, Company B" />
               </div>
             </div>
           )}

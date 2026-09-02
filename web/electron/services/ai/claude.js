@@ -1,6 +1,6 @@
 const Anthropic = require('@anthropic-ai/sdk')
 const { withUsage } = require('./usage')
-const { interviewQuestionsPrompt, followUpEmailPrompt } = require('./prompts')
+const { interviewQuestionsPrompt, followUpEmailPrompt, counterOfferPrompt, interviewAnswerPrompt } = require('./prompts')
 const { fence, FENCE_RULES } = require('./untrusted')
 const { parseScore, parseScoreWithExplanation } = require('./scoring')
 
@@ -248,6 +248,22 @@ async function generateFollowUpEmail(jobTitle, company, masterResume, apiKey, _m
   return text
 }
 
+async function generateCounterOffer(input, apiKey) {
+  return complete('generateCounterOffer', apiKey, {
+    ...SMART,
+    max_tokens: 700,
+    messages: [{ role: 'user', content: counterOfferPrompt(input) }],
+  })
+}
+
+async function draftInterviewAnswer(input, apiKey) {
+  return complete('draftInterviewAnswer', apiKey, {
+    ...SMART,
+    max_tokens: 600,
+    messages: [{ role: 'user', content: interviewAnswerPrompt(input) }],
+  })
+}
+
 async function improveResume(resumeText, apiKey) {
   const text = await complete('improveResume', apiKey, {
     ...SMART,
@@ -291,4 +307,4 @@ ${fence('BODY', body, 1500)}` }],
   return (text || '').trim().toLowerCase()
 }
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply }
+module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply, generateCounterOffer, draftInterviewAnswer }

@@ -3,9 +3,22 @@ const http = require('http')
 const { URL } = require('url')
 const configService = require('./config')
 
+// A webhook reply is only ever read for its status code and, when a test fails,
+// for a line or two of explanation. It used to be accumulated without any limit
+// at all, so a misconfigured URL pointing at something that streams — or an
+// endpoint that simply answers with a large page — pulled unbounded bytes into
+// the main process, which is the one process whose death takes the scan, the
+// tray icon and the scheduler with it. Keep enough to explain a failure and
+// discard the rest.
+const MAX_RESPONSE_BYTES = 8192
+
 function post(webhookUrl, payload) {
   return new Promise((resolve, reject) => {
     const url = new URL(webhookUrl)
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      reject(new Error(`Webhook URL must be http or https, not "${url.protocol}"`))
+      return
+    }
     const mod = url.protocol === 'https:' ? https : http
     const data = JSON.stringify(payload)
     const req = mod.request(url, {
@@ -13,8 +26,20 @@ function post(webhookUrl, payload) {
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
     }, res => {
       let body = ''
-      res.on('data', c => { body += c })
-      res.on('end', () => resolve({ status: res.statusCode, body }))
+      let truncated = false
+      res.on('data', c => {
+        if (body.length >= MAX_RESPONSE_BYTES) {
+          // Stop reading rather than merely stop storing: a sender that is
+          // never given backpressure keeps sending.
+          if (!truncated) { truncated = true; res.destroy() }
+          return
+        }
+        body += c
+      })
+      res.on('end', () => resolve({ status: res.statusCode, body: body.slice(0, MAX_RESPONSE_BYTES), truncated }))
+      // destroy() above ends the response with an error rather than an 'end'.
+      // The status line has already arrived, which is the part that matters.
+      res.on('close', () => resolve({ status: res.statusCode, body: body.slice(0, MAX_RESPONSE_BYTES), truncated }))
     })
     req.on('error', reject)
     req.setTimeout(10000, () => { req.destroy(); reject(new Error('Webhook timeout')) })

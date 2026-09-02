@@ -142,10 +142,26 @@ async function doRun(cfg, { log, notifyAttention }) {
     scrapers.push({ name: 'ATS', scraper: ats, limit: cfg.dailyLimitAts })
   }
 
-  // Submissions ATTEMPTED, which is what the batch limit governs. Counting only
-  // successes meant a batch of 3 where every apply failed never reached its
-  // limit, so it walked the entire scrape set — paying for scoring, tailoring
-  // and a cover letter on every listing — instead of stopping after three.
+  // Jobs this run has taken all the way to a decision, which is what the batch
+  // limit governs.
+  //
+  // Counting only successes meant a batch of 3 where every apply failed never
+  // reached its limit, so it walked the entire scrape set — paying for scoring,
+  // tailoring and a cover letter on every listing — instead of stopping after
+  // three. That was fixed by counting attempted submissions instead.
+  //
+  // But counting SUBMISSIONS still missed every path that costs exactly the same
+  // and never submits: a draft held for review, a career-board match routed to
+  // Needs Attention, a document the fabrication guard stopped. With review mode
+  // on, nothing is ever submitted — so nothing ever incremented this, and a
+  // smart-schedule batch of 3 quietly drafted its way through the entire scrape
+  // set in one sitting, which is the identical failure by another route.
+  //
+  // So this counts a job once it has consumed the drafting spend (the tailoring
+  // and cover-letter calls), however that job ends. Jobs discarded below the
+  // match threshold are deliberately not counted: they cost one scoring call and
+  // stop, and bounding those would make the batch limit a cap on scanning rather
+  // than on work.
   let batchAttempts = 0
   // Submissions that actually went through. This is the number worth reporting.
   let batchCount = 0
@@ -513,6 +529,7 @@ async function doRun(cfg, { log, notifyAttention }) {
           job.tailored_resume = tailoredResume
           job.cover_letter = coverLetter
           job.recruiter_email = recruiterEmail
+          batchAttempts++
           await addAttentionJob(job, jobCfg, log, notifyAttention)
           await randomDelay(1500, 4000)
           continue
@@ -537,6 +554,7 @@ async function doRun(cfg, { log, notifyAttention }) {
           ],
         })
         heldCount++
+        batchAttempts++
         log(`  HELD for review — ${detail}`)
         await randomDelay(1500, 4000)
         continue
@@ -555,6 +573,7 @@ async function doRun(cfg, { log, notifyAttention }) {
         job.tailored_resume = tailoredResume
         job.cover_letter = coverLetter
         job.recruiter_email = recruiterEmail
+        batchAttempts++
         await addAttentionJob(job, jobCfg, log, notifyAttention)
         await randomDelay(1500, 4000)
         continue
@@ -591,6 +610,7 @@ async function doRun(cfg, { log, notifyAttention }) {
           recruiter_email: recruiterEmail,
         })
         heldCount++
+        batchAttempts++
         log(`  Held for review (${matchScore}%) — nothing submitted`)
         await randomDelay(1500, 4000)
         continue
@@ -605,7 +625,8 @@ async function doRun(cfg, { log, notifyAttention }) {
 
       // Apply. Counted here, before the outcome is known — the batch limit
       // exists to bound how much work a batch does, and a failed submission
-      // cost exactly as much scraping and AI spend as a successful one.
+      // cost exactly as much scraping and AI spend as a successful one. The
+      // non-submitting outcomes above are counted for the same reason.
       batchAttempts++
       await randomDelay(3000, 8000)
       let result

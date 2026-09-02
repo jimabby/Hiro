@@ -62,21 +62,71 @@ function signInput(req, timestamp, nonce, rawBody = '') {
   return [req.method, req.url, timestamp, nonce, rawBody].join('\n')
 }
 
+// How far a request's timestamp may be from ours before it is refused.
+const SIGNATURE_WINDOW_MS = 300000
+
+// Verify a signed request, and say WHY when it fails.
+//
+// This used to return a bare null for every rejection, and the caller then fell
+// through to the bearer-token path — which, for a phone or extension paired with
+// the encrypted protocol, means falling through with no bearer token at all. So
+// every rejection, whatever its cause, was counted as a failed authentication.
+//
+// That is right for a bad signature and catastrophic for a wrong clock. A phone
+// whose time had drifted past five minutes failed, counted, failed, counted, and
+// after ten polls locked ITSELF out for five minutes — then did it again, and
+// again, indefinitely, while being told "too many failed attempts". Nothing said
+// the clock was the problem, and the one action that fixes it is not one that
+// "too many failed attempts" would ever suggest.
+//
+// So the reasons are distinguished now. A wrong clock and a replayed nonce are
+// refused with an explanation and do NOT feed the lockout: neither is evidence
+// of anyone guessing a credential, and treating them as such locks out the only
+// person who could put it right. A bad or absent signature still counts.
 function verifySignedRequest(req, rawBody = '') {
   const timestamp = String(req.headers['x-hiro-timestamp'] || '')
   const nonce = String(req.headers['x-hiro-nonce'] || '')
   const signature = String(req.headers['x-hiro-signature'] || '')
+
+  // No signature headers at all — an unsigned (legacy bearer) request. Not a
+  // rejection: there is nothing here to verify.
+  if (!timestamp && !nonce && !signature) return { signed: false }
+
+  if (!nonce || !signature || !timestamp) return { signed: true, ok: false, reason: 'malformed' }
   const time = Number(timestamp)
-  if (!nonce || !signature || !Number.isFinite(time) || Math.abs(Date.now() - time) > 300000 || seenNonces.has(nonce)) return null
+  if (!Number.isFinite(time)) return { signed: true, ok: false, reason: 'malformed' }
+
+  const skewMs = Date.now() - time
+  if (Math.abs(skewMs) > SIGNATURE_WINDOW_MS) return { signed: true, ok: false, reason: 'clock', skewMs }
+
+  if (seenNonces.has(nonce)) return { signed: true, ok: false, reason: 'replay' }
+
   for (const candidate of pairing.deviceSecrets(configService)) {
     const expected = crypto.createHmac('sha256', candidate.token).update(signInput(req, timestamp, nonce, rawBody)).digest('hex')
     if (timingSafeEqualStr(signature, expected)) {
       seenNonces.set(nonce, Date.now())
       pairing.touchDevice(configService, candidate.device.id)
-      return candidate
+      return { signed: true, ok: true, candidate }
     }
   }
-  return null
+  return { signed: true, ok: false, reason: 'signature' }
+}
+
+// Actionable, which is the whole point of separating the reasons: the person
+// holding the phone can do something about this one.
+function describeSignatureFailure(result) {
+  if (result.reason === 'clock') {
+    const minutes = Math.round(Math.abs(result.skewMs) / 60000)
+    const direction = result.skewMs > 0 ? 'behind' : 'ahead of'
+    return `This device's clock is about ${minutes} minute${minutes === 1 ? '' : 's'} ${direction} the desktop's. `
+      + 'Signed requests are only accepted inside a five-minute window, so turn on automatic date & time '
+      + 'on both machines and try again.'
+  }
+  if (result.reason === 'replay') {
+    return 'That request was already used once and cannot be replayed. '
+      + 'This is normal after a retry — the next request will go through.'
+  }
+  return 'Unauthorized'
 }
 
 function encryptPayload(token, body) {
@@ -386,11 +436,30 @@ async function handle(req, res) {
   } catch (err) { return json(res, 400, { error: err.message }) }
 
   const signed = verifySignedRequest(req, req.rawBody || '')
-  if (signed) {
-    req.secureToken = signed.token
-    res.secureToken = signed.token
+
+  // A wrong clock or a replayed nonce is refused HERE, with the reason, and
+  // without touching the lockout counter. Falling through to authCheck would
+  // count it as a bad credential — and for a secure client, which sends no
+  // bearer token at all, that meant a drifted clock locked the phone out of its
+  // own desktop every five minutes forever. See verifySignedRequest.
+  if (signed.signed && !signed.ok && (signed.reason === 'clock' || signed.reason === 'replay')) {
+    logger.append(`Mobile API: refused a signed request from ${ip} — ${signed.reason === 'clock'
+      ? `this device's clock is ${Math.round(signed.skewMs / 1000)}s away from the desktop's`
+      : 'the request nonce had already been used'}`)
+    return json(res, 401, { error: describeSignatureFailure(signed), reason: signed.reason })
   }
-  const check = signed ? { ok: true, device: signed.device } : authCheck(ip, token)
+
+  if (signed.ok) {
+    req.secureToken = signed.candidate.token
+    res.secureToken = signed.candidate.token
+    // A device that just authenticated is not a device that has been guessing.
+    // This used to live only inside authCheck, which the signed path skips — so
+    // a phone could carry nine stale failures across any number of successful
+    // requests and then be locked out by one unrelated blip.
+    failures.delete(ip)
+  }
+
+  const check = signed.ok ? { ok: true, device: signed.candidate.device } : authCheck(ip, token)
   if (!check.ok) {
     if (check.retryAfter) {
       res.setHeader('Retry-After', String(check.retryAfter))
@@ -656,6 +725,6 @@ module.exports = {
   revokeAllDevices: () => pairing.revokeAll(configService),
   start, stop, getInfo, regenerateToken, isPrivateAddress,
   // exported for tests
-  lockoutFor, recordFailure,
+  lockoutFor, recordFailure, verifySignedRequest, describeSignatureFailure,
   _resetThrottle: () => { failures.clear(); seenNonces.clear() },
 }

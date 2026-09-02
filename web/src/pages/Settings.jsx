@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import HiroLogo from '../components/HiroLogo'
 
 // How long ago a cached screening answer was last confirmed, in whole days.
@@ -19,13 +19,475 @@ function answerAgeDays(updatedAt) {
 // user is actually looking at when they go to copy the slug, so it is written as
 // the careers address rather than the API endpoint behind it.
 const ATS_PROVIDERS = [
-  { id: 'greenhouse', label: 'Greenhouse', hint: 'boards.greenhouse.io/SLUG' },
-  { id: 'lever', label: 'Lever', hint: 'jobs.lever.co/SLUG' },
-  { id: 'ashby', label: 'Ashby', hint: 'jobs.ashbyhq.com/SLUG' },
-  { id: 'workable', label: 'Workable', hint: 'apply.workable.com/SLUG' },
-  { id: 'recruitee', label: 'Recruitee', hint: 'SLUG.recruitee.com' },
-  { id: 'smartrecruiters', label: 'SmartRecruiters', hint: 'jobs.smartrecruiters.com/SLUG' },
+  { id: 'greenhouse', label: 'Greenhouse', hint: 'boards.greenhouse.io/SLUG', placeholder: 'company' },
+  { id: 'lever', label: 'Lever', hint: 'jobs.lever.co/SLUG', placeholder: 'company' },
+  { id: 'ashby', label: 'Ashby', hint: 'jobs.ashbyhq.com/SLUG', placeholder: 'company' },
+  { id: 'workable', label: 'Workable', hint: 'apply.workable.com/SLUG', placeholder: 'company' },
+  { id: 'recruitee', label: 'Recruitee', hint: 'SLUG.recruitee.com', placeholder: 'company' },
+  { id: 'smartrecruiters', label: 'SmartRecruiters', hint: 'jobs.smartrecruiters.com/SLUG', placeholder: 'company' },
+  { id: 'bamboohr', label: 'BambooHR', hint: 'SLUG.bamboohr.com/careers', placeholder: 'company' },
+  { id: 'personio', label: 'Personio', hint: 'SLUG.jobs.personio.com', placeholder: 'company' },
+  // The one board identified by a URL rather than a name. The data centre in it
+  // (wd1, wd3, wd5…) differs per employer and cannot be derived from the company
+  // name, so asking for the address is the only thing that can work — and it is
+  // what the user already has in front of them.
+  {
+    id: 'workday',
+    label: 'Workday',
+    hint: 'the full careers URL, e.g. https://acme.wd3.myworkdayjobs.com/en-US/External',
+    placeholder: 'https://acme.wd3.myworkdayjobs.com/en-US/External',
+    isUrl: true,
+  },
 ]
+
+// Which mail servers this address resolves to, and what to do when it does not
+// resolve to any.
+//
+// The old behaviour was a hardcoded switch on the domain with Gmail as the
+// fallback, which meant three separate wrongs (see services/mailProvider.js):
+// a custom domain silently had its credentials sent to smtp.gmail.com and
+// reported the refusal as a bad password; Outlook could not work at all because
+// Microsoft turned off password sign-in for personal accounts; and the Outlook
+// transport carried an SSLv3 cipher list copied from an old README.
+//
+// This panel exists so all three are visible rather than inferred from a failed
+// send that arrives, or does not arrive, twelve hours later.
+function MailServers({ form, set }) {
+  const [resolved, setResolved] = useState(null)
+  const custom = form.mailProvider === 'custom'
+
+  // Re-resolved as the address is typed, so the answer is on screen before Test
+  // Connection is pressed rather than after it fails.
+  useEffect(() => {
+    let cancelled = false
+    window.api.describeMailServers?.({
+      gmailAddress: form.gmailAddress,
+      mailProvider: form.mailProvider,
+      smtpHost: form.smtpHost, smtpPort: form.smtpPort, smtpSecure: form.smtpSecure,
+      imapHost: form.imapHost, imapPort: form.imapPort, imapSecure: form.imapSecure,
+    }).then(r => { if (!cancelled) setResolved(r || null) }).catch(() => {})
+    return () => { cancelled = true }
+  }, [form.gmailAddress, form.mailProvider, form.smtpHost, form.smtpPort, form.smtpSecure,
+    form.imapHost, form.imapPort, form.imapSecure])
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div className="form-group" style={{ maxWidth: 280 }}>
+        <label htmlFor="mail-provider">Mail servers</label>
+        <select
+          id="mail-provider"
+          value={form.mailProvider || 'auto'}
+          onChange={e => set('mailProvider', e.target.value)}
+        >
+          <option value="auto">Detect from my email address</option>
+          <option value="custom">Custom mail server</option>
+        </select>
+      </div>
+
+      {custom && (
+        <div style={{ padding: '12px 14px', background: 'var(--surface2)', borderRadius: 8, marginBottom: 12 }}>
+          <div className="form-row">
+            <div className="form-group">
+              <label htmlFor="smtp-host">SMTP host <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: 11 }}>(sending)</span></label>
+              <input id="smtp-host" value={form.smtpHost || ''} onChange={e => set('smtpHost', e.target.value)} placeholder="smtp.example.com" />
+            </div>
+            <div className="form-group" style={{ maxWidth: 110 }}>
+              <label htmlFor="smtp-port">Port</label>
+              <input id="smtp-port" type="number" value={form.smtpPort ?? 465} onChange={e => set('smtpPort', Number(e.target.value) || 465)} />
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label htmlFor="imap-host">IMAP host <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: 11 }}>(reading replies)</span></label>
+              <input id="imap-host" value={form.imapHost || ''} onChange={e => set('imapHost', e.target.value)} placeholder="imap.example.com" />
+            </div>
+            <div className="form-group" style={{ maxWidth: 110 }}>
+              <label htmlFor="imap-port">Port</label>
+              <input id="imap-port" type="number" value={form.imapPort ?? 993} onChange={e => set('imapPort', Number(e.target.value) || 993)} />
+            </div>
+          </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label htmlFor="smtp-user">Login name <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: 11 }}>(only if it differs from the address)</span></label>
+            <input id="smtp-user" value={form.smtpUser || ''} onChange={e => set('smtpUser', e.target.value)} placeholder="Leave blank to use the address above" />
+          </div>
+          <small style={{ display: 'block', color: 'var(--text-muted)', marginTop: 8 }}>
+            Ports 465 and 993 use TLS directly; anything else is treated as STARTTLS. Both hosts are
+            required — an account Hiro can send from but not read leaves recruiter replies undetected,
+            which looks like nobody has written back.
+          </small>
+        </div>
+      )}
+
+      {/* What the address actually resolves to, including the reason when it
+          resolves to nothing. This is the part that used to be invisible. */}
+      {resolved && (
+        <div
+          role="status"
+          style={{
+            fontSize: 12, padding: '9px 12px', borderRadius: 6, lineHeight: 1.55,
+            background: 'var(--surface2)',
+            borderLeft: `3px solid ${resolved.ok ? 'var(--green)' : 'var(--yellow)'}`,
+            color: resolved.ok ? 'var(--text-muted)' : 'var(--text)',
+          }}
+        >
+          {resolved.ok ? (
+            <>
+              <strong>{resolved.providerName}</strong> — sending via {resolved.smtp.host}:{resolved.smtp.port},
+              reading via {resolved.imap.host}:{resolved.imap.port}.
+              {resolved.passwordHelp ? <> {resolved.passwordHelp}</> : null}
+            </>
+          ) : resolved.error}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Will an applicant tracking system be able to READ this resume?
+//
+// Keyword Gap already answers "does this resume say the right things". This is
+// the question underneath it, which nothing here asked before: does the document
+// survive being parsed at all.
+//
+// The failure it catches is silent by construction. A two-column layout, or a
+// contact block in a Word header, or a resume built from a table, looks
+// immaculate on screen and reads perfectly to a human — and comes out of an ATS
+// parser as interleaved nonsense, or with no phone number, or as three
+// characters of text. The application is rejected by a machine before a person
+// sees it, and no feedback ever comes back. Somebody can send two hundred
+// applications into that.
+//
+// Advisory throughout: it never blocks anything and never edits a document.
+// "Your columns may not parse" is a judgement about someone else's parser, and
+// being wrong about it must not cost a real application.
+function ParseCheck({ resume }) {
+  const [result, setResult] = useState(null)
+  const [checking, setChecking] = useState(false)
+  const [showExtract, setShowExtract] = useState(false)
+
+  async function run() {
+    setChecking(true)
+    try {
+      const res = await window.api.checkResumeParseable?.(resume.originalPath || null, resume.originalExt || null)
+      setResult(res || null)
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  const tone = (severity) => (severity === 'error' ? 'var(--red)' : 'var(--yellow)')
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <button className="btn btn-ghost" style={{ fontSize: 11 }} disabled={checking} onClick={run}>
+        {checking ? 'Checking…' : result ? 'Check again' : 'Check ATS readability'}
+      </button>
+
+      {result && !result.ok && (
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6, lineHeight: 1.55 }}>
+          {result.reason}
+        </div>
+      )}
+
+      {result?.ok && (
+        <div style={{ marginTop: 8 }}>
+          {result.findings.length === 0 ? (
+            <div style={{ fontSize: 12, color: 'var(--green)' }}>
+              ✓ Parses cleanly — {result.extractedChars.toLocaleString()} characters extracted, contact
+              details found.
+            </div>
+          ) : (
+            result.findings.map(f => (
+              <div key={f.id} style={{
+                padding: '9px 12px', borderRadius: 6, marginBottom: 6,
+                background: 'var(--surface2)', borderLeft: `3px solid ${tone(f.severity)}`,
+              }}>
+                <div style={{ fontSize: 12, fontWeight: 600 }}>
+                  <span style={{ color: tone(f.severity) }}>
+                    {f.severity === 'error' ? 'Problem' : 'Worth checking'}
+                  </span>{' — '}{f.title}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3, lineHeight: 1.55 }}>
+                  {f.detail}
+                </div>
+                <div style={{ fontSize: 11, marginTop: 4, lineHeight: 1.55 }}>{f.fix}</div>
+              </div>
+            ))
+          )}
+
+          {/* The advisory findings are judgements; this is the evidence. If the
+              extracted text reads out of order here, an ATS sees the same thing. */}
+          <button
+            className="btn btn-ghost" style={{ fontSize: 11 }}
+            aria-expanded={showExtract}
+            onClick={() => setShowExtract(v => !v)}
+          >
+            {showExtract ? 'Hide what a parser sees' : 'Show what a parser sees'}
+          </button>
+          {showExtract && (
+            <pre style={{
+              fontSize: 11, whiteSpace: 'pre-wrap', background: 'var(--surface2)',
+              padding: '10px 12px', borderRadius: 6, marginTop: 6, maxHeight: 260, overflow: 'auto',
+            }}>{result.extract || '(nothing)'}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// The handful of facts every application form asks for.
+//
+// These used to go through the full screening-answer path — a model call, a
+// fabrication check against the resume, and a fallback to interrupting the user
+// — which is the wrong machinery three times over. "Do you have the right to
+// work in Australia?" is not inferable from a resume: the model either guessed
+// or said it was unsure, and the user was interrupted for a fact that never
+// changes, on every application, forever.
+//
+// Filled in here, these bypass the model entirely and are treated exactly as a
+// user-typed answer is treated everywhere else — never second-guessed, never
+// fabrication-checked — because that is what they are. See
+// services/applicationProfile.js.
+function ApplicationProfile({ form, set }) {
+  const [fields, setFields] = useState([])
+  const profile = (form.applicationProfile && typeof form.applicationProfile === 'object')
+    ? form.applicationProfile
+    : {}
+
+  useEffect(() => {
+    // The field list comes from the service so this form cannot drift from what
+    // the matcher actually recognises.
+    window.api.getProfileFields?.().then(f => setFields(f || [])).catch(() => {})
+  }, [])
+
+  const filled = fields.filter(f => String(profile[f.id] || '').trim()).length
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <h3 style={{ marginBottom: 6, fontSize: 15 }}>Application Profile</h3>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14, lineHeight: 1.55 }}>
+        The questions nearly every application form asks. Anything filled in here is typed straight
+        into the form as you wrote it — no model call, no guess, and no interruption mid-scan. Leave a
+        field blank and that question falls back to the usual path.
+        {fields.length > 0 && (
+          <> <strong>{filled} of {fields.length} filled in.</strong></>
+        )}
+      </p>
+
+      {fields.map(field => (
+        <div className="form-group" key={field.id}>
+          <label htmlFor={`profile-${field.id}`}>{field.label}</label>
+          <input
+            id={`profile-${field.id}`}
+            value={profile[field.id] || ''}
+            placeholder={field.help}
+            onChange={e => set('applicationProfile', { ...profile, [field.id]: e.target.value })}
+          />
+        </div>
+      ))}
+
+      {fields.length === 0 && (
+        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading…</div>
+      )}
+    </div>
+  )
+}
+
+// Where the scrapers' traffic goes out.
+//
+// automationHealth can already tell when a platform has started refusing us, and
+// it responds the only way it could — by backing off and waiting. That is the
+// right default and it was the entire toolkit: there was no lever for "route
+// this somewhere else". For anyone on a connection a job board has decided it
+// does not like, or on a corporate network whose only route out is a proxy,
+// Hiro simply did not work and there was nothing to configure.
+function ProxySettings({ form, set }) {
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <h3 style={{ marginBottom: 6, fontSize: 15 }}>Network &amp; Proxy</h3>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14, lineHeight: 1.55 }}>
+        Route every browser Hiro launches through a proxy. Needed on a corporate network whose only
+        way out is one, and useful when a job board has started refusing your connection — automation
+        health can detect that and back off, but backing off is all it can do on its own.
+      </p>
+
+      <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, cursor: 'pointer', marginBottom: 14 }}>
+        <input
+          type="checkbox"
+          checked={!!form.proxyEnabled}
+          onChange={e => set('proxyEnabled', e.target.checked)}
+        />
+        <span>Send scraper traffic through a proxy</span>
+      </label>
+
+      {form.proxyEnabled && (
+        <>
+          <div className="form-group">
+            <label htmlFor="proxy-server">Proxy address</label>
+            <input
+              id="proxy-server"
+              value={form.proxyServer || ''}
+              onChange={e => set('proxyServer', e.target.value)}
+              placeholder="http://proxy.example.com:8080 or socks5://127.0.0.1:1080"
+              aria-describedby="proxy-server-hint"
+            />
+            <small id="proxy-server-hint" style={{ color: 'var(--text-muted)' }}>
+              Include the scheme and the port. http, https and socks5 are all accepted.
+            </small>
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label htmlFor="proxy-user">Username <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: 11 }}>(optional)</span></label>
+              <input id="proxy-user" value={form.proxyUsername || ''} onChange={e => set('proxyUsername', e.target.value)} />
+            </div>
+            <div className="form-group">
+              <label htmlFor="proxy-pass">Password <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: 11 }}>(optional)</span></label>
+              <input id="proxy-pass" type="password" value={form.proxyPassword || ''} onChange={e => set('proxyPassword', e.target.value)} />
+            </div>
+          </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label htmlFor="proxy-bypass">Bypass list <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: 11 }}>(optional)</span></label>
+            <input
+              id="proxy-bypass"
+              value={form.proxyBypass || ''}
+              onChange={e => set('proxyBypass', e.target.value)}
+              placeholder="localhost, 127.0.0.1, *.internal"
+            />
+            <small style={{ color: 'var(--text-muted)' }}>
+              Hosts to reach directly. The proxy password is stored encrypted in your OS keychain,
+              like every other secret here, and is only ever sent to the proxy — never to a job board.
+            </small>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// Your own answers to interview questions, kept once and reused.
+//
+// Interview Questions generated questions and had nowhere to put the answers, so
+// a STAR story worked out for one panel was worked out again from scratch for
+// the next. Entries are keyed on a normalised form of the question, so the same
+// question asked with different punctuation is one entry.
+function AnswerBank({ showToast }) {
+  const [answers, setAnswers] = useState([])
+  const [search, setSearch] = useState('')
+  const [editing, setEditing] = useState(null)
+  const [draft, setDraft] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(() => {
+    window.api.listInterviewAnswers?.(search).then(rows => setAnswers(rows || [])).catch(() => {})
+  }, [search])
+
+  useEffect(() => { load() }, [load])
+
+  async function polish(entry) {
+    setBusy(true)
+    try {
+      const res = await window.api.draftInterviewAnswer?.({
+        question: entry.question,
+        existingAnswer: draft,
+      })
+      if (res?.success) setDraft(res.draft)
+      else showToast?.(res?.error || 'Could not draft an answer', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function save(entry) {
+    // Saved as the user's own, whatever produced the text: they read it and
+    // pressed save, which is the whole difference between a draft and an answer.
+    await window.api.saveInterviewAnswer?.({ question: entry.question, answer: draft, source: 'user' })
+    setEditing(null)
+    setDraft('')
+    load()
+    showToast?.('Answer saved', 'success')
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <h3 style={{ marginBottom: 6, fontSize: 15 }}>Interview Answer Bank</h3>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14, lineHeight: 1.55 }}>
+        Answers you have worked out once, kept for the next time the question comes up. Saved from the
+        Interview Questions panel on any application; the same question asked with different wording
+        finds the same entry.
+      </p>
+
+      <div className="form-group" style={{ maxWidth: 320 }}>
+        <label htmlFor="answer-search">Search</label>
+        <input
+          id="answer-search"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Question or answer text"
+        />
+      </div>
+
+      {answers.length === 0 && (
+        <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          {search ? 'Nothing matches that.' : 'No answers saved yet.'}
+        </div>
+      )}
+
+      {answers.map(entry => (
+        <div key={entry.id} style={{
+          padding: '10px 12px', background: 'var(--surface2)', borderRadius: 8, marginBottom: 8,
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>{entry.question}</div>
+            <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+              <button
+                className="btn btn-ghost" style={{ fontSize: 12 }}
+                onClick={() => { setEditing(entry.id); setDraft(entry.answer || '') }}
+              >Edit</button>
+              <button
+                className="btn btn-ghost" style={{ fontSize: 12 }}
+                onClick={async () => {
+                  await window.api.deleteInterviewAnswer?.(entry.question)
+                  load()
+                }}
+              >Delete</button>
+            </div>
+          </div>
+
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+            {/* An unedited AI draft is not yet the user's answer, and saying so
+                is the difference between a bank and a pile of generated text. */}
+            {entry.source === 'ai' ? 'AI draft — not yet reviewed' : 'Your answer'}
+            {entry.times_used > 0 && ` · used ${entry.times_used} time${entry.times_used === 1 ? '' : 's'}`}
+          </div>
+
+          {editing === entry.id ? (
+            <div style={{ marginTop: 8 }}>
+              <textarea
+                value={draft}
+                onChange={e => setDraft(e.target.value)}
+                rows={5}
+                style={{ width: '100%', fontSize: 13 }}
+                aria-label={`Answer to: ${entry.question}`}
+              />
+              <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                <button className="btn btn-primary" style={{ fontSize: 12 }} onClick={() => save(entry)}>Save</button>
+                <button className="btn btn-ghost" style={{ fontSize: 12 }} disabled={busy} onClick={() => polish(entry)}>
+                  {busy ? 'Working…' : 'Tighten with AI'}
+                </button>
+                <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => { setEditing(null); setDraft('') }}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ fontSize: 13, marginTop: 6, whiteSpace: 'pre-wrap', lineHeight: 1.55 }}>
+              {entry.answer || <span style={{ color: 'var(--text-muted)' }}>No answer yet.</span>}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
 
 // Company career boards. These serve structured JSON with no login and no bot
 // defenses, which makes them far steadier than scraping the aggregators — but
@@ -76,10 +538,10 @@ function AtsBoards({ form, set, showToast }) {
     <div className="card" style={{ marginBottom: 16 }}>
       <h3 style={{ marginBottom: 6, fontSize: 15 }}>Company Career Boards</h3>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
-        Watch specific employers directly on Greenhouse, Lever, Ashby, Workable, Recruitee or SmartRecruiters. These have no bot defenses
-        and don't change shape, so they're more reliable than the job aggregators. They can't be
-        auto-submitted — matches land in Needs Attention with your tailored resume and cover letter
-        ready to paste.
+        Watch specific employers directly on Greenhouse, Lever, Ashby, Workable, Recruitee,
+        SmartRecruiters, Workday, BambooHR or Personio. These have no bot defenses and don't change
+        shape, so they're more reliable than the job aggregators. They can't be auto-submitted —
+        matches land in Needs Attention with your tailored resume and cover letter ready to paste.
       </p>
 
       <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, cursor: 'pointer', marginBottom: 14 }}>
@@ -116,36 +578,41 @@ function AtsBoards({ form, set, showToast }) {
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
         <div className="form-group" style={{ marginBottom: 0, minWidth: 130 }}>
-          <label>Provider</label>
-          <select value={provider} onChange={e => setProvider(e.target.value)}>
+          <label htmlFor="set-f0">Provider</label>
+          <select id="set-f0" value={provider} onChange={e => setProvider(e.target.value)}>
             {ATS_PROVIDERS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
           </select>
         </div>
-        <div className="form-group" style={{ marginBottom: 0, flex: 1, minWidth: 150 }}>
-          <label>Board slug</label>
+        <div className="form-group" style={{ marginBottom: 0, flex: 1, minWidth: active?.isUrl ? 280 : 150 }}>
+          <label htmlFor="ats-slug">{active?.isUrl ? 'Careers URL' : 'Board slug'}</label>
           <input
+            id="ats-slug"
             value={slug}
             onChange={e => setSlug(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') addBoard() }}
-            placeholder={active?.hint.split('/')[1] || 'company'}
+            placeholder={active?.placeholder || 'company'}
+            aria-describedby="ats-slug-hint"
           />
         </div>
         <div className="form-group" style={{ marginBottom: 0, flex: 1, minWidth: 130 }}>
-          <label>Display name (optional)</label>
-          <input value={label} onChange={e => setLabel(e.target.value)} placeholder="Acme Corp" />
+          <label htmlFor="set-f1">Display name (optional)</label>
+          <input id="set-f1" value={label} onChange={e => setLabel(e.target.value)} placeholder="Acme Corp" />
         </div>
         <button className="btn btn-primary" onClick={addBoard} disabled={testing || !slug.trim()}>
           {testing ? 'Checking…' : 'Add board'}
         </button>
       </div>
-      <small style={{ color: 'var(--text-muted)', display: 'block', marginTop: 8 }}>
-        The slug is the company name in their careers URL — {active?.hint}. The board is checked
-        before it's added.
+      <small id="ats-slug-hint" style={{ color: 'var(--text-muted)', display: 'block', marginTop: 8 }}>
+        {active?.isUrl
+          ? <>Paste {active.hint}. Everything else is read out of it. The board is checked before it&apos;s added.</>
+          : <>The slug is the company name in their careers URL — {active?.hint}. The board is checked
+            before it&apos;s added.</>}
       </small>
 
       <div className="form-group" style={{ marginTop: 16, marginBottom: 0, maxWidth: 200 }}>
-        <label>Daily application limit</label>
+        <label htmlFor="ats-daily-limit">Daily application limit</label>
         <input
+          id="ats-daily-limit"
           type="number" min="1" max="50"
           value={form.dailyLimitAts ?? 10}
           onChange={e => set('dailyLimitAts', Number(e.target.value) || 10)}
@@ -486,8 +953,8 @@ function DataTransferCard({ showToast, onImported }) {
             </div>
           )}
           <div className="form-group" style={{ marginBottom: 10 }}>
-            <label style={{ fontSize: 12 }}>Passphrase (optional)</label>
-            <input type="password" value={passphrase} autoFocus
+            <label htmlFor="set-f2" style={{ fontSize: 12 }}>Passphrase (optional)</label>
+            <input id="set-f2" type="password" value={passphrase} autoFocus
               onChange={e => setPassphrase(e.target.value)}
               placeholder="Leave blank to write readable JSON" />
             <div style={{ fontSize: 11, color: passphrase ? 'var(--text-muted)' : 'var(--yellow)', marginTop: 4 }}>
@@ -528,8 +995,8 @@ function DataTransferCard({ showToast, onImported }) {
           </div>
           {staged.encrypted && (
             <div className="form-group" style={{ marginBottom: 10 }}>
-              <label style={{ fontSize: 12 }}>Passphrase</label>
-              <input type="password" value={passphrase} autoFocus
+              <label htmlFor="set-f3" style={{ fontSize: 12 }}>Passphrase</label>
+              <input id="set-f3" type="password" value={passphrase} autoFocus
                 onChange={e => setPassphrase(e.target.value)}
                 placeholder="Passphrase used at export" />
             </div>
@@ -612,8 +1079,8 @@ function SettingsTransferCard({ showToast, onImported }) {
       {mode && !staged && (
         <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
           <div className="form-group" style={{ marginBottom: 10 }}>
-            <label style={{ fontSize: 12 }}>Passphrase</label>
-            <input type="password" value={passphrase} autoFocus
+            <label htmlFor="set-f4" style={{ fontSize: 12 }}>Passphrase</label>
+            <input id="set-f4" type="password" value={passphrase} autoFocus
               onChange={e => setPassphrase(e.target.value)}
               placeholder={mode === 'export' ? 'At least 8 characters' : 'Passphrase used at export'} />
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
@@ -914,7 +1381,13 @@ export default function Settings({ showToast, active }) {
 
   async function testEmail() {
     setTestingEmail(true); setEmailResult(null)
-    const res = await window.api.testEmailConnection(form.gmailAddress, form.gmailAppPassword)
+    // The custom-server fields as they stand in the form, so this tests what is
+    // on screen rather than what was last saved.
+    const res = await window.api.testEmailConnection(form.gmailAddress, form.gmailAppPassword, {
+      mailProvider: form.mailProvider,
+      smtpHost: form.smtpHost, smtpPort: form.smtpPort, smtpSecure: form.smtpSecure, smtpUser: form.smtpUser,
+      imapHost: form.imapHost, imapPort: form.imapPort, imapSecure: form.imapSecure, imapUser: form.imapUser,
+    })
     setTestingEmail(false); setEmailResult(res)
   }
 
@@ -975,8 +1448,8 @@ export default function Settings({ showToast, active }) {
       <div className="card" style={{ marginBottom: 16 }}>
         <h3 style={{ marginBottom: 16, fontSize: 15 }}>AI Provider</h3>
         <div className="form-group">
-          <label>Provider</label>
-          <select value={form.aiProvider} onChange={e => set('aiProvider', e.target.value)}>
+          <label htmlFor="set-f5">Provider</label>
+          <select id="set-f5" value={form.aiProvider} onChange={e => set('aiProvider', e.target.value)}>
             <option value="claude">Claude (Anthropic)</option>
             <option value="chatgpt">ChatGPT (OpenAI)</option>
             <option value="deepseek">DeepSeek</option>
@@ -995,15 +1468,15 @@ export default function Settings({ showToast, active }) {
           </div>
         ) : (
           <div className="form-group">
-            <label>API Key</label>
-            <input type="password" value={form.aiApiKey} onChange={e => set('aiApiKey', e.target.value)} />
+            <label htmlFor="set-f6">API Key</label>
+            <input id="set-f6" type="password" value={form.aiApiKey} onChange={e => set('aiApiKey', e.target.value)} />
           </div>
         )}
         {form.aiProvider === 'local' && (
           <>
             <div className="form-group">
-              <label>Server address</label>
-              <input
+              <label htmlFor="set-f7">Server address</label>
+              <input id="set-f7"
                 value={form.localAiBaseUrl || ''}
                 onChange={e => set('localAiBaseUrl', e.target.value)}
                 placeholder="http://localhost:11434/v1"
@@ -1014,8 +1487,8 @@ export default function Settings({ showToast, active }) {
               </span>
             </div>
             <div className="form-group">
-              <label>Model</label>
-              <input
+              <label htmlFor="set-f8">Model</label>
+              <input id="set-f8"
                 value={form.localAiModel || ''}
                 onChange={e => set('localAiModel', e.target.value)}
                 placeholder="e.g. llama3.1:8b"
@@ -1028,8 +1501,8 @@ export default function Settings({ showToast, active }) {
         )}
         {form.aiProvider === 'gemini' && (
           <div className="form-group">
-            <label>Gemini Model Name</label>
-            <input
+            <label htmlFor="set-f9">Gemini Model Name</label>
+            <input id="set-f9"
               value={form.geminiModel || ''}
               onChange={e => set('geminiModel', e.target.value)}
               placeholder="e.g. gemini-2.5-flash"
@@ -1114,8 +1587,13 @@ export default function Settings({ showToast, active }) {
       <div className="card" style={{ marginBottom: 16 }}>
         <h3 style={{ marginBottom: 8, fontSize: 15 }}>Email Notifications</h3>
         <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 16 }}>
-          Used to send job alerts, daily reports, follow-up emails, and check your inbox for recruiter replies. Supports Gmail, Outlook, Yahoo, and iCloud.
+          Used to send job alerts, daily reports, follow-up emails, and check your inbox for recruiter
+          replies. Gmail, Yahoo, iCloud, Fastmail, Zoho and AOL are recognised automatically; anything
+          else — a personal domain, a university address, a company mail server — needs the servers
+          entered below.
         </p>
+
+        <MailServers form={form} set={set} />
 
         {/* App Password helper */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
@@ -1139,12 +1617,12 @@ export default function Settings({ showToast, active }) {
 
         <div className="form-row">
           <div className="form-group">
-            <label>Email Address</label>
-            <input type="email" value={form.gmailAddress} onChange={e => set('gmailAddress', e.target.value)} placeholder="you@gmail.com / outlook.com / yahoo.com" />
+            <label htmlFor="set-f10">Email Address</label>
+            <input id="set-f10" type="email" value={form.gmailAddress} onChange={e => set('gmailAddress', e.target.value)} placeholder="you@gmail.com" />
           </div>
           <div className="form-group">
-            <label>App Password <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: 11 }}>(generated in your email provider's security settings)</span></label>
-            <input type="password" value={form.gmailAppPassword} onChange={e => set('gmailAppPassword', e.target.value)} placeholder="App-specific password" />
+            <label htmlFor="set-f11">App Password <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: 11 }}>(generated in your email provider's security settings)</span></label>
+            <input id="set-f11" type="password" value={form.gmailAppPassword} onChange={e => set('gmailAppPassword', e.target.value)} placeholder="App-specific password" />
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1169,8 +1647,8 @@ export default function Settings({ showToast, active }) {
           {form.enableInboxCheck && (
             <div style={{ display: 'flex', gap: 16, alignItems: 'flex-end', marginBottom: 12, flexWrap: 'wrap' }}>
               <div>
-                <label style={{ fontSize: 12 }}>Check every</label>
-                <select value={form.inboxCheckHours ?? 2} onChange={e => set('inboxCheckHours', e.target.value)}
+                <label htmlFor="set-f12" style={{ fontSize: 12 }}>Check every</label>
+                <select id="set-f12" value={form.inboxCheckHours ?? 2} onChange={e => set('inboxCheckHours', e.target.value)}
                   style={{ width: 130, padding: '6px 10px', fontSize: 12 }}>
                   {[1, 2, 3, 4, 6, 8, 12, 24].map(h => (
                     <option key={h} value={h}>{h === 1 ? 'hour' : `${h} hours`}</option>
@@ -1220,12 +1698,12 @@ export default function Settings({ showToast, active }) {
         <h3 style={{ marginBottom: 16, fontSize: 15 }}>Automation Schedule</h3>
         <div className="form-row">
           <div className="form-group">
-            <label>Daily Scan Time (Mon–Fri)</label>
-            <input type="time" value={form.scheduledScanTime || '09:00'} onChange={e => set('scheduledScanTime', e.target.value)} />
+            <label htmlFor="set-f13">Daily Scan Time (Mon–Fri)</label>
+            <input id="set-f13" type="time" value={form.scheduledScanTime || '09:00'} onChange={e => set('scheduledScanTime', e.target.value)} />
           </div>
           <div className="form-group">
-            <label>Daily Report Time (Mon–Fri)</label>
-            <input type="time" value={form.dailyReportTime || '18:00'} onChange={e => set('dailyReportTime', e.target.value)} />
+            <label htmlFor="set-f14">Daily Report Time (Mon–Fri)</label>
+            <input id="set-f14" type="time" value={form.dailyReportTime || '18:00'} onChange={e => set('dailyReportTime', e.target.value)} />
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
@@ -1237,12 +1715,12 @@ export default function Settings({ showToast, active }) {
         {form.enableFollowUp && (
           <>
             <div className="form-group">
-              <label>Send the first follow-up after how many days of no response</label>
-              <input type="number" min={1} max={30} value={form.followUpDays || 7} onChange={e => set('followUpDays', e.target.value)} />
+              <label htmlFor="set-f15">Send the first follow-up after how many days of no response</label>
+              <input id="set-f15" type="number" min={1} max={30} value={form.followUpDays || 7} onChange={e => set('followUpDays', e.target.value)} />
             </div>
             <div className="form-group">
-              <label>How many follow-ups in total</label>
-              <input type="number" min={1} max={5} value={form.followUpMaxCount ?? 2} onChange={e => set('followUpMaxCount', e.target.value)} />
+              <label htmlFor="set-f16">How many follow-ups in total</label>
+              <input id="set-f16" type="number" min={1} max={5} value={form.followUpMaxCount ?? 2} onChange={e => set('followUpMaxCount', e.target.value)} />
               <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
                 Each one is written differently — the second leads with something new rather than
                 repeating the first, and later ones read as a closing note rather than another pitch.
@@ -1251,8 +1729,8 @@ export default function Settings({ showToast, active }) {
             </div>
             {(form.followUpMaxCount ?? 2) > 1 && (
               <div className="form-group">
-                <label>Days between follow-ups</label>
-                <input type="number" min={7} max={90} value={form.followUpIntervalDays ?? 14} onChange={e => set('followUpIntervalDays', e.target.value)} />
+                <label htmlFor="set-f17">Days between follow-ups</label>
+                <input id="set-f17" type="number" min={7} max={90} value={form.followUpIntervalDays ?? 14} onChange={e => set('followUpIntervalDays', e.target.value)} />
                 <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
                   Counted from the last follow-up, not from the application, so the gap the recruiter
                   actually experiences is the one set here.
@@ -1288,22 +1766,22 @@ export default function Settings({ showToast, active }) {
           <div>
             <div className="form-row">
               <div className="form-group">
-                <label>Start Time</label>
-                <input type="time" value={form.smartScheduleStartTime || '09:00'} onChange={e => set('smartScheduleStartTime', e.target.value)} />
+                <label htmlFor="set-f18">Start Time</label>
+                <input id="set-f18" type="time" value={form.smartScheduleStartTime || '09:00'} onChange={e => set('smartScheduleStartTime', e.target.value)} />
               </div>
               <div className="form-group">
-                <label>End Time</label>
-                <input type="time" value={form.smartScheduleEndTime || '17:00'} onChange={e => set('smartScheduleEndTime', e.target.value)} />
+                <label htmlFor="set-f19">End Time</label>
+                <input id="set-f19" type="time" value={form.smartScheduleEndTime || '17:00'} onChange={e => set('smartScheduleEndTime', e.target.value)} />
               </div>
             </div>
             <div className="form-row">
               <div className="form-group">
-                <label>Applications per batch</label>
-                <input type="number" min={1} max={20} value={form.smartScheduleBatchSize || 3} onChange={e => set('smartScheduleBatchSize', parseInt(e.target.value) || 3)} />
+                <label htmlFor="set-f20">Applications per batch</label>
+                <input id="set-f20" type="number" min={1} max={20} value={form.smartScheduleBatchSize || 3} onChange={e => set('smartScheduleBatchSize', parseInt(e.target.value) || 3)} />
               </div>
               <div className="form-group">
-                <label>Jitter (± minutes)</label>
-                <input type="number" min={0} max={60} value={form.smartScheduleJitter || 15} onChange={e => set('smartScheduleJitter', parseInt(e.target.value) || 15)} />
+                <label htmlFor="set-f21">Jitter (± minutes)</label>
+                <input id="set-f21" type="number" min={0} max={60} value={form.smartScheduleJitter || 15} onChange={e => set('smartScheduleJitter', parseInt(e.target.value) || 15)} />
               </div>
             </div>
           </div>
@@ -1373,13 +1851,13 @@ export default function Settings({ showToast, active }) {
 
             <div className="form-row">
               <div className="form-group">
-                <label>Warn about a closing date this many days ahead</label>
-                <input type="number" min="0" max="30" value={form.closingSoonDays ?? 3}
+                <label htmlFor="set-f22">Warn about a closing date this many days ahead</label>
+                <input id="set-f22" type="number" min="0" max="30" value={form.closingSoonDays ?? 3}
                   onChange={e => set('closingSoonDays', Number(e.target.value))} />
               </div>
               <div className="form-group">
-                <label>Review reminders, at most one every (hours)</label>
-                <input type="number" min="1" max="168" value={form.reviewReminderHours ?? 24}
+                <label htmlFor="set-f23">Review reminders, at most one every (hours)</label>
+                <input id="set-f23" type="number" min="1" max="168" value={form.reviewReminderHours ?? 24}
                   onChange={e => set('reviewReminderHours', Number(e.target.value))} />
               </div>
             </div>
@@ -1422,8 +1900,8 @@ export default function Settings({ showToast, active }) {
         {!calSync?.connected ? (
           <>
             <div className="form-group">
-              <label>Provider</label>
-              <select value={calProvider} onChange={e => setCalProvider(e.target.value)}>
+              <label htmlFor="set-f24">Provider</label>
+              <select id="set-f24" value={calProvider} onChange={e => setCalProvider(e.target.value)}>
                 <option value="">Choose…</option>
                 {(calSync?.providers || []).map(p => (
                   <option key={p.id} value={p.id}>{p.label}</option>
@@ -1448,14 +1926,14 @@ export default function Settings({ showToast, active }) {
                     ship its own client credentials — a secret inside a downloadable app is not a secret.
                   </p>
                   <div className="form-group">
-                    <label>OAuth client ID</label>
-                    <input value={calClientId} onChange={e => setCalClientId(e.target.value)}
+                    <label htmlFor="set-f25">OAuth client ID</label>
+                    <input id="set-f25" value={calClientId} onChange={e => setCalClientId(e.target.value)}
                       placeholder="xxxxx.apps.googleusercontent.com" />
                   </div>
                   {provider?.needsSecret && (
                     <div className="form-group">
-                      <label>OAuth client secret</label>
-                      <input type="password" value={calClientSecret}
+                      <label htmlFor="set-f26">OAuth client secret</label>
+                      <input id="set-f26" type="password" value={calClientSecret}
                         onChange={e => setCalClientSecret(e.target.value)} />
                       <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
                         Google issues one even for desktop clients and requires it on the token exchange.
@@ -1514,8 +1992,8 @@ export default function Settings({ showToast, active }) {
 
             <div className="form-row">
               <div className="form-group">
-                <label>Calendar</label>
-                <select value={form.calendarId || ''} onChange={e => set('calendarId', e.target.value)}>
+                <label htmlFor="set-f27">Calendar</label>
+                <select id="set-f27" value={form.calendarId || ''} onChange={e => set('calendarId', e.target.value)}>
                   <option value="">Default calendar</option>
                   {(calCalendars || []).map(c => (
                     <option key={c.id} value={c.id}>{c.label}{c.primary ? ' (primary)' : ''}</option>
@@ -1529,8 +2007,8 @@ export default function Settings({ showToast, active }) {
                   }}>Load my calendars</button>
               </div>
               <div className="form-group">
-                <label>Remind me this many minutes before</label>
-                <input type="number" min="0" max="1440" value={form.calendarReminderMinutes ?? 60}
+                <label htmlFor="set-f28">Remind me this many minutes before</label>
+                <input id="set-f28" type="number" min="0" max="1440" value={form.calendarReminderMinutes ?? 60}
                   onChange={e => set('calendarReminderMinutes', Number(e.target.value))} />
               </div>
             </div>
@@ -1580,8 +2058,8 @@ export default function Settings({ showToast, active }) {
             </div>
             <div className="form-row">
               <div className="form-group" style={{ flex: 1 }}>
-                <label>Provider</label>
-                <select value={wh.provider || 'discord'} onChange={e => {
+                <label htmlFor="set-f29">Provider</label>
+                <select id="set-f29" value={wh.provider || 'discord'} onChange={e => {
                   const webhooks = [...(form.webhooks || [])]
                   webhooks[i] = { ...webhooks[i], provider: e.target.value }
                   set('webhooks', webhooks)
@@ -1591,8 +2069,8 @@ export default function Settings({ showToast, active }) {
                 </select>
               </div>
               <div className="form-group" style={{ flex: 3 }}>
-                <label>Webhook URL</label>
-                <input value={wh.url || ''} placeholder="https://discord.com/api/webhooks/..." onChange={e => {
+                <label htmlFor="set-f30">Webhook URL</label>
+                <input id="set-f30" value={wh.url || ''} placeholder="https://discord.com/api/webhooks/..." onChange={e => {
                   const webhooks = [...(form.webhooks || [])]
                   webhooks[i] = { ...webhooks[i], url: e.target.value }
                   set('webhooks', webhooks)
@@ -2045,21 +2523,21 @@ export default function Settings({ showToast, active }) {
         ) : (
           <>
             <div className="form-group">
-              <label>Supabase Project URL</label>
-              <input value={cloudUrl} onChange={e => setCloudUrl(e.target.value)} placeholder="https://xxxx.supabase.co" />
+              <label htmlFor="set-f31">Supabase Project URL</label>
+              <input id="set-f31" value={cloudUrl} onChange={e => setCloudUrl(e.target.value)} placeholder="https://xxxx.supabase.co" />
             </div>
             <div className="form-group">
-              <label>Supabase anon key</label>
-              <input value={cloudKey} onChange={e => setCloudKey(e.target.value)} placeholder="anon / public key" />
+              <label htmlFor="set-f32">Supabase anon key</label>
+              <input id="set-f32" value={cloudKey} onChange={e => setCloudKey(e.target.value)} placeholder="anon / public key" />
             </div>
             <div className="form-row">
               <div className="form-group">
-                <label>Email</label>
-                <input value={cloudEmail} onChange={e => setCloudEmail(e.target.value)} placeholder="you@example.com" />
+                <label htmlFor="set-f33">Email</label>
+                <input id="set-f33" value={cloudEmail} onChange={e => setCloudEmail(e.target.value)} placeholder="you@example.com" />
               </div>
               <div className="form-group">
-                <label>Password</label>
-                <input type="password" value={cloudPassword} onChange={e => setCloudPassword(e.target.value)} placeholder="password" />
+                <label htmlFor="set-f34">Password</label>
+                <input id="set-f34" type="password" value={cloudPassword} onChange={e => setCloudPassword(e.target.value)} placeholder="password" />
               </div>
             </div>
             {!!cloudMsg && <p style={{ color: 'var(--red)', fontSize: 13, marginTop: 4 }}>{cloudMsg}</p>}
@@ -2092,32 +2570,39 @@ export default function Settings({ showToast, active }) {
       </div>} {/* end notifications tab */}
 
       {settingsTab === 'criteria' && <div>
+
+      {/* The facts every form asks for, answered without a model call. */}
+      <ApplicationProfile form={form} set={set} />
+
+      {/* Answers worked out once, kept for the next time the question comes up. */}
+      <AnswerBank showToast={showToast} />
+
       {/* Job Criteria */}
       <div className="card" style={{ marginBottom: 16 }}>
         <h3 style={{ marginBottom: 16, fontSize: 15 }}>Job Criteria</h3>
         <div className="form-group">
-          <label>Keywords</label>
-          <input value={form.jobKeywords} onChange={e => set('jobKeywords', e.target.value)} />
+          <label htmlFor="set-f35">Keywords</label>
+          <input id="set-f35" value={form.jobKeywords} onChange={e => set('jobKeywords', e.target.value)} />
         </div>
         <div className="form-row">
           <div className="form-group">
-            <label>Location</label>
-            <input value={form.jobLocation} onChange={e => set('jobLocation', e.target.value)} />
+            <label htmlFor="set-f36">Location</label>
+            <input id="set-f36" value={form.jobLocation} onChange={e => set('jobLocation', e.target.value)} />
           </div>
           <div className="form-group">
-            <label>Min Salary</label>
-            <input type="number" value={form.salaryMin} onChange={e => set('salaryMin', e.target.value)} />
+            <label htmlFor="set-f37">Min Salary</label>
+            <input id="set-f37" type="number" value={form.salaryMin} onChange={e => set('salaryMin', e.target.value)} />
           </div>
         </div>
         <div className="form-group">
-          <label>Match Threshold: {form.matchThreshold}%</label>
-          <input type="range" min={50} max={100} value={form.matchThreshold}
+          <label htmlFor="set-f38">Match Threshold: {form.matchThreshold}%</label>
+          <input id="set-f38" type="range" min={50} max={100} value={form.matchThreshold}
             onChange={e => set('matchThreshold', e.target.value)}
             style={{ padding: 0, border: 'none', background: 'transparent' }} />
         </div>
         <div className="form-group">
-          <label>Company Cooldown (days)</label>
-          <input type="number" min={0} max={365}
+          <label htmlFor="set-f39">Company Cooldown (days)</label>
+          <input id="set-f39" type="number" min={0} max={365}
             value={form.companyCooldownDays ?? 30}
             onChange={e => set('companyCooldownDays', e.target.value)} />
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
@@ -2127,8 +2612,8 @@ export default function Settings({ showToast, active }) {
           </div>
         </div>
         <div className="form-group">
-          <label>Pages per scan</label>
-          <input type="number" min={1} max={10}
+          <label htmlFor="set-f40">Pages per scan</label>
+          <input id="set-f40" type="number" min={1} max={10}
             value={form.scrapePages ?? 3}
             onChange={e => set('scrapePages', e.target.value)} />
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
@@ -2140,8 +2625,8 @@ export default function Settings({ showToast, active }) {
           </div>
         </div>
         <div className="form-group">
-          <label>Mark as No Response after (days)</label>
-          <input type="number" min={0} max={365}
+          <label htmlFor="set-f41">Mark as No Response after (days)</label>
+          <input id="set-f41" type="number" min={0} max={365}
             value={form.staleAfterDays ?? 45}
             onChange={e => set('staleAfterDays', e.target.value)} />
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
@@ -2185,8 +2670,8 @@ export default function Settings({ showToast, active }) {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
           {['Seek', 'Indeed', 'LinkedIn'].map(p => (
             <div className="form-group" key={p}>
-              <label>Daily Limit — {p}</label>
-              <input type="number" min={1} max={50}
+              <label htmlFor="set-f42">Daily Limit — {p}</label>
+              <input id="set-f42" type="number" min={1} max={50}
                 value={form[`dailyLimit${p}`]}
                 onChange={e => set(`dailyLimit${p}`, e.target.value)} />
             </div>
@@ -2314,6 +2799,7 @@ export default function Settings({ showToast, active }) {
                 </button>
               </div>
             </div>
+            <ParseCheck resume={r} />
             <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 6 }}>
               {r.text.slice(0, 120).replace(/\n/g, ' ')}…
             </div>
@@ -2323,8 +2809,8 @@ export default function Settings({ showToast, active }) {
         {addingResume && (
           <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
             <div className="form-group" style={{ marginBottom: 8 }}>
-              <label style={{ fontSize: 12 }}>Name</label>
-              <input value={newResumeName} onChange={e => setNewResumeName(e.target.value)} placeholder="e.g. Software Engineer Resume" />
+              <label htmlFor="set-f43" style={{ fontSize: 12 }}>Name</label>
+              <input id="set-f43" value={newResumeName} onChange={e => setNewResumeName(e.target.value)} placeholder="e.g. Software Engineer Resume" />
             </div>
             <div className="form-group" style={{ marginBottom: 10 }}>
               {newResumeOriginalPath ? (
@@ -2483,8 +2969,8 @@ export default function Settings({ showToast, active }) {
             ) : (
               <>
                 <div className="form-group" style={{ marginBottom: 10 }}>
-                  <label>Test name</label>
-                  <input
+                  <label htmlFor="set-f44">Test name</label>
+                  <input id="set-f44"
                     placeholder="e.g. Metrics-led vs narrative-led"
                     value={exp.name || ''}
                     onChange={e => setExp({ name: e.target.value })}
@@ -2493,8 +2979,8 @@ export default function Settings({ showToast, active }) {
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                   {['resumeA', 'resumeB'].map((slot, i) => (
                     <div className="form-group" key={slot} style={{ marginBottom: 0 }}>
-                      <label>{i === 0 ? 'Resume A' : 'Resume B'}</label>
-                      <select value={exp[slot] || ''} onChange={e => setExp({ [slot]: e.target.value })}>
+                      <label htmlFor="set-f45">{i === 0 ? 'Resume A' : 'Resume B'}</label>
+                      <select id="set-f45" value={exp[slot] || ''} onChange={e => setExp({ [slot]: e.target.value })}>
                         <option value="">Not set</option>
                         {resumes.map(r => (
                           <option key={r.id} value={r.id}>{r.name || r.id}</option>
@@ -2529,24 +3015,24 @@ export default function Settings({ showToast, active }) {
           Used in resume PDFs as clickable links. Auto-detected from DOCX uploads, or enter manually here. Settings override DOCX-extracted links.
         </p>
         <div className="form-group" style={{ marginBottom: 10 }}>
-          <label>Portfolio URL</label>
-          <input
+          <label htmlFor="set-f46">Portfolio URL</label>
+          <input id="set-f46"
             placeholder="https://yourportfolio.com"
             value={(form.personalLinks || {}).portfolio || ''}
             onChange={e => set('personalLinks', { ...(form.personalLinks || {}), portfolio: e.target.value })}
           />
         </div>
         <div className="form-group" style={{ marginBottom: 10 }}>
-          <label>GitHub URL</label>
-          <input
+          <label htmlFor="set-f47">GitHub URL</label>
+          <input id="set-f47"
             placeholder="https://github.com/username"
             value={(form.personalLinks || {}).github || ''}
             onChange={e => set('personalLinks', { ...(form.personalLinks || {}), github: e.target.value })}
           />
         </div>
         <div className="form-group" style={{ marginBottom: 0 }}>
-          <label>LinkedIn URL</label>
-          <input
+          <label htmlFor="set-f48">LinkedIn URL</label>
+          <input id="set-f48"
             placeholder="https://linkedin.com/in/username"
             value={(form.personalLinks || {}).linkedin || ''}
             onChange={e => set('personalLinks', { ...(form.personalLinks || {}), linkedin: e.target.value })}
@@ -2558,8 +3044,8 @@ export default function Settings({ showToast, active }) {
       <div className="card">
         <h3 style={{ marginBottom: 8, fontSize: 15 }}>Cover Letter</h3>
         <div className="form-group">
-          <label>Tone</label>
-          <select value={form.coverLetterTone || 'professional'} onChange={e => set('coverLetterTone', e.target.value)}>
+          <label htmlFor="set-f49">Tone</label>
+          <select id="set-f49" value={form.coverLetterTone || 'professional'} onChange={e => set('coverLetterTone', e.target.value)}>
             <option value="professional">Professional (default)</option>
             <option value="casual">Casual &amp; Warm</option>
             <option value="confident">Confident &amp; Direct</option>
@@ -2946,8 +3432,8 @@ export default function Settings({ showToast, active }) {
 
           {form.reviewBeforeSubmit && (
             <div className="form-group" style={{ marginTop: 14 }}>
-              <label>Auto-submit jobs scoring at least (%)</label>
-              <input
+              <label htmlFor="set-f50">Auto-submit jobs scoring at least (%)</label>
+              <input id="set-f50"
                 type="number"
                 min="0"
                 max="100"
@@ -2971,8 +3457,8 @@ export default function Settings({ showToast, active }) {
 
           {form.reviewBeforeSubmit && (
             <div className="form-group" style={{ marginTop: 14 }}>
-              <label>Draft at most, per platform per day</label>
-              <input
+              <label htmlFor="set-f51">Draft at most, per platform per day</label>
+              <input id="set-f51"
                 type="number"
                 min="0"
                 value={form.dailyDraftLimit ?? 20}
@@ -3001,8 +3487,8 @@ export default function Settings({ showToast, active }) {
             page for what you have actually used.
           </p>
           <div className="form-group">
-            <label>Monthly spend cap (USD)</label>
-            <input
+            <label htmlFor="set-f52">Monthly spend cap (USD)</label>
+            <input id="set-f52"
               type="number" min="0" step="1"
               value={form.aiMonthlyBudgetUsd ?? 0}
               onChange={e => set('aiMonthlyBudgetUsd', Number(e.target.value) || 0)}
@@ -3010,8 +3496,8 @@ export default function Settings({ showToast, active }) {
             <small style={{ color: 'var(--text-muted)' }}>0 disables the cap. Costs are estimated from published token prices.</small>
           </div>
           <div className="form-group">
-            <label>Retries on a failed AI call</label>
-            <input
+            <label htmlFor="set-f53">Retries on a failed AI call</label>
+            <input id="set-f53"
               type="number" min="0" max="6"
               value={form.aiMaxRetries ?? 3}
               onChange={e => set('aiMaxRetries', Math.max(0, Math.min(6, Number(e.target.value) || 0)))}
@@ -3022,8 +3508,8 @@ export default function Settings({ showToast, active }) {
             </small>
           </div>
           <div className="form-group">
-            <label>Retry budget per scan</label>
-            <input
+            <label htmlFor="set-f54">Retry budget per scan</label>
+            <input id="set-f54"
               type="number" min="0" max="500"
               value={form.aiRetryBudgetPerScan ?? 20}
               onChange={e => set('aiRetryBudgetPerScan', Math.max(0, Math.min(500, Number(e.target.value) || 0)))}
@@ -3039,6 +3525,10 @@ export default function Settings({ showToast, active }) {
 
         {/* Company career boards */}
         <AtsBoards form={form} set={set} showToast={showToast} />
+
+        {/* The lever automation health never had: somewhere else to send the
+            traffic, rather than only backing off from where it was going. */}
+        <ProxySettings form={form} set={set} />
 
         {/* Background operation */}
         <div className="card" style={{ marginBottom: 16 }}>

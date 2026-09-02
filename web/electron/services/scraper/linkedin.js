@@ -1,5 +1,5 @@
 const { chromium } = require('playwright')
-const { randomDelay, randomUserAgent, buildResumeFile, verifySubmission, confirmSubmission, gotoResultsPage, createSelectorProbe } = require('./utils')
+const { randomDelay, randomUserAgent, buildResumeFile, verifySubmission, confirmSubmission, gotoResultsPage, createSelectorProbe, launchOptions } = require('./utils')
 
 // Which selectors matched on the most recent scrape — see seek.js.
 let lastSelectorReport = null
@@ -48,7 +48,7 @@ function extractRecentJob(resumeText) {
 
 async function scrape(cfg) {
   const { jobKeywords, jobLocation } = cfg
-  const browser = await chromium.launch({ headless: true })
+  const browser = await chromium.launch(launchOptions({ headless: true }))
 
   const storagePath = linkedinSession.getStoragePath()
   const fs = require('fs')
@@ -120,7 +120,7 @@ async function scrape(cfg) {
 }
 
 async function getJobDescription(jobUrl) {
-  const browser = await chromium.launch({ headless: true })
+  const browser = await chromium.launch(launchOptions({ headless: true }))
   const storagePath = linkedinSession.getStoragePath()
   const fs = require('fs')
   const contextOptions = { userAgent: randomUserAgent() }
@@ -146,7 +146,7 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
     return { success: false, reason: 'LinkedIn login required — go to Settings and click Login to LinkedIn' }
   }
 
-  const browser = await chromium.launch({ headless: false, slowMo: 50 })
+  const browser = await chromium.launch(launchOptions({ headless: false, slowMo: 50 }))
 
   const storagePath = linkedinSession.getStoragePath()
   const fs = require('fs')

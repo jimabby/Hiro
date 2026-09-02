@@ -24,7 +24,8 @@ contextBridge.exposeInMainWorld('api', {
   getConfigSecretError: () => ipcRenderer.invoke('config:secretError'),
   saveConfig: (config) => ipcRenderer.invoke('config:save', config),
   testAiConnection: (provider, apiKey, geminiModel) => ipcRenderer.invoke('ai:test', provider, apiKey, geminiModel),
-  testEmailConnection: (email, password) => ipcRenderer.invoke('email:test', email, password),
+  testEmailConnection: (email, password, overrides) => ipcRenderer.invoke('email:test', email, password, overrides),
+  describeMailServers: (cfg) => ipcRenderer.invoke('email:describeServers', cfg),
 
   // Campaigns, universal job import, contacts/referrals and recommendations
   getCampaigns: () => ipcRenderer.invoke('features:campaigns'),
@@ -63,6 +64,19 @@ contextBridge.exposeInMainWorld('api', {
   logRendererError: (report) => ipcRenderer.invoke('logs:rendererError', report),
   clearLogs: () => ipcRenderer.invoke('logs:clear'),
   openLogFile: () => ipcRenderer.invoke('logs:openFile'),
+  getLogStatus: () => ipcRenderer.invoke('logs:status'),
+  getProfileFields: () => ipcRenderer.invoke('profile:fields'),
+  getProfileCompleteness: () => ipcRenderer.invoke('profile:completeness'),
+  getThresholdRecommendation: () => ipcRenderer.invoke('analytics:thresholdRecommendation'),
+  draftCounterOffer: (applicationId, options) => ipcRenderer.invoke('offer:draftCounter', applicationId, options),
+  listInterviewAnswers: (search) => ipcRenderer.invoke('answers:list', search),
+  getInterviewAnswer: (question) => ipcRenderer.invoke('answers:get', question),
+  saveInterviewAnswer: (payload) => ipcRenderer.invoke('answers:save', payload),
+  deleteInterviewAnswer: (question) => ipcRenderer.invoke('answers:delete', question),
+  markInterviewAnswerUsed: (question, applicationId) => ipcRenderer.invoke('answers:markUsed', question, applicationId),
+  draftInterviewAnswer: (payload) => ipcRenderer.invoke('answers:draft', payload),
+  checkResumeParseable: (originalPath, originalExt) =>
+    ipcRenderer.invoke('resume:checkParseable', originalPath, originalExt),
 
   // Applications history
   getApplications: (filters) => ipcRenderer.invoke('db:getApplications', filters),

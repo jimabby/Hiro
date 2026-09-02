@@ -871,4 +871,59 @@ function createSelectorProbe(platform) {
   }
 }
 
-module.exports = { randomUserAgent, randomDelay, humanType, stripMarkdown, verifySubmission, confirmSubmission, detectBlock, blockReason, BlockedError, gotoResultsPage, buildResumePDF, buildResumeDocx, buildCoverLetterPDF, buildAnalyticsReportPDF, tailorDocx, buildResumeFile, createSelectorProbe }
+
+// ─── Network egress ──────────────────────────────────────────────────────
+//
+// Every browser Hiro launches goes through here.
+//
+// automationHealth can already tell when a platform has started refusing us,
+// and it responds the only way it could: by backing off and waiting. That is the
+// right default and it is the whole of the toolkit — there was no lever for
+// "route this somewhere else". For anyone on a residential connection that a job
+// board has decided it does not like, or on a corporate network whose only route
+// out is a proxy, Hiro simply did not work and there was nothing to configure.
+//
+// Deliberately plain: one proxy, applied to every launch. Rotating pools and
+// per-platform routing are what a scraping operation needs; this is one person
+// looking for a job, and the failure this fixes is "cannot reach the site at
+// all", not "not enough throughput".
+//
+// The credentials go to Chromium, not to the site — Playwright passes them to
+// the proxy's own auth. They are stored encrypted like every other secret; see
+// the SECRET_KEYS list in services/config.js.
+function proxyFor(cfg) {
+  if (!cfg?.proxyEnabled) return null
+  const server = String(cfg.proxyServer || '').trim()
+  if (!server) return null
+  const proxy = { server }
+  if (cfg.proxyUsername) proxy.username = String(cfg.proxyUsername)
+  if (cfg.proxyPassword) proxy.password = String(cfg.proxyPassword)
+  // Chromium wants a comma-separated list; accept newlines too, because a list
+  // of hosts is something people paste.
+  const bypass = String(cfg.proxyBypass || '').split(/[\s,]+/).filter(Boolean).join(',')
+  if (bypass) proxy.bypass = bypass
+  return proxy
+}
+
+// Merge the configured proxy into a Playwright launch. Call it at every
+// chromium.launch() site rather than threading a proxy argument through each
+// scraper: a launch that quietly skipped this would send traffic out of the
+// wrong interface, which is exactly the thing the setting exists to prevent,
+// and it would do so invisibly.
+//
+// `cfg` is optional. The session helpers have one; the scrapers that do not are
+// given the saved config, which is the same thing they would have read anyway.
+function launchOptions(options = {}, cfg = null) {
+  const config = cfg || safeConfig()
+  const proxy = proxyFor(config)
+  return proxy ? { ...options, proxy } : options
+}
+
+// The scrapers run inside the main process and can read config directly, but
+// this file is also required by tests that stub nothing. A failed read means no
+// proxy, never a failed launch.
+function safeConfig() {
+  try { return require('../config').load() } catch { return null }
+}
+
+module.exports = { randomUserAgent, randomDelay, humanType, stripMarkdown, verifySubmission, confirmSubmission, detectBlock, blockReason, BlockedError, gotoResultsPage, buildResumePDF, buildResumeDocx, buildCoverLetterPDF, buildAnalyticsReportPDF, tailorDocx, buildResumeFile, createSelectorProbe, launchOptions, proxyFor }
