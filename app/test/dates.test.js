@@ -4,7 +4,7 @@
 // through Date objects can be knocked off by an hour of DST.
 
 const { createChecker } = require('./helpers')
-const { localDateIn, todayLocal, describeDue, isOverdue, isDueOrOverdue } = require('../src/dates')
+const { localDateIn, todayLocal, describeDue, isOverdue, isDueOrOverdue, daysBetweenDates } = require('../src/dates')
 
 const { check, done } = createChecker()
 
@@ -61,5 +61,36 @@ check('due-or-overdue includes today', isDueOrOverdue('2026-08-06', '2026-08-06'
 check('due-or-overdue includes the past', isDueOrOverdue('2026-07-01', '2026-08-06'), true)
 check('due-or-overdue excludes the future', isDueOrOverdue('2026-08-07', '2026-08-06'), false)
 check('due-or-overdue on nothing booked is false', isDueOrOverdue(null), false)
+
+
+
+// ── daysBetweenDates ────────────────────────────────────────────────────
+// This is what fills an offer's daysToRespond on the cloud path, and it has to
+// produce the same number as the desktop's daysBetween() does on the LAN path —
+// otherwise the same offer reports a different urgency, and a different colour,
+// depending only on how the phone happened to be connected.
+
+check('same day is zero', daysBetweenDates('2026-09-05', '2026-09-05'), 0)
+check('forward is positive', daysBetweenDates('2026-09-05', '2026-09-08'), 3)
+check('backward is negative', daysBetweenDates('2026-09-08', '2026-09-05'), -3)
+check('across a month boundary', daysBetweenDates('2026-08-30', '2026-09-02'), 3)
+check('across a year boundary', daysBetweenDates('2026-12-30', '2027-01-02'), 3)
+// 2028 is a leap year, so February has 29 days.
+check('across a leap day', daysBetweenDates('2028-02-28', '2028-03-01'), 2)
+// A timestamp is truncated to its date rather than rejected — the desktop
+// stores respond_by as a plain date but nothing stops a longer string arriving.
+check('a timestamp is truncated to its date', daysBetweenDates('2026-09-05T23:00:00', '2026-09-06'), 1)
+// Null rather than NaN: a null is skipped by every caller, a NaN would colour a
+// deadline chip red for no reason.
+check('a missing side is null, not NaN', daysBetweenDates(null, '2026-09-05'), null)
+check('an empty string is null', daysBetweenDates('', '2026-09-05'), null)
+check('an unparseable date is null', daysBetweenDates('not-a-date', '2026-09-05'), null)
+
+// The property that matters is DST-independence: a span measured across a
+// clock change must still be a whole number of days. Checked against the
+// platform rather than a hardcoded answer so this cannot expire.
+for (const [from, to] of [['2026-03-27', '2026-04-03'], ['2026-10-23', '2026-10-30']]) {
+  check(`${from} to ${to} is exactly 7 days across a clock change`, daysBetweenDates(from, to), 7)
+}
 
 done()

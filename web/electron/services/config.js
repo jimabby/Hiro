@@ -393,6 +393,7 @@ const DEFAULTS = {
     review: true,       // drafts are waiting for approval
     newDevice: true,    // a device signed in to the account
     followUp: true,     // a pipeline next-action date came due
+    offerDeadline: true, // an offer's respond-by date is close
   },
   // How far ahead to warn about an interview, and how long to keep quiet
   // afterwards. Two reminders (a day out, an hour out) is the useful shape.

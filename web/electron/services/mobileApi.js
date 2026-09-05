@@ -608,6 +608,14 @@ async function handle(req, res) {
       return json(res, 200, database.getSalaryStats())
     }
 
+    // Read-only on purpose. The phone shows what the offers are and when they
+    // expire — the deadline is the reason this exists — but accepting or
+    // declining, and the negotiation draft, stay on the desktop. Those are not
+    // decisions to take one-handed on a train.
+    if (req.method === 'GET' && path === '/api/offers') {
+      return json(res, 200, database.getOffers())
+    }
+
     if (req.method === 'GET' && path === '/api/perday') {
       const days = Math.min(90, Math.max(1, Number(url.searchParams.get('days')) || 7))
       return json(res, 200, database.getApplicationsPerDay(days))

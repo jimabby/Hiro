@@ -191,9 +191,16 @@ async function doRun(cfg, { log, notifyAttention }) {
   // Per-platform ceiling on drafts held for review in a day. 0 disables it,
   // which restores the old unbounded behaviour for anyone who wants it.
   const draftLimit = Number.isFinite(Number(cfg.dailyDraftLimit)) ? Number(cfg.dailyDraftLimit) : 20
+  // `cancelled` rides on every summary, not just the ones produced by a cancel
+  // check. run() honours cancel() by RETURNING rather than throwing, so without
+  // this the caller cannot tell an aborted run from a finished one — and
+  // scheduler's finally, seeing no error, recorded the abort as a clean success,
+  // stamped lastScanAt, and announced "Scan complete" over a scan the user had
+  // just stopped. Read at the moment the summary is built, so a cancel that
+  // lands mid-unwind is still reflected.
   const summary = () => (cfg.dryRun
-    ? { dryRun: true, scores: dryScores, wouldApply: dryWouldApply, threshold: cfg.matchThreshold, blocked, paused, scoringFailures, budgetStopped }
-    : { dryRun: false, found: foundCount, applied: batchCount, held: heldCount, blocked, paused, scoringFailures, budgetStopped })
+    ? { dryRun: true, cancelled, scores: dryScores, wouldApply: dryWouldApply, threshold: cfg.matchThreshold, blocked, paused, scoringFailures, budgetStopped }
+    : { dryRun: false, cancelled, found: foundCount, applied: batchCount, held: heldCount, blocked, paused, scoringFailures, budgetStopped })
 
   for (const { name, scraper, limit } of scrapers) {
     if (cancelled || batchAttempts >= batchLimit) { if (cancelled) log('Scan cancelled.'); return summary() }

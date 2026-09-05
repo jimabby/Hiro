@@ -13,6 +13,7 @@ let rows = []
 // current set and deletes whatever the cloud still has that no longer exists.
 let interviewRows = []
 let attentionRows = []
+let offerRows = []
 // Local ids the desktop recorded as deleted. This is the ONLY thing that may
 // cause a cloud row to be removed — see the restore/delete tests below.
 let tombstones = []
@@ -33,6 +34,9 @@ const db = {
   markCloudSeen: (id, cloudUpdatedAt) => { const r = byId(id); if (r) r.cloud_updated_at = cloudUpdatedAt },
   getAllInterviewEventsForSync: () => interviewRows,
   getAttentionJobs: () => attentionRows,
+  // Shaped like the real getOffers(): a summary object wrapping the rows, with
+  // the derived fields the desktop computes before the mirror sees them.
+  getOffers: () => ({ offers: offerRows }),
   countApplications: () => rows.length,
   // Mirrors the real query: a tombstone for a row that exists again is not a
   // deletion.
@@ -132,7 +136,7 @@ const { check, done } = createChecker()
 
 const reset = () => {
   upserted = []; deletedLocalIds = []; upsertedBy = {}; keptBy = {}
-  interviewRows = []; attentionRows = []; missingTables = new Set(); rlsTables = new Set()
+  interviewRows = []; attentionRows = []; offerRows = []; missingTables = new Set(); rlsTables = new Set()
 }
 
 ;(async () => {
@@ -254,6 +258,14 @@ check('edit not echoed back as a push', (upsertedBy.applications || []).length, 
     talking_points: '[]', reason: 'Requires manual application', closing_date: null,
     found_at: '2026-08-01 09:00:00',
   }]
+  offerRows = [{
+    application_id: 3, job_title: 'Staff Engineer', company: 'Northwind', platform: 'Seek',
+    base_salary: 180000, bonus: 20000, currency: 'AUD', equity: '0.1%',
+    respond_by: '2026-09-12', start_date: '2026-10-01', decision: 'considering',
+    excitement: 4, location: 'Sydney', remote: 'Hybrid',
+    pros: 'Good team', cons: 'Long commute', notes: 'Ask about the on-call rota',
+    totalComp: 200000, comparableComp: 200000, compIsAdvertised: false,
+  }]
   await cloudSync.sync()
 
   check('sync completed without error', cloudSync.getStatus().error, null)
@@ -263,6 +275,31 @@ check('edit not echoed back as a push', (upsertedBy.applications || []).length, 
   check('interview keeps the desktop local time', upsertedBy.interview_events?.[0]?.scheduled_at, '2026-08-14 14:30:00')
   check('attention job mirrored to cloud', upsertedBy.attention_jobs?.[0]?.local_id, 9)
   check('attention job carries parsed salary', upsertedBy.attention_jobs?.[0]?.salary_min, 150000)
+
+  // Offers are mirrored for one reason above the rest: respond_by is the only
+  // externally-imposed deadline in Hiro, and the phone could not see it at all.
+  const offer = upsertedBy.offers?.[0]
+  check('offer mirrored to cloud', offer?.local_id, 3)
+  check('offer resolves to its application', offer?.application_local_id, 3)
+  // The deadline, the decision and the rating stay in the clear: the phone has
+  // to sort and colour by the deadline before it can decrypt anything, and none
+  // of the three says who the offer is from or what it is worth.
+  check('the deadline is readable without the key', offer?.respond_by, '2026-09-12')
+  check('so is the decision', offer?.decision, 'considering')
+  check('and the excitement rating', offer?.excitement, 4)
+  // This harness has no cloudDataKey, so it exercises the UNENCRYPTED path —
+  // the same one the other two mirrors are checked on above. Encryption is
+  // covered by cross-platform-crypto.test.js; what matters here is that the
+  // figures survive the round trip intact rather than arriving mangled.
+  check('the employer travels', offer?.company, 'Northwind')
+  check('the role travels', offer?.job_title, 'Staff Engineer')
+  check('the base salary travels', offer?.base_salary, 180000)
+  check('the comparable total travels', offer?.comparable_comp, 200000)
+  check('no envelope without a data key', offer?.encrypted_meta, null)
+  // Presenting an advertised range as though it were an offer is the one
+  // failure here that would actively mislead, so the flag is never dropped.
+  check('whether the figure is advertised is never hidden', offer?.comp_is_advertised, false)
+  check('mirror keeps only current offer ids', keptBy.offers, [3])
   // Anything the cloud still holds that isn't in the local set is removed.
   check('mirror keeps only current interview ids', keptBy.interview_events, [5])
   check('mirror keeps only current attention ids', keptBy.attention_jobs, [9])

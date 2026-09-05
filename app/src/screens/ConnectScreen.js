@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   KeyboardAvoidingView, Platform, ScrollView,
@@ -6,10 +6,15 @@ import {
 import { HiroClient, pairWithDesktop } from '../api'
 import QrPairScanner from './QrPairScanner'
 import { supabase, isConfigured } from '../supabase'
-import { colors, radius } from '../theme'
+import { radius, useTheme } from '../theme'
 import { deriveAccountKeys, setCloudKey } from '../cloudCrypto'
 
 export default function ConnectScreen({ onConnected }) {
+  // Palette and stylesheet follow the phone's appearance setting. Named
+  // `colors` so every inline reference below reads unchanged.
+  const colors = useTheme()
+  const styles = useMemo(() => makeStyles(colors), [colors])
+
   const [mode, setMode] = useState(isConfigured ? 'cloud' : 'lan')
   const [host, setHost] = useState('')
   const [port, setPort] = useState('4823')
@@ -143,7 +148,9 @@ export default function ConnectScreen({ onConnected }) {
 
       {!!error && <Text style={styles.error}>{error}</Text>}
 
-      <TouchableOpacity style={[styles.button, busy && styles.buttonDisabled]} onPress={signInCloud} disabled={busy}>
+      <TouchableOpacity style={[styles.button, busy && styles.buttonDisabled]} onPress={signInCloud} disabled={busy}
+        accessibilityRole="button" accessibilityLabel="Sign in to your Hiro cloud account"
+        accessibilityState={{ disabled: busy, busy }}>
         <Text style={styles.buttonText}>{busy ? 'Signing in…' : 'Sign in'}</Text>
       </TouchableOpacity>
 
@@ -162,6 +169,10 @@ export default function ConnectScreen({ onConnected }) {
         style={[styles.button, busy && styles.buttonDisabled, { marginBottom: 14 }]}
         onPress={() => { setError(''); setScanning(true) }}
         disabled={busy}
+        accessibilityRole="button"
+        accessibilityLabel="Scan the QR code"
+        accessibilityHint="Opens the camera to read the pairing code shown on your desktop"
+        accessibilityState={{ disabled: busy }}
       >
         <Text style={styles.buttonText}>Scan the QR code</Text>
       </TouchableOpacity>
@@ -182,6 +193,9 @@ export default function ConnectScreen({ onConnected }) {
         style={[styles.button, busy && styles.buttonDisabled, { marginBottom: 22 }]}
         onPress={() => pair()}
         disabled={busy}
+        accessibilityRole="button"
+        accessibilityLabel="Pair using the typed code"
+        accessibilityState={{ disabled: busy, busy }}
       >
         <Text style={styles.buttonText}>{busy ? 'Pairing…' : 'Pair with code'}</Text>
       </TouchableOpacity>
@@ -225,7 +239,9 @@ export default function ConnectScreen({ onConnected }) {
 
         {!!error && <Text style={styles.error}>{error}</Text>}
 
-        <TouchableOpacity style={[styles.button, busy && styles.buttonDisabled]} onPress={connect} disabled={busy}>
+        <TouchableOpacity style={[styles.button, busy && styles.buttonDisabled]} onPress={connect} disabled={busy}
+          accessibilityRole="button" accessibilityLabel="Connect to the desktop"
+          accessibilityState={{ disabled: busy, busy }}>
           <Text style={styles.buttonText}>{busy ? 'Connecting…' : 'Connect'}</Text>
         </TouchableOpacity>
 
@@ -241,16 +257,24 @@ export default function ConnectScreen({ onConnected }) {
         <Text style={styles.logo}>Hiro</Text>
 
         {isConfigured && (
-          <View style={styles.toggle}>
+          <View style={styles.toggle} accessibilityRole="radiogroup" accessibilityLabel="How to connect">
             <TouchableOpacity
               style={[styles.toggleBtn, mode === 'cloud' && styles.toggleActive]}
               onPress={() => { setMode('cloud'); setError('') }}
+              accessibilityRole="radio"
+              accessibilityLabel="Cloud account"
+              accessibilityHint="Works anywhere, using the account you signed into on the desktop"
+              accessibilityState={{ selected: mode === 'cloud', checked: mode === 'cloud' }}
             >
               <Text style={[styles.toggleText, mode === 'cloud' && styles.toggleTextActive]}>Cloud account</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.toggleBtn, mode === 'lan' && styles.toggleActive]}
               onPress={() => { setMode('lan'); setError('') }}
+              accessibilityRole="radio"
+              accessibilityLabel="Desktop over Wi-Fi"
+              accessibilityHint="Talks straight to your computer; both must be on the same network"
+              accessibilityState={{ selected: mode === 'lan', checked: mode === 'lan' }}
             >
               <Text style={[styles.toggleText, mode === 'lan' && styles.toggleTextActive]}>Desktop (Wi-Fi)</Text>
             </TouchableOpacity>
@@ -278,30 +302,31 @@ export default function ConnectScreen({ onConnected }) {
   )
 }
 
-const styles = StyleSheet.create({
+// Rebuilt per palette — see useTheme() in ../theme.
+const makeStyles = (c) => StyleSheet.create({
   container: { flexGrow: 1, justifyContent: 'center', padding: 28 },
-  logo: { fontSize: 34, fontWeight: '700', color: colors.accent, textAlign: 'center', marginBottom: 16 },
+  logo: { fontSize: 34, fontWeight: '700', color: c.accent, textAlign: 'center', marginBottom: 16 },
   toggle: {
-    flexDirection: 'row', backgroundColor: colors.surface2, borderRadius: radius,
+    flexDirection: 'row', backgroundColor: c.surface2, borderRadius: radius,
     padding: 4, marginBottom: 22,
   },
   toggleBtn: { flex: 1, paddingVertical: 9, alignItems: 'center', borderRadius: radius - 2 },
-  toggleActive: { backgroundColor: colors.accent },
-  toggleText: { color: colors.textMuted, fontSize: 13, fontWeight: '600' },
+  toggleActive: { backgroundColor: c.accent },
+  toggleText: { color: c.textMuted, fontSize: 13, fontWeight: '600' },
   toggleTextActive: { color: '#fff' },
-  subtitle: { color: colors.textMuted, fontSize: 13, textAlign: 'center', marginBottom: 28, lineHeight: 19 },
-  label: { color: colors.textMuted, fontSize: 12, fontWeight: '500', marginBottom: 4 },
+  subtitle: { color: c.textMuted, fontSize: 13, textAlign: 'center', marginBottom: 28, lineHeight: 19 },
+  label: { color: c.textMuted, fontSize: 12, fontWeight: '500', marginBottom: 4 },
   input: {
-    backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: c.surface2, borderWidth: 1, borderColor: c.border,
     borderRadius: radius, paddingHorizontal: 12, paddingVertical: 10,
-    color: colors.text, fontSize: 14, marginBottom: 16,
+    color: c.text, fontSize: 14, marginBottom: 16,
   },
-  error: { color: colors.red, fontSize: 13, marginBottom: 12 },
+  error: { color: c.red, fontSize: 13, marginBottom: 12 },
   button: {
-    backgroundColor: colors.accent, borderRadius: radius,
+    backgroundColor: c.accent, borderRadius: radius,
     paddingVertical: 13, alignItems: 'center', marginTop: 4,
   },
   buttonDisabled: { opacity: 0.5 },
   buttonText: { color: '#fff', fontSize: 15, fontWeight: '600' },
-  hint: { color: colors.textMuted, fontSize: 12, textAlign: 'center', marginTop: 18 },
+  hint: { color: c.textMuted, fontSize: 12, textAlign: 'center', marginTop: 18 },
 })

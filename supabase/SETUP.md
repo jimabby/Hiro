@@ -63,6 +63,8 @@ added alongside. Re-running is needed if your project predates:
 - `delete_account()` — in-app account deletion (required for App Store release)
 - `interview_events` — the phone's Upcoming Interviews panel
 - `attention_jobs` — the phone's Needs Attention list and its count tile
+- `offers` — the phone's Offers board, and the deadline notifications that go
+  with it
 - `applications.salary_min` / `salary_max` — normalised salary, so the phone
   sorts and filters on pay the same way the desktop does
 - `devices` — the device list, so every desktop and phone signed in to the
@@ -127,7 +129,7 @@ exists`, every column is `add column if not exists`, and every policy is dropped
 before it is created. Running it again against an existing project is safe and is
 how new columns arrive.
 
-Two additions need it, and both degrade gracefully until you do:
+Three additions need it, and all of them degrade gracefully until you do:
 
 **`encrypted_meta`** (on `applications`, `interview_events`, `attention_jobs`).
 The documents were always encrypted before upload; the fields that *identify* an
@@ -148,3 +150,23 @@ be checked rather than trusted.
 
 **`applications.status`** also gains `withdrawn`. The check constraint is dropped
 and recreated, so re-running is what allows the phone and desktop to write it.
+
+**`offers`.** The Offers board, mirrored so the phone can read it. It is here for
+one reason above the others: `respond_by` is the only externally-imposed deadline
+anywhere in Hiro. Every other date the apps track is one Hiro chose (a scheduled
+scan, a follow-up you booked) or one that is advisory (a job ad's closing date).
+Miss a respond_by and the offer is gone — and until this table existed, the page
+built entirely around hoisting whichever deadline expires first could only be read
+on the machine at home.
+
+Desktop-owned and read-only on the phone, like `interview_events` and
+`attention_jobs`. The deadline, the decision and the excitement rating are stored
+in the clear, because the phone has to sort and colour by the deadline before it
+can decrypt anything, and none of the three says who the offer is from or what it
+is worth. Everything else — the base, the bonus, the employer, and your own pros,
+cons and notes — goes inside `encrypted_meta`. That is a deliberate step up from
+how an application's salary band is treated: a band is what an employer published,
+whereas a base and bonus are what somebody is privately willing to pay *you*.
+
+Without this table the desktop skips the mirror quietly and the phone's Offers tab
+shows an empty board. Nothing else is affected.

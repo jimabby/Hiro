@@ -363,7 +363,13 @@ export default function Review({ active, showToast, onCountChange }) {
           </div>
         </div>
       ) : (
+        // overflow: hidden on the card is what rounds the corners of the
+        // table's first and last rows — but it also CLIPPED anything wider than
+        // the card, and at the 900px minimum window width that is the rightmost
+        // column, unreachable with no scrollbar to hint it was there. The clip
+        // stays for the corners; the scrolling happens on the wrapper inside it.
         <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+          <div className="table-wrap">
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ background: 'var(--surface2)', textAlign: 'left' }}>
@@ -421,6 +427,7 @@ export default function Review({ active, showToast, onCountChange }) {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 

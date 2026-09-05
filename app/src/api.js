@@ -186,6 +186,17 @@ export class HiroClient {
     }
   }
 
+  // Live offers and their deadlines. Read-only: accepting, declining and the
+  // negotiation draft stay on the desktop. An older desktop build has no such
+  // route, so a 404 resolves to an empty board rather than an error.
+  async getOffers() {
+    try {
+      return await this.request('/api/offers')
+    } catch {
+      return { offers: [], live: 0, best: null, spread: null, nextDeadline: null }
+    }
+  }
+
   // Queue a scan on the desktop. `opts` may include { keywords, location } to
   // override the desktop's saved search for this run.
   requestScan(opts = {}) {

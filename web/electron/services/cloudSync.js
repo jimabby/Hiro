@@ -545,7 +545,12 @@ function isMissingTable(error, table) {
   ).test(msg)
 }
 
-async function mirrorTable(c, table, rows, toCloud) {
+// `localId` says where a row's local id lives. It defaults to `r.id`, which is
+// right for every table with an id column of its own — but the offers table is
+// keyed by application_id and has no `id`, so without this the keep-list below
+// was built from undefined and the delete removed every mirrored row on each
+// pass, immediately after upserting it.
+async function mirrorTable(c, table, rows, toCloud, localId = (r) => r.id) {
   const payload = rows.map(toCloud)
   if (payload.length > 0) {
     for (let i = 0; i < payload.length; i += 200) {
@@ -559,7 +564,7 @@ async function mirrorTable(c, table, rows, toCloud) {
 
   // Remove cloud rows whose local counterpart is gone. `not in` with an empty
   // list is invalid, so an empty local set is a plain delete-all instead.
-  const keep = rows.map(r => r.id)
+  const keep = rows.map(localId)
   let del = c.from(table).delete().eq('user_id', user.id)
   if (keep.length > 0) del = del.not('local_id', 'in', `(${keep.join(',')})`)
   const { error: delErr } = await del
@@ -631,6 +636,73 @@ async function pushAttentionJobs(c) {
       updated_at: new Date().toISOString(),
     }
   })
+}
+
+// Offers are desktop-owned in the same way, and mirrored for one reason above
+// all: respond_by is the only externally-imposed deadline in Hiro, and missing
+// it loses the offer. A page built entirely around hoisting the deadline that
+// expires first was, until now, only readable on the machine at home.
+//
+// Everything identifying travels inside the envelope, and so do the money
+// figures. A salary band on an application is what an employer advertised
+// publicly; an offer's base and bonus are what somebody is privately willing to
+// pay THIS person, which is a materially more sensitive disclosure — and pros,
+// cons and notes are the user's own candid writing about an employer.
+//
+// respond_by, decision and excitement stay in the clear: the phone has to sort
+// and colour by the deadline before it can decrypt anything, and none of the
+// three says who the offer is from or what it is worth.
+async function pushOffers(c) {
+  // getOffers() joins offers to applications, and a desktop whose schema
+  // predates the offers table has nothing to join. mirrorTable already skips a
+  // table the CLOUD lacks; this is the same tolerance for the local side.
+  // Without it a throw here aborts the whole sync pass — including
+  // registerDevice() and the new-device check, which run after the mirrors.
+  let rows
+  try {
+    rows = database.getOffers().offers
+  } catch {
+    return { skipped: true }
+  }
+  const dataKey = configService.load().cloudDataKey
+  return mirrorTable(c, 'offers', rows, (o) => {
+    const meta = encryptMeta(dataKey, {
+      job_title: o.job_title || '', company: o.company || '',
+      job_url: o.job_url || '', currency: o.currency || '',
+      base_salary: o.base_salary ?? null, bonus: o.bonus ?? null,
+      equity: o.equity || '', location: o.location || '',
+      remote: o.remote || '', pros: o.pros || '', cons: o.cons || '',
+      notes: o.notes || '',
+      total_comp: o.totalComp ?? null,
+      comparable_comp: o.comparableComp ?? null,
+    })
+    return {
+      user_id: user.id,
+      // The offers table is keyed by application_id rather than an id of its
+      // own, so that IS the local id — which also lets the phone open the
+      // application a notification names.
+      local_id: o.application_id,
+      application_local_id: o.application_id,
+      job_title: meta ? REDACTED : (o.job_title || ''),
+      company: meta ? REDACTED : (o.company || ''),
+      platform: o.platform || '',
+      currency: meta ? '' : (o.currency || ''),
+      base_salary: meta ? null : (o.base_salary ?? null),
+      bonus: meta ? null : (o.bonus ?? null),
+      comparable_comp: meta ? null : (o.comparableComp ?? null),
+      // Whether the figure above is an offer or an advert. Never hidden: showing
+      // an advertised range as though it were an offer is the one failure on
+      // this page that would actively mislead, so the flag has to survive
+      // encryption even when the number itself does not.
+      comp_is_advertised: !!o.compIsAdvertised,
+      respond_by: o.respond_by || null,
+      start_date: o.start_date || null,
+      decision: o.decision || 'considering',
+      excitement: o.excitement ?? null,
+      encrypted_meta: meta,
+      updated_at: new Date().toISOString(),
+    }
+  }, (o) => o.application_id)
 }
 
 // Pick up scan requests the phone queued via the cloud (scan_requests table):
@@ -1077,15 +1149,16 @@ async function sync() {
     // lands alongside an application row the phone can already resolve.
     await pushInterviews(c)
     await pushAttentionJobs(c)
+    await pushOffers(c)
     await pollScanRequests(c)
     await pollReviewRequests(c)
     await registerDevice(c)
     // Reading the list back is also how a new device on the account is noticed;
     // never let that reporting break a sync that otherwise succeeded.
     try { await announceNewDevices(await listDevices()) } catch { /* best-effort */ }
-    // Clock-driven notifications (interview reminders, closing dates, the review
-    // queue) piggyback on the sync timer rather than owning one — the dedupe
-    // ledger makes running them often free.
+    // Clock-driven notifications (interview reminders, offer deadlines, closing
+    // dates, the review queue) piggyback on the sync timer rather than owning
+    // one — the dedupe ledger makes running them often free.
     try { await require('./push').runDueChecks() } catch { /* best-effort */ }
     lastError = null
     configService.update({ lastCloudSyncAt: new Date().toISOString() })

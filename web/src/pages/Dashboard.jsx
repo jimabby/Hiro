@@ -766,6 +766,39 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
         </div>
       )}
 
+      {/* A scan the user stopped. Sits above the failure banner and is styled
+          apart from it on purpose: `lastScanOk` is false for a cancel, but
+          nothing went wrong — the run simply never finished, so the market was
+          not swept and whatever the page says about "today" is short of what a
+          full scan would have found. Neutral grey, not red: presenting a
+          deliberate choice as a fault is exactly what the old code did when it
+          reported this as a clean success by another route. */}
+      {scanInfo?.lastScanCancelled && !scanRunning && scanInfo.lastScanEndedAt !== dismissedScanAt && (
+        <div className="card" style={{
+          marginBottom: 16, padding: '12px 16px', display: 'flex',
+          alignItems: 'center', justifyContent: 'space-between', gap: 12,
+          borderLeft: '3px solid var(--border-strong)',
+        }}>
+          <div style={{ fontSize: 13 }}>
+            <span style={{ fontWeight: 600 }}>Last scan was cancelled</span>
+            <span style={{ color: 'var(--text-muted)' }}>
+              {scanInfo.lastScanEndedAt ? ` · ${new Date(scanInfo.lastScanEndedAt).toLocaleString()}` : ''}
+              {' — it stopped partway, so it did not finish reading the market.'}
+            </span>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+            <button className="btn" style={{ fontSize: 12, padding: '4px 10px' }}
+              onClick={onScanStart} disabled={scanRunning}>
+              Run it again
+            </button>
+            <button className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }}
+              onClick={() => setDismissedScanAt(scanInfo.lastScanEndedAt)}>
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Last-scan outcome. A toast is easy to miss and disappears — a failed
           overnight scan should still be visible the next morning. */}
       {scanInfo?.lastScanError && !scanRunning && scanInfo.lastScanAt !== dismissedScanAt && (

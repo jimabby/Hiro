@@ -49,4 +49,20 @@ function isDueOrOverdue(date, today = todayLocal()) {
   return String(date).slice(0, 10) <= today
 }
 
-module.exports = { localDateIn, todayLocal, describeDue, isOverdue, isDueOrOverdue }
+// Whole days from one local YYYY-MM-DD to another. Mirrors daysBetween() in
+// web/electron/services/database.js, which is what fills daysToRespond on an
+// offer over the LAN — the cloud path has to compute the same number from the
+// same two dates or an offer would report a different urgency depending on how
+// the phone happened to be connected.
+//
+// Returns null rather than NaN for an unparseable date: a null is skipped by
+// every caller, a NaN colours a deadline chip red for no reason.
+function daysBetweenDates(from, to) {
+  if (!from || !to) return null
+  const a = new Date(`${String(from).slice(0, 10)}T00:00:00`).getTime()
+  const b = new Date(`${String(to).slice(0, 10)}T00:00:00`).getTime()
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null
+  return Math.round((b - a) / 86400000)
+}
+
+module.exports = { localDateIn, todayLocal, describeDue, isOverdue, isDueOrOverdue, daysBetweenDates }

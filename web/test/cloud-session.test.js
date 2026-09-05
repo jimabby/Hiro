@@ -57,6 +57,7 @@ stub({
     getAllApplicationIds: () => [],
     getAllInterviewEventsForSync: () => [],
     getAttentionJobs: () => [],
+    getOffers: () => ({ offers: [] }),
     countApplications: () => 0,
     getTombstones: () => [],
     clearTombstones: () => {},

@@ -366,3 +366,71 @@ do $$ begin
   alter table public.applications add constraint applications_status_valid
     check (status in ('applied','interview','offer','rejected','pending','no_response','skipped','held','withdrawn')) not valid;
 exception when duplicate_object then null; end $$;
+
+-- ─── Offers ──────────────────────────────────────────────────────────────────
+--
+-- Mirrored for one reason above all the others: `respond_by` is the only
+-- externally-imposed deadline anywhere in Hiro. Every other date the apps track
+-- is one Hiro chose (a scheduled scan, a follow-up you booked) or one that is
+-- advisory (a job ad's closing date, which mostly means "we will stop reading
+-- applications"). Miss a respond_by and the offer is gone. Until this table
+-- existed, the page built entirely around hoisting whichever deadline expires
+-- first could only be read on the machine at home.
+--
+-- Desktop-owned, like interview_events and attention_jobs: the phone reads and
+-- never writes. Accepting, declining and the negotiation draft stay on the
+-- desktop — those are not decisions to take one-handed on a train.
+--
+-- Keyed by the application's local id, because the desktop's `offers` table is
+-- itself keyed by application_id rather than carrying an id of its own. That
+-- also lets a notification naming an application resolve straight to its offer.
+create table if not exists public.offers (
+  id                  uuid primary key default gen_random_uuid(),
+  user_id             uuid not null references auth.users (id) on delete cascade,
+  local_id            integer not null,   -- = the desktop's applications.id
+  application_local_id integer not null,
+  job_title           text,
+  company             text,
+  platform            text,
+  -- Money. Written NULL whenever encrypted_meta is present — see the note
+  -- below on why these are treated as more sensitive than an advertised band.
+  currency            text,
+  base_salary         integer,
+  bonus               integer,
+  comparable_comp     integer,
+  -- Whether comparable_comp came from the offer or from the job advert. Never
+  -- encrypted, even when the figure is: presenting an advertised range as
+  -- though it were an offer is the one failure on this page that would actively
+  -- mislead, so the flag has to survive when the number does not.
+  comp_is_advertised  boolean default false,
+  -- Left in the clear on purpose. The phone has to sort and colour by the
+  -- deadline before it can decrypt anything, and a bare date, a decision word
+  -- and a 0–5 rating say neither who the offer is from nor what it is worth.
+  respond_by          text,
+  start_date          text,
+  decision            text default 'considering',
+  excitement          integer,
+  encrypted_meta      text,
+  updated_at          timestamptz default now(),
+  unique (user_id, local_id)
+);
+
+alter table public.offers enable row level security;
+
+drop policy if exists "own offers" on public.offers;
+create policy "own offers" on public.offers
+  for all
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+-- The phone's only ordering: soonest deadline first among live offers.
+create index if not exists idx_offers_user_respond_by
+  on public.offers (user_id, respond_by);
+
+-- The base, the bonus and the user's own pros/cons/notes travel inside the same
+-- envelope as everything else identifying — and they are a step more sensitive
+-- than an application's salary band. That band is what an employer advertised
+-- publicly; these are what somebody is privately willing to pay THIS person,
+-- alongside candid writing about an employer that was never meant to leave the
+-- machine.
+alter table public.offers add column if not exists encrypted_meta text;

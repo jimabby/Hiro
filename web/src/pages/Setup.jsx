@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import HiroLogo from '../components/HiroLogo'
 
 const STEPS = ['AI Provider', 'Email', 'Job Criteria', 'Resume', 'Review']
@@ -32,6 +32,11 @@ export default function Setup({ onComplete }) {
   const [testResult, setTestResult] = useState(null)
   const [saving, setSaving] = useState(false)
   const [validationErrors, setValidationErrors] = useState([])
+  // The validation-error region, so a failed Continue can put the reader on it.
+  const errorRef = useRef(null)
+  useEffect(() => {
+    if (validationErrors.length > 0) errorRef.current?.focus()
+  }, [validationErrors])
 
   const set = (key, val) => { setForm(f => ({ ...f, [key]: val })); setTestResult(null); setValidationErrors([]) }
 
@@ -153,11 +158,13 @@ export default function Setup({ onComplete }) {
             <HiroLogo size={36} />
             <span style={{ fontSize: 28, fontWeight: 700, color: 'var(--accent)' }}>Hiro</span>
           </div>
-          <div style={{ color: 'var(--text-muted)' }}>Setup Wizard — {STEPS[step]} ({step + 1}/{STEPS.length})</div>
+          <div role="status" aria-live="polite" style={{ color: 'var(--text-muted)' }}>
+            Setup Wizard — {STEPS[step]} (step {step + 1} of {STEPS.length})
+          </div>
         </div>
 
         {/* Progress */}
-        <div style={{ display: 'flex', gap: 4, marginBottom: 28 }}>
+        <div aria-hidden="true" style={{ display: 'flex', gap: 4, marginBottom: 28 }}>
           {STEPS.map((label, i) => (
             <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
               <div style={{
@@ -243,7 +250,8 @@ export default function Setup({ onComplete }) {
                   {testing ? 'Testing...' : 'Test Connection'}
                 </button>
                 {testResult && (
-                  <span style={{ color: testResult.success ? 'var(--green)' : 'var(--red)', fontSize: 13 }}>
+                  <span role="status" aria-live="polite"
+                    style={{ color: testResult.success ? 'var(--green)' : 'var(--red)', fontSize: 13 }}>
                     {testResult.success ? '✓ Connected' : `✗ ${testResult.error}`}
                   </span>
                 )}
@@ -271,7 +279,8 @@ export default function Setup({ onComplete }) {
                   {testing ? 'Testing...' : 'Test Connection'}
                 </button>
                 {testResult && (
-                  <span style={{ color: testResult.success ? 'var(--green)' : 'var(--red)', fontSize: 13 }}>
+                  <span role="status" aria-live="polite"
+                    style={{ color: testResult.success ? 'var(--green)' : 'var(--red)', fontSize: 13 }}>
                     {testResult.success ? '✓ Connected' : `✗ ${testResult.error}`}
                   </span>
                 )}
@@ -401,9 +410,23 @@ export default function Setup({ onComplete }) {
             </div>
           )}
 
-          {/* Validation errors */}
+          {/* Validation errors.
+          
+              This is the wizard's only blocking interaction — press Continue
+              with a required field empty and you are stopped here. Setup renders
+              INSTEAD of the app shell, so the toast stack and its live regions
+              do not exist yet; without role="alert" the reason was on screen and
+              never spoken, and focus stayed on a button that appeared to do
+              nothing. tabIndex={-1} makes the region a focus target so
+              nextStep() can move the reader to it. */}
           {validationErrors.length > 0 && (
-            <div style={{ marginTop: 12, padding: '8px 12px', background: 'var(--red-soft)', borderRadius: 8 }}>
+            <div
+              ref={errorRef}
+              tabIndex={-1}
+              role="alert"
+              aria-live="assertive"
+              style={{ marginTop: 12, padding: '8px 12px', background: 'var(--red-soft)', borderRadius: 8, outlineOffset: 2 }}
+            >
               {validationErrors.map((err, i) => (
                 <div key={i} style={{ fontSize: 12, color: 'var(--red)', marginBottom: i < validationErrors.length - 1 ? 4 : 0 }}>{err}</div>
               ))}

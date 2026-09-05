@@ -1,10 +1,16 @@
-import { useState, useEffect, useCallback } from 'react'
-import { View, Text, ScrollView, RefreshControl, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, Linking, Platform } from 'react-native'
-import { colors, radius, statusColors } from '../theme'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { View, Text, ScrollView, RefreshControl, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, Linking, Platform, AppState } from 'react-native'
+import { radius, statusLabel, useTheme, useStatusColors } from '../theme'
 import { describeDue, isOverdue } from '../components/NextAction'
 import { enqueue, flush, getPending } from '../scanQueue'
 
 export default function DashboardScreen({ client }) {
+  // Palette and stylesheet follow the phone's appearance setting. Named
+  // `colors` so every inline reference below reads unchanged.
+  const colors = useTheme()
+  const styles = useMemo(() => makeStyles(colors), [colors])
+  const statusColors = useStatusColors()
+
   const [stats, setStats] = useState(null)
   const [perDay, setPerDay] = useState([])
   const [attention, setAttention] = useState([])
@@ -20,6 +26,9 @@ export default function DashboardScreen({ client }) {
   const [liveLog, setLiveLog] = useState([])
   const [cancelBusy, setCancelBusy] = useState(false)
   const [dueActions, setDueActions] = useState([])
+  // Set when the poll below has given up on an unreachable desktop, so the UI
+  // can say the connection was lost instead of showing a scan running forever.
+  const [scanPollLost, setScanPollLost] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -80,10 +89,35 @@ export default function DashboardScreen({ client }) {
   // Cloud mode polls status only, at a gentler rate (each tick is a Supabase
   // read); LAN talks straight to the desktop so 4s is cheap.
   const scanActive = !!(scanStatus?.running || scanStatus?.queued > 0)
+  // Cleared whenever a scan starts again, so giving up once does not poison the
+  // next scan's polling.
+  useEffect(() => { if (!scanActive) setScanPollLost(false) }, [scanActive])
+
+  // The phone's own foreground state. A 4-second network call has no business
+  // running behind a locked screen: iOS suspends JS timers soon after
+  // backgrounding but Android does not, so this used to keep polling — and
+  // draining the battery — for as long as the app stayed in memory.
+  const appActive = useRef(true)
+  const [foreground, setForeground] = useState(true)
   useEffect(() => {
-    if (!scanActive) return
+    const sub = AppState.addEventListener('change', (state) => {
+      appActive.current = state === 'active'
+      setForeground(state === 'active')
+    })
+    return () => sub.remove()
+  }, [])
+
+  useEffect(() => {
+    if (!scanActive || !foreground || scanPollLost) return
     let cancelled = false
     let finishing = false
+    // The exit condition is derived from scanStatus, and a failed tick used to
+    // leave the previous `running: true` in place — so a desktop that went away
+    // mid-scan (laptop closed, Wi-Fi dropped) left this spinning at 4s forever,
+    // with pull-to-refresh the only way out. Give up after a few consecutive
+    // failures and say so.
+    const MAX_CONSECUTIVE_FAILURES = 4
+    let failures = 0
     const tick = async () => {
       try {
         const [status, logs] = await Promise.all([
@@ -91,6 +125,7 @@ export default function DashboardScreen({ client }) {
           client.getLogs ? client.getLogs(40) : Promise.resolve(null),
         ])
         if (cancelled) return
+        failures = 0
         if (logs?.lines) setLiveLog(logs.lines)
         setScanStatus(status)
         // Scan finished — refresh stats/chart once so new applications show up.
@@ -98,12 +133,16 @@ export default function DashboardScreen({ client }) {
           finishing = true
           load()
         }
-      } catch { /* desktop went away mid-scan; pull-to-refresh recovers */ }
+      } catch {
+        if (cancelled) return
+        failures++
+        if (failures >= MAX_CONSECUTIVE_FAILURES) setScanPollLost(true)
+      }
     }
     const id = setInterval(tick, client.getLogs ? 4000 : 10000)
     tick()
     return () => { cancelled = true; clearInterval(id) }
-  }, [scanActive, client, load])
+  }, [scanActive, foreground, scanPollLost, client, load])
 
   async function onCancelScan() {
     setCancelBusy(true)
@@ -161,16 +200,33 @@ export default function DashboardScreen({ client }) {
           onChangeText={setKeywords}
           autoCapitalize="none"
         />
-        <TouchableOpacity style={[styles.scanBtn, scanBusy && { opacity: 0.6 }]} onPress={onRunScan} disabled={scanBusy}>
-          {scanBusy ? <ActivityIndicator color="#fff" /> : <Text style={styles.scanBtnText}>Run scan now</Text>}
+        <TouchableOpacity style={[styles.scanBtn, scanBusy && { opacity: 0.6 }]} onPress={onRunScan} disabled={scanBusy}
+          accessibilityRole="button" accessibilityLabel="Run a scan now"
+          accessibilityHint="Asks the desktop to search for jobs"
+          accessibilityState={{ disabled: scanBusy, busy: scanBusy }}>
+          {scanBusy
+            ? <ActivityIndicator color="#fff" accessibilityElementsHidden importantForAccessibility="no" />
+            : <Text style={styles.scanBtnText}>Run scan now</Text>}
         </TouchableOpacity>
         {scanStatus?.running && !!client.cancelScan && (
-          <TouchableOpacity style={[styles.cancelBtn, cancelBusy && { opacity: 0.6 }]} onPress={onCancelScan} disabled={cancelBusy}>
+          <TouchableOpacity style={[styles.cancelBtn, cancelBusy && { opacity: 0.6 }]} onPress={onCancelScan} disabled={cancelBusy}
+            accessibilityRole="button" accessibilityLabel="Cancel the running scan"
+            accessibilityHint="Stops the desktop partway; anything already submitted stays"
+            accessibilityState={{ disabled: cancelBusy, busy: cancelBusy }}>
             <Text style={styles.cancelBtnText}>{cancelBusy ? 'Cancelling…' : 'Cancel scan'}</Text>
           </TouchableOpacity>
         )}
         {pendingCount > 0 && <Text style={styles.pending}>{pendingCount} scan{pendingCount > 1 ? 's' : ''} waiting to send to the desktop</Text>}
-        {!!scanMsg && <Text style={styles.scanMsg}>{scanMsg}</Text>}
+        {!!scanMsg && <Text style={styles.scanMsg} accessibilityLiveRegion="polite">{scanMsg}</Text>}
+        {/* The poll gave up rather than spinning on an unreachable desktop.
+            Say which it is: "still scanning" and "I stopped being able to ask"
+            look identical otherwise, and only one of them is worth waiting on. */}
+        {scanPollLost && (
+          <Text style={styles.scanLost} accessibilityLiveRegion="polite">
+            Lost contact with the desktop, so this stopped checking. It may still be
+            scanning — pull down to refresh.
+          </Text>
+        )}
 
         {/* Live activity feed while a scan runs (LAN only — the log stays on
             the desktop; cloud mode shows the status line above instead) */}
@@ -268,7 +324,10 @@ export default function DashboardScreen({ client }) {
             <View style={styles.chart}>
               {perDay.length === 0 && <Text style={styles.muted}>No applications yet</Text>}
               {perDay.map(d => (
-                <View key={d.date} style={styles.chartRow}>
+                <View key={d.date} style={styles.chartRow}
+                  accessible
+                  accessibilityRole="text"
+                  accessibilityLabel={`${d.date}: ${d.count} application${d.count === 1 ? '' : 's'}`}>
                   <Text style={styles.chartLabel}>{d.date.slice(5)}</Text>
                   <View style={styles.chartTrack}>
                     <View style={[styles.chartBar, { width: `${(d.count / maxPerDay) * 100}%` }]} />
@@ -289,6 +348,14 @@ export default function DashboardScreen({ client }) {
                   style={styles.attentionRow}
                   disabled={!job.job_url}
                   onPress={() => job.job_url && Linking.openURL(job.job_url)}
+                  accessibilityRole="link"
+                  accessibilityLabel={
+                    `${job.job_title} at ${job.company}.`
+                    + `${job.reason ? ` ${job.reason}.` : ''}`
+                    + `${job.match_score != null ? ` ${job.match_score} percent match.` : ''}`
+                  }
+                  accessibilityHint={job.job_url ? 'Opens the posting in your browser' : undefined}
+                  accessibilityState={{ disabled: !job.job_url }}
                 >
                   <View style={{ flex: 1 }}>
                     <Text style={styles.attentionTitle} numberOfLines={1}>{job.job_title}</Text>
@@ -309,9 +376,10 @@ export default function DashboardScreen({ client }) {
           <View style={styles.card}>
             <Text style={styles.cardTitle}>By status</Text>
             {(stats.byStatus || []).map(s => (
-              <View key={s.status} style={styles.row}>
+              <View key={s.status} style={styles.row} accessibilityRole="text"
+                accessibilityLabel={`${statusLabel(s.status)}: ${s.count}`}>
                 <View style={[styles.dot, { backgroundColor: statusColors[s.status] || colors.textMuted }]} />
-                <Text style={styles.rowLabel}>{s.status}</Text>
+                <Text style={styles.rowLabel}>{statusLabel(s.status)}</Text>
                 <Text style={styles.rowValue}>{s.count}</Text>
               </View>
             ))}
@@ -334,6 +402,9 @@ export default function DashboardScreen({ client }) {
 }
 
 function StatCard({ label, value, accent }) {
+  const colors = useTheme()
+  const styles = useMemo(() => makeStyles(colors), [colors])
+
   return (
     <View style={styles.statCard}>
       <Text style={[styles.statValue, accent ? { color: accent } : null]}>{value}</Text>
@@ -342,62 +413,64 @@ function StatCard({ label, value, accent }) {
   )
 }
 
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.bg },
-  title: { fontSize: 22, fontWeight: '700', color: colors.text, marginBottom: 16 },
-  error: { color: colors.red, fontSize: 13, marginBottom: 12 },
+// Rebuilt per palette — see useTheme() in ../theme.
+const makeStyles = (c) => StyleSheet.create({
+  root: { flex: 1, backgroundColor: c.bg },
+  title: { fontSize: 22, fontWeight: '700', color: c.text, marginBottom: 16 },
+  error: { color: c.red, fontSize: 13, marginBottom: 12 },
   statRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
   statCard: {
-    flex: 1, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border,
+    flex: 1, backgroundColor: c.surface, borderWidth: 1, borderColor: c.border,
     borderRadius: radius, padding: 16, alignItems: 'center',
   },
-  statValue: { fontSize: 26, fontWeight: '700', color: colors.text },
-  statLabel: { fontSize: 11, color: colors.textMuted, marginTop: 4 },
+  statValue: { fontSize: 26, fontWeight: '700', color: c.text },
+  statLabel: { fontSize: 11, color: c.textMuted, marginTop: 4 },
   card: {
-    backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: c.surface, borderWidth: 1, borderColor: c.border,
     borderRadius: radius, padding: 16, marginTop: 10,
   },
-  cardTitle: { fontSize: 14, fontWeight: '600', color: colors.text, marginBottom: 12 },
-  muted: { color: colors.textMuted, fontSize: 13 },
+  cardTitle: { fontSize: 14, fontWeight: '600', color: c.text, marginBottom: 12 },
+  muted: { color: c.textMuted, fontSize: 13 },
   input: {
-    backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, borderRadius: radius,
-    color: colors.text, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, marginTop: 10,
+    backgroundColor: c.bg, borderWidth: 1, borderColor: c.border, borderRadius: radius,
+    color: c.text, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, marginTop: 10,
   },
   scanBtn: {
-    backgroundColor: colors.accent, borderRadius: radius, paddingVertical: 12,
+    backgroundColor: c.accent, borderRadius: radius, paddingVertical: 12,
     alignItems: 'center', marginTop: 10,
   },
   scanBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
   cancelBtn: {
-    borderWidth: 1, borderColor: colors.red, borderRadius: radius,
+    borderWidth: 1, borderColor: c.red, borderRadius: radius,
     paddingVertical: 10, alignItems: 'center', marginTop: 8,
   },
-  cancelBtnText: { color: colors.red, fontSize: 13, fontWeight: '600' },
+  cancelBtnText: { color: c.red, fontSize: 13, fontWeight: '600' },
   liveLog: {
-    backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: c.bg, borderWidth: 1, borderColor: c.border,
     borderRadius: radius, padding: 10, marginTop: 10, gap: 3,
   },
   liveLogLine: {
-    color: colors.textMuted, fontSize: 11, lineHeight: 15,
+    color: c.textMuted, fontSize: 11, lineHeight: 15,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
-  pending: { color: colors.yellow, fontSize: 12, marginTop: 10 },
-  scanMsg: { color: colors.textMuted, fontSize: 12, marginTop: 8 },
-  scanError: { color: colors.red, fontSize: 12, marginTop: 6 },
+  scanLost: { color: c.yellow, fontSize: 12, marginTop: 8, lineHeight: 17 },
+  pending: { color: c.yellow, fontSize: 12, marginTop: 10 },
+  scanMsg: { color: c.textMuted, fontSize: 12, marginTop: 8 },
+  scanError: { color: c.red, fontSize: 12, marginTop: 6 },
   chart: { gap: 8 },
   chartRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  chartLabel: { width: 42, fontSize: 11, color: colors.textMuted },
-  chartTrack: { flex: 1, height: 14, backgroundColor: colors.surface2, borderRadius: 7, overflow: 'hidden' },
-  chartBar: { height: '100%', backgroundColor: colors.accent, borderRadius: 7 },
-  chartValue: { width: 24, fontSize: 11, color: colors.text, textAlign: 'right' },
+  chartLabel: { width: 42, fontSize: 11, color: c.textMuted },
+  chartTrack: { flex: 1, height: 14, backgroundColor: c.surface2, borderRadius: 7, overflow: 'hidden' },
+  chartBar: { height: '100%', backgroundColor: c.accent, borderRadius: 7 },
+  chartValue: { width: 24, fontSize: 11, color: c.text, textAlign: 'right' },
   row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6, gap: 8 },
   attentionRow: {
     flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border,
   },
-  attentionTitle: { color: colors.text, fontSize: 13, fontWeight: '600' },
-  attentionScore: { color: colors.yellow, fontSize: 13, fontWeight: '700' },
+  attentionTitle: { color: c.text, fontSize: 13, fontWeight: '600' },
+  attentionScore: { color: c.yellow, fontSize: 13, fontWeight: '700' },
   dot: { width: 8, height: 8, borderRadius: 4 },
-  rowLabel: { flex: 1, color: colors.text, fontSize: 13, textTransform: 'capitalize' },
-  rowValue: { color: colors.textMuted, fontSize: 13, fontWeight: '600' },
+  rowLabel: { flex: 1, color: c.text, fontSize: 13, textTransform: 'capitalize' },
+  rowValue: { color: c.textMuted, fontSize: 13, fontWeight: '600' },
 })

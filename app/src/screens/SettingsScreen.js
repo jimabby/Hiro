@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { View, Text, TouchableOpacity, StyleSheet, Alert, Linking } from 'react-native'
-import { colors, radius } from '../theme'
+import { radius, useTheme } from '../theme'
 import { deleteAccount } from '../supabase'
 import { enablePush, disablePush, getPermissionStatus } from '../push'
 
@@ -9,6 +9,11 @@ export const PRIVACY_POLICY_URL = `${LEGAL_BASE}/privacy-policy.html`
 export const SUPPORT_URL = `${LEGAL_BASE}/support.html`
 
 export default function SettingsScreen({ client, connection, onDisconnect }) {
+  // Palette and stylesheet follow the phone's appearance setting. Named
+  // `colors` so every inline reference below reads unchanged.
+  const colors = useTheme()
+  const styles = useMemo(() => makeStyles(colors), [colors])
+
   const [pingResult, setPingResult] = useState(null)
   const [pinging, setPinging] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -82,7 +87,9 @@ export default function SettingsScreen({ client, connection, onDisconnect }) {
           <Row label="Server" value={`${connection.host}:${connection.port}`} />
           <Row label="Token" value={`${connection.token.slice(0, 8)}…`} />
 
-          <TouchableOpacity style={styles.btnGhost} onPress={testConnection} disabled={pinging}>
+          <TouchableOpacity style={styles.btnGhost} onPress={testConnection} disabled={pinging}
+            accessibilityRole="button" accessibilityLabel="Test the connection to the desktop"
+            accessibilityState={{ disabled: pinging, busy: pinging }}>
             <Text style={styles.btnGhostText}>{pinging ? 'Testing…' : 'Test Connection'}</Text>
           </TouchableOpacity>
           {pingResult && (
@@ -112,7 +119,11 @@ export default function SettingsScreen({ client, connection, onDisconnect }) {
                 : 'Checking…'
           } />
 
-          <TouchableOpacity style={styles.btnGhost} disabled={pushBusy} onPress={async () => {
+          <TouchableOpacity style={styles.btnGhost} disabled={pushBusy}
+            accessibilityRole="switch"
+            accessibilityLabel="Notifications on this phone"
+            accessibilityState={{ checked: pushState === 'on', disabled: pushBusy, busy: pushBusy }}
+            onPress={async () => {
             setPushBusy(true)
             setPushError('')
             if (pushState === 'on') {
@@ -133,13 +144,17 @@ export default function SettingsScreen({ client, connection, onDisconnect }) {
         </View>
       )}
 
-      <TouchableOpacity style={styles.btnDanger} onPress={onDisconnect}>
+      <TouchableOpacity style={styles.btnDanger} onPress={onDisconnect}
+        accessibilityRole="button" accessibilityLabel="Disconnect this phone from Hiro">
         <Text style={styles.btnDangerText}>{isCloud ? 'Sign out' : 'Disconnect'}</Text>
       </TouchableOpacity>
 
       {isCloud && (
         <>
-          <TouchableOpacity style={styles.btnDeleteAccount} onPress={confirmDeleteAccount} disabled={deleting}>
+          <TouchableOpacity style={styles.btnDeleteAccount} onPress={confirmDeleteAccount} disabled={deleting}
+            accessibilityRole="button" accessibilityLabel="Permanently delete your Hiro cloud account"
+            accessibilityHint="This cannot be undone"
+            accessibilityState={{ disabled: deleting, busy: deleting }}>
             <Text style={styles.btnDeleteAccountText}>{deleting ? 'Deleting…' : 'Delete account'}</Text>
           </TouchableOpacity>
           {!!deleteError && <Text style={styles.deleteError}>{deleteError}</Text>}
@@ -151,11 +166,15 @@ export default function SettingsScreen({ client, connection, onDisconnect }) {
       )}
 
       <View style={styles.legalLinks}>
-        <TouchableOpacity onPress={() => Linking.openURL(PRIVACY_POLICY_URL)}>
+        <TouchableOpacity onPress={() => Linking.openURL(PRIVACY_POLICY_URL)}
+          accessibilityRole="link" accessibilityLabel="Privacy policy"
+          accessibilityHint="Opens in your browser">
           <Text style={styles.legalLinkText}>Privacy Policy</Text>
         </TouchableOpacity>
         <Text style={styles.legalDivider}>·</Text>
-        <TouchableOpacity onPress={() => Linking.openURL(SUPPORT_URL)}>
+        <TouchableOpacity onPress={() => Linking.openURL(SUPPORT_URL)}
+          accessibilityRole="link" accessibilityLabel="Support"
+          accessibilityHint="Opens in your browser">
           <Text style={styles.legalLinkText}>Support</Text>
         </TouchableOpacity>
       </View>
@@ -169,6 +188,9 @@ export default function SettingsScreen({ client, connection, onDisconnect }) {
 }
 
 function Row({ label, value }) {
+  const colors = useTheme()
+  const styles = useMemo(() => makeStyles(colors), [colors])
+
   return (
     <View style={styles.row}>
       <Text style={styles.rowLabel}>{label}</Text>
@@ -177,40 +199,41 @@ function Row({ label, value }) {
   )
 }
 
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.bg, padding: 16 },
-  title: { fontSize: 22, fontWeight: '700', color: colors.text, marginBottom: 16 },
+// Rebuilt per palette — see useTheme() in ../theme.
+const makeStyles = (c) => StyleSheet.create({
+  root: { flex: 1, backgroundColor: c.bg, padding: 16 },
+  title: { fontSize: 22, fontWeight: '700', color: c.text, marginBottom: 16 },
   card: {
-    backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: c.surface, borderWidth: 1, borderColor: c.border,
     borderRadius: radius, padding: 16, marginBottom: 16,
   },
-  cardTitle: { fontSize: 14, fontWeight: '600', color: colors.text, marginBottom: 10 },
+  cardTitle: { fontSize: 14, fontWeight: '600', color: c.text, marginBottom: 10 },
   row: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 5 },
-  rowLabel: { color: colors.textMuted, fontSize: 13 },
-  rowValue: { color: colors.text, fontSize: 13, fontWeight: '500' },
-  hint: { color: colors.textMuted, fontSize: 12, lineHeight: 17, marginBottom: 10 },
+  rowLabel: { color: c.textMuted, fontSize: 13 },
+  rowValue: { color: c.text, fontSize: 13, fontWeight: '500' },
+  hint: { color: c.textMuted, fontSize: 12, lineHeight: 17, marginBottom: 10 },
   btnGhost: {
-    borderWidth: 1, borderColor: colors.border, borderRadius: radius,
+    borderWidth: 1, borderColor: c.border, borderRadius: radius,
     paddingVertical: 9, alignItems: 'center', marginTop: 10,
   },
-  btnGhostText: { color: colors.textMuted, fontSize: 13, fontWeight: '500' },
+  btnGhostText: { color: c.textMuted, fontSize: 13, fontWeight: '500' },
   btnDanger: {
-    backgroundColor: colors.red, borderRadius: radius,
+    backgroundColor: c.red, borderRadius: radius,
     paddingVertical: 12, alignItems: 'center',
   },
   btnDangerText: { color: '#fff', fontSize: 14, fontWeight: '600' },
   btnDeleteAccount: {
-    borderWidth: 1, borderColor: colors.red, borderRadius: radius,
+    borderWidth: 1, borderColor: c.red, borderRadius: radius,
     paddingVertical: 11, alignItems: 'center', marginTop: 12,
   },
-  btnDeleteAccountText: { color: colors.red, fontSize: 13, fontWeight: '600' },
-  deleteError: { color: colors.red, fontSize: 12, marginTop: 8, textAlign: 'center' },
-  deleteHint: { color: colors.textMuted, fontSize: 11, textAlign: 'center', marginTop: 8, lineHeight: 16 },
+  btnDeleteAccountText: { color: c.red, fontSize: 13, fontWeight: '600' },
+  deleteError: { color: c.red, fontSize: 12, marginTop: 8, textAlign: 'center' },
+  deleteHint: { color: c.textMuted, fontSize: 11, textAlign: 'center', marginTop: 8, lineHeight: 16 },
   legalLinks: {
     flexDirection: 'row', justifyContent: 'center', alignItems: 'center',
     gap: 10, marginTop: 'auto', paddingVertical: 8,
   },
-  legalLinkText: { color: colors.accent, fontSize: 13, fontWeight: '500' },
-  legalDivider: { color: colors.textMuted, fontSize: 13 },
-  footer: { color: colors.textMuted, fontSize: 12, textAlign: 'center', lineHeight: 18, paddingBottom: 8 },
+  legalLinkText: { color: c.accent, fontSize: 13, fontWeight: '500' },
+  legalDivider: { color: c.textMuted, fontSize: 13 },
+  footer: { color: c.textMuted, fontSize: 12, textAlign: 'center', lineHeight: 18, paddingBottom: 8 },
 })

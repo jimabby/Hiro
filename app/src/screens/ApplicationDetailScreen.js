@@ -1,18 +1,22 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   View, Text, ScrollView, TouchableOpacity, TextInput,
   Linking, StyleSheet,
 } from 'react-native'
-import { colors, radius, statusColors, statusLabel } from '../theme'
+import { radius, statusLabel, SETTABLE_STATUSES, useTheme, useStatusColors } from '../theme'
 import NextAction from '../components/NextAction'
-
-const STATUSES = ['applied', 'interview', 'offer', 'rejected', 'pending', 'no_response', 'skipped']
 
 // Rows that were never submitted have nothing to chase — there is no recruiter on
 // the other end of a held draft. Mirrors UNSENT_STATUSES on the desktop.
 const UNSENT = ['skipped', 'held']
 
 export default function ApplicationDetailScreen({ client, id, onBack }) {
+  // Palette and stylesheet follow the phone's appearance setting. Named
+  // `colors` so every inline reference below reads unchanged.
+  const colors = useTheme()
+  const styles = useMemo(() => makeStyles(colors), [colors])
+  const statusColors = useStatusColors()
+
   const [app, setApp] = useState(null)
   const [error, setError] = useState('')
   const [comment, setComment] = useState('')
@@ -65,7 +69,8 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
-      <TouchableOpacity onPress={onBack}>
+      <TouchableOpacity onPress={onBack}
+        accessibilityRole="button" accessibilityLabel="Back to applications">
         <Text style={styles.back}>‹ Applications</Text>
       </TouchableOpacity>
 
@@ -84,8 +89,14 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
               <Text style={styles.cardTitle}>Waiting for review</Text>
               <Text style={styles.body}>Queue a decision for the desktop. Approval submits only when its browser session is available.</Text>
               <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
-                <TouchableOpacity style={styles.saveBtn} onPress={async () => { await client.requestReviewAction(id, 'approve'); setReviewQueued('Approval queued') }}><Text style={styles.saveBtnText}>Approve on desktop</Text></TouchableOpacity>
-                <TouchableOpacity style={[styles.saveBtn, { backgroundColor: colors.red }]} onPress={async () => { await client.requestReviewAction(id, 'reject'); setReviewQueued('Rejection queued') }}><Text style={styles.saveBtnText}>Reject</Text></TouchableOpacity>
+                <TouchableOpacity style={styles.saveBtn}
+                  accessibilityRole="button" accessibilityLabel="Approve this draft on the desktop"
+                  accessibilityHint="Queues the approval; the desktop submits it when its browser session is available"
+                  onPress={async () => { await client.requestReviewAction(id, 'approve'); setReviewQueued('Approval queued') }}><Text style={styles.saveBtnText}>Approve on desktop</Text></TouchableOpacity>
+                <TouchableOpacity style={[styles.saveBtn, { backgroundColor: colors.red }]}
+                  accessibilityRole="button" accessibilityLabel="Reject this draft"
+                  accessibilityHint="Nothing is sent and the job is filed as skipped"
+                  onPress={async () => { await client.requestReviewAction(id, 'reject'); setReviewQueued('Rejection queued') }}><Text style={styles.saveBtnText}>Reject</Text></TouchableOpacity>
               </View>
               {!!reviewQueued && <Text style={[styles.muted, { marginTop: 8 }]}>{reviewQueued}</Text>}
             </View>
@@ -119,8 +130,21 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
 
           {app.status !== 'held' && <View style={styles.card}>
             <Text style={styles.cardTitle}>Status</Text>
-            <View style={styles.statusRow}>
-              {STATUSES.map(s => {
+            {/* A row whose status the scan assigned ('skipped') has no chip to
+                light up, and a grid of unselected chips reads as "unset" rather
+                than "not one of these". Say what it is before offering to
+                change it. */}
+            {!SETTABLE_STATUSES.includes(app.status) && (
+              <Text style={[styles.muted, { marginBottom: 8 }]}>
+                Currently {statusLabel(app.status)} — set by the scan. Choosing below overrides it.
+              </Text>
+            )}
+            <View
+              style={styles.statusRow}
+              accessibilityRole="radiogroup"
+              accessibilityLabel="Application status"
+            >
+              {SETTABLE_STATUSES.map(s => {
                 const active = app.status === s
                 const c = statusColors[s] || colors.textMuted
                 return (
@@ -128,6 +152,10 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
                     key={s}
                     style={[styles.statusChip, { borderColor: active ? c : colors.border, backgroundColor: active ? c + '26' : 'transparent' }]}
                     onPress={() => setStatus(s)}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: active, checked: active }}
+                    accessibilityLabel={statusLabel(s)}
+                    accessibilityHint={active ? undefined : `Mark this application as ${statusLabel(s)}`}
                   >
                     <Text style={[styles.statusChipText, { color: active ? c : colors.textMuted }]}>{statusLabel(s)}</Text>
                   </TouchableOpacity>
@@ -146,7 +174,9 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
               placeholderTextColor={colors.textMuted}
               multiline
             />
-            <TouchableOpacity style={styles.saveBtn} onPress={saveComment} disabled={savingComment}>
+            <TouchableOpacity style={styles.saveBtn} onPress={saveComment} disabled={savingComment}
+              accessibilityRole="button" accessibilityLabel="Save note"
+              accessibilityState={{ disabled: savingComment, busy: savingComment }}>
               <Text style={styles.saveBtnText}>
                 {savingComment ? 'Saving…' : savedComment ? '✓ Saved' : 'Save Note'}
               </Text>
@@ -154,7 +184,9 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
           </View>
 
           {!!app.job_url && (
-            <TouchableOpacity style={styles.card} onPress={() => Linking.openURL(app.job_url)}>
+            <TouchableOpacity style={styles.card} onPress={() => Linking.openURL(app.job_url)}
+              accessibilityRole="link" accessibilityLabel="Open the job posting"
+              accessibilityHint="Opens in your browser">
               <Text style={[styles.cardTitle, { color: colors.accent }]}>Open job posting ↗</Text>
             </TouchableOpacity>
           )}
@@ -190,30 +222,31 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
   )
 }
 
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.bg },
-  back: { color: colors.accent, fontSize: 15, marginBottom: 14 },
-  error: { color: colors.red, fontSize: 13, marginBottom: 10 },
-  muted: { color: colors.textMuted, fontSize: 12, marginTop: 2 },
-  title: { fontSize: 20, fontWeight: '700', color: colors.text },
-  company: { fontSize: 14, color: colors.textMuted, marginTop: 4 },
+// Rebuilt per palette — see useTheme() in ../theme.
+const makeStyles = (c) => StyleSheet.create({
+  root: { flex: 1, backgroundColor: c.bg },
+  back: { color: c.accent, fontSize: 15, marginBottom: 14 },
+  error: { color: c.red, fontSize: 13, marginBottom: 10 },
+  muted: { color: c.textMuted, fontSize: 12, marginTop: 2 },
+  title: { fontSize: 20, fontWeight: '700', color: c.text },
+  company: { fontSize: 14, color: c.textMuted, marginTop: 4 },
   card: {
-    backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: c.surface, borderWidth: 1, borderColor: c.border,
     borderRadius: radius, padding: 14, marginTop: 12,
   },
-  cardTitle: { fontSize: 14, fontWeight: '600', color: colors.text, marginBottom: 6 },
-  body: { fontSize: 13, color: colors.text, lineHeight: 19 },
-  question: { fontSize: 13, color: colors.textMuted, fontWeight: '600', marginBottom: 2 },
+  cardTitle: { fontSize: 14, fontWeight: '600', color: c.text, marginBottom: 6 },
+  body: { fontSize: 13, color: c.text, lineHeight: 19 },
+  question: { fontSize: 13, color: c.textMuted, fontWeight: '600', marginBottom: 2 },
   statusRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   statusChip: { borderWidth: 1, borderRadius: 14, paddingHorizontal: 10, paddingVertical: 5 },
   statusChipText: { fontSize: 12, textTransform: 'capitalize', fontWeight: '600' },
   commentInput: {
-    backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border,
-    borderRadius: radius, padding: 10, color: colors.text, fontSize: 13,
+    backgroundColor: c.surface2, borderWidth: 1, borderColor: c.border,
+    borderRadius: radius, padding: 10, color: c.text, fontSize: 13,
     minHeight: 70, textAlignVertical: 'top',
   },
   saveBtn: {
-    backgroundColor: colors.accent, borderRadius: radius,
+    backgroundColor: c.accent, borderRadius: radius,
     paddingVertical: 9, alignItems: 'center', marginTop: 10,
   },
   saveBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },

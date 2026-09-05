@@ -1,15 +1,19 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   View, Text, FlatList, TextInput, TouchableOpacity,
   RefreshControl, StyleSheet,
 } from 'react-native'
-import { colors, radius, statusColors, statusLabel } from '../theme'
+import { radius, statusLabel, STATUS_FILTERS, useTheme, useStatusColors } from '../theme'
 import ApplicationDetailScreen from './ApplicationDetailScreen'
 import { describeDue, isOverdue } from '../components/NextAction'
 
-const STATUS_FILTERS = ['all', 'applied', 'held', 'interview', 'offer', 'rejected', 'pending', 'no_response', 'skipped']
-
 export default function ApplicationsScreen({ client, openApplicationId, onOpened }) {
+  // Palette and stylesheet follow the phone's appearance setting. Named
+  // `colors` so every inline reference below reads unchanged.
+  const colors = useTheme()
+  const styles = useMemo(() => makeStyles(colors), [colors])
+  const statusColors = useStatusColors()
+
   const [apps, setApps] = useState([])
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
@@ -76,6 +80,9 @@ export default function ApplicationsScreen({ client, openApplicationId, onOpened
         {STATUS_FILTERS.map(f => (
           <TouchableOpacity
             key={f}
+            accessibilityRole="button"
+            accessibilityLabel={`Show ${f === 'all' ? 'all' : statusLabel(f)} applications`}
+            accessibilityState={{ selected: statusFilter === f }}
             style={[styles.filterChip, statusFilter === f && styles.filterChipActive]}
             onPress={() => setStatusFilter(f)}
           >
@@ -92,7 +99,20 @@ export default function ApplicationsScreen({ client, openApplicationId, onOpened
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
         ListEmptyComponent={<Text style={styles.empty}>No applications found</Text>}
         renderItem={({ item }) => (
-          <TouchableOpacity style={styles.item} onPress={() => setSelectedId(item.id)}>
+          // One announcement for the whole row rather than five fragments read
+          // in layout order — a screen reader landing on this needs the job, the
+          // company and what state it is in, in that order and as one thing.
+          <TouchableOpacity
+            style={styles.item}
+            onPress={() => setSelectedId(item.id)}
+            accessibilityRole="button"
+            accessibilityLabel={
+              `${item.job_title} at ${item.company}. ${statusLabel(item.status)}.`
+              + `${item.match_score != null ? ` ${item.match_score} percent match.` : ''}`
+              + `${item.next_action_at ? ` Follow-up ${describeDue(item.next_action_at)}${isOverdue(item.next_action_at) ? ', overdue' : ''}.` : ''}`
+            }
+            accessibilityHint="Opens the application"
+          >
             <View style={{ flex: 1 }}>
               <Text style={styles.itemTitle} numberOfLines={1}>{item.job_title}</Text>
               <Text style={styles.itemCompany} numberOfLines={1}>
@@ -125,35 +145,36 @@ export default function ApplicationsScreen({ client, openApplicationId, onOpened
   )
 }
 
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.bg, padding: 16 },
-  title: { fontSize: 22, fontWeight: '700', color: colors.text, marginBottom: 12 },
+// Rebuilt per palette — see useTheme() in ../theme.
+const makeStyles = (c) => StyleSheet.create({
+  root: { flex: 1, backgroundColor: c.bg, padding: 16 },
+  title: { fontSize: 22, fontWeight: '700', color: c.text, marginBottom: 12 },
   search: {
-    backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: c.surface2, borderWidth: 1, borderColor: c.border,
     borderRadius: radius, paddingHorizontal: 12, paddingVertical: 9,
-    color: colors.text, fontSize: 14, marginBottom: 10,
+    color: c.text, fontSize: 14, marginBottom: 10,
   },
   filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 12 },
   filterChip: {
     paddingHorizontal: 10, paddingVertical: 5, borderRadius: 14,
-    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface,
+    borderWidth: 1, borderColor: c.border, backgroundColor: c.surface,
   },
-  filterChipActive: { backgroundColor: colors.accent, borderColor: colors.accent },
-  filterText: { fontSize: 12, color: colors.textMuted, textTransform: 'capitalize' },
+  filterChipActive: { backgroundColor: c.accent, borderColor: c.accent },
+  filterText: { fontSize: 12, color: c.textMuted, textTransform: 'capitalize' },
   filterTextActive: { color: '#fff', fontWeight: '600' },
-  error: { color: colors.red, fontSize: 13, marginBottom: 10 },
-  empty: { color: colors.textMuted, fontSize: 13, textAlign: 'center', marginTop: 32 },
+  error: { color: c.red, fontSize: 13, marginBottom: 10 },
+  empty: { color: c.textMuted, fontSize: 13, textAlign: 'center', marginTop: 32 },
   item: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
-    backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: c.surface, borderWidth: 1, borderColor: c.border,
     borderRadius: radius, padding: 14, marginBottom: 8,
   },
-  itemTitle: { color: colors.text, fontSize: 14, fontWeight: '600' },
-  itemCompany: { color: colors.textMuted, fontSize: 12, marginTop: 2 },
-  itemOverdue: { color: colors.red },
-  itemDate: { color: colors.textMuted, fontSize: 11, marginTop: 2 },
+  itemTitle: { color: c.text, fontSize: 14, fontWeight: '600' },
+  itemCompany: { color: c.textMuted, fontSize: 12, marginTop: 2 },
+  itemOverdue: { color: c.red },
+  itemDate: { color: c.textMuted, fontSize: 11, marginTop: 2 },
   itemRight: { alignItems: 'flex-end', gap: 6 },
-  itemScore: { color: colors.accent, fontSize: 13, fontWeight: '700' },
+  itemScore: { color: c.accent, fontSize: 13, fontWeight: '700' },
   statusBadge: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2 },
   statusText: { fontSize: 10, fontWeight: '600', textTransform: 'uppercase' },
 })

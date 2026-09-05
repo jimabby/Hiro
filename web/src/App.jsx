@@ -181,9 +181,21 @@ export default function App() {
           setHeldCount((s.heldCount || 0) + (s.followUpReviewCount || 0))
           setTodayCount(s.totalToday || 0)
         })
+        // Checked before everything else: the user pressed Stop, so what they
+        // need is confirmation that it stopped — not a report on the partial
+        // run, and emphatically not the green "Scan complete" this used to
+        // fall through to (twice, because the cancel announced itself as well).
+        if (data.cancelled) {
+          showToast(
+            data.held > 0
+              ? `Scan cancelled — ${data.held} draft${data.held === 1 ? '' : 's'} already written are waiting in Review`
+              : 'Scan cancelled',
+            'info'
+          )
+        }
         // A scan that died partway used to report "Scan complete" like any
         // other — the error now rides along on the event.
-        if (data.error) showToast(`Scan failed: ${data.error}`, 'error')
+        else if (data.error) showToast(`Scan failed: ${data.error}`, 'error')
         // A platform that refused to serve results isn't a failure, but it
         // isn't a clean run either — say so rather than reporting success over
         // results that are missing. The dashboard banner has the detail.
@@ -346,6 +358,31 @@ export default function App() {
   }
 
   const badgeFor = (id) => (id === 'attention' ? attentionCount : id === 'review' ? heldCount : 0)
+
+  // One toast, rendered into whichever of the two live regions matches its
+  // urgency. Extracted so the markup is stated once rather than twice.
+  const renderToast = (t) => (
+    <div key={t.id} className={`toast toast-${t.type}`}>
+      <span className="toast-icon" aria-hidden="true">
+        {t.type === 'success' ? '✓' : t.type === 'error' ? '✗' : 'ℹ'}
+      </span>
+      <span className="toast-msg">{t.msg}</span>
+      {t.action && (
+        <button
+          className="toast-action"
+          onClick={() => {
+            // Dismissed first: the action re-renders the page underneath, and a
+            // toast still offering "Undo" over restored rows invites a second
+            // click that has nothing left to undo.
+            dismissToast(t.id)
+            t.action.onAction()
+          }}
+        >{t.action.label}</button>
+      )}
+      <button className="toast-close" aria-label="Dismiss notification"
+        onClick={() => dismissToast(t.id)}>×</button>
+    </div>
+  )
 
   return (
     // The data-testid attributes on the shell and the nav are the only stable
@@ -555,32 +592,28 @@ export default function App() {
       </main>
 
       {/* Toast notifications. Newest sits closest to the corner (the stack is
-          column-reverse), errors persist until dismissed. */}
-      <div className="toast-stack" role="status" aria-live="polite">
-        {toasts.map(t => (
-          <div key={t.id} className={`toast toast-${t.type}`}>
-            <span className="toast-icon" aria-hidden="true">
-              {t.type === 'success' ? '✓' : t.type === 'error' ? '✗' : 'ℹ'}
-            </span>
-            <span className="toast-msg">{t.msg}</span>
-            {t.action && (
-              <button
-                className="toast-action"
-                onClick={() => {
-                  // Dismissed first: the action re-renders the page underneath,
-                  // and a toast still offering "Undo" over restored rows invites
-                  // a second click that has nothing left to undo.
-                  dismissToast(t.id)
-                  t.action.onAction()
-                }}
-              >{t.action.label}</button>
-            )}
-            <button className="toast-close" aria-label="Dismiss notification"
-              onClick={() => dismissToast(t.id)}>×</button>
-          </div>
-        ))}
+          column-reverse), errors persist until dismissed.
+          
+          Two regions, not one. Errors are deliberately different from the rest
+          of the stack — they stay up until dismissed precisely because a failed
+          scan reported for four seconds while the user was in another window is
+          a failure they never saw. A single polite region undid that for anyone
+          listening rather than looking: a polite announcement queues behind
+          whatever the screen reader is already saying and can be dropped
+          outright. The new-device security warning ships through this channel
+          too, which is the case where being missed matters most. So errors get
+          an assertive region and everything else stays polite.
+          
+          The two are rendered into one visual stack by the wrapper below; only
+          the announcement level differs. */}
+      <div className="toast-stack">
+        <div role="alert" aria-live="assertive" className="toast-region">
+          {toasts.filter(t => t.type === 'error').map(t => renderToast(t))}
+        </div>
+        <div role="status" aria-live="polite" className="toast-region">
+          {toasts.filter(t => t.type !== 'error').map(t => renderToast(t))}
+        </div>
       </div>
-
       {/* Resume required modal */}
       {resumeModal && (
         <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="resume-modal-title"

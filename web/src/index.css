@@ -419,6 +419,16 @@ tr:hover td { background: var(--surface2); }
   display: flex; flex-direction: column-reverse; gap: 10px;
   max-width: 420px; pointer-events: none;
 }
+/* Errors and everything else live in separate ARIA regions so they can be
+   announced at different urgencies (see the note in App.jsx). Visually they are
+   still one stack: each region lays its own toasts out the same way, and the
+   error region sits last in DOM order — which, in a column-reverse parent, puts
+   it nearest the corner where the eye already is. */
+.toast-region {
+  display: flex; flex-direction: column-reverse; gap: 10px;
+}
+/* An empty region must not contribute a gap to the stack above it. */
+.toast-region:empty { display: none; }
 .toast {
   background: var(--glass-thick);
   -webkit-backdrop-filter: var(--blur-thick);

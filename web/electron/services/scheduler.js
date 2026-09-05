@@ -334,6 +334,10 @@ async function runBatch(batchSize) {
   // because the AI was down.
   let batchHeld = 0
   let batchScoringFailures = 0
+  // Set when the user aborted this batch. Kept apart from batchError: a cancel
+  // is neither a success nor a fault, and reporting it through either channel
+  // was wrong in a different way each time.
+  let batchCancelled = false
   log(`Starting batch (${batchSize} apps max)...`)
   cloudSync.updateScanStatus(true).catch(() => {})
 
@@ -343,6 +347,7 @@ async function runBatch(batchSize) {
     if (result?.paused?.length) batchPaused = result.paused
     batchHeld = result?.held || 0
     batchScoringFailures = result?.scoringFailures || 0
+    batchCancelled = !!result?.cancelled
     if (result?.budgetStopped) batchError = 'AI monthly budget reached — batch stopped early'
   } catch (err) {
     batchError = describeError(err)
@@ -351,25 +356,32 @@ async function runBatch(batchSize) {
     running = false
     lastScanOutcome = {
       at: new Date().toISOString(),
-      ok: !batchError,
+      ok: !batchError && !batchCancelled,
+      cancelled: batchCancelled,
       error: batchError,
       blocked: batchBlocked,
       paused: batchPaused,
       held: batchHeld,
       scoringFailures: batchScoringFailures,
-      source: 'batch',
+      source: batchCancelled ? 'cancel' : 'batch',
     }
     cloudSync.updateScanStatus(false).catch(() => {})
-    log(batchError ? `Batch failed: ${batchError}` : 'Batch complete.')
-    notify({ type: 'scan-complete', error: batchError, blocked: batchBlocked, paused: batchPaused, held: batchHeld, scoringFailures: batchScoringFailures })
-    webhooks.send('scan-complete', {
-      message: batchError
-        ? `Batch failed: ${batchError}`
-        : (batchBlocked.length ? `Batch complete, but blocked on: ${batchBlocked.map(b => b.platform).join(', ')}` : `Batch of ${batchSize} complete`),
-      ok: !batchError,
-      blocked: batchBlocked,
-      paused: batchPaused,
-    }).catch(() => {})
+    log(batchCancelled
+      ? 'Batch cancelled.'
+      : batchError ? `Batch failed: ${batchError}` : 'Batch complete.')
+    notify({ type: 'scan-complete', cancelled: batchCancelled, error: batchError, blocked: batchBlocked, paused: batchPaused, held: batchHeld, scoringFailures: batchScoringFailures })
+    // A batch the user stopped is not news to anybody but the user, who is
+    // standing right there — no webhook, no push, no OS notification.
+    if (!batchCancelled) {
+      webhooks.send('scan-complete', {
+        message: batchError
+          ? `Batch failed: ${batchError}`
+          : (batchBlocked.length ? `Batch complete, but blocked on: ${batchBlocked.map(b => b.platform).join(', ')}` : `Batch of ${batchSize} complete`),
+        ok: !batchError,
+        blocked: batchBlocked,
+        paused: batchPaused,
+      }).catch(() => {})
+    }
     cloudSync.sync().catch(() => {})
     setImmediate(drainQueue)
   }
@@ -416,13 +428,22 @@ function stop({ abortRun = true } = {}) {
   }
 }
 
+// Ask the in-flight scan to stop. Deliberately does NOT announce the outcome
+// itself.
+//
+// applicator.run() honours a cancel by returning rather than throwing, so the
+// scan is still unwinding when this returns and its own `finally` runs a moment
+// later. This used to write the outcome and fire a scan-complete event here,
+// and that finally then overwrote both — recording the abort as a clean success,
+// stamping lastScanAt, raising an OS notification and posting a webhook saying
+// the scan had finished, on top of a second toast. So the run that is ending
+// owns the announcement; this only asks it to end, and clears `running` so the
+// UI stops showing a spinner during the unwind.
 function cancelScan() {
   if (!running) return // nothing to cancel (e.g. the phone raced a finished scan)
   applicator.cancel()
   running = false
-  lastScanOutcome = { at: new Date().toISOString(), ok: false, error: 'Cancelled by user', source: 'cancel' }
   log('Scan cancelled by user.')
-  notify({ type: 'scan-complete' })
   cloudSync.updateScanStatus(false).catch(() => {})
 }
 
@@ -510,6 +531,16 @@ async function processQueue() {
     log(`Could not clear the finished scan request from the queue: ${describeError(err)}`)
     return
   }
+  // "Cancel scan" means stop scanning, not "skip to the next one". Draining on
+  // through the rest of the queue would start a fresh scan seconds after the
+  // user pressed stop — which looks exactly like the cancel having failed. The
+  // request that was running is still popped (they cancelled it deliberately);
+  // the ones behind it stay queued for the next scheduled drain.
+  if (result.cancelled) {
+    const left = (after.pendingScans || []).length
+    if (left > 0) log(`Scan cancelled — ${left} queued request${left === 1 ? '' : 's'} left for later.`)
+    return
+  }
   if ((after.pendingScans || []).length > 0) await processQueue()
 }
 
@@ -538,6 +569,9 @@ async function runScan(overrides = {}) {
   // was down, must not look like a scan that simply found nothing.
   let scanHeld = 0
   let scanScoringFailures = 0
+  // The user stopped this run. Neither a success nor a fault — see the note on
+  // cancelScan().
+  let scanCancelled = false
   let runResult = null
   const campaignStartedAt = new Date().toISOString()
   log(dryRun ? 'Starting test scan (dry run — nothing will be submitted)...' : 'Starting job scan...')
@@ -561,10 +595,15 @@ async function runScan(overrides = {}) {
     if (result?.paused?.length) scanPaused = result.paused
     scanHeld = result?.held || 0
     scanScoringFailures = result?.scoringFailures || 0
+    scanCancelled = !!result?.cancelled
     // A scan that stopped on the budget cap is not a success, but it isn't a
     // crash either — say which it was rather than reporting "Scan complete".
     if (result?.budgetStopped) scanError = 'AI monthly budget reached — scan stopped early'
-    if (dryRun && result) lastDryRun = { at: new Date().toISOString(), ...result }
+    // A cancelled dry run stopped partway through the market, so its score
+    // distribution is a truncated sample — and the only thing lastDryRun is
+    // used for is recommending a match threshold from that distribution. Keep
+    // the previous complete run rather than replacing it with a partial one.
+    if (dryRun && result && !result.cancelled) lastDryRun = { at: new Date().toISOString(), ...result }
   } catch (err) {
     // NOT err.message. sql.js throws bare strings, so a database refusal
     // ("Wrong API use : tried to bind a value of an unknown type") arrived here
@@ -577,20 +616,27 @@ async function runScan(overrides = {}) {
     cloudSync.updateScanStatus(false).catch(() => {})
     // A dry run changes nothing — don't touch lastScanAt, sync, or the queue.
     if (!dryRun) {
-      try {
-        configService.update({ lastScanAt: new Date().toISOString() })
-      } catch {}
+      // A cancelled scan did not sweep the market, so it must not claim to have.
+      // Stamping lastScanAt here made the dashboard report a full scan the user
+      // had aborted, and let the smart schedule skip the next real one.
+      if (!scanCancelled) {
+        try {
+          configService.update({ lastScanAt: new Date().toISOString() })
+        } catch {}
+      }
       // Record how the scan actually ended, so a failure is distinguishable
-      // from a scan that simply found nothing (previously both looked alike).
+      // from a scan that simply found nothing (previously both looked alike),
+      // and an abort from either.
       lastScanOutcome = {
         at: new Date().toISOString(),
-        ok: !scanError,
+        ok: !scanError && !scanCancelled,
+        cancelled: scanCancelled,
         error: scanError,
         blocked: scanBlocked,
         paused: scanPaused,
         held: scanHeld,
         scoringFailures: scanScoringFailures,
-        source: overrides.fromQueue ? 'queue' : (overrides.source || 'desktop'),
+        source: scanCancelled ? 'cancel' : (overrides.fromQueue ? 'queue' : (overrides.source || 'desktop')),
       }
       if (overrides.campaignId) {
         try {
@@ -600,14 +646,21 @@ async function runScan(overrides = {}) {
             startedAt: campaignStartedAt, found: runResult?.found,
             applied: runResult?.applied, held: runResult?.held,
             scoringFailures: runResult?.scoringFailures,
-            ok: !scanError, error: scanError,
+            ok: !scanError && !scanCancelled,
+            error: scanError || (scanCancelled ? 'Cancelled by user' : null),
           })
         } catch (err) { log(`Could not record campaign analytics: ${describeError(err)}`) }
       }
     }
-    log(dryRun ? 'Test scan complete (dry run — nothing was submitted).' : 'Scan complete.')
-    notify({ type: 'scan-complete', error: scanError, blocked: scanBlocked, paused: scanPaused, held: scanHeld, scoringFailures: scanScoringFailures })
-    if (!dryRun) {
+    log(scanCancelled
+      ? (dryRun ? 'Test scan cancelled.' : 'Scan cancelled.')
+      : dryRun ? 'Test scan complete (dry run — nothing was submitted).' : 'Scan complete.')
+    notify({ type: 'scan-complete', cancelled: scanCancelled, error: scanError, blocked: scanBlocked, paused: scanPaused, held: scanHeld, scoringFailures: scanScoringFailures })
+    // Everything below announces the scan to somewhere the user is not looking —
+    // the OS, a webhook, their phone. A scan they stopped themselves needs none
+    // of it: they know, and a "Scan complete" push for an abort is worse than
+    // silence. The renderer still gets its event above so the spinner clears.
+    if (!dryRun && !scanCancelled) {
       try {
         const s = database.getStats()
         // A block is the one outcome the user has to act on, so it takes
@@ -643,6 +696,11 @@ async function runScan(overrides = {}) {
       // creates review-queue work; push both to the calendar and the phone now
       // rather than waiting up to two minutes for the sync timer.
       calendarSync.syncNow().catch(() => {})
+    }
+    // Syncing and draining are bookkeeping rather than announcements, so they
+    // run for a cancelled scan too: it may still have submitted applications
+    // before it was stopped, and a request queued from the phone is still owed.
+    if (!dryRun) {
       cloudSync.sync().catch(() => {})
       // Drain scans queued (e.g. from the phone) while this scan was running.
       // Queue-initiated runs skip this: processQueue continues itself after
@@ -651,8 +709,10 @@ async function runScan(overrides = {}) {
     }
   }
   // `ran` means the scan flow executed, error or not — a failed scan must not
-  // be retried forever by the queue. The error travels alongside it.
-  return { ran: true, ok: !scanError, error: scanError }
+  // be retried forever by the queue. The error travels alongside it. A cancelled
+  // run also counts as ran: the user stopped it deliberately, and re-running it
+  // from the queue would be the opposite of what they asked for.
+  return { ran: true, ok: !scanError && !scanCancelled, cancelled: scanCancelled, error: scanError }
 }
 
 function getScanInfo() {
@@ -666,6 +726,14 @@ function getScanInfo() {
     lastScanAt: cfg.lastScanAt || null,
     lastScanOk: lastScanOutcome ? lastScanOutcome.ok : null,
     lastScanError: lastScanOutcome?.error || null,
+    // The user stopped the last run. `ok` is false for it, but it is not a
+    // fault and must not be presented as one — the market was never swept, so
+    // the honest thing to say is that it did not finish, not that it broke.
+    lastScanCancelled: !!lastScanOutcome?.cancelled,
+    // When the abort happened. lastScanAt is deliberately NOT stamped by a
+    // cancelled run (it would claim a sweep that never happened), so the banner
+    // needs its own timestamp to show and to dismiss against.
+    lastScanEndedAt: lastScanOutcome?.at || null,
     // Platforms that refused to serve results on the last scan. Non-empty here
     // means missing results, not absent results.
     lastScanBlocked: lastScanOutcome?.blocked || [],

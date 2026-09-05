@@ -29,6 +29,15 @@ stub({
     getStats: () => ({ totalAllTime: 7 }),
     getUpcomingInterviews: (limit) => [{ id: 1, job_title: 'Dev', company: 'Acme', scheduled_at: '2026-08-14 14:30:00', _limit: limit }],
     getSalaryStats: () => ({ count: 3, median: 120000 }),
+    getOffers: () => ({
+      offers: [{
+        application_id: 3, company: 'Northwind', job_title: 'Staff Engineer',
+        base_salary: 180000, bonus: 20000, currency: 'AUD', respond_by: '2026-09-12',
+        decision: 'considering', totalComp: 200000, comparableComp: 200000,
+        compIsAdvertised: false, daysToRespond: 7, expired: false,
+      }],
+      live: 1, best: 200000, spread: null, nextDeadline: null,
+    }),
     updateApplicationStatus: (id, status) => { statusWrites.push({ id, status }); return { success: true } },
     // Review mode: the phone may look at what is held back and reject a bad
     // draft, but approving means submitting, which needs the desktop's browser.
@@ -143,6 +152,18 @@ const post = async (path, body) => {
   // An out-of-range limit is clamped rather than passed through to a query.
   check('absurd limit clamped', (await get('/api/interviews?limit=99999')).body[0]._limit, 200)
   check('non-numeric limit falls back', (await get('/api/interviews?limit=abc')).body[0]._limit, 25)
+
+  // Offers, and above all the deadline on them — the only externally-imposed
+  // date in Hiro, and the one thing the phone could not see at all.
+  const offers = await get('/api/offers')
+  check('offers route served', offers.status, 200)
+  check('the offer is returned', offers.body.offers[0].application_id, 3)
+  check('with its deadline', offers.body.offers[0].respond_by, '2026-09-12')
+  check('and how long is left', offers.body.offers[0].daysToRespond, 7)
+  check('the summary rides along', offers.body.live, 1)
+  // Read-only on purpose: accepting, declining and the negotiation draft are
+  // not decisions to take one-handed on a train.
+  check('offers cannot be written from the phone', (await post('/api/offers', {})).status, 404)
   check('salary route served', (await get('/api/salary')).body.median, 120000)
 
   // ── Status vocabulary ───────────────────────────────────────────

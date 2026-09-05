@@ -55,11 +55,13 @@ Your phone and computer must be on the same network.
 ## Features
 
 - **Dashboard** — today / this week / all time counts, interviews, response rate, 7-day chart, breakdowns by status and platform (pull to refresh)
-- **Live scan progress** — while a scan runs on the desktop, the Dashboard shows "scanning now…" and (over Wi-Fi) a live feed of the desktop's activity log, updating every few seconds; a **Cancel scan** button stops it remotely. Over the cloud the running indicator works from anywhere via the `scan_status` table.
+- **Live scan progress** — while a scan runs on the desktop, the Dashboard shows "scanning now…" and (over Wi-Fi) a live feed of the desktop's activity log, updating every few seconds; a **Cancel scan** button stops it remotely, and the desktop records that as a cancellation rather than as a completed scan. Polling stops when the app is backgrounded, and gives up with a "lost contact with the desktop" note rather than spinning forever when the desktop goes away mid-scan. Over the cloud the running indicator works from anywhere via the `scan_status` table.
 - **Applications** — searchable, filterable list of every application
-- **Detail view** — match score and explanation, status updates (applied / interview / offer / rejected / skipped), notes, cover letter, screening Q&A, full job description, link to the posting
+- **Detail view** — match score and explanation, status updates (applied / interview / offer / rejected / pending / no response / **withdrawn**), notes, cover letter, screening Q&A, full job description, link to the posting. The settable statuses mirror the desktop's exactly: `withdrawn` is offered because "I pulled out" is a claim only a person can make, and `skipped` is not, because that one is the scan's to assign
 - **Follow-ups** — book or clear a next action on any submitted application, with a note. One tap for "tomorrow", "3 days", "1 week", "2 weeks". Overdue ones lead the Dashboard and show in red on the list
-- **Push notifications** (cloud mode) — recruiter replies, interview reminders, follow-ups coming due, closing dates, review-queue items, failed scans and new sign-ins. Tapping one opens the application it was about
+- **Offers** — every live offer with its total compensation and, above all, its deadline: the only date in Hiro somebody else set, and the only one that expires whether or not you look at it. Soonest first, coloured by how close it is, with the reasons for and against and your own excitement rating a tap away. Read-only — accepting, declining and drafting a negotiation stay on the desktop, because those are not decisions to take one-handed on a train. An advertised range is always labelled as one and never dressed up as an offer
+- **Push notifications** (cloud mode) — recruiter replies, interview reminders, **offers about to expire** (seven days out, then three, then the last day), follow-ups coming due, closing dates, review-queue items, failed scans and new sign-ins. Tapping one opens what it was about
+- **Follows your phone's appearance setting** — light and dark, switching live. Nothing to configure: a phone's theme is already deliberate and usually scheduled, and a companion app that stays black while everything else on the device has turned white is the one that looks broken
 - **Settings** — connection test, re-pairing, notification toggle, and (cloud mode) permanent account deletion
 
 ## Notifications
@@ -95,6 +97,21 @@ phone as signed out, it signs itself out and clears its stored session.
 
 Signing out on purpose clears the push token first — otherwise notifications would
 keep arriving on a phone that is no longer signed in.
+
+## Accessibility
+
+Every control carries a role, a label and — where it has one — a selected or busy
+state, so the app is operable by VoiceOver and TalkBack rather than merely visible.
+Three things that are easy to miss and are handled deliberately:
+
+- The tab bar's icons are decorative glyphs (`▦`, `☰`, `★`, `⚙`). They are marked
+  `importantForAccessibility="no"` so a reader announces "Applications, tab,
+  selected" rather than the character's Unicode name first.
+- A list row is one announcement — job, company, status, match, follow-up — not
+  five fragments read in layout order.
+- Nothing is signalled by colour alone. The selected tab has a rule under it as
+  well as an accent, and an offer's deadline says "3 days left" beside the colour
+  that means the same thing.
 
 ## Permissions
 

@@ -48,7 +48,7 @@ export async function deleteAccount() {
 // the phone went on counting skipped and held rows as applications long after the
 // desktop stopped. Extracted so a test can pin the two together.
 import { deriveStats, derivePerDay, isUnsent } from './stats'
-import { isDueOrOverdue } from './dates'
+import { isDueOrOverdue, todayLocal, daysBetweenDates } from './dates'
 import { decryptCloudPayload } from './cloudCrypto'
 
 const VALID_STATUSES = ['applied', 'interview', 'offer', 'rejected', 'pending', 'no_response', 'skipped', 'held', 'withdrawn']
@@ -338,6 +338,77 @@ export class CloudClient {
       const r = await this._withMeta(row)
       return { ...r, id: r.local_id, application_id: r.application_local_id }
     }))
+  }
+
+  // Offers, mirrored from the desktop. Read-only here: accepting, declining and
+  // the negotiation draft stay on the desktop.
+  //
+  // The summary figures are recomputed on this side rather than mirrored,
+  // because they are derived from `today` — and the phone's today is the one
+  // that matters when it is in a different timezone from the desktop that last
+  // synced. Mirroring a stale daysToRespond is how an offer with one day left
+  // reads as having three.
+  async getOffers() {
+    const empty = { offers: [], live: 0, best: null, spread: null, nextDeadline: null }
+    let data, error
+    try {
+      ({ data, error } = await supabase
+        .from('offers')
+        .select('local_id, application_local_id, job_title, company, platform, currency, base_salary, bonus, comparable_comp, comp_is_advertised, respond_by, start_date, decision, excitement, encrypted_meta')
+        .eq('user_id', this.userId)
+        .order('respond_by', { ascending: true, nullsFirst: false }))
+    } catch {
+      return empty
+    }
+    // The table is optional — an older project hasn't re-run schema.sql, and an
+    // older desktop never pushed. Nothing to report either way.
+    if (error) return empty
+
+    const today = todayLocal()
+    const decrypted = await Promise.all((data || []).map(async (row) => {
+      const r = await this._withMeta(row)
+      const total = r.base_salary == null ? null : r.base_salary + (r.bonus || 0)
+      return {
+        ...r,
+        id: r.local_id,
+        application_id: r.application_local_id,
+        totalComp: total,
+        // comparable_comp arrives already computed by the desktop, but it is
+        // null whenever the money was encrypted — recompute from the decrypted
+        // figures when we have them, and fall back to what was sent.
+        comparableComp: r.comparable_comp ?? total ?? null,
+        compIsAdvertised: !!r.comp_is_advertised,
+        // _withMeta sets this when the envelope could not be opened on this
+        // device. The prose fields (pros, cons, notes, equity, location) live
+        // ONLY inside it — a new table has no older clients to keep plaintext
+        // columns for, so encryption-only is both safer and simpler. But that
+        // makes an unopenable envelope look like an offer nobody filled in, so
+        // the flag has to reach the screen.
+        metaPending: !!r.meta_pending,
+        daysToRespond: r.respond_by ? daysBetweenDates(today, r.respond_by) : null,
+        expired: !!(r.respond_by && r.respond_by < today && r.decision === 'considering'),
+      }
+    }))
+
+    // Same ordering as the desktop's getOffers: live offers first, then the ones
+    // with a deadline, soonest first.
+    decrypted.sort((a, b) => {
+      const rank = (o) => (o.decision === 'considering' ? 0 : o.decision === 'accepted' ? 1 : 2)
+      if (rank(a) !== rank(b)) return rank(a) - rank(b)
+      const ad = a.respond_by || '￿'
+      const bd = b.respond_by || '￿'
+      return ad.localeCompare(bd)
+    })
+
+    const live = decrypted.filter(o => o.decision === 'considering')
+    const comps = live.map(o => o.comparableComp).filter(v => v != null)
+    return {
+      offers: decrypted,
+      live: live.length,
+      best: comps.length ? Math.max(...comps) : null,
+      spread: comps.length >= 2 ? Math.max(...comps) - Math.min(...comps) : null,
+      nextDeadline: live.find(o => o.respond_by) || null,
+    }
   }
 
   // Live desktop status over the cloud: the desktop upserts its row in

@@ -11,13 +11,14 @@ import { StatusBar } from 'expo-status-bar'
 import secureStore from './src/secureStore'
 import { HiroClient } from './src/api'
 import { supabase, CloudClient } from './src/supabase'
-import { colors } from './src/theme'
+import { useTheme, useStatusBarStyle } from './src/theme'
 import { registerDevice, checkRevoked, clearPushToken } from './src/deviceRegistry'
 import { subscribeToTaps } from './src/push'
 import { loadCloudKey, clearCloudKey } from './src/cloudCrypto'
 import ConnectScreen from './src/screens/ConnectScreen'
 import DashboardScreen from './src/screens/DashboardScreen'
 import ApplicationsScreen from './src/screens/ApplicationsScreen'
+import OffersScreen from './src/screens/OffersScreen'
 import SettingsScreen from './src/screens/SettingsScreen'
 
 const STORAGE_KEY = 'hiro.connection'
@@ -25,6 +26,12 @@ const STORAGE_KEY = 'hiro.connection'
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', icon: '▦' },
   { id: 'applications', label: 'Applications', icon: '☰' },
+  // Sits before Settings because it is the tab with a deadline on it — the same
+  // reasoning that puts Offers third in the desktop's rail. Always present
+  // rather than hidden when there are none: both clients resolve a missing
+  // table or an older desktop to an empty board, and the empty state says what
+  // would fill it, which a tab that appears and disappears never could.
+  { id: 'offers', label: 'Offers', icon: '★' },
   { id: 'settings', label: 'Settings', icon: '⚙' },
 ]
 
@@ -37,6 +44,14 @@ export default function App() {
 }
 
 function AppContent() {
+  // Palette and stylesheet follow the phone's appearance setting. Named
+  // `colors` so every inline reference below reads unchanged.
+  const colors = useTheme()
+  const styles = useMemo(() => makeStyles(colors), [colors])
+  // The status bar draws OVER the app, so it needs the inverse: dark glyphs on
+  // a light ground. Hardcoding "light" left black-on-black in light mode.
+  const statusBarStyle = useStatusBarStyle()
+
   const [connection, setConnection] = useState(undefined) // undefined = loading
   const [tab, setTab] = useState('dashboard')
   // Set when a notification tap names a specific application to open.
@@ -142,7 +157,7 @@ function AppContent() {
   if (!connection) {
     return (
       <SafeAreaView style={styles.root}>
-        <StatusBar style="light" />
+        <StatusBar style={statusBarStyle} />
         <ConnectScreen onConnected={handleConnected} />
       </SafeAreaView>
     )
@@ -150,7 +165,7 @@ function AppContent() {
 
   return (
     <SafeAreaView style={styles.root}>
-      <StatusBar style="light" />
+      <StatusBar style={statusBarStyle} />
       <View style={styles.content}>
         {tab === 'dashboard' && <DashboardScreen client={client} />}
         {tab === 'applications' && (
@@ -160,15 +175,39 @@ function AppContent() {
             onOpened={() => setDeepLinkedApplication(null)}
           />
         )}
+        {tab === 'offers' && <OffersScreen client={client} />}
         {tab === 'settings' && (
           <SettingsScreen client={client} connection={connection} onDisconnect={handleDisconnect} />
         )}
       </View>
-      <View style={styles.tabBar}>
+      {/* The app's only global navigation, so it is the one control that has to
+          be reachable by every means. The icons are decorative glyphs — without
+          importantForAccessibility="no" a screen reader announces the character
+          name ("black square", "trigram for heaven") ahead of the real label. */}
+      <View style={styles.tabBar} accessibilityRole="tablist">
         {TABS.map(t => (
-          <TouchableOpacity key={t.id} style={styles.tabItem} onPress={() => setTab(t.id)}>
-            <Text style={[styles.tabIcon, tab === t.id && styles.tabActive]}>{t.icon}</Text>
-            <Text style={[styles.tabLabel, tab === t.id && styles.tabActive]}>{t.label}</Text>
+          <TouchableOpacity
+            key={t.id}
+            style={styles.tabItem}
+            onPress={() => setTab(t.id)}
+            accessibilityRole="tab"
+            accessibilityLabel={t.label}
+            accessibilityState={{ selected: tab === t.id }}
+          >
+            <Text
+              style={[styles.tabIcon, tab === t.id && styles.tabActive]}
+              importantForAccessibility="no"
+              accessibilityElementsHidden
+            >{t.icon}</Text>
+            <Text
+              style={[styles.tabLabel, tab === t.id && styles.tabActive]}
+              importantForAccessibility="no"
+              accessibilityElementsHidden
+            >{t.label}</Text>
+            {/* Colour is the only visual cue for the selected tab. That fails
+                anyone who cannot distinguish it, so the active tab also carries
+                a rule under it. */}
+            {tab === t.id && <View style={styles.tabUnderline} />}
           </TouchableOpacity>
         ))}
       </View>
@@ -176,20 +215,28 @@ function AppContent() {
   )
 }
 
-const styles = StyleSheet.create({
+// Rebuilt per palette — see useTheme() in ../theme.
+const makeStyles = (c) => StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: colors.bg,
+    backgroundColor: c.bg,
   },
   content: { flex: 1 },
   tabBar: {
     flexDirection: 'row',
     borderTopWidth: 1,
-    borderTopColor: colors.border,
-    backgroundColor: colors.surface,
+    borderTopColor: c.border,
+    backgroundColor: c.surface,
   },
-  tabItem: { flex: 1, alignItems: 'center', paddingVertical: 10 },
-  tabIcon: { fontSize: 18, color: colors.textMuted },
-  tabLabel: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
-  tabActive: { color: colors.accent },
+  // 44pt is the smallest reliably tappable target on both platforms; the icon
+  // and label together came to roughly 51, but the padding is stated rather
+  // than inherited from the type so a font-size change cannot shrink it.
+  tabItem: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 10, minHeight: 48 },
+  tabIcon: { fontSize: 18, color: c.textMuted },
+  tabLabel: { fontSize: 11, color: c.textMuted, marginTop: 2 },
+  tabActive: { color: c.accent },
+  tabUnderline: {
+    position: 'absolute', bottom: 0, height: 2, width: 28,
+    borderRadius: 1, backgroundColor: c.accent,
+  },
 })

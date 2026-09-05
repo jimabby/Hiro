@@ -140,6 +140,7 @@ stub({
     getDirtyApplications: () => [],
     getAllInterviewEventsForSync: () => [],
     getAttentionJobs: () => [],
+    getOffers: () => ({ offers: [] }),
   },
   './push': {
     notifyNewDevice: async (d) => { pushed.push(d.device_id) },

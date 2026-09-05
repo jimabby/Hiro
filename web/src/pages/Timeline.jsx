@@ -205,6 +205,7 @@ export default function Timeline({ active }) {
                   </div>
                   {isOpen && currentJobs.length > 0 && (
                     <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }} onClick={e => e.stopPropagation()}>
+                      <div className="table-wrap">
                       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                         <thead>
                           <tr>
@@ -242,6 +243,7 @@ export default function Timeline({ active }) {
                           ))}
                         </tbody>
                       </table>
+                      </div>
                     </div>
                   )}
                 </div>

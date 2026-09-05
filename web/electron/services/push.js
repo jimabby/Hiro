@@ -41,6 +41,10 @@ const KIND_SETTING = {
   review: 'review',
   'new-device': 'newDevice',
   'follow-up': 'followUp',
+  // Missing here means isEnabled() returns false and the kind is silently never
+  // sent — which is exactly the "broken feature" the comment below warns about,
+  // one level up. A new kind belongs in this map before anywhere else.
+  'offer-deadline': 'offerDeadline',
 }
 
 function isEnabled(kind) {
@@ -264,6 +268,70 @@ async function checkExpiring(cfg) {
   }
 }
 
+// The one deadline in Hiro that somebody else set and that expires whether or
+// not you look at it.
+//
+// Every other due-date sweep here watches something Hiro decided (a review queue
+// it filled, a follow-up you booked) or something advisory (a job ad's closing
+// date, which mostly means "we will stop reading applications"). An offer's
+// respond_by is neither: miss it and the offer is gone. It was also the only one
+// of the five with no notification at all, on a page whose entire design is
+// built around hoisting whichever deadline expires first.
+//
+// Escalating windows rather than one: three days out is "start deciding", one
+// day out is "decide today". The tightest window that has been entered wins, and
+// each window dedupes separately, so a desktop that was off for two days sends
+// the urgent one rather than the stale one.
+const OFFER_DEADLINE_WINDOWS = [7, 3, 1]
+
+async function checkOfferDeadlines() {
+  let live
+  try {
+    live = database.getOffers().offers.filter(o => o.decision === 'considering' && o.respond_by)
+  } catch {
+    // An older schema with no offers table. Nothing to warn about — the desktop
+    // is where that gets fixed.
+    return
+  }
+  for (const offer of live) {
+    const days = offer.daysToRespond
+    if (days == null) continue
+    // An offer whose deadline has already passed is not a reminder, it is a
+    // fact, and one the user cannot act on any more. The page says so; a push
+    // that arrives after the door shut is noise.
+    if (days < 0) continue
+    const hit = [...OFFER_DEADLINE_WINDOWS].sort((a, b) => a - b).find(w => days <= w)
+    if (hit == null) continue
+    const company = offer.company || 'an employer'
+    await send({
+      kind: 'offer-deadline',
+      // Keyed on the window AND the date, so correcting a respond_by legitimately
+      // re-notifies while an unchanged one never repeats inside its window.
+      dedupeKey: `offer:${offer.application_id}:${hit}d:${offer.respond_by}`,
+      title: days <= 0
+        ? `Offer from ${company} expires today`
+        : `Offer from ${company} — ${days} day${days === 1 ? '' : 's'} to respond`,
+      body: `${offer.job_title || 'Offer'} · respond by ${offer.respond_by}`
+        + (offer.comparableComp != null
+          ? ` · ${offer.compIsAdvertised ? 'advertised around' : 'total'} ${formatMoney(offer.comparableComp, offer.currency)}`
+          : ''),
+      // The offer board, not the application behind it: what the reader wants
+      // is the deadline, the number, and what else is on the table beside it —
+      // the application detail would show them the job advert.
+      data: { applicationId: offer.application_id, tab: 'offers' },
+    })
+  }
+}
+
+// Deliberately plain: a push body is not the place to be clever with currency,
+// and an unknown currency code is better shown than guessed at.
+function formatMoney(amount, currency) {
+  const n = Number(amount)
+  if (!Number.isFinite(n)) return String(amount)
+  const rounded = n >= 1000 ? `${Math.round(n / 1000)}k` : String(Math.round(n))
+  return currency ? `${rounded} ${currency}` : rounded
+}
+
 async function checkReviewQueue(cfg) {
   const held = database.getStats().heldCount
   if (held <= 0) return
@@ -308,6 +376,7 @@ async function runDueChecks() {
     const cfg = configService.load()
     if (!cfg.pushEnabled) return
     await checkInterviewReminders(cfg)
+    await checkOfferDeadlines()
     await checkExpiring(cfg)
     await checkReviewQueue(cfg)
     await checkFollowUps()
@@ -346,5 +415,5 @@ module.exports = {
   send, sendTest, runDueChecks,
   notifyReply, notifyScanFailed, notifyNewDevice,
   // exported for tests
-  parseLocal, isEnabled,
+  parseLocal, isEnabled, checkOfferDeadlines, formatMoney, OFFER_DEADLINE_WINDOWS,
 }

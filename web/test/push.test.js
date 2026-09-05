@@ -253,6 +253,88 @@ async function main() {
   await push.notifyScanFailed({ blocked: [{ platform: 'Indeed' }] })
   check('a block on a different platform is a new event', sent.length, 2)
 
+  // ── Offer deadlines ──────────────────────────────────────────
+  // The only externally-imposed deadline in Hiro: miss a respond_by and the
+  // offer is gone. It was also the only due-date sweep with no notification at
+  // all, on a page whose entire design is built around hoisting whichever
+  // deadline expires first.
+  sent.length = 0
+  targets = [{ deviceId: 'phone-1', token: 'ExponentPushToken[aaa]' }]
+  setConfig({ pushEnabled: true, pushKinds: {} })
+
+  const soon = addApplication({ company: 'Northwind', job_title: 'Staff Engineer', status: 'offer' })
+  const later = addApplication({ company: 'Contoso', job_title: 'Principal', status: 'offer' })
+  const undated = addApplication({ company: 'Fabrikam', job_title: 'Lead', status: 'offer' })
+  db.saveOffer(soon, { baseSalary: 180000, bonus: 20000, currency: 'AUD', respondBy: localDate(2), decision: 'considering' })
+  db.saveOffer(later, { baseSalary: 150000, respondBy: localDate(40), decision: 'considering' })
+  db.saveOffer(undated, { baseSalary: 140000, decision: 'considering' })
+
+  await push.checkOfferDeadlines()
+  check('only the offer inside a window is announced', sent.length, 1)
+  check('the notification names the employer', /Northwind/.test(sent[0].messages[0].title), true)
+  check('and says how long is left', /2 days to respond/.test(sent[0].messages[0].title), true)
+  check('the body carries the deadline', /respond by/.test(sent[0].messages[0].body), true)
+  check('and the money, so it is decidable from the lock screen', /200k AUD/.test(sent[0].messages[0].body), true)
+  // The offer board is what the reader wants, not the job advert behind it.
+  check('it routes to the offers tab', sent[0].messages[0].data.tab, 'offers')
+
+  // Runs on a two-minute sync loop, so "send once" is the property that matters.
+  sent.length = 0
+  await push.checkOfferDeadlines()
+  await push.checkOfferDeadlines()
+  check('the same deadline is not repeated', sent.length, 0)
+
+  // A deadline that has already passed is a fact, not a reminder, and not one
+  // the user can act on any more.
+  sent.length = 0
+  const gone = addApplication({ company: 'Tailspin', status: 'offer' })
+  db.saveOffer(gone, { baseSalary: 100000, respondBy: localDate(-3), decision: 'considering' })
+  await push.checkOfferDeadlines()
+  check('an expired deadline is not announced', sent.length, 0)
+
+  // A decision already taken has no deadline left to warn about.
+  sent.length = 0
+  const settled = addApplication({ company: 'Litware', status: 'offer' })
+  db.saveOffer(settled, { baseSalary: 170000, respondBy: localDate(1), decision: 'accepted' })
+  await push.checkOfferDeadlines()
+  check('a settled offer is not announced', sent.length, 0)
+
+  // Each window is its own event, so an offer warned about at seven days is
+  // warned about again when it reaches three.
+  sent.length = 0
+  const walking = addApplication({ company: 'Adventure Works', status: 'offer' })
+  db.saveOffer(walking, { baseSalary: 160000, respondBy: localDate(6), decision: 'considering' })
+  await push.checkOfferDeadlines()
+  check('the seven-day window fires', sent.length, 1)
+  db.saveOffer(walking, { baseSalary: 160000, respondBy: localDate(3), decision: 'considering' })
+  await push.checkOfferDeadlines()
+  check('the three-day window fires as well', sent.length, 2)
+  check('and it is more urgent', /3 days/.test(sent[1].messages[0].title), true)
+
+  // The per-kind switch has to reach it. A kind missing from KIND_SETTING is
+  // silently never sent, which is the failure this check exists to catch.
+  sent.length = 0
+  setConfig({ pushEnabled: true, pushKinds: { offerDeadline: false } })
+  const muted = addApplication({ company: 'Proseware', status: 'offer' })
+  db.saveOffer(muted, { baseSalary: 120000, respondBy: localDate(1), decision: 'considering' })
+  await push.checkOfferDeadlines()
+  check('switching the kind off silences it', sent.length, 0)
+  setConfig({ pushEnabled: true, pushKinds: {} })
+  await push.checkOfferDeadlines()
+  check('and switching it back on lets it through', sent.length, 1)
+
+  // An advertised band must never be presented as an offer figure.
+  sent.length = 0
+  const advertised = addApplication({ company: 'Wingtip', status: 'offer' })
+  db.saveOffer(advertised, { respondBy: localDate(1), decision: 'considering' })
+  await push.checkOfferDeadlines()
+  check('an offer with no figure entered still warns', sent.length, 1)
+  check('and quotes no total it does not have', /total/.test(sent[0].messages[0].body), false)
+
+  check('a round thousand reads as k', push.formatMoney(200000, 'AUD'), '200k AUD')
+  check('a small figure is not abbreviated', push.formatMoney(850, ''), '850')
+  check('a non-number is passed through rather than guessed at', push.formatMoney('negotiable', ''), 'negotiable')
+
   // ── The test notification bypasses the ledger ─────────────────
   // Its whole purpose is to be sent again, on demand.
   sent.length = 0

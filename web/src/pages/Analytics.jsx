@@ -881,6 +881,7 @@ export default function Analytics({ active }) {
               repeatedly reposted listings
             </span>
           </div>
+          <div className="table-wrap">
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ textAlign: 'left', color: 'var(--text-muted)', fontSize: 11 }}>
@@ -922,6 +923,7 @@ export default function Analytics({ active }) {
               ))}
             </tbody>
           </table>
+          </div>
           <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 10, marginBottom: 0 }}>
             Each of these has been advertised at least three times under different URLs over more than
             six weeks. That usually means a pipeline being kept warm, an agency collecting CVs, or a
@@ -946,6 +948,7 @@ export default function Analytics({ active }) {
               interview or offer rate per resume sent
             </span>
           </div>
+          <div className="table-wrap">
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ textAlign: 'left', color: 'var(--text-muted)', fontSize: 11 }}>
@@ -976,6 +979,7 @@ export default function Analytics({ active }) {
               ))}
             </tbody>
           </table>
+          </div>
           <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 10, marginBottom: 0 }}>
             Rates marked “?” come from fewer than 10 applications and aren't meaningful yet. Once a
             resume has a real sample, this is the evidence for keeping or dropping the routing rule
@@ -1008,6 +1012,7 @@ export default function Analytics({ active }) {
             ))}
           </div>
           {(aiUsage.byOperation || []).length > 0 && (
+            <div className="table-wrap">
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
                 <tr style={{ textAlign: 'left', color: 'var(--text-muted)', fontSize: 11 }}>
@@ -1026,6 +1031,7 @@ export default function Analytics({ active }) {
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </div>
       )}

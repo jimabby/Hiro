@@ -110,6 +110,12 @@ export async function disablePush(userId) {
 // already has, and returns null when there is nothing specific to open.
 export function routeForNotification(data) {
   if (!data) return null
+  // Checked BEFORE the applicationId branch, which every kind carrying an id
+  // would otherwise swallow. An offer-deadline notification names an
+  // application, but the thing the reader wants is the offer board — the
+  // deadline, the number, and what else is on the table beside it. Opening the
+  // application detail instead would show them the job advert.
+  if (data.kind === 'offer-deadline') return { tab: 'offers' }
   if (data.applicationId != null) return { tab: 'applications', applicationId: data.applicationId }
   if (data.kind === 'review' || data.kind === 'expiring') return { tab: 'applications' }
   if (data.kind === 'new-device') return { tab: 'settings' }
