@@ -82,6 +82,119 @@ function recordApply(platform, { success, reason = '' } = {}) {
   } catch { /* as above */ }
 }
 
+// ─── Career boards, individually ─────────────────────────────────
+//
+// The aggregate "ATS" signal cannot see the failure that actually happens here.
+// Boards are watched one employer at a time and fail one at a time: a slug that
+// is renamed or made private 404s while the other five keep returning jobs. The
+// platform is working, so every heuristic above reports it working — and the
+// board the user believes they are watching has been dead for weeks.
+//
+// Recorded under their own platform key so one board's history cannot be
+// confused with another's, or with the aggregate.
+const BOARD_PREFIX = 'board:'
+
+const boardPlatform = (key) => `${BOARD_PREFIX}${key}`
+
+function recordBoard(board) {
+  try {
+    database.recordAutomationEvent({
+      platform: boardPlatform(board.key),
+      // A 404 is not the same kind of event as a timeout, and conflating them
+      // means the advice cannot be specific. `board-missing` is permanent until
+      // the user edits the slug; `error` may fix itself.
+      kind: board.notFound ? 'board-missing' : board.error ? 'error' : board.found > 0 ? 'scrape-ok' : 'scrape-empty',
+      detail: board.error || `${board.found || 0} posting(s), ${board.matched ?? 0} matched`,
+      count: board.found || 0,
+    })
+  } catch { /* health tracking must never break a scan */ }
+}
+
+// One verdict per configured board.
+//
+// Deliberately not routed through diagnose(): that reads an aggregator's
+// failures — expired logins, moved selectors, CAPTCHA challenges — and a JSON
+// board has none of those. Its failure modes are a wrong slug, an unreachable
+// endpoint, and an employer with nothing open, and every one of them needs
+// different words.
+function summariseBoards(boards, now = Date.now()) {
+  return (boards || []).map(board => {
+    const key = `${board.provider}:${board.slug}`
+    const events = database.getAutomationEvents(boardPlatform(key), 20)
+    const lastOk = events.find(e => e.kind === 'scrape-ok')
+    const base = {
+      key,
+      board: true,
+      platform: board.label || board.slug,
+      provider: board.provider,
+      lastScrapeOkAt: lastOk?.at || null,
+      lastScrapeCount: lastOk?.count ?? null,
+      lastEventAt: events[0]?.at || null,
+    }
+
+    if (events.length === 0) {
+      return { ...base, status: 'unknown', headline: 'Not scanned yet', advice: 'This board is watched from the next scan onwards.' }
+    }
+
+    // Scoped to events newer than the last success, like every other check
+    // here: a board that was renamed and then fixed must stop being reported.
+    const since = eventsSince(events, 6, SCRAPE_OK)
+    const missing = since.find(e => e.kind === 'board-missing')
+    if (missing) {
+      return {
+        ...base,
+        status: 'critical',
+        headline: 'This board no longer exists',
+        advice: `The provider returned "not found" for ${board.slug}. The employer has renamed the board, made it private, or the slug is wrong — fix or remove it in Settings → Job Boards. ${lastOk ? `It last returned postings ${describeAge(lastOk.at, now)}.` : 'It has never returned any.'}`,
+      }
+    }
+
+    const errors = since.filter(e => e.kind === 'error')
+    if (errors.length >= 2) {
+      return {
+        ...base,
+        status: 'critical',
+        headline: 'This board keeps failing to load',
+        advice: `${errors.length} failures in a row, most recently "${errors[0].detail}". Unlike a wrong slug this may be temporary, so it is worth one more scan before changing anything.`,
+      }
+    }
+    if (errors.length === 1) {
+      return {
+        ...base,
+        status: 'warning',
+        headline: 'Last scan could not read this board',
+        advice: `"${errors[0].detail}". One failure is usually a network blip; it is only worth acting on if it repeats.`,
+      }
+    }
+
+    // An employer with nothing open is not a fault, and must never be dressed
+    // up as one — but a board that has published nothing for weeks is usually a
+    // slug pointing at an empty or retired board rather than a hiring freeze.
+    let emptyStreak = 0
+    for (const e of events) {
+      if (e.kind === 'scrape-empty') emptyStreak++
+      else break
+    }
+    if (emptyStreak >= EMPTY_STREAK_FOR_SUSPICION) {
+      return {
+        ...base,
+        status: 'warning',
+        headline: `Nothing published in the last ${emptyStreak} scans`,
+        advice: lastOk
+          ? `This board last had postings ${describeAge(lastOk.at, now)}. That is normal for a small employer; if it goes on, check the board still lists jobs on the employer's own careers page.`
+          : 'This board has never returned a posting. Check the slug against the employer\'s careers page — a valid but wrong slug returns an empty board rather than an error.',
+      }
+    }
+
+    return {
+      ...base,
+      status: 'ok',
+      headline: `Working — ${lastOk?.count ?? 0} posting(s) on the last scan`,
+      advice: '',
+    }
+  })
+}
+
 function startCooldown(platform, reason, now = Date.now()) {
   try {
     const cfg = configService.load()
@@ -299,6 +412,7 @@ function describeAge(at, now = Date.now()) {
 
 module.exports = {
   recordScrape, recordApply, summarise, diagnose, classifyApplyFailure,
+  recordBoard, summariseBoards,
   startCooldown, getCooldown,
   eventsSince,
   EMPTY_STREAK_FOR_SUSPICION, STALE_SUCCESS_HOURS,

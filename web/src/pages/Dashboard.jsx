@@ -720,11 +720,25 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
             .filter(h => h.status === 'critical' || h.status === 'warning')
             .sort((a, b) => (a.status === 'critical' ? -1 : 1) - (b.status === 'critical' ? -1 : 1))
             .map(h => (
-              <div key={h.platform} style={{ marginBottom: 8, fontSize: 12 }}>
+              // A board's key, not its label: two employers can be watched
+              // under the same display name, and a board can share a name with
+              // a platform.
+              <div key={h.key || h.platform} style={{ marginBottom: 8, fontSize: 12 }}>
                 <span style={{
                   color: h.status === 'critical' ? 'var(--red)' : 'var(--yellow)',
                   fontWeight: 600,
                 }}>{h.platform}</span>
+                {/* Which ATS this employer is on. Without it a board row reads
+                    as though Hiro has a platform called "Atlassian", and the
+                    provider is half of what the user needs to go and fix the
+                    slug. */}
+                {h.board && (
+                  <span style={{
+                    marginLeft: 6, fontSize: 10, padding: '1px 6px', borderRadius: 'var(--pill)',
+                    background: 'var(--surface2)', color: 'var(--text-muted)',
+                    textTransform: 'uppercase', letterSpacing: '0.03em',
+                  }}>{h.provider}</span>
+                )}
                 <span style={{ color: 'var(--text)' }}> — {h.headline}</span>
                 {h.hasSession === false && (
                   <span style={{ color: 'var(--red)' }}> · not logged in</span>

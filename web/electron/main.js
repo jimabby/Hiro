@@ -1633,12 +1633,22 @@ ipcMain.handle('automation:health', () => {
     Indeed: indeedSession.hasCookies(),
     LinkedIn: linkedinSession.hasCookies(),
   }
-  return require('./services/automationHealth').summarise(platforms).map(h => ({
+  const health = require('./services/automationHealth')
+  const rows = health.summarise(platforms).map(h => ({
     ...h,
     // A platform with no stored login cannot work at all, whatever the event
     // log says — report that before any subtler diagnosis.
     hasSession: sessions[h.platform] !== undefined ? sessions[h.platform] : null,
   }))
+
+  // Each watched board on its own line, under the aggregate. The "ATS" row can
+  // only ever say whether the category is working; a single renamed board
+  // leaves it perfectly healthy while the employer the user actually cares
+  // about has been unreadable for weeks.
+  if (cfg.enableAtsBoards) {
+    rows.push(...health.summariseBoards(cfg.atsBoards || []).map(b => ({ ...b, hasSession: null })))
+  }
+  return rows
 })
 ipcMain.handle('automation:clearHealth', () => database.clearAutomationEvents())
 

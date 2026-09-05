@@ -616,13 +616,35 @@ async function fetchDescriptions(provider, jobs, log) {
   }
 }
 
-async function scrape(cfg, { log, skipDetails = false } = {}) {
+// `onBoard` is how a per-board failure escapes this function.
+//
+// Boards are watched individually and fail individually: a slug that is renamed
+// or made private 404s while every other board keeps working. That failure used
+// to be pushed onto `failures` and then discarded unless EVERY board failed, so
+// a user watching six employers could have one dead for weeks while the scan
+// reported success each morning. The aggregate "ATS" health signal cannot see it
+// either — the platform is working, one board inside it is not.
+async function scrape(cfg, { log, skipDetails = false, onBoard } = {}) {
   const boards = (cfg.atsBoards || []).filter(b => b?.slug && PROVIDERS[b.provider])
   if (boards.length === 0) return []
 
   const jobs = []
   const seen = new Set()
   const failures = []
+
+  const report = (board, outcome) => {
+    try {
+      onBoard?.({
+        // Stable across renames of the display label, which is the thing a user
+        // is most likely to edit.
+        key: `${board.provider}:${board.slug}`,
+        provider: board.provider,
+        label: board.label || board.slug,
+        slug: board.slug,
+        ...outcome,
+      })
+    } catch { /* health reporting must never break a scan */ }
+  }
 
   for (const board of boards) {
     const provider = PROVIDERS[board.provider]
@@ -658,10 +680,19 @@ async function scrape(cfg, { log, skipDetails = false } = {}) {
           _provider: provider.label,
         })
       }
+
+      // `parsed` rather than `kept`: a board publishing forty roles of which
+      // none match your keywords is healthy, and reporting it as zero would
+      // make every narrow search look like a broken board.
+      report(board, { found: parsed.length, matched: kept.length })
     } catch (err) {
       // One misconfigured board must not take the whole platform down.
       if (err.blocked) throw err
       failures.push(`${board.label || board.slug}: ${err.message}`)
+      // A renamed or private board is a configuration problem the user has to
+      // fix, and it is permanent until they do; anything else may be transient.
+      report(board, { error: err.message, notFound: !!err.notFound })
+      log?.(`  ${board.label || board.slug}: ${err.message}`)
     }
   }
 

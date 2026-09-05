@@ -221,7 +221,15 @@ async function doRun(cfg, { log, notifyAttention }) {
       // `log` lets a scraper narrate work the caller cannot otherwise see —
       // the ATS adapter uses it to say when it is reading descriptions one at a
       // time, and when it has stopped short of a very long board.
-      jobs = await scraper.scrape(cfg, { log })
+      // `onBoard` is only meaningful for the ATS adapter, which watches several
+      // employers behind one platform name. Passing it unconditionally is
+      // harmless — every other scraper ignores the option — and it is what
+      // gives each board its own health record, since a single dead board is
+      // invisible in the aggregate signal recorded below.
+      jobs = await scraper.scrape(cfg, {
+        log,
+        onBoard: (board) => automationHealth.recordBoard(board),
+      })
       // ATS boards return the description with the listing; hand it forward so
       // getJobDescription is a lookup rather than a second network round trip.
       scraper.primeDescriptions?.(jobs)
