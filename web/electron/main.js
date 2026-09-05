@@ -1337,6 +1337,10 @@ ipcMain.handle('db:getStatusHistory', (_, applicationId) => database.getStatusHi
 ipcMain.handle('db:getSnapshots', (_, applicationId) => database.getSnapshots(applicationId))
 ipcMain.handle('db:getSnapshot', (_, id) => database.getSnapshot(id))
 ipcMain.handle('db:getSnapshotDiff', (_, id) => database.getSnapshotDiff(id))
+// What the fabrication guard objected to on a held draft, and what the model
+// changed to cause it. Read on demand rather than sent with the review list:
+// it carries a full document diff, and the list renders dozens of rows.
+ipcMain.handle('db:getHoldExplanation', (_, id) => database.getHoldExplanation(id))
 ipcMain.handle('db:compareSnapshots', (_, a, b, field) => database.compareSnapshots(a, b, field))
 ipcMain.handle('db:restoreSnapshot', (_, id) => database.restoreSnapshot(id))
 ipcMain.handle('db:backupNow', () => {

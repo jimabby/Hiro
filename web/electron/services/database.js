@@ -984,6 +984,64 @@ function getSnapshot(id) {
 }
 
 // What the tailoring pass changed, for one snapshot.
+// Why a draft is sitting in Review, in the terms the guard actually objected in.
+//
+// The Review page could already show what WOULD be sent — the tailored resume
+// and the cover letter, in full. What it could not show is the thing the user
+// is actually being asked to adjudicate: which line the fabrication guard
+// objected to, and what the model changed to produce it. "Held for review"
+// appeared in the match explanation as one run-on sentence, and answering
+// "is this a real problem?" meant reading a 600-line resume against a base the
+// page did not have.
+//
+// Both halves are already stored. fabrication_flags is on the applications row
+// and carries every objection from every check, each with the line that
+// triggered it. The base resume is on the 'drafted' SNAPSHOT rather than the
+// row, which is the right source and not merely the available one: the
+// applications row is mutable — editing the master resume changes the base out
+// from under every past application — while the snapshot is frozen at the
+// moment the draft was held, so it is what the guard actually compared.
+function getHoldExplanation(id) {
+  const row = queryOne(
+    'SELECT id, fabrication_flags, resume_name FROM applications WHERE id = ?', [id])
+  if (!row) return null
+
+  const { diffLines, diffSummary } = require('./textDiff')
+  let flags = []
+  // A row written before this column existed, or by an older version, reads as
+  // no flags rather than as an error — the diff below is still worth showing.
+  try {
+    const parsed = JSON.parse(row.fabrication_flags || '[]')
+    if (Array.isArray(parsed)) flags = parsed
+  } catch { flags = [] }
+
+  // The version that is waiting, which is the newest — a draft re-tailored
+  // after being held has a later snapshot, and diffing the first one would
+  // describe a document nobody is being asked to approve.
+  const snap = queryOne(`
+    SELECT base_resume, tailored_resume, resume_name
+    FROM application_snapshots
+    WHERE application_id = ?
+    ORDER BY taken_at DESC, id DESC
+    LIMIT 1
+  `, [id])
+
+  // Only meaningful when there is a base to differ from. A draft held purely
+  // because the LISTING carried model-directed instructions has no resume
+  // objection at all, and showing an empty diff would imply it did.
+  const hasBase = !!(snap?.base_resume && snap?.tailored_resume)
+  const diff = hasBase ? diffLines(snap.base_resume, snap.tailored_resume) : []
+
+  return {
+    id: row.id,
+    resume_name: snap?.resume_name || row.resume_name || null,
+    flags,
+    hasBase,
+    diff,
+    summary: diffSummary(diff),
+  }
+}
+
 function getSnapshotDiff(id) {
   const snap = getSnapshot(id)
   if (!snap) return null
@@ -3738,6 +3796,7 @@ module.exports = {
   findRecentApplicationToCompany, insertApplication, updateApplicationStatus,
   getHeldApplications, markHeldApplied, rejectHeldApplication, holdApplicationDraft,
   recordSnapshot, getSnapshots, getSnapshot, getSnapshotDiff, compareSnapshots, restoreSnapshot,
+  getHoldExplanation,
   recordAutomationEvent, getAutomationEvents, clearAutomationEvents,
   recordSyncConflict, getSyncConflicts, countSyncConflicts, clearSyncConflicts, applyConflictResolution,
   getResumeConversion, getResumeExperimentArms, getGhostJobs,

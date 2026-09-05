@@ -231,6 +231,7 @@ contextBridge.exposeInMainWorld('api', {
   getSnapshots: (applicationId) => ipcRenderer.invoke('db:getSnapshots', applicationId),
   getSnapshot: (id) => ipcRenderer.invoke('db:getSnapshot', id),
   getSnapshotDiff: (id) => ipcRenderer.invoke('db:getSnapshotDiff', id),
+  getHoldExplanation: (id) => ipcRenderer.invoke('db:getHoldExplanation', id),
   compareSnapshots: (a, b, field) => ipcRenderer.invoke('db:compareSnapshots', a, b, field),
   restoreSnapshot: (id) => ipcRenderer.invoke('db:restoreSnapshot', id),
   backupNow: () => ipcRenderer.invoke('db:backupNow'),

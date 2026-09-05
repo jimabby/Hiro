@@ -26,12 +26,163 @@ function scoreColour(score) {
   return 'var(--text-muted)'
 }
 
+// How the guard's own vocabulary reads to a person. `kind` comes from
+// fabricationGuard and is prefixed per document, so "cover-letter credential"
+// and "credential" are the same objection about two different files.
+const FLAG_LABELS = {
+  date: 'A date the base resume does not contain',
+  credential: 'A qualification the base resume does not claim',
+  'job-title': 'A job title the base resume does not list',
+  employer: 'An employer the base resume does not mention',
+  'listing-injection': 'Instructions aimed at the AI, found in the job ad',
+}
+
+function flagLabel(kind) {
+  const bare = String(kind || '').replace(/^cover-letter /, '')
+  const known = FLAG_LABELS[bare] || bare
+  // Which document it was found in leads, so two objections of the same kind
+  // about different files do not read as duplicates.
+  if (!String(kind || '').startsWith('cover-letter')) return known
+  return `Cover letter: ${known.charAt(0).toLowerCase()}${known.slice(1)}`
+}
+
+// A listing-injection flag is not evidence the model misbehaved — it is the
+// reason not to find out the hard way — so it is coloured as a caution rather
+// than as a fault, and said so in words.
+const isInjection = (kind) => String(kind || '') === 'listing-injection'
+
+function Flag({ flag, colour }) {
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div style={{ fontSize: 12, fontWeight: 500 }}>
+        {flagLabel(flag.kind)}
+        {flag.value ? <>: <span style={{ color: colour }}>“{flag.value}”</span></> : null}
+      </div>
+      {/* The line, verbatim. "A credential was invented" is an alarm; the
+          sentence it appears in is something a person can act on. */}
+      {flag.line && (
+        <pre style={{
+          margin: '4px 0 0', padding: '6px 8px', borderRadius: 6,
+          background: 'var(--surface)', fontSize: 11, lineHeight: 1.5,
+          whiteSpace: 'pre-wrap', fontFamily: 'inherit', color: 'var(--text-muted)',
+        }}>{flag.line}</pre>
+      )}
+    </div>
+  )
+}
+
+function HoldReason({ hold, showDiff, onToggleDiff }) {
+  if (!hold) {
+    return (
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 16 }}>
+        Checking why this draft was held…
+      </p>
+    )
+  }
+
+  const flags = Array.isArray(hold.flags) ? hold.flags : []
+  // Blanket review mode holds everything, so most drafts have nothing flagged.
+  // Saying so plainly is the point: it separates "held because you asked for
+  // review" from "held because something in it is wrong".
+  if (flags.length === 0) {
+    return (
+      <div style={{
+        marginTop: 16, padding: '10px 12px', borderRadius: 8,
+        background: 'var(--surface2)', borderLeft: '3px solid var(--border-strong)',
+        fontSize: 12, color: 'var(--text-muted)',
+      }}>
+        Nothing was flagged in this draft — it is waiting because review mode holds
+        every application, not because a check objected to it.
+      </div>
+    )
+  }
+
+  const faults = flags.filter(f => !isInjection(f.kind))
+  const cautions = flags.filter(f => isInjection(f.kind))
+  const accent = faults.length > 0 ? 'var(--red)' : 'var(--yellow)'
+
+  return (
+    <div style={{
+      marginTop: 16, padding: '12px 14px', borderRadius: 8,
+      background: faults.length > 0 ? 'var(--red-soft)' : 'var(--yellow-soft)',
+      borderLeft: `3px solid ${accent}`,
+    }}>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>
+        {faults.length > 0
+          ? `Held because ${faults.length} thing${faults.length === 1 ? '' : 's'} could not be checked against your resume`
+          : 'Held because the job ad carried instructions aimed at the AI'}
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
+        {faults.length > 0
+          ? 'Each one is quoted below with the line it came from. The guard is deliberately '
+            + 'cautious — a wrong flag costs a click, a missed one is a false claim sent over your name.'
+          : 'Nothing in the documents was flagged. The listing is quoted so you can see what it tried.'}
+      </div>
+
+      {faults.map((flag, i) => <Flag key={`f${i}`} flag={flag} colour={accent} />)}
+
+      {/* The boundary between the two kinds, stated rather than implied by
+          colour alone. An injection hit is not a claim the model made — it is
+          something the ADVERT tried — so it is neither counted in the headline
+          above nor coloured as a fault. */}
+      {cautions.length > 0 && (
+        <>
+          {faults.length > 0 && (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 12, marginBottom: 6 }}>
+              The advert also carried instructions aimed at the AI. That is not something
+              the model got wrong — it is the reason this was not sent unattended.
+            </div>
+          )}
+          {cautions.map((flag, i) => <Flag key={`c${i}`} flag={flag} colour="var(--yellow)" />)}
+        </>
+      )}
+
+      {/* The diff answers the follow-up question — "so what did it actually
+          change?" — and it is long, so it is one click away rather than
+          pushed in front of every reader. Absent entirely when there is no
+          base to compare against, rather than shown as an empty list. */}
+      {hold.hasBase && hold.diff?.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <button className="btn btn-ghost btn-sm" onClick={onToggleDiff}>
+            {showDiff ? 'Hide' : 'Show'} what the AI changed
+            <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>
+              {' '}· {hold.summary?.added ?? 0} added, {hold.summary?.removed ?? 0} removed
+            </span>
+          </button>
+          {showDiff && (
+            <pre style={{
+              margin: '8px 0 0', fontSize: 11, lineHeight: 1.5, maxHeight: 260,
+              overflowY: 'auto', whiteSpace: 'pre-wrap',
+              background: 'var(--surface)', borderRadius: 6, padding: 10,
+            }}>
+              {hold.diff.map((part, i) => (
+                <div key={i} style={{
+                  color: part.type === 'added' ? 'var(--green)'
+                    : part.type === 'removed' ? 'var(--red)'
+                    : 'var(--text-faint)',
+                }}>
+                  {part.type === 'added' ? '+ ' : part.type === 'removed' ? '\u2212 ' : '  '}{part.line}
+                </div>
+              ))}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function Review({ active, showToast, onCountChange }) {
   const [held, setHeld] = useState([])
   const [followUps, setFollowUps] = useState([])
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState(() => new Set())
   const [detail, setDetail] = useState(null)
+  // Why the open draft is held, fetched alongside it. Null until it arrives, so
+  // the panel can say "checking" rather than flashing "nothing was flagged" at
+  // a draft that was in fact flagged.
+  const [hold, setHold] = useState(null)
+  const [showDiff, setShowDiff] = useState(false)
   const [busy, setBusy] = useState(false)
   const [log, setLog] = useState([])
   const [confirmReject, setConfirmReject] = useState(null)
@@ -83,11 +234,21 @@ export default function Review({ active, showToast, onCountChange }) {
   async function openDetail(row) {
     // The list query omits the document columns — fetch the full row so the
     // drafted resume and cover letter can actually be read before approving.
+    setHold(null)
+    setShowDiff(false)
     try {
       const full = await window.api.getApplication(row.id)
       setDetail(full || row)
     } catch {
       setDetail(row)
+    }
+    // Separately, and allowed to fail on its own: the guard's objections and
+    // the base-vs-tailored diff. A build without the handler, or a row from
+    // before it existed, must still open the draft.
+    try {
+      setHold(await window.api.getHoldExplanation?.(row.id) || { flags: [], diff: [], hasBase: false })
+    } catch {
+      setHold({ flags: [], diff: [], hasBase: false })
     }
   }
 
@@ -309,6 +470,13 @@ export default function Review({ active, showToast, onCountChange }) {
                 Follow-up contact found in the ad: <strong>{detail.recruiter_email}</strong>
               </div>
             )}
+
+            {/* Why this is here.
+                Everything below this point is what WOULD be sent. This is the
+                one thing the page is actually asking the user to adjudicate,
+                so it goes above the documents rather than under them: the
+                objection, quoted, with the line that caused it. */}
+            <HoldReason hold={hold} showDiff={showDiff} onToggleDiff={() => setShowDiff(v => !v)} />
 
             <section style={{ marginTop: 20 }}>
               <h3 style={{ fontSize: 13, marginBottom: 8 }}>Cover letter that would be sent</h3>
