@@ -129,6 +129,14 @@ jobs:
       - name: Desktop/phone key derivation agrees
         run: node web/test/cross-platform-crypto.test.js
 
+      # Same reason, for the pairing handshake: the desktop, the extension and
+      # the phone each implement it, and the phone's half needs @noble/curves
+      # from app/node_modules. In the desktop job that dependency is absent and
+      # the suite skips that one block, so this is the step that actually runs
+      # it.
+      - name: Desktop/phone pairing handshake agrees
+        run: node web/test/pair-channel.test.js
+
       # `expo config` only proves app.json parses; an export runs Metro over
       # every module, which is what catches a bad import or a syntax error after
       # a dependency bump.

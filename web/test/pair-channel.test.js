@@ -21,8 +21,18 @@ const desktop = service('pairChannel.js')
 // The real extension file, run in Node. Its WebCrypto calls are the same ones
 // the browser makes.
 const browser = require(path.join(__dirname, '..', '..', 'extension', 'pairChannel.js'))
-// The exact library and entrypoint app/src/pairProtocol.js imports.
-const { p256 } = require(path.join(__dirname, '..', '..', 'app', 'node_modules', '@noble', 'curves', 'nist.js'))
+// The exact library and entrypoint app/src/pairProtocol.js imports, resolved
+// from the mobile app's own node_modules so this tests the build that actually
+// ships. A desktop-only checkout does not have it; that is handled below rather
+// than crashing the whole suite, which is what used to happen on CI — the
+// desktop job installs `web` only, so this file failed there every single run
+// and took the two thirds of it that need no phone dependency down with it.
+let p256 = null
+try {
+  ({ p256 } = require(path.join(__dirname, '..', '..', 'app', 'node_modules', '@noble', 'curves', 'nist.js')))
+} catch {
+  p256 = null
+}
 
 const { check, done } = createChecker()
 
@@ -56,7 +66,12 @@ const CODE = 'K7M2QW9X'
   // Reproduces src/pairProtocol.js openChannel() with the same library, to pin
   // that noble's shared secret is the one node computes. A mismatch here is a
   // phone that cannot pair at all.
-  {
+  // Skipping is a local convenience for a desktop-only checkout. It is NOT a way
+  // for this check to quietly disappear: CI runs this file as its own step in
+  // the mobile job, where app/node_modules is always installed.
+  if (!p256) {
+    console.log('SKIP  app/node_modules is not installed — run `npm ci --prefix app` to check the phone derivation')
+  } else {
     const channel = desktop.createChannel(CODE)
     const secretKey = p256.utils.randomSecretKey()
     const publicKey = p256.getPublicKey(secretKey, false)

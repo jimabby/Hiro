@@ -352,7 +352,15 @@ export default function App() {
           scrolling column passes behind. It samples the ambient wash directly,
           which is the one place in the app where the material is unmistakable. */}
       <nav data-testid="nav" style={{
-        width: 236, flexShrink: 0,
+        // 236 left "Needs Attention" — the one label that shares its row with a
+        // count badge AND the shortcut hint — two pixels short, so the app's
+        // most urgent destination permanently read "Needs Attenti…". The hint is
+        // invisible until hover but still reserves its ~18px, and the ellipsis
+        // rule below it in index.css was hiding the overflow rather than the
+        // rail being wide enough for the content it carries. This is that width
+        // plus enough headroom that a slightly longer label does not reintroduce
+        // it.
+        width: 252, flexShrink: 0,
         background: 'var(--glass)',
         backdropFilter: 'var(--blur)',
         WebkitBackdropFilter: 'var(--blur)',

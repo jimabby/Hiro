@@ -694,12 +694,12 @@ function IndeedAccountCard() {
   }, [])
 
   return (
-    <div className="card">
+    <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
       <h3 style={{ marginBottom: 8, fontSize: 15 }}>Indeed Account</h3>
       <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 16 }}>
         Required for Indeed Easy Apply. Without logging in, applications won't be submitted under your account.
       </p>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: loggedIn ? 'var(--green)' : 'var(--text-muted)', fontSize: 13 }}>
           <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: loggedIn ? 'var(--green)' : 'var(--border)' }} />
           {loggedIn ? 'Logged in' : 'Not logged in'}
@@ -740,12 +740,12 @@ function SeekAccountCard() {
   }, [])
 
   return (
-    <div className="card">
+    <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
       <h3 style={{ marginBottom: 8, fontSize: 15 }}>Seek Account</h3>
       <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 16 }}>
         Required for Seek applications. Without logging in, submitted applications won't be recorded and you won't receive confirmation emails.
       </p>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: loggedIn ? 'var(--green)' : 'var(--text-muted)', fontSize: 13 }}>
           <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: loggedIn ? 'var(--green)' : 'var(--border)' }} />
           {loggedIn ? 'Logged in' : 'Not logged in'}
@@ -1528,12 +1528,12 @@ export default function Settings({ showToast, active }) {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 16 }}>
       {/* LinkedIn */}
-      <div className="card" style={{ marginBottom: 0 }}>
+      <div className="card" style={{ marginBottom: 0, display: 'flex', flexDirection: 'column' }}>
         <h3 style={{ marginBottom: 8, fontSize: 15 }}>LinkedIn Account</h3>
         <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 16 }}>
           Required for LinkedIn Easy Apply. A browser window will open — log in normally, it closes automatically.
         </p>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 'auto' }}>
           <div style={{
             display: 'flex', alignItems: 'center', gap: 6,
             color: linkedinLoggedIn ? 'var(--green)' : 'var(--text-muted)', fontSize: 13,
@@ -3642,14 +3642,13 @@ export default function Settings({ showToast, active }) {
       </div>} {/* end about tab */}
 
       {pdfModal && (
-        <div style={{
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Document preview" style={{
           position: 'fixed', inset: 0, background: 'var(--scrim)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300,
         }} onClick={() => setPdfModal(null)} onKeyDown={e => { if (e.key === 'Escape') setPdfModal(null) }}>
-          <div onClick={e => e.stopPropagation()} style={{
+          <div className="modal-content" onClick={e => e.stopPropagation()} style={{
             width: '82vw', height: '92vh', display: 'flex', flexDirection: 'column',
-            background: 'var(--surface)', borderRadius: 12, overflow: 'hidden',
-            boxShadow: '0 24px 60px rgba(0,0,0,0.5)',
+            overflow: 'hidden',
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
               <span style={{ fontWeight: 600, fontSize: 15 }}>{pdfModal.title}</span>
@@ -3665,8 +3664,8 @@ export default function Settings({ showToast, active }) {
       )}
 
       {improveModal && (
-        <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)',
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="AI-improved resume" style={{
+          position: 'fixed', inset: 0, background: 'var(--scrim)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200,
         }} onClick={() => setImproveModal(null)} onKeyDown={e => { if (e.key === 'Escape') setImproveModal(null) }}>
           <div className="card" style={{ width: 680, maxHeight: '85vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>

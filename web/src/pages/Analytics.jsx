@@ -221,9 +221,16 @@ function ScoreHistogram({ apps, threshold }) {
   const chartH = 120, barW = 92, gap = 16
   const width = 10 * (barW + gap) - gap
   const thrX = Math.min((threshold / 100) * width, width)
+  // Headroom above the plot, because the count sits ABOVE its bar at y - 5 and
+  // the tallest bar is exactly chartH high — so its label landed at y = -5,
+  // outside the viewBox, and was clipped. That silently blanked the label on the
+  // one bar that most needs it: the tallest bar is the mode of the distribution
+  // here and the best-converting band in the chart below, and it was the only
+  // bar in either with no number on it.
+  const topPad = 14
 
   return (
-    <svg width="100%" height={chartH + 36} viewBox={`0 0 ${width} ${chartH + 36}`} preserveAspectRatio="xMidYMax meet">
+    <svg width="100%" height={chartH + 36 + topPad} viewBox={`0 ${-topPad} ${width} ${chartH + 36 + topPad}`} preserveAspectRatio="xMidYMax meet">
       {buckets.map((b, i) => {
         const h = b.count === 0 ? 2 : Math.max((b.count / max) * chartH, 3)
         const x = i * (barW + gap)
@@ -271,10 +278,17 @@ function ConversionChart({ bands, threshold }) {
   const chartH = 120, barW = 92, gap = 16
   const width = 10 * (barW + gap) - gap
   const thrX = Math.min((threshold / 100) * width, width)
+  // Headroom above the plot, because the count sits ABOVE its bar at y - 5 and
+  // the tallest bar is exactly chartH high — so its label landed at y = -5,
+  // outside the viewBox, and was clipped. That silently blanked the label on the
+  // one bar that most needs it: the tallest bar is the mode of the distribution
+  // here and the best-converting band in the chart below, and it was the only
+  // bar in either with no number on it.
+  const topPad = 14
   const maxRate = Math.max(...withData.map(b => b.conversionRate || 0), 1)
 
   return (
-    <svg width="100%" height={chartH + 36} viewBox={`0 0 ${width} ${chartH + 36}`} preserveAspectRatio="xMidYMax meet">
+    <svg width="100%" height={chartH + 36 + topPad} viewBox={`0 ${-topPad} ${width} ${chartH + 36 + topPad}`} preserveAspectRatio="xMidYMax meet">
       {bands.map((b, i) => {
         const x = i * (barW + gap)
         const reliable = b.applied >= MIN_SAMPLE

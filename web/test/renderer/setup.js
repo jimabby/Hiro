@@ -77,8 +77,36 @@ function installMatchMedia() {
   })
 }
 
+// Node 24+ ships its own global `localStorage`, and it wins: vitest populates
+// the jsdom globals onto globalThis without overwriting a built-in that is
+// already there, so `window.localStorage` ends up being Node's — which is
+// unbacked without --localstorage-file and has no getItem at all. App reads it
+// on mount for the theme, so every test that renders App dies on
+// "localStorage.getItem is not a function", on Node 24/25 only. CI runs 22 and
+// never saw it; a contributor on a current Node saw nothing else.
+//
+// Restoring a working Storage keeps the suite reading the same on every Node
+// the engines field allows.
+function installLocalStorage() {
+  if (typeof window.localStorage?.getItem === 'function') return
+  let store = new Map()
+  const storage = {
+    getItem: (key) => (store.has(String(key)) ? store.get(String(key)) : null),
+    setItem: (key, value) => { store.set(String(key), String(value)) },
+    removeItem: (key) => { store.delete(String(key)) },
+    clear: () => { store = new Map() },
+    key: (i) => [...store.keys()][i] ?? null,
+    get length() { return store.size },
+  }
+  Object.defineProperty(window, 'localStorage', { value: storage, configurable: true, writable: true })
+  // App reads the bare global, not window.*, so both have to point at it.
+  Object.defineProperty(globalThis, 'localStorage', { value: storage, configurable: true, writable: true })
+}
+
 beforeEach(() => {
   installMatchMedia()
+  installLocalStorage()
+  window.localStorage.clear()
   window.api = makeApi()
 })
 

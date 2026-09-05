@@ -440,7 +440,7 @@ export default function NeedsAttention({ active, onCountChange, showToast }) {
       {/* AI Apply progress modal */}
       {applying && (
         <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="AI application in progress" style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)',
+          position: 'fixed', inset: 0, background: 'var(--scrim)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200,
         }}>
           <div className="card modal-content" style={{ width: 560, maxHeight: '70vh', display: 'flex', flexDirection: 'column' }}>
@@ -465,7 +465,7 @@ export default function NeedsAttention({ active, onCountChange, showToast }) {
             {applyResult && (
               <div style={{
                 marginTop: 16, padding: '12px 14px', borderRadius: 8,
-                background: applyResult.success ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
+                background: applyResult.success ? 'var(--green-soft)' : 'var(--red-soft)',
                 color: applyResult.success ? 'var(--green)' : 'var(--red)',
                 fontSize: 13, fontWeight: 600,
               }}>

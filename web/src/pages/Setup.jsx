@@ -392,7 +392,7 @@ export default function Setup({ onComplete }) {
                 </div>
               ))}
               {!aiConfigured && (
-                <div style={{ marginTop: 12, padding: '8px 12px', background: 'rgba(234,179,8,0.15)', borderRadius: 8, fontSize: 12, color: 'var(--yellow)' }}>
+                <div style={{ marginTop: 12, padding: '8px 12px', background: 'var(--yellow-soft)', borderRadius: 8, fontSize: 12, color: 'var(--yellow)' }}>
                   {form.aiProvider === 'local'
                     ? "Warning: the local model isn't fully configured. AI features won't work until the server address and model are set in Settings."
                     : "Warning: No AI API key set. AI features won't work until you add one in Settings."}
@@ -403,7 +403,7 @@ export default function Setup({ onComplete }) {
 
           {/* Validation errors */}
           {validationErrors.length > 0 && (
-            <div style={{ marginTop: 12, padding: '8px 12px', background: 'rgba(239,68,68,0.15)', borderRadius: 8 }}>
+            <div style={{ marginTop: 12, padding: '8px 12px', background: 'var(--red-soft)', borderRadius: 8 }}>
               {validationErrors.map((err, i) => (
                 <div key={i} style={{ fontSize: 12, color: 'var(--red)', marginBottom: i < validationErrors.length - 1 ? 4 : 0 }}>{err}</div>
               ))}
