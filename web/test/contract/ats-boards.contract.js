@@ -31,15 +31,23 @@ const BOARDS = [
   // The one whose descriptions are not in the list response, so the detail
   // endpoint is exercised separately below.
   { provider: 'smartrecruiters', slug: 'Ubisoft2' },
+  // The only provider whose list is markup. It is therefore the one most worth
+  // checking against the live site: the others break when a documented JSON
+  // field is renamed, which is rare and announced, while this one breaks when
+  // iCIMS restyles a results page, which is neither.
+  { provider: 'icims', slug: 'careers-peraton' },
 ]
 
-async function fetchWithTimeout(url, ms = 20000) {
+async function fetchWithTimeout(url, { html = false, ms = 20000 } = {}) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), ms)
   try {
     return await fetch(url, {
       signal: controller.signal,
-      headers: { Accept: 'application/json', 'User-Agent': 'Hiro/1.0 (+contract-test)' },
+      headers: {
+        Accept: html ? 'text/html,application/xhtml+xml' : 'application/json',
+        'User-Agent': 'Hiro/1.0 (+contract-test)',
+      },
     })
   } finally {
     clearTimeout(timer)
@@ -50,9 +58,12 @@ async function main() {
   for (const { provider, slug } of BOARDS) {
     const spec = PROVIDERS[provider]
     const url = spec.listUrl(slug)
+    // iCIMS serves markup rather than JSON; everything from parse() down is the
+    // same contract either way.
+    const html = spec.responseType === 'html'
     let res
     try {
-      res = await fetchWithTimeout(url)
+      res = await fetchWithTimeout(url, { html })
     } catch (err) {
       console.log(`SKIP  ${spec.label}: could not reach the endpoint (${err.message})`)
       continue
@@ -74,7 +85,9 @@ async function main() {
     }
 
     ran++
-    const data = await res.json()
+    const data = html ? await res.text() : await res.json()
+    // A moved iCIMS template raises here rather than parsing to nothing, which
+    // is the whole point of that adapter — so let it fail the run loudly.
     const parsed = spec.parse(data, slug)
 
     // The shape assertions. Each one names a field the scraper would silently
@@ -102,10 +115,10 @@ async function main() {
       const target = parsed.find(j => j.detailUrl)
       check(`${spec.label}: the list carries a detail URL`, !!target, true)
       if (target) {
-        const detailRes = await fetchWithTimeout(target.detailUrl)
+        const detailRes = await fetchWithTimeout(target.detailUrl, { html })
         check(`${spec.label}: the detail endpoint responds`, detailRes.status, 200)
         if (detailRes.ok) {
-          const detail = spec.parseDetail(await detailRes.json())
+          const detail = spec.parseDetail(html ? await detailRes.text() : await detailRes.json())
           check(`${spec.label}: the detail carries a description`,
             (detail.job_description || '').length > 50, true)
           check(`${spec.label}: the detail description is plain text`,

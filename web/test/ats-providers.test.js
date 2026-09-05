@@ -244,8 +244,13 @@ for (const [id, spec] of Object.entries(ats.PROVIDERS)) {
   check(`${id} tells the user what its identifier looks like`, typeof spec.slugHint, 'string')
   check(`${id} builds a list url`, typeof spec.listUrl(slug), 'string')
   check(`${id} builds an https url`, spec.listUrl(slug).startsWith('https://'), true)
+  // "A board that publishes nothing is not an error" — but what an empty
+  // response LOOKS like is per provider, so each one may declare its own. The
+  // JSON boards are an empty object; iCIMS is an empty results page, and the
+  // distinction carries weight there: a response missing the container
+  // altogether is a moved template and is supposed to raise.
   check(`${id} parses an empty response without throwing`, (() => {
-    try { return Array.isArray(spec.parse({}, slug)) } catch { return false }
+    try { return Array.isArray(spec.parse(spec.emptyResponse ?? {}, slug)) } catch { return false }
   })(), true)
   // A provider that needs a detail fetch must be able to read one.
   check(`${id} pairs parseDetail with a detail url`,
@@ -338,3 +343,126 @@ function fakeFetch({ jobs = 5, detailFails = false } = {}) {
   global.fetch = realFetch
   done()
 })()
+
+// ── iCIMS ────────────────────────────────────────────────────────
+//
+// The one provider whose list is markup, so it is the one that can fail in a
+// way none of the others can: a moved template yields the same empty array a
+// board with no openings does. These pin the difference, because getting it
+// wrong means a broken board reports "no jobs" every day and nobody notices.
+//
+// The fixtures below are trimmed from the real pages of two different tenants
+// (see test/contract/ats-boards.contract.js, which checks they still parse
+// against the live boards). Two, deliberately: they label the location field
+// differently — "Job Locations" and "Location" — and an adapter keyed on either
+// phrase would silently lose the location on half the boards.
+const icimsCard = (id, slug, title, locLabel, loc) => `
+<li class="iCIMS_JobCardItem">
+<div class="row">
+<div class="col-xs-6 header left">
+<span class="sr-only field-label">${locLabel}</span>
+<span >
+${loc}</span>
+</div>
+<div class="col-xs-12 title">
+<a href="https://careers-acme.icims.com/jobs/${id}/${slug}/job?in_iframe=1" class="iCIMS_Anchor" title="${id} - ${title}">
+<span class="sr-only field-label">Title</span>
+<h3 >
+${title}</h3>
+</a>
+</div>
+</div>
+</li>`
+
+const icimsPage = (...cards) =>
+  `<html><body><div class="iCIMS_JobsTable"><ul>${cards.join('')}</ul></div></body></html>`
+
+const icims = ats.PROVIDERS.icims.parse(icimsPage(
+  icimsCard('170252', 'executive-assistant', 'Executive Assistant', 'Job Locations', 'US-VA-Reston'),
+  icimsCard('32633', 'assembler-1', 'Assembler 1 - Hiring Event', 'Location', 'US-VA-Caroline County&nbsp;'),
+), 'Acme')
+
+check('icims reads every job card', icims.length, 2)
+check('icims title comes from the anchor', icims[0].job_title, 'Executive Assistant')
+check('icims keeps the requisition id', icims[0].external_id, '170252')
+// The reader gets the branded posting; in_iframe is how Hiro fetches it, not
+// somewhere to send a person.
+check('icims links to the posting without the iframe flag',
+  icims[0].job_url, 'https://careers-acme.icims.com/jobs/170252/executive-assistant/job')
+check('icims still fetches the detail through the iframe view',
+  /in_iframe=1$/.test(icims[0].detailUrl), true)
+check('icims reads the location', icims[0].location, 'US-VA-Reston')
+// The second tenant labels the same field "Location", not "Job Locations".
+check('icims reads a location under a different field label',
+  icims[1].location, 'US-VA-Caroline County')
+check('icims decodes entities in the location', /&nbsp;/.test(icims[1].location), false)
+// Descriptions are not on the list page at all — they come from the JobPosting
+// on each job page, which is what makes the detail fetch mandatory here.
+check('icims leaves the description to the detail fetch', icims[0].job_description, '')
+
+// A board with nothing open is a fact about the employer, not a fault.
+check('icims treats an empty results page as an empty board',
+  ats.PROVIDERS.icims.parse(icimsPage(), 'Acme').length, 0)
+
+// …and a page with no results container at all is a fault, and must say so.
+// Returning [] here is the exact failure the module note argues about: three
+// days of "this company has no openings" while the board is fine.
+check('icims raises when the results container is gone', (() => {
+  try { ats.PROVIDERS.icims.parse('<html><body><h1>Careers</h1></body></html>', 'Acme'); return false }
+  catch { return true }
+})(), true)
+
+// A card whose anchor is not a job posting (the pagination link, a saved-search
+// link) is skipped rather than becoming a job with no title.
+check('icims ignores a card with no job anchor',
+  ats.PROVIDERS.icims.parse(icimsPage('<li class="iCIMS_JobCardItem"><a href="/jobs/search?pr=1">Next</a></li>'), 'Acme').length, 0)
+
+// ── iCIMS detail: schema.org, not a template ─────────────────────
+const icimsDetail = ats.PROVIDERS.icims.parseDetail(`
+<html><head>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"JobPosting","title":"Executive Assistant",
+ "description":"<p>Provides support &amp; runs the office</p><p>Second&nbsp;paragraph</p>",
+ "url":"https://careers-acme.icims.com/jobs/170252/executive-assistant/job"}
+</script>
+</head><body></body></html>`)
+check('icims detail reads the JobPosting description',
+  icimsDetail.job_description, 'Provides support & runs the office\nSecond paragraph')
+check('icims detail prefers the canonical url the posting names',
+  icimsDetail.job_url, 'https://careers-acme.icims.com/jobs/170252/executive-assistant/job')
+
+// Career sites carry other structured data too (Organization, BreadcrumbList,
+// WebSite). Taking the first block rather than the JobPosting would read the
+// wrong one — and on a graph-shaped page there is more than one.
+check('icims detail skips structured data that is not the posting',
+  ats.PROVIDERS.icims.parseDetail(`
+    <script type="application/ld+json">{"@type":"Organization","name":"Acme"}</script>
+    <script type="application/ld+json">{"@type":"JobPosting","description":"The real one"}</script>
+  `).job_description, 'The real one')
+check('icims detail handles an array of structured data',
+  ats.PROVIDERS.icims.parseDetail(`
+    <script type="application/ld+json">[{"@type":"WebSite"},{"@type":"JobPosting","description":"In an array"}]</script>
+  `).job_description, 'In an array')
+// A posting with no structured data is a job kept with no description, not a
+// crash — fetchDescriptions already treats that as survivable.
+check('icims detail tolerates a page with no structured data',
+  ats.PROVIDERS.icims.parseDetail('<html></html>').job_description, '')
+check('icims detail tolerates unparseable structured data',
+  ats.PROVIDERS.icims.parseDetail('<script type="application/ld+json">{oops</script>').job_description, '')
+
+// ── iCIMS hosts ──────────────────────────────────────────────────
+// The portal half of the name is part of the tenant and cannot be derived, so
+// both a bare tenant and a pasted URL have to resolve to the same host.
+check('icims accepts a bare tenant', ats.icimsHost('careers-acme'), 'careers-acme.icims.com')
+check('icims accepts a full careers url',
+  ats.icimsHost('https://careers-acme.icims.com/jobs/search?ss=1'), 'careers-acme.icims.com')
+check('icims accepts a non-careers portal prefix', ats.icimsHost('jobs-acme.icims.com'), 'jobs-acme.icims.com')
+check('icims lowercases the host', ats.icimsHost('Careers-ACME'), 'careers-acme.icims.com')
+// This one goes into a URL as a HOST, where encodeURIComponent cannot help.
+const icimsRejects = (v) => { try { ats.icimsHost(v); return false } catch { return true } }
+check('icims refuses a traversal', icimsRejects('../../etc'), true)
+check('icims refuses another provider\'s address', icimsRejects('https://boards.greenhouse.io/acme'), true)
+// Suffixing this would make it acme.example.com.icims.com and fail as DNS days
+// later, rather than as a wrong-provider message at the moment it is added.
+check('icims refuses a host belonging to someone else', icimsRejects('acme.example.com'), true)
+check('icims refuses an empty identifier', icimsRejects(''), true)

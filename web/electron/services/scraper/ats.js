@@ -9,12 +9,26 @@
 // to work for yields better matches per unit of maintenance than any amount of
 // keyword scraping.
 //
-// Not here, deliberately: iCIMS. It publishes no publicly documented JSON board
-// API — the only way in is to parse the rendered careers page, which is exactly
-// the brittleness the paragraph above says this module exists to avoid. An
-// adapter built on it would break on a template change and report the break as
-// "this company has no openings", which is the worst failure shape available
-// here. If iCIMS ships a public endpoint, this is where it goes.
+// iCIMS is the exception to the paragraph above, and the shape of the exception
+// matters. It still publishes no free JSON board API — api.icims.com is sold to
+// its own customers, and `format=json` on a careers portal returns HTML — so
+// the note that used to sit here, refusing to add it, was right about the API.
+//
+// What changed the answer is that the two objections turned out to be separable.
+// The listing page is HTML, but every iCIMS JOB page carries a schema.org
+// JobPosting in application/ld+json, which is a W3C-standard shape rather than
+// a per-customer template — so the description, title, company and location all
+// come from structured data like every other provider here. Only the discovery
+// step reads markup, and it reads iCIMS's own platform classes
+// (iCIMS_JobCardItem, iCIMS_Anchor), not the employer's branding.
+//
+// The second objection — "it would report a template change as 'this company
+// has no openings'" — is the one that actually decided it, and it is answered
+// explicitly rather than tolerated. iCIMS_JobsTable is emitted on the results
+// page whether or not the search matched anything, so an empty board and a
+// moved template are distinguishable: the container present with no cards is a
+// genuine zero, and the container missing altogether raises rather than
+// returning []. See parseIcims.
 //
 // These boards cannot be auto-submitted: the application forms are custom per
 // company and often include file uploads and EEO questions. So every match is
@@ -277,6 +291,136 @@ const PROVIDERS = {
       external_id: String(j.id || ''),
     })),
   },
+
+  // ─── iCIMS ─────────────────────────────────────────────────────
+  //
+  // The one provider whose LIST is markup rather than JSON — see the note at
+  // the top of this file for why that was worth making an exception for, and
+  // what had to be true before it was.
+  //
+  // Discovery reads the results page; content comes from the JobPosting
+  // ld+json on each job page, so this behaves like SmartRecruiters or BambooHR
+  // from fetchDescriptions() down: bounded per-job fetches, after filtering.
+  //
+  // `in_iframe=1` is the server-rendered variant of the results page. The
+  // default one ships an empty shell and fills it in from script, so it parses
+  // to zero jobs no matter how healthy the board is.
+  icims: {
+    label: 'iCIMS',
+    responseType: 'html',
+    // What a board with nothing open looks like, for the contract check that
+    // every provider tolerates one. The others are JSON and an empty object
+    // says it; here the container is the whole point — an empty results page
+    // still carries it, and a response WITHOUT it is the break case that must
+    // raise rather than parse to nothing.
+    emptyResponse: '<div class="iCIMS_JobsTable"></div>',
+    sampleSlug: 'careers-acme',
+    slugHint: 'The name in careers-NAME.icims.com, or the full careers URL',
+    listUrl: (slug) => `https://${icimsHost(slug)}/jobs/search?ss=1&in_iframe=1`,
+    parse: (html, slug) => parseIcims(html, slug),
+    parseDetail: (html) => parseIcimsDetail(html),
+  },
+}
+
+// iCIMS tenants are one host, and the portal half of the name is part of it:
+// "careers-acme" and "jobs-acme" are both real and neither is derivable from
+// the company name. So the tenant is taken as given, and a pasted URL has its
+// host lifted out rather than being picked apart.
+function icimsHost(value) {
+  const raw = String(value || '').trim()
+  const bare = raw.replace(/^https?:\/\//i, '').split(/[/?#]/)[0]
+  // A bare tenant is one token. Suffixing anything else — "acme.example.com"
+  // becoming "acme.example.com.icims.com" — turns a pasted address for some
+  // other ATS into a DNS failure days later instead of a wrong-provider message
+  // at the moment it is added.
+  const host = /icims\.com$/i.test(bare) ? bare
+    : /^[A-Za-z0-9-]+$/.test(bare) ? `${bare}.icims.com`
+    : ''
+  // Same reasoning as assertSafeWorkday: this goes into a URL as a HOST, where
+  // encodeURIComponent cannot help, so it is checked against what an iCIMS
+  // tenant actually looks like instead of being escaped into something that
+  // merely looks harmless.
+  if (!/^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.icims\.com$/.test(host)) {
+    throw new Error('that does not look like an iCIMS careers address — it should be of the form '
+      + 'careers-acme.icims.com, or the full https://careers-acme.icims.com/jobs/search URL')
+  }
+  return host.toLowerCase()
+}
+
+// The structural marker iCIMS emits around the results list. Present on a search
+// that matched nothing, which is the entire reason this is checked separately
+// from the card count — see parseIcims.
+const ICIMS_CONTAINER = /iCIMS_JobsTable|iCIMS_JobCardItem|iCIMS_content/i
+
+function parseIcims(html, slug) {
+  const text = String(html || '')
+
+  // An empty board and a moved template both yield zero cards, and they need
+  // opposite responses: one is a fact about the employer, the other is a bug
+  // that must be visible. The container tells them apart, so a break is raised
+  // here rather than being laundered into "no openings" three days running.
+  const cards = text.split(/class="[^"]*iCIMS_JobCardItem/i).slice(1)
+  if (cards.length === 0 && !ICIMS_CONTAINER.test(text)) {
+    throw new Error('the iCIMS results page did not contain a job list — the board may have moved, '
+      + 'or the careers portal address may be wrong')
+  }
+
+  const jobs = []
+  for (const card of cards) {
+    // The anchor carries both identifiers: the href gives the requisition id and
+    // the canonical posting, and iCIMS writes "<id> - <title>" into the title
+    // attribute of that same tag.
+    const href = card.match(/href="([^"]*\/jobs\/(\d+)\/[^"]*?\/job)[^"]*"/i)
+    if (!href) continue
+    const [, url, id] = href
+
+    const titled = card.match(new RegExp(`title="${id}\\s*-\\s*([^"]*)"`, 'i'))
+    const heading = card.match(/<h3[^>]*>\s*([^<]+?)\s*<\/h3>/i)
+    // Last resort: the slug in the URL. Lossy on case and punctuation, but a
+    // job with a readable title beats a job dropped for want of one.
+    const fromSlug = url.match(/\/jobs\/\d+\/([^/]+)\/job/)
+    const title = decodeHtml(
+      titled?.[1] || heading?.[1] || (fromSlug ? decodeURIComponent(fromSlug[1]).replace(/-+/g, ' ') : '')
+    ).trim()
+    if (!title) continue
+
+    // Tenants label this field differently ("Location" and "Job Locations" are
+    // both live), so the label is matched on the word rather than the phrase.
+    const loc = card.match(/field-label"[^>]*>[^<]*Location[^<]*<\/span>\s*<span[^>]*>\s*([^<]*)/i)
+
+    jobs.push({
+      job_title: title,
+      company: slug,
+      salary: '',
+      // The reader gets the branded page; in_iframe is a fetching detail.
+      job_url: url.replace(/[?&]in_iframe=1/i, ''),
+      job_description: '',
+      location: decodeHtml(loc?.[1] || '').replace(/\s+/g, ' ').trim(),
+      external_id: id,
+      detailUrl: `${url}${url.includes('?') ? '&' : '?'}in_iframe=1`,
+    })
+  }
+  return jobs
+}
+
+// schema.org/JobPosting, which is what makes this provider tenable: the part
+// that carries the content a match score turns on is a standard, not a layout.
+function parseIcimsDetail(html) {
+  for (const block of String(html || '').matchAll(
+    /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
+  )) {
+    let data
+    try { data = JSON.parse(block[1].trim()) } catch { continue }
+    for (const node of Array.isArray(data) ? data : [data]) {
+      if (!node || node['@type'] !== 'JobPosting') continue
+      return {
+        job_description: decodeHtml(stripTags(node.description || '')),
+        // Only overrides the constructed URL when the posting names one.
+        job_url: typeof node.url === 'string' ? node.url : '',
+      }
+    }
+  }
+  return { job_description: '', job_url: '' }
 }
 
 // A board identifier with any surrounding URL stripped off, so a user can paste
@@ -376,8 +520,10 @@ function decodeHtml(s) {
 const TIMEOUT_MS = 20000
 
 // `init` carries a method and body for the one provider whose list endpoint is a
-// POST (Workday). Everything else is a plain GET and passes nothing.
+// POST (Workday), and `responseType` for the one whose pages are markup rather
+// than JSON (iCIMS). Everything else is a plain GET and passes nothing.
 async function fetchJson(url, init = {}) {
+  const wantsHtml = init.responseType === 'html'
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
   try {
@@ -385,7 +531,7 @@ async function fetchJson(url, init = {}) {
       signal: controller.signal,
       method: init.method || 'GET',
       headers: {
-        Accept: 'application/json',
+        Accept: wantsHtml ? 'text/html,application/xhtml+xml' : 'application/json',
         'User-Agent': 'Hiro/1.0 (+job-search-assistant)',
         ...(init.body ? { 'Content-Type': 'application/json' } : {}),
       },
@@ -402,7 +548,7 @@ async function fetchJson(url, init = {}) {
       throw new BlockedError('ATS', 'rate-limit')
     }
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return await res.json()
+    return wantsHtml ? await res.text() : await res.json()
   } finally {
     clearTimeout(timer)
   }
@@ -456,7 +602,9 @@ async function fetchDescriptions(provider, jobs, log) {
   }
   for (const job of budget) {
     try {
-      const detail = provider.parseDetail(await fetchJson(job.detailUrl))
+      const detail = provider.parseDetail(
+        await fetchJson(job.detailUrl, { responseType: provider.responseType })
+      )
       if (detail.job_description) job.job_description = detail.job_description
       if (detail.job_url) job.job_url = detail.job_url
     } catch (err) {
@@ -482,6 +630,7 @@ async function scrape(cfg, { log, skipDetails = false } = {}) {
       const data = await fetchJson(provider.listUrl(board.slug), {
         method: provider.method,
         body: provider.body ? provider.body(board.slug) : undefined,
+        responseType: provider.responseType,
       })
       const parsed = provider.parse(data, board.label || board.slug)
       // Filtered BEFORE any per-job description fetch, so the detail requests
@@ -555,5 +704,5 @@ module.exports = {
   scrape, getJobDescription, apply, primeDescriptions, supportsAutoApply,
   // exported for tests
   PROVIDERS, matchesKeywords, matchesLocation, stripTags, decodeHtml, MAX_DETAIL_FETCHES,
-  parseWorkday, bareSlug,
+  parseWorkday, bareSlug, icimsHost, parseIcims, parseIcimsDetail,
 }

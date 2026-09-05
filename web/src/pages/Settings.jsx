@@ -38,6 +38,15 @@ const ATS_PROVIDERS = [
     placeholder: 'https://acme.wd3.myworkdayjobs.com/en-US/External',
     isUrl: true,
   },
+  // The portal half of an iCIMS host is part of the tenant name and is not
+  // derivable from the company — careers-acme and jobs-acme are both real — so
+  // the hint names the whole host rather than a slug inside a fixed one.
+  {
+    id: 'icims',
+    label: 'iCIMS',
+    hint: 'careers-SLUG.icims.com, or paste the full careers URL',
+    placeholder: 'careers-acme',
+  },
 ]
 
 // Which mail servers this address resolves to, and what to do when it does not
