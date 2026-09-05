@@ -503,6 +503,20 @@ function migrate() {
   try { db.run('ALTER TABLE applications ADD COLUMN campaign_name TEXT') } catch {}
   try { db.run('ALTER TABLE attention_jobs ADD COLUMN campaign_id TEXT') } catch {}
   try { db.run('ALTER TABLE attention_jobs ADD COLUMN campaign_name TEXT') } catch {}
+  // The documents that were already written for this job.
+  //
+  // The applicator sets job.tailored_resume and job.cover_letter at three
+  // separate places before routing a job here — a career board that cannot be
+  // automated, a failed submit, a draft the fabrication guard stopped — and the
+  // table had nowhere to put them, so insertAttentionJob dropped both. The
+  // README promises "matches land in Needs Attention with the tailored resume
+  // and cover letter already written", and ats.js tells the user in as many
+  // words that "your tailored resume and cover letter are ready below". Neither
+  // was true: the model calls were paid for and the output thrown away, and the
+  // one thing the user needs in order to complete the application by hand was
+  // the thing that got discarded.
+  try { db.run('ALTER TABLE attention_jobs ADD COLUMN tailored_resume TEXT') } catch {}
+  try { db.run('ALTER TABLE attention_jobs ADD COLUMN cover_letter TEXT') } catch {}
   // Review mode ('held' status) parks a job instead of submitting it. These
   // carry the drafted documents forward so approving it doesn't re-run the AI.
   try { db.run('ALTER TABLE applications ADD COLUMN held_at TEXT') } catch {}
@@ -1767,8 +1781,8 @@ function insertAttentionJob(data) {
   // object, so the insert threw and the whole feature silently saved nothing.
   run(`
     INSERT INTO attention_jobs
-      (job_title, company, platform, salary, job_url, job_description, match_score, talking_points, reason, closing_date, salary_min, salary_max, campaign_id, campaign_name, description_hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (job_title, company, platform, salary, job_url, job_description, match_score, talking_points, reason, closing_date, salary_min, salary_max, campaign_id, campaign_name, description_hash, tailored_resume, cover_letter)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     data.job_title ?? '', data.company ?? '', data.platform ?? '', data.salary || '',
     data.job_url ?? '', data.job_description ?? '', data.match_score ?? null,
@@ -1777,6 +1791,9 @@ function insertAttentionJob(data) {
     parsed.salary_min ?? null, parsed.salary_max ?? null,
     data.campaign_id || null, data.campaign_name || null,
     jobFingerprint.fingerprint(data.company, data.job_description),
+    // Written before the job was routed here, and previously dropped on the
+    // floor — see the migration for these two columns.
+    data.tailored_resume || '', data.cover_letter || '',
   ])
   return { success: true }
 }

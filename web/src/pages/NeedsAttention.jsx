@@ -18,6 +18,57 @@ function ClosingBadge({ date }) {
   )
 }
 
+// One drafted document, collapsed by default with a copy button.
+//
+// Collapsed because two full documents open at once push everything else in
+// this panel off the screen, and the job description and talking points are
+// what the user reads FIRST — the documents are what they reach for once they
+// have decided to apply. Copy rather than only display, because the destination
+// is someone else's web form.
+function DraftedDocument({ title, text, showToast }) {
+  const [open, setOpen] = useState(false)
+  const lines = String(text || '').split('\n').length
+
+  return (
+    <div style={{ marginBottom: 8, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        gap: 8, padding: '8px 10px', background: 'var(--surface2)',
+      }}>
+        <button
+          className="btn btn-ghost btn-sm"
+          onClick={() => setOpen(v => !v)}
+          style={{ border: 'none', background: 'none', padding: 0, fontWeight: 600 }}
+        >
+          {open ? '▾' : '▸'} {title}
+          <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> · {lines} lines</span>
+        </button>
+        <button
+          className="btn btn-ghost btn-sm"
+          onClick={async () => {
+            try {
+              await navigator.clipboard.writeText(text)
+              showToast?.(`${title} copied`, 'success')
+            } catch {
+              // Clipboard access can be refused; opening the text is the
+              // fallback that still lets the user select it by hand.
+              setOpen(true)
+              showToast?.(`Could not copy — the ${title.toLowerCase()} is open below`, 'error')
+            }
+          }}
+        >Copy</button>
+      </div>
+      {open && (
+        <pre style={{
+          margin: 0, padding: 12, fontSize: 12, lineHeight: 1.55, maxHeight: 260,
+          overflowY: 'auto', whiteSpace: 'pre-wrap', fontFamily: 'inherit',
+          background: 'var(--surface)', color: 'var(--text)',
+        }}>{text}</pre>
+      )}
+    </div>
+  )
+}
+
 export default function NeedsAttention({ active, onCountChange, showToast }) {
   const [jobs, setJobs] = useState([])
   const [selected, setSelected] = useState(null)
@@ -432,6 +483,24 @@ export default function NeedsAttention({ active, onCountChange, showToast }) {
                 <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '10px 14px', background: 'var(--surface2)', borderRadius: 8 }}>
                   {selected.match_explanation}
                 </div>
+              </div>
+            )}
+
+            {/* The documents that were already written for this job.
+                These are the whole point of routing a job here rather than
+                dropping it: the form has to be filled in by hand, and this is
+                what gets pasted into it. They were being generated and then
+                discarded, so the page told the user their resume and cover
+                letter were "ready below" and showed neither. */}
+            {(selected.tailored_resume || selected.cover_letter) && (
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ marginBottom: 6 }}>Ready to paste into the application</label>
+                {selected.cover_letter && (
+                  <DraftedDocument title="Cover letter" text={selected.cover_letter} showToast={showToast} />
+                )}
+                {selected.tailored_resume && (
+                  <DraftedDocument title="Tailored resume" text={selected.tailored_resume} showToast={showToast} />
+                )}
               </div>
             )}
 
