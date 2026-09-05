@@ -1146,10 +1146,97 @@ function updateRecruiterEmail(id, email) {
   return { success: true }
 }
 
+// ─── Undo ────────────────────────────────────────────────────────
+//
+// Deleting an application is one click on a dense table, next to eight other
+// controls, and it takes the tailored resume, the cover letter, the recruiter
+// replies and the interview history with it. There was no way back short of
+// restoring a whole backup — which reverts everything else the user has done
+// since, so in practice nobody does it for one misclicked row.
+//
+// So a delete now hands back everything it removed, and restoreApplications()
+// puts it back exactly where it was. Ids are preserved rather than reassigned,
+// which is what lets the dependent rows below be reinserted untouched: they key
+// on application_id, and a restore that renumbered would silently orphan every
+// one of them.
+const UNDO_CHILD_TABLES = [
+  'status_history',
+  'interview_prep',
+  'interview_events',
+  'recruiter_replies',
+  'offers',
+  'application_snapshots',
+]
+
+// Column names come from the row objects the database itself just returned, so
+// they are its own identifiers rather than anything user-supplied. Quoted
+// anyway — a column called `order` would otherwise produce a syntax error that
+// only appears when someone adds one.
+function insertRow(table, row) {
+  const columns = Object.keys(row)
+  if (columns.length === 0) return
+  run(
+    `INSERT OR REPLACE INTO "${table}" (${columns.map(c => `"${c}"`).join(', ')})
+     VALUES (${columns.map(() => '?').join(', ')})`,
+    columns.map(c => row[c])
+  )
+}
+
+// Everything a delete of these applications would remove, in one payload.
+function captureApplications(ids) {
+  const list = (Array.isArray(ids) ? ids : [ids]).filter(id => id != null)
+  if (list.length === 0) return null
+  const placeholders = list.map(() => '?').join(', ')
+  const applications = query(`SELECT * FROM applications WHERE id IN (${placeholders})`, list)
+  if (applications.length === 0) return null
+
+  const children = {}
+  for (const table of UNDO_CHILD_TABLES) {
+    try {
+      children[table] = query(
+        `SELECT * FROM "${table}" WHERE application_id IN (${placeholders})`, list)
+    } catch {
+      // A table that does not exist in this schema version is simply not part
+      // of the capture; it cannot have held rows to lose.
+      children[table] = []
+    }
+  }
+  return { applications, children }
+}
+
+// Put a capture back. Returns how many applications were restored, so the
+// caller can say "3 applications restored" rather than guessing.
+function restoreApplications(capture) {
+  const applications = capture?.applications
+  if (!Array.isArray(applications) || applications.length === 0) return { success: true, restored: 0 }
+
+  batch(() => {
+    for (const app of applications) {
+      // cloud_dirty, because as far as every other device is concerned this row
+      // was deleted. Restoring it locally and leaving it clean would mean the
+      // next sync agreed with the tombstone and deleted it again.
+      insertRow('applications', { ...app, cloud_dirty: 1 })
+      // And the tombstone goes, for the same reason.
+      run('DELETE FROM deleted_applications WHERE local_id = ?', [app.id])
+    }
+    for (const table of UNDO_CHILD_TABLES) {
+      for (const row of capture.children?.[table] || []) insertRow(table, row)
+    }
+    for (const [table, rows] of Object.entries(capture.global || {})) {
+      for (const row of rows || []) insertRow(table, row)
+    }
+  })
+  return { success: true, restored: applications.length }
+}
+
 // Deleting an application must take its dependent rows with it. interview_prep
 // in particular was never cleaned up — the rows accumulated forever, inflated
 // the count in Settings → Data, and had no way to be removed.
 function deleteApplication(id) {
+  // Captured before the delete, obviously — and returned rather than stored,
+  // so the buffer lives in one place (main.js) instead of this module growing
+  // a second, quietly-stale copy of the database.
+  const undo = captureApplications([id])
   batch(() => {
     // Tombstone first: if the process dies mid-delete, an extra tombstone for a
     // row that still exists is harmless (sync skips tombstones whose row is
@@ -1162,10 +1249,22 @@ function deleteApplication(id) {
     run('DELETE FROM recruiter_replies WHERE application_id = ?', [id])
     run('DELETE FROM offers WHERE application_id = ?', [id])
   })
-  return { success: true }
+  return { success: true, undo }
 }
 
 function clearAllApplications() {
+  // Clear-all removes two things that are not application-scoped, so they are
+  // captured wholesale rather than by id: the cached screening answers, and the
+  // record of what sync had to discard. Restoring the applications without them
+  // would be an undo that quietly loses the answer bank.
+  const undo = {
+    ...(captureApplications(query('SELECT id FROM applications').map(r => r.id))
+      || { applications: [], children: {} }),
+    global: {
+      interview_answers: query('SELECT * FROM interview_answers'),
+      sync_conflicts: query('SELECT * FROM sync_conflicts'),
+    },
+  }
   batch(() => {
     run('INSERT OR REPLACE INTO deleted_applications (local_id) SELECT id FROM applications')
     run('DELETE FROM applications')
@@ -1178,7 +1277,7 @@ function clearAllApplications() {
     run('DELETE FROM recruiter_replies')
     run('DELETE FROM offers')
   })
-  return { success: true }
+  return { success: true, undo }
 }
 
 // One-off sweep for rows orphaned by earlier versions, which deleted the
@@ -1687,14 +1786,34 @@ function dismissAttentionJob(id) {
   return { success: true }
 }
 
+// Same undo shape as an application delete. Unlike an application, an attention
+// job has no snapshot trail behind it, so a delete here leaves nothing anywhere
+// — and the talking points on the row were paid for with a model call.
+function captureAttentionJobs(ids) {
+  const list = (Array.isArray(ids) ? ids : [ids]).filter(id => id != null)
+  if (list.length === 0) return null
+  const rows = query(
+    `SELECT * FROM attention_jobs WHERE id IN (${list.map(() => '?').join(', ')})`, list)
+  return rows.length ? { attention_jobs: rows } : null
+}
+
+function restoreAttentionJobs(capture) {
+  const rows = capture?.attention_jobs
+  if (!Array.isArray(rows) || rows.length === 0) return { success: true, restored: 0 }
+  batch(() => { for (const row of rows) insertRow('attention_jobs', row) })
+  return { success: true, restored: rows.length }
+}
+
 function deleteAttentionJob(id) {
+  const undo = captureAttentionJobs([id])
   run('DELETE FROM attention_jobs WHERE id = ?', [id])
-  return { success: true }
+  return { success: true, undo }
 }
 
 function clearAllAttentionJobs() {
+  const undo = captureAttentionJobs(query('SELECT id FROM attention_jobs').map(r => r.id))
   run('DELETE FROM attention_jobs')
-  return { success: true }
+  return { success: true, undo }
 }
 
 // ─── Screening Answer Cache ──────────────────────────────────────
@@ -3797,6 +3916,7 @@ module.exports = {
   getHeldApplications, markHeldApplied, rejectHeldApplication, holdApplicationDraft,
   recordSnapshot, getSnapshots, getSnapshot, getSnapshotDiff, compareSnapshots, restoreSnapshot,
   getHoldExplanation,
+  captureApplications, restoreApplications, captureAttentionJobs, restoreAttentionJobs,
   recordAutomationEvent, getAutomationEvents, clearAutomationEvents,
   recordSyncConflict, getSyncConflicts, countSyncConflicts, clearSyncConflicts, applyConflictResolution,
   getResumeConversion, getResumeExperimentArms, getGhostJobs,

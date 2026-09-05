@@ -643,16 +643,45 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
     if (selected?.id === id) setSelected(s => ({ ...s, recruiter_email: email }))
   }
 
+
+  // One place, because every delete on this page was irreversible and each one
+  // is a single click in a dense row of controls. The rows themselves stay in
+  // the main process; this only carries the token that names them.
+  // Not memoised: it is only ever called from a click handler, so there is
+  // nothing to keep stable for, and depending on the page's reload function
+  // would tie it to a callback that changes every render.
+  const offerUndo = (result) => {
+    const undo = result?.undo
+    if (!undo?.token) return
+    showToast?.(undo.label, 'info', {
+      label: 'Undo',
+      onAction: async () => {
+        try {
+          const res = await window.api.undoDelete?.(undo.token)
+          if (res?.success) {
+            showToast?.(`Restored ${res.restored} ${res.restored === 1 ? 'row' : 'rows'}`, 'success')
+            loadData()
+          } else {
+            showToast?.(res?.error || 'That could not be undone', 'error')
+          }
+        } catch (err) {
+          showToast?.(`Could not undo: ${err.message}`, 'error')
+        }
+      },
+    })
+  }
+
   async function deleteApp(id, e) {
     e.stopPropagation()
-    await window.api.deleteApplication(id)
+    offerUndo(await window.api.deleteApplication(id))
     setApps(prev => prev.filter(a => a.id !== id))
     if (selected?.id === id) setSelected(null)
   }
 
   async function clearAll() {
-    if (!window.confirm('Delete all application history? This cannot be undone.')) return
-    await window.api.clearAllApplications()
+    // No longer "cannot be undone" — it can, for as long as the toast is up.
+    if (!window.confirm('Delete all application history?')) return
+    offerUndo(await window.api.clearAllApplications())
     setApps([])
     setSelected(null)
     loadData()
@@ -1306,7 +1335,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
               <div style={{ display: 'flex', gap: 6 }}>
                 <button className="btn btn-ghost" style={{ fontSize: 12, color: 'var(--red)' }}
                   onClick={async () => {
-                    await window.api.deleteApplication(selected.id)
+                    offerUndo(await window.api.deleteApplication(selected.id))
                     setApps(prev => prev.filter(a => a.id !== selected.id))
                     setSelected(null)
                   }}>Delete</button>

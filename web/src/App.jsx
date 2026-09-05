@@ -108,12 +108,18 @@ export default function App() {
     setToasts(prev => prev.filter(t => t.id !== id))
   }, [])
 
-  const showToast = useCallback((msg, type = 'info') => {
+  // `action` turns a toast into the only chance to take something back —
+  // { label, onAction }. A toast carrying one is given longer than a plain
+  // notice, because it is not telling the user something, it is offering them
+  // a decision, and 4.5 seconds is not long enough to notice a row vanished,
+  // read what happened and reach for the button.
+  const showToast = useCallback((msg, type = 'info', action = null) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     // Errors stay put until dismissed. A failed scan reported for four seconds
     // while the user was in another window is a failure they never saw.
-    setToasts(prev => [...prev.slice(-3), { id, msg, type }])
-    if (type !== 'error') setTimeout(() => dismissToast(id), 4500)
+    setToasts(prev => [...prev.slice(-3), { id, msg, type, action }])
+    if (type === 'error') return
+    setTimeout(() => dismissToast(id), action ? 12000 : 4500)
   }, [dismissToast])
 
   useEffect(() => {
@@ -557,6 +563,18 @@ export default function App() {
               {t.type === 'success' ? '✓' : t.type === 'error' ? '✗' : 'ℹ'}
             </span>
             <span className="toast-msg">{t.msg}</span>
+            {t.action && (
+              <button
+                className="toast-action"
+                onClick={() => {
+                  // Dismissed first: the action re-renders the page underneath,
+                  // and a toast still offering "Undo" over restored rows invites
+                  // a second click that has nothing left to undo.
+                  dismissToast(t.id)
+                  t.action.onAction()
+                }}
+              >{t.action.label}</button>
+            )}
             <button className="toast-close" aria-label="Dismiss notification"
               onClick={() => dismissToast(t.id)}>×</button>
           </div>

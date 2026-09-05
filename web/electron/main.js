@@ -1362,12 +1362,115 @@ ipcMain.handle('db:getApplication', (_, id) => database.getApplication(id))
 ipcMain.handle('db:updateStatus', (_, id, status) => database.updateApplicationStatus(id, status))
 ipcMain.handle('db:updateComment', (_, id, comment) => database.updateApplicationComment(id, comment))
 ipcMain.handle('db:updateRecruiterEmail', (_, id, email) => database.updateRecruiterEmail(id, email))
-ipcMain.handle('db:deleteApplication', (_, id) => database.deleteApplication(id))
-ipcMain.handle('db:clearAllApplications', () => database.clearAllApplications())
+// ─── Undo for deletes ────────────────────────────────────────────
+//
+// The captured rows stay in the main process and the renderer is handed only a
+// token. Two reasons, and the first is the load-bearing one: "clear all" on a
+// long job search captures every application with its documents, replies and
+// snapshots, and sending that across the IPC boundary and back would move
+// several megabytes through the renderer to undo a click. The second is that
+// the renderer never needs to see it — it needs to offer the button.
+//
+// One slot, not a stack. Undo here means "I did not mean that", which is about
+// the action just taken; a history of undoable deletes invites undoing the
+// wrong one, and the backup system is what answers questions older than the
+// last click.
+const UNDO_TTL_MS = 120000
+// "Delete selected" deletes one row per call, in a loop. Without coalescing,
+// ten rows would leave a buffer holding the tenth and a toast offering to undo
+// "1 application" — the one case where an undo button that lies is worse than
+// no undo button. Deletes arriving in quick succession are therefore treated as
+// the one action the user actually took.
+const UNDO_COALESCE_MS = 5000
+let pendingUndo = null
+
+function mergeCapture(kind, into, next) {
+  if (kind === 'attention') {
+    return { attention_jobs: [...(into.attention_jobs || []), ...(next.attention_jobs || [])] }
+  }
+  const children = { ...into.children }
+  for (const [table, rows] of Object.entries(next.children || {})) {
+    children[table] = [...(children[table] || []), ...(rows || [])]
+  }
+  return {
+    applications: [...(into.applications || []), ...(next.applications || [])],
+    children,
+    global: next.global || into.global,
+  }
+}
+
+// The TTL is deliberately longer than the toast that offers it. The toast is
+// the prompt; the window is how long the offer stays honest while the user
+// reads what vanished before deciding. Expiring exactly when the toast fades
+// would make a click on a still-visible button fail.
+function stashUndo(kind, capture, describe) {
+  if (!capture) return null
+  const coalescing = pendingUndo
+    && pendingUndo.kind === kind
+    && Date.now() - pendingUndo.startedAt < UNDO_COALESCE_MS
+
+  const merged = coalescing ? mergeCapture(kind, pendingUndo.capture, capture) : capture
+  const count = kind === 'attention'
+    ? (merged.attention_jobs || []).length
+    : (merged.applications || []).length
+
+  pendingUndo = {
+    // The token is kept across a coalesce so the toast already on screen still
+    // works — it now undoes more than it did when it appeared, which is right.
+    token: coalescing ? pendingUndo.token : require('crypto').randomUUID(),
+    kind,
+    capture: merged,
+    label: describe(count),
+    startedAt: coalescing ? pendingUndo.startedAt : Date.now(),
+    expiresAt: Date.now() + UNDO_TTL_MS,
+  }
+  return { token: pendingUndo.token, label: pendingUndo.label }
+}
+
+ipcMain.handle('db:undoDelete', (_, token) => {
+  if (!pendingUndo || pendingUndo.token !== token) {
+    return { success: false, error: 'There is nothing left to undo.' }
+  }
+  if (Date.now() > pendingUndo.expiresAt) {
+    pendingUndo = null
+    return { success: false, error: 'That undo has expired.' }
+  }
+  const { kind, capture } = pendingUndo
+  // Cleared before restoring, not after: a restore that throws half way must
+  // not leave a token that can be replayed onto the rows it did manage to put
+  // back.
+  pendingUndo = null
+  try {
+    const result = kind === 'attention'
+      ? database.restoreAttentionJobs(capture)
+      : database.restoreApplications(capture)
+    return { success: true, restored: result.restored }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+const describeApplications = (n) => `${n} application${n === 1 ? '' : 's'} deleted`
+const describeAttention = (n) => `${n} job${n === 1 ? '' : 's'} removed`
+
+ipcMain.handle('db:deleteApplication', (_, id) => {
+  const result = database.deleteApplication(id)
+  return { ...result, undo: stashUndo('application', result.undo, describeApplications) }
+})
+ipcMain.handle('db:clearAllApplications', () => {
+  const result = database.clearAllApplications()
+  return { ...result, undo: stashUndo('application', result.undo, describeApplications) }
+})
 ipcMain.handle('db:getAttentionJobs', () => database.getAttentionJobs())
 ipcMain.handle('db:dismissAttention', (_, id) => database.dismissAttentionJob(id))
-ipcMain.handle('db:deleteAttentionJob', (_, id) => database.deleteAttentionJob(id))
-ipcMain.handle('db:clearAllAttentionJobs', () => database.clearAllAttentionJobs())
+ipcMain.handle('db:deleteAttentionJob', (_, id) => {
+  const result = database.deleteAttentionJob(id)
+  return { ...result, undo: stashUndo('attention', result.undo, describeAttention) }
+})
+ipcMain.handle('db:clearAllAttentionJobs', () => {
+  const result = database.clearAllAttentionJobs()
+  return { ...result, undo: stashUndo('attention', result.undo, describeAttention) }
+})
 ipcMain.handle('db:getStats', () => database.getStats())
 
 // ─── IPC: AI Apply from Needs Attention ─────────────────────────

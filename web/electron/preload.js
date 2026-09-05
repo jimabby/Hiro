@@ -92,6 +92,9 @@ contextBridge.exposeInMainWorld('api', {
   dismissAttentionJob: (id) => ipcRenderer.invoke('db:dismissAttention', id),
   deleteAttentionJob: (id) => ipcRenderer.invoke('db:deleteAttentionJob', id),
   clearAllAttentionJobs: () => ipcRenderer.invoke('db:clearAllAttentionJobs'),
+  // Put back whatever the last delete removed. The rows themselves stay in the
+  // main process; this carries only the token that names them.
+  undoDelete: (token) => ipcRenderer.invoke('db:undoDelete', token),
   applyAttentionJob: (id) => ipcRenderer.invoke('attention:apply', id),
   applyAttentionJobs: (ids) => ipcRenderer.invoke('attention:applyMany', ids),
   onAttentionLog: (cb) => subscribe('attention:log', cb),

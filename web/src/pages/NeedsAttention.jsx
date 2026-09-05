@@ -101,9 +101,37 @@ export default function NeedsAttention({ active, onCountChange, showToast }) {
     }
   }
 
+
+  // One place, because every delete on this page was irreversible and each one
+  // is a single click in a dense row of controls. The rows themselves stay in
+  // the main process; this only carries the token that names them.
+  // Not memoised: it is only ever called from a click handler, so there is
+  // nothing to keep stable for, and depending on the page's reload function
+  // would tie it to a callback that changes every render.
+  const offerUndo = (result) => {
+    const undo = result?.undo
+    if (!undo?.token) return
+    showToast?.(undo.label, 'info', {
+      label: 'Undo',
+      onAction: async () => {
+        try {
+          const res = await window.api.undoDelete?.(undo.token)
+          if (res?.success) {
+            showToast?.(`Restored ${res.restored} ${res.restored === 1 ? 'row' : 'rows'}`, 'success')
+            load()
+          } else {
+            showToast?.(res?.error || 'That could not be undone', 'error')
+          }
+        } catch (err) {
+          showToast?.(`Could not undo: ${err.message}`, 'error')
+        }
+      },
+    })
+  }
+
   async function deleteJob(id) {
     try {
-      await window.api.deleteAttentionJob(id)
+      offerUndo(await window.api.deleteAttentionJob(id))
       setJobs(prev => prev.filter(j => j.id !== id))
       onCountChange(prev => prev - 1)
       if (selected?.id === id) setSelected(null)
@@ -113,9 +141,11 @@ export default function NeedsAttention({ active, onCountChange, showToast }) {
   }
 
   async function clearAll() {
-    if (!window.confirm('Delete all attention jobs? This cannot be undone.')) return
+    // An attention job has no snapshot trail, so unlike an application there is
+    // nothing behind it to fall back on — see the undo buffer in main.js.
+    if (!window.confirm('Delete all attention jobs?')) return
     try {
-      await window.api.clearAllAttentionJobs()
+      offerUndo(await window.api.clearAllAttentionJobs())
       setJobs([])
       onCountChange(0)
       setSelected(null)
