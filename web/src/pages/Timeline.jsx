@@ -1,17 +1,10 @@
 import { useState, useEffect } from 'react'
 import { statusBadge } from '../statuses'
+// Shared with the unit tests: the label used to be computed inline from a
+// noon anchor and read "-1 days ago" every morning. See src/dates.js.
+import { relativeDay as relativeDate, localDayBoundsUTC } from '../dates'
 
 const PLATFORM_COLORS = { Seek: 'badge-blue', LinkedIn: 'badge-green', Indeed: 'badge-yellow' }
-
-function relativeDate(dateStr) {
-  const d = new Date(dateStr + 'T12:00:00')
-  const now = new Date()
-  const diffDays = Math.floor((now - d) / 86400000)
-  if (diffDays === 0) return 'Today'
-  if (diffDays === 1) return 'Yesterday'
-  if (diffDays < 7) return `${diffDays} days ago`
-  return d.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' })
-}
 
 export default function Timeline({ active }) {
   const [byDate, setByDate] = useState({})
@@ -50,12 +43,7 @@ export default function Timeline({ active }) {
     }
     // `date` is a LOCAL calendar day, but applied_at is stored in UTC — convert
     // the local-midnight boundaries to UTC before querying.
-    const start = new Date(date + 'T00:00:00')
-    const fmt = d => d.toISOString().slice(0, 19).replace('T', ' ')
-    const jobs = await window.api.getApplications({
-      dateFrom: fmt(start),
-      dateTo: fmt(new Date(start.getTime() + 86400000 - 1000)),
-    })
+    const jobs = await window.api.getApplications(localDayBoundsUTC(date))
     if (expandAll) {
       setExpandedJobs(prev => ({ ...prev, [date]: jobs }))
     } else {
@@ -102,12 +90,13 @@ export default function Timeline({ active }) {
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <input
               value={searchQuery}
+              aria-label="Filter by date or platform"
               onChange={e => setSearchQuery(e.target.value)}
               placeholder="Filter by date..."
               style={{ width: 180, padding: '6px 10px', fontSize: 12 }}
             />
             {allPlatforms.length > 1 && (
-              <select value={platformFilter} onChange={e => setPlatformFilter(e.target.value)} style={{ width: 180, padding: '6px 10px', fontSize: 12 }}>
+              <select value={platformFilter} aria-label="Filter by platform" onChange={e => setPlatformFilter(e.target.value)} style={{ width: 180, padding: '6px 10px', fontSize: 12 }}>
                 <option value="">All Platforms</option>
                 {allPlatforms.map(p => <option key={p} value={p}>{p}</option>)}
               </select>
@@ -118,9 +107,12 @@ export default function Timeline({ active }) {
                 setExpandedJobs({})
               } else {
                 setExpandAll(true)
+                // The same local-to-UTC conversion the single-day path uses.
+                // This used to query the local day string as if it were UTC,
+                // so a morning's applications landed under the wrong day.
                 const results = await Promise.all(
                   filteredDates.map(date =>
-                    window.api.getApplications({ dateFrom: date + ' 00:00:00', dateTo: date + ' 23:59:59' }).then(jobs => [date, jobs])
+                    window.api.getApplications(localDayBoundsUTC(date)).then(jobs => [date, jobs])
                   )
                 )
                 setExpandedJobs(Object.fromEntries(results))
