@@ -27,6 +27,7 @@ const Workbench = lazy(() => import('./pages/Workbench'))
 const Offers = lazy(() => import('./pages/Offers'))
 import useModalFocus from './hooks/useModalFocus'
 import ErrorBoundary from './components/ErrorBoundary'
+import ShortcutHelp from './components/ShortcutHelp'
 
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: '▦', shortcut: '1' },
@@ -103,6 +104,8 @@ export default function App() {
   // Final checkpoint before an approved draft reaches an employer.
   const [submitReview, setSubmitReview] = useState(null)
   const [scanMode, setScanMode] = useState('real') // 'real' | 'dry' — used by the resume-required flow
+  // The keyboard shortcut list. Opened with "?" or from the sidebar footer.
+  const [helpOpen, setHelpOpen] = useState(false)
 
   const dismissToast = useCallback((id) => {
     setToasts(prev => prev.filter(t => t.id !== id))
@@ -259,17 +262,26 @@ export default function App() {
   }, [scanRunning])
 
   // Global keyboard shortcuts for nav
-  const modalOpen = !!(question || submitReview || resumeModal)
+  const modalOpen = !!(question || submitReview || resumeModal || helpOpen)
   useEffect(() => {
     function handleGlobalKey(e) {
       // Don't fire when typing in inputs
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return
-      // Nor while a modal owns the screen — switching the page behind a
-      // blocking question left the app showing a tab the user can't reach.
-      if (modalOpen) return
       // Ctrl/Cmd/Alt+number belong to the OS and to Electron's own menu
       // accelerators; only a bare digit is ours.
       if (e.ctrlKey || e.metaKey || e.altKey) return
+      // "?" toggles the shortcut list. It is allowed through while the list
+      // itself is open — pressing it twice should close it — but not over any
+      // other dialog, where a stray keystroke must not stack a second one.
+      if (e.key === '?' && (helpOpen || !modalOpen)) {
+        e.preventDefault()
+        setHelpOpen(v => !v)
+        return
+      }
+      if (helpOpen && e.key === 'Escape') { setHelpOpen(false); return }
+      // Nor while a modal owns the screen — switching the page behind a
+      // blocking question left the app showing a tab the user can't reach.
+      if (modalOpen) return
 
       const num = parseInt(e.key, 10)
       if (num >= 1 && num <= NAV.length) {
@@ -278,7 +290,7 @@ export default function App() {
     }
     window.addEventListener('keydown', handleGlobalKey)
     return () => window.removeEventListener('keydown', handleGlobalKey)
-  }, [modalOpen])
+  }, [modalOpen, helpOpen])
 
   // Escape closes the resume prompt. The question and submit-confirmation
   // modals are deliberately excluded: both have an apply flow blocked on an
@@ -344,7 +356,7 @@ export default function App() {
   }
 
   const pages = {
-    dashboard: <Dashboard active={page === 'dashboard'} logs={logs} scanRunning={scanRunning} onScanStart={() => beginScan('real')} onDryRun={() => beginScan('dry')} onClearLogs={handleClearLogs} showToast={showToast} focusApplicationId={focusApp} onFocusHandled={() => setFocusApp(null)} />,
+    dashboard: <Dashboard active={page === 'dashboard'} logs={logs} scanRunning={scanRunning} onScanStart={() => beginScan('real')} onDryRun={() => beginScan('dry')} onClearLogs={handleClearLogs} showToast={showToast} focusApplicationId={focusApp} onFocusHandled={() => setFocusApp(null)} onNavigate={setPage} />,
     // Clicking a card on the board opens that application on the Dashboard —
     // where the whole detail view already lives — rather than duplicating it.
     pipeline: <Pipeline active={page === 'pipeline'} onOpenApplication={(id) => { setFocusApp(id); setPage('dashboard') }} />,
@@ -486,7 +498,14 @@ export default function App() {
               boxShadow: scanRunning ? '0 0 0 3px var(--green-soft)' : 'none',
               flexShrink: 0,
             }} />
-            {scanRunning ? 'Scanning…' : 'Idle'}
+            <span style={{ flex: 1 }}>{scanRunning ? 'Scanning…' : 'Idle'}</span>
+            <button
+              onClick={() => setHelpOpen(true)}
+              aria-label="Keyboard shortcuts"
+              title="Keyboard shortcuts — press ?"
+              className="kbd"
+              style={{ cursor: 'pointer', margin: 0, padding: '0 6px', lineHeight: '18px' }}
+            >?</button>
           </div>
           {/* Three-way, because "follow the system" is a real preference and a
               two-state toggle cannot express it. */}
@@ -614,6 +633,8 @@ export default function App() {
           {toasts.filter(t => t.type !== 'error').map(t => renderToast(t))}
         </div>
       </div>
+      <ShortcutHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
+
       {/* Resume required modal */}
       {resumeModal && (
         <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="resume-modal-title"

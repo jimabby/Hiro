@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 // One description of the status vocabulary, shared with Timeline — see
 // src/statuses.js for why these stopped living in each page.
 import { statusBadge, SETTABLE_STATUSES, FILTER_TABS } from '../statuses'
+import GettingStarted from '../components/GettingStarted'
 
 function safeParseJSON(str) {
   try { return JSON.parse(str || '[]') } catch { return [] }
@@ -277,7 +278,7 @@ function InterviewPrepPanel({ questions, applicationId, jobDescription }) {
   )
 }
 
-export default function Dashboard({ active = true, logs, scanRunning, onScanStart, onDryRun, onClearLogs, showToast, focusApplicationId, onFocusHandled }) {
+export default function Dashboard({ active = true, logs, scanRunning, onScanStart, onDryRun, onClearLogs, showToast, focusApplicationId, onFocusHandled, onNavigate }) {
   const [stats, setStats] = useState(null)
   const [apps, setApps] = useState([])
   const [selected, setSelected] = useState(null)
@@ -414,6 +415,15 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
     onFocusHandled?.()
   }, [focusApplicationId, onFocusHandled])
 
+  async function copyText(text, what) {
+    try {
+      await navigator.clipboard.writeText(text)
+      showToast?.(`${what} copied`, 'success')
+    } catch {
+      showToast?.(`Could not copy the ${what.toLowerCase()} — select it below and copy by hand`, 'error')
+    }
+  }
+
   async function viewPDF(text, title, isCoverLetter = false) {
     setPdfLoading(true)
     try {
@@ -520,6 +530,33 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
   // sequential IPC round trips — and reported success unconditionally, so rows
   // that failed to update were still struck from the on-screen list. Both now
   // run as one batch and only the rows that actually succeeded are applied.
+  // One place, because every delete on this page was irreversible and each one
+  // is a single click in a dense row of controls. The rows themselves stay in
+  // the main process; this only carries the token that names them.
+  // Not memoised: it is only ever called from a click handler, so there is
+  // nothing to keep stable for, and depending on the page's reload function
+  // would tie it to a callback that changes every render.
+  const offerUndo = (result) => {
+    const undo = result?.undo
+    if (!undo?.token) return
+    showToast?.(undo.label, 'info', {
+      label: 'Undo',
+      onAction: async () => {
+        try {
+          const res = await window.api.undoDelete?.(undo.token)
+          if (res?.success) {
+            showToast?.(`Restored ${res.restored} ${res.restored === 1 ? 'row' : 'rows'}`, 'success')
+            loadData()
+          } else {
+            showToast?.(res?.error || 'That could not be undone', 'error')
+          }
+        } catch (err) {
+          showToast?.(`Could not undo: ${err.message}`, 'error')
+        }
+      },
+    })
+  }
+
   async function bulkApply(ids, fn) {
     const results = await Promise.allSettled(ids.map(id => fn(id)))
     const ok = ids.filter((_, i) => {
@@ -534,17 +571,26 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
     const { ok, failed } = await bulkApply(ids, id => window.api.updateApplicationStatus(id, newStatus))
     setApps(prev => prev.map(a => ok.has(a.id) ? { ...a, status: newStatus } : a))
     if (selected && ok.has(selected.id)) setSelected(s => ({ ...s, status: newStatus }))
-    if (failed) showToast?.(`${ok.size} updated to ${newStatus}, ${failed} failed`, 'error')
-    else showToast?.(`${ok.size} job${ok.size === 1 ? '' : 's'} updated to ${newStatus}`, 'success')
+    const label = statusBadge(newStatus).label
+    if (failed) showToast?.(`${ok.size} updated to ${label}, ${failed} failed`, 'error')
+    else showToast?.(`${ok.size} job${ok.size === 1 ? '' : 's'} updated to ${label}`, 'success')
     setSelectedIds(new Set())
   }
 
   async function bulkDelete() {
-    if (!window.confirm(`Delete ${selectedIds.size} selected applications? This cannot be undone.`)) return
+    if (!window.confirm(`Delete ${selectedIds.size} selected application${selectedIds.size === 1 ? '' : 's'}?`)) return
     const ids = [...selectedIds]
-    const { ok, failed } = await bulkApply(ids, id => window.api.deleteApplication(id))
+    // The deletes land within the main process's coalescing window, so every
+    // result carries the same undo token and any one of them undoes the batch.
+    let lastResult = null
+    const { ok, failed } = await bulkApply(ids, async (id) => {
+      const res = await window.api.deleteApplication(id)
+      if (res?.undo?.token) lastResult = res
+      return res
+    })
     setApps(prev => prev.filter(a => !ok.has(a.id)))
     if (failed) showToast?.(`${ok.size} deleted, ${failed} failed`, 'error')
+    else if (lastResult) offerUndo(lastResult)
     else showToast?.(`${ok.size} application${ok.size === 1 ? '' : 's'} deleted`, 'success')
     setSelectedIds(new Set())
     setCurrentPage(1)
@@ -627,7 +673,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
       window.api.getStatusHistory?.(id).then(h => setStatusHistory(h || [])).catch(() => {})
     }
     if (prev && prev !== status) {
-      showToast?.(`Status changed to ${status}`, 'info')
+      showToast?.(`Status changed to ${statusBadge(status).label}`, 'info')
     }
   }
 
@@ -643,33 +689,6 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
     if (selected?.id === id) setSelected(s => ({ ...s, recruiter_email: email }))
   }
 
-
-  // One place, because every delete on this page was irreversible and each one
-  // is a single click in a dense row of controls. The rows themselves stay in
-  // the main process; this only carries the token that names them.
-  // Not memoised: it is only ever called from a click handler, so there is
-  // nothing to keep stable for, and depending on the page's reload function
-  // would tie it to a callback that changes every render.
-  const offerUndo = (result) => {
-    const undo = result?.undo
-    if (!undo?.token) return
-    showToast?.(undo.label, 'info', {
-      label: 'Undo',
-      onAction: async () => {
-        try {
-          const res = await window.api.undoDelete?.(undo.token)
-          if (res?.success) {
-            showToast?.(`Restored ${res.restored} ${res.restored === 1 ? 'row' : 'rows'}`, 'success')
-            loadData()
-          } else {
-            showToast?.(res?.error || 'That could not be undone', 'error')
-          }
-        } catch (err) {
-          showToast?.(`Could not undo: ${err.message}`, 'error')
-        }
-      },
-    })
-  }
 
   async function deleteApp(id, e) {
     e.stopPropagation()
@@ -877,6 +896,16 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
             </div>
           </div>
         </div>
+      )}
+
+      {/* The first-run checklist. Only while there is nothing in the table —
+          once the first application exists, the user has found their way. */}
+      {stats && apps.length === 0 && (
+        <GettingStarted
+          hasScanned={!!(scanInfo?.lastScanAt || scanInfo?.lastScanEndedAt)}
+          onNavigate={onNavigate}
+          onDryRun={onDryRun}
+        />
       )}
 
       {/* Stats */}
@@ -1122,6 +1151,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                 <span style={{ fontSize: 12, color: 'var(--accent)', fontWeight: 600 }}>{selectedIds.size} selected</span>
                 <select
                   defaultValue=""
+                  aria-label="Set status for selected applications"
                   onChange={e => { if (e.target.value) bulkChangeStatus(e.target.value); e.target.value = '' }}
                   style={{ width: 'auto', padding: '3px 6px', fontSize: 11 }}
                 >
@@ -1136,6 +1166,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
             <input
               ref={searchRef}
               value={filter.search}
+              aria-label="Search applications by role or company"
               onChange={e => setFilter(f => ({ ...f, search: e.target.value }))}
               placeholder="Search... (/)"
               style={{ width: 180, padding: '6px 10px', fontSize: 12 }}
@@ -1159,7 +1190,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                   onClick={() => setFilter(f => ({ ...f, salaryFrom: '', salaryTo: '' }))}>clear</button>
               )}
             </div>
-            <select value={filter.platform} onChange={e => setFilter(f => ({ ...f, platform: e.target.value }))} style={{ width: 180, padding: '6px 10px', fontSize: 12 }}>
+            <select value={filter.platform} aria-label="Filter by platform" onChange={e => setFilter(f => ({ ...f, platform: e.target.value }))} style={{ width: 180, padding: '6px 10px', fontSize: 12 }}>
               <option value="">All Platforms</option>
               <option value="Seek">Seek</option>
               <option value="Indeed">Indeed</option>
@@ -1252,6 +1283,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                       <td onClick={e => e.stopPropagation()} style={{ minWidth: 140 }}>
                         <input
                           defaultValue={a.comment || ''}
+                          aria-label={`Note for ${a.job_title} at ${a.company}`}
                           placeholder="Add note..."
                           onBlur={e => saveComment(a.id, e.target.value)}
                           onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }}
@@ -1266,7 +1298,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                         {a.status === 'skipped' ? (
                           <span className="badge badge-gray">Skipped</span>
                         ) : (
-                          <select value={a.status} style={{ width: 'auto', padding: '3px 6px', fontSize: 12 }}
+                          <select value={a.status} aria-label={`Status of ${a.job_title} at ${a.company}`} style={{ width: 'auto', padding: '3px 6px', fontSize: 12 }}
                             onChange={e => changeStatus(a.id, e.target.value, e)}>
                             {SETTABLE_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
                           </select>
@@ -1513,7 +1545,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                 </div>
               )}
               <div style={{ display: 'flex', gap: 8 }}>
-                <input type="datetime-local" value={newInterviewAt}
+                <input type="datetime-local" value={newInterviewAt} aria-label="Interview date and time"
                   onChange={e => setNewInterviewAt(e.target.value)} style={{ flex: 1, fontSize: 12 }} />
                 <button className="btn btn-ghost" style={{ fontSize: 12, flexShrink: 0 }}
                   disabled={!newInterviewAt}
@@ -1735,6 +1767,10 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                   <label style={{ marginBottom: 0 }}>Cover Letter</label>
                   <div style={{ display: 'flex', gap: 4 }}>
+                    <button className="btn btn-ghost" style={{ fontSize: 11 }}
+                      onClick={() => copyText(stripMd(selected.cover_letter), 'Cover letter')}>
+                      Copy
+                    </button>
                     <button className="btn btn-ghost" style={{ fontSize: 11 }} disabled={pdfLoading}
                       onClick={() => viewPDF(selected.cover_letter, 'Cover Letter', true)}>
                       {pdfLoading ? 'Loading...' : 'View PDF'}
@@ -1757,6 +1793,10 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                   <label style={{ marginBottom: 0 }}>Tailored Resume</label>
                   <div style={{ display: 'flex', gap: 4 }}>
+                    <button className="btn btn-ghost" style={{ fontSize: 11 }}
+                      onClick={() => copyText(stripMd(selected.tailored_resume), 'Tailored resume')}>
+                      Copy
+                    </button>
                     <button className="btn btn-ghost" style={{ fontSize: 11 }} disabled={pdfLoading}
                       onClick={() => viewPDF(selected.tailored_resume, 'Tailored Resume')}>
                       {pdfLoading ? 'Loading...' : 'View PDF'}
@@ -1812,7 +1852,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                   What they said <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>({replies.length})</span>
                 </div>
                 {replies.map(r => (
-                  <details key={r.id} style={{ marginBottom: 6, padding: 10, background: 'var(--bg)', borderRadius: 6 }}>
+                  <details key={r.id} style={{ marginBottom: 6, padding: 10, background: 'var(--surface2)', borderRadius: 6 }}>
                     <summary style={{ cursor: 'pointer', fontSize: 13, display: 'flex', gap: 8, alignItems: 'baseline' }}>
                       <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {r.subject || '(no subject)'}
