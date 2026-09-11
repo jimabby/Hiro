@@ -307,16 +307,16 @@ export default function Setup({ onComplete }) {
                 </div>
               </div>
               <div className="form-group">
-                <label>Match Threshold (%)</label>
+                <label htmlFor="sup-f14">Match Threshold (%)</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <input type="range" min={50} max={100} value={form.matchThreshold}
+                  <input id="sup-f14" type="range" min={50} max={100} value={form.matchThreshold}
                     onChange={e => set('matchThreshold', e.target.value)}
                     style={{ flex: 1, padding: 0, border: 'none', background: 'transparent' }} />
                   <span style={{ color: 'var(--accent)', fontWeight: 600, minWidth: 36 }}>{form.matchThreshold}%</span>
                 </div>
               </div>
-              <div style={{ marginBottom: 16 }}>
-                <label style={{ marginBottom: 8, display: 'block' }}>Platforms to scan</label>
+              <fieldset style={{ marginBottom: 16, border: 'none', padding: 0 }}>
+                <legend style={{ marginBottom: 8, display: 'block', color: 'var(--text-muted)', fontSize: 12, fontWeight: 500 }}>Platforms to scan</legend>
                 <div style={{ display: 'flex', gap: 16 }}>
                   {['Seek', 'Indeed', 'LinkedIn'].map(p => (
                     <label key={p} style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: 0 }}>
@@ -327,7 +327,7 @@ export default function Setup({ onComplete }) {
                     </label>
                   ))}
                 </div>
-              </div>
+              </fieldset>
               <div className="form-row">
                 <div className="form-group">
                   <label htmlFor="sup-f10">Daily Limit — Seek</label>
@@ -358,7 +358,7 @@ export default function Setup({ onComplete }) {
               </p>
               <div className="form-group">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                  <label style={{ marginBottom: 0 }}>Resume Text</label>
+                  <label htmlFor="sup-f15" style={{ marginBottom: 0 }}>Resume Text</label>
                   <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={async () => {
                     const res = await window.api.importResumeFile()
                     if (res.success) set('masterResume', res.text)
@@ -367,6 +367,7 @@ export default function Setup({ onComplete }) {
                   </button>
                 </div>
                 <textarea
+                  id="sup-f15"
                   value={form.masterResume}
                   onChange={e => set('masterResume', e.target.value)}
                   placeholder="Paste your resume here, or upload a file above..."

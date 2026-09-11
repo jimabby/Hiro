@@ -324,17 +324,18 @@ export default function NeedsAttention({ active, onCountChange, showToast }) {
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 16, flexWrap: 'wrap' }}>
           <input
             value={search}
+            aria-label="Search jobs or companies"
             onChange={e => setSearch(e.target.value)}
             placeholder="Search jobs or companies..."
             style={{ width: 180, padding: '6px 10px', fontSize: 12 }}
           />
           {platforms.length > 1 && (
-            <select value={platformFilter} onChange={e => setPlatformFilter(e.target.value)} style={{ width: 180, padding: '6px 10px', fontSize: 12 }}>
+            <select value={platformFilter} aria-label="Filter by platform" onChange={e => setPlatformFilter(e.target.value)} style={{ width: 180, padding: '6px 10px', fontSize: 12 }}>
               <option value="">All Platforms</option>
               {platforms.map(p => <option key={p} value={p}>{p}</option>)}
             </select>
           )}
-          <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ width: 180, padding: '6px 10px', fontSize: 12 }}>
+          <select value={sortBy} aria-label="Sort by" onChange={e => setSortBy(e.target.value)} style={{ width: 180, padding: '6px 10px', fontSize: 12 }}>
             <option value="date">Newest First</option>
             <option value="closing">Closing Soonest</option>
             <option value="match">Highest Match</option>
@@ -432,9 +433,9 @@ export default function NeedsAttention({ active, onCountChange, showToast }) {
                     disabled={applying !== null}>
                     {applying === job.id ? 'Applying...' : 'AI Apply'}
                   </button>
-                  <a href={job.job_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}>
-                    <button className="btn btn-primary" style={{ fontSize: 12, padding: '6px 12px' }}>Apply Now</button>
-                  </a>
+                  <a className="btn btn-primary" href={job.job_url} target="_blank" rel="noreferrer"
+                    style={{ fontSize: 12, padding: '6px 12px', textDecoration: 'none' }}
+                    onClick={e => e.stopPropagation()}>Apply Now</a>
                   <button className="btn btn-ghost" style={{ fontSize: 12, padding: '6px 12px' }}
                     onClick={e => { e.stopPropagation(); dismiss(job.id) }}>
                     Dismiss
@@ -468,7 +469,9 @@ export default function NeedsAttention({ active, onCountChange, showToast }) {
             </div>
 
             <div style={{ marginBottom: 12 }}>
-              <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>{selected.company} · {selected.platform} · {selected.salary}</div>
+              <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>
+                {[selected.company, selected.platform, selected.salary].filter(Boolean).join(' · ')}
+              </div>
               <div style={{ color: 'var(--red)', fontSize: 12, marginTop: 4 }}>{selected.reason}</div>
             </div>
 
@@ -525,12 +528,12 @@ export default function NeedsAttention({ active, onCountChange, showToast }) {
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button className="btn btn-ghost" onClick={() => dismiss(selected.id)}>Dismiss</button>
               <button className="btn btn-primary" style={{ background: 'var(--accent)' }}
+                disabled={applying !== null}
                 onClick={() => aiApply(selected)}>
                 AI Apply
               </button>
-              <a href={selected.job_url} target="_blank" rel="noreferrer">
-                <button className="btn btn-primary">Apply Now</button>
-              </a>
+              <a className="btn btn-primary" href={selected.job_url} target="_blank" rel="noreferrer"
+                style={{ textDecoration: 'none' }}>Apply Now</a>
             </div>
           </div>
         </div>

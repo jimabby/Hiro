@@ -80,6 +80,10 @@ export default function Settings({ showToast, active }) {
   const [encBusy, setEncBusy] = useState(false)
   const [recoveryKey, setRecoveryKey] = useState(null)
   const [recoveryInput, setRecoveryInput] = useState('')
+  // The running build's version, from the updater. The About tab used to carry
+  // a hardcoded "1.0.0", which is the one string guaranteed to be wrong after
+  // the first release.
+  const [appVersion, setAppVersion] = useState(null)
 
   // Every page stays mounted for the app's lifetime, so this form is a snapshot
   // that would otherwise go stale: blacklisting a company from the Dashboard,
@@ -113,6 +117,7 @@ export default function Settings({ showToast, active }) {
       if (s?.provider) setCalProvider(s.provider)
     })
     window.api.getEncryptionStatus?.().then(setEncryption)
+    window.api.getUpdateStatus?.().then(s => { if (s?.currentVersion) setAppVersion(s.currentVersion) }).catch(() => {})
     window.api.getConfig().then(cfg => {
       setCloudUrl(cfg.supabaseUrl || '')
       setCloudKey(cfg.supabaseAnonKey || '')
@@ -199,6 +204,26 @@ export default function Settings({ showToast, active }) {
     setTimeout(() => setSaved(false), 3000)
   }
 
+  // The same offer the Dashboard and Needs Attention make after a delete. Both
+  // clear handlers below used to say "cannot be undone" and drop the token the
+  // main process returns — the one place in the app where that was still true.
+  const offerUndo = (result) => {
+    const undo = result?.undo
+    if (!undo?.token) return
+    showToast?.(undo.label, 'info', {
+      label: 'Undo',
+      onAction: async () => {
+        try {
+          const res = await window.api.undoDelete?.(undo.token)
+          if (res?.success) showToast?.(`Restored ${res.restored} ${res.restored === 1 ? 'row' : 'rows'}`, 'success')
+          else showToast?.(res?.error || 'That could not be undone', 'error')
+        } catch (err) {
+          showToast?.(`Could not undo: ${err.message}`, 'error')
+        }
+      },
+    })
+  }
+
   async function testAI() {
     setTestingAi(true); setAiResult(null)
     // A local server names its own model in the same argument slot Gemini uses
@@ -256,11 +281,14 @@ export default function Settings({ showToast, active }) {
           { id: 'about', label: 'About' },
         ]
         return (
-          <div style={{ display: 'flex', gap: 2, marginBottom: 24, borderBottom: '1px solid var(--border)' }}>
+          // flexWrap, because six tabs at this size are wider than the column at
+          // the default window size — "About" sat past the right edge with no
+          // scrollbar to say so. Wrapping costs one row, and only when needed.
+          <div role="tablist" aria-label="Settings sections" style={{ display: 'flex', flexWrap: 'wrap', gap: 2, marginBottom: 24, borderBottom: '1px solid var(--border)' }}>
             {TABS.map(tab => (
-              <button key={tab.id} onClick={() => setSettingsTab(tab.id)} style={{
-                background: 'none', border: 'none', cursor: 'pointer',
-                padding: '8px 18px', fontSize: 14, fontWeight: settingsTab === tab.id ? 600 : 400,
+              <button key={tab.id} role="tab" aria-selected={settingsTab === tab.id} onClick={() => setSettingsTab(tab.id)} style={{
+                background: 'none', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap',
+                padding: '8px 14px', fontSize: 13.5, fontWeight: settingsTab === tab.id ? 600 : 400,
                 color: settingsTab === tab.id ? 'var(--text)' : 'var(--text-muted)',
                 borderBottom: settingsTab === tab.id ? '2px solid var(--accent)' : '2px solid transparent',
                 marginBottom: -1,
@@ -888,8 +916,8 @@ export default function Settings({ showToast, active }) {
             </div>
             <div className="form-row">
               <div className="form-group" style={{ flex: 1 }}>
-                <label htmlFor="set-f29">Provider</label>
-                <select id="set-f29" value={wh.provider || 'discord'} onChange={e => {
+                <label htmlFor={`set-f29-${i}`}>Provider</label>
+                <select id={`set-f29-${i}`} value={wh.provider || 'discord'} onChange={e => {
                   const webhooks = [...(form.webhooks || [])]
                   webhooks[i] = { ...webhooks[i], provider: e.target.value }
                   set('webhooks', webhooks)
@@ -899,8 +927,8 @@ export default function Settings({ showToast, active }) {
                 </select>
               </div>
               <div className="form-group" style={{ flex: 3 }}>
-                <label htmlFor="set-f30">Webhook URL</label>
-                <input id="set-f30" value={wh.url || ''} placeholder="https://discord.com/api/webhooks/..." onChange={e => {
+                <label htmlFor={`set-f30-${i}`}>Webhook URL</label>
+                <input id={`set-f30-${i}`} value={wh.url || ''} placeholder="https://discord.com/api/webhooks/..." onChange={e => {
                   const webhooks = [...(form.webhooks || [])]
                   webhooks[i] = { ...webhooks[i], url: e.target.value }
                   set('webhooks', webhooks)
@@ -1500,8 +1528,8 @@ export default function Settings({ showToast, active }) {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
           {['Seek', 'Indeed', 'LinkedIn'].map(p => (
             <div className="form-group" key={p}>
-              <label htmlFor="set-f42">Daily Limit — {p}</label>
-              <input id="set-f42" type="number" min={1} max={50}
+              <label htmlFor={`set-f42-${p}`}>Daily Limit — {p}</label>
+              <input id={`set-f42-${p}`} type="number" min={1} max={50}
                 value={form[`dailyLimit${p}`]}
                 onChange={e => set(`dailyLimit${p}`, e.target.value)} />
             </div>
@@ -1525,6 +1553,7 @@ export default function Settings({ showToast, active }) {
           <div style={{ display: 'flex', gap: 8 }}>
             <input
               value={newBlacklist}
+              aria-label="Company to blacklist"
               onChange={e => setNewBlacklist(e.target.value)}
               placeholder="Add company to blacklist..."
               onKeyDown={e => {
@@ -1678,7 +1707,7 @@ export default function Settings({ showToast, active }) {
                       } else { setUploadError(res.error || 'Failed to read file') }
                     }}>Upload File (PDF / DOCX)</button>
                   </div>
-                  <textarea value={newResumeText} onChange={e => setNewResumeText(e.target.value)}
+                  <textarea value={newResumeText} aria-label="Resume text" onChange={e => setNewResumeText(e.target.value)}
                     placeholder="Paste resume text or upload a file..." style={{ minHeight: 120 }} />
                 </>
               )}
@@ -1743,6 +1772,7 @@ export default function Settings({ showToast, active }) {
             <div style={{ flex: 1 }}>
               <input
                 value={rule.keywords}
+                aria-label={`Keywords for routing rule ${i + 1}`}
                 placeholder="data, analytics, sql"
                 onChange={e => set('resumeRules', (form.resumeRules || []).map(r =>
                   r.id === rule.id ? { ...r, keywords: e.target.value } : r))}
@@ -1753,6 +1783,7 @@ export default function Settings({ showToast, active }) {
             </div>
             <select
               value={rule.resumeId}
+              aria-label={`Resume for routing rule ${i + 1}`}
               style={{ width: 190, flexShrink: 0 }}
               onChange={e => set('resumeRules', (form.resumeRules || []).map(r =>
                 r.id === rule.id ? { ...r, resumeId: e.target.value } : r))}>
@@ -1809,8 +1840,8 @@ export default function Settings({ showToast, active }) {
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                   {['resumeA', 'resumeB'].map((slot, i) => (
                     <div className="form-group" key={slot} style={{ marginBottom: 0 }}>
-                      <label htmlFor="set-f45">{i === 0 ? 'Resume A' : 'Resume B'}</label>
-                      <select id="set-f45" value={exp[slot] || ''} onChange={e => setExp({ [slot]: e.target.value })}>
+                      <label htmlFor={`set-f45-${slot}`}>{i === 0 ? 'Resume A' : 'Resume B'}</label>
+                      <select id={`set-f45-${slot}`} value={exp[slot] || ''} onChange={e => setExp({ [slot]: e.target.value })}>
                         <option value="">Not set</option>
                         {resumes.map(r => (
                           <option key={r.id} value={r.id}>{r.name || r.id}</option>
@@ -1911,7 +1942,7 @@ export default function Settings({ showToast, active }) {
           <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 8 }}>
             AI will use this as a structural base. Leave blank for fully AI-generated letters. Supports .txt, .docx, .pdf
           </p>
-          <textarea value={form.coverLetterTemplate || ''} onChange={e => set('coverLetterTemplate', e.target.value)}
+          <textarea value={form.coverLetterTemplate || ''} aria-label="Cover letter template" onChange={e => set('coverLetterTemplate', e.target.value)}
             placeholder="Leave blank to let AI write freely..." style={{ minHeight: 120, fontSize: 12, fontFamily: 'monospace' }} />
           {clUploadError && <div style={{ color: 'var(--red)', fontSize: 12, marginTop: 4 }}>{clUploadError}</div>}
         </div>
@@ -2042,7 +2073,7 @@ export default function Settings({ showToast, active }) {
               computer’s keychain cannot unwrap the stored key.
             </p>
             <div style={{ display: 'flex', gap: 8 }}>
-              <input value={recoveryInput} onChange={e => setRecoveryInput(e.target.value)}
+              <input value={recoveryInput} aria-label="Recovery key" onChange={e => setRecoveryInput(e.target.value)}
                 placeholder="HIRO-RECOVERY-1:…" style={{ fontSize: 12 }} />
               <button className="btn btn-ghost" style={{ fontSize: 11, flexShrink: 0 }}
                 disabled={!recoveryInput.trim()} onClick={async () => {
@@ -2104,6 +2135,7 @@ export default function Settings({ showToast, active }) {
             <>
               <input
                 value={cachedSearch}
+                aria-label="Search cached screening answers"
                 onChange={e => setCachedSearch(e.target.value)}
                 placeholder="Search questions..."
                 style={{ marginBottom: 12, fontSize: 12 }}
@@ -2129,6 +2161,7 @@ export default function Settings({ showToast, active }) {
                             <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6, color: 'var(--text)' }}>Q: {ca.question}</div>
                             <textarea
                               defaultValue={ca.answer}
+                              aria-label={`Answer to: ${ca.question}`}
                               onBlur={async (e) => {
                                 const newAnswer = e.target.value.trim()
                                 if (newAnswer && newAnswer !== ca.answer) {
@@ -2203,23 +2236,25 @@ export default function Settings({ showToast, active }) {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 14px', background: 'var(--surface2)', borderRadius: 8 }}>
               <div>
                 <div style={{ fontWeight: 500, fontSize: 13, color: 'var(--red)' }}>Clear All Application History</div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Permanently delete all application records</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Delete every application record. You can undo for two minutes afterwards.</div>
               </div>
               <button className="btn btn-danger" style={{ fontSize: 12 }} onClick={async () => {
-                if (!window.confirm('Delete ALL application history? This cannot be undone.')) return
-                await window.api.clearAllApplications()
-                showToast?.('Application history cleared', 'success')
+                if (!window.confirm('Delete ALL application history?')) return
+                const res = await window.api.clearAllApplications()
+                if (res?.undo?.token) offerUndo(res)
+                else showToast?.('Application history cleared', 'success')
               }}>Clear All</button>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 14px', background: 'var(--surface2)', borderRadius: 8 }}>
               <div>
                 <div style={{ fontWeight: 500, fontSize: 13, color: 'var(--red)' }}>Clear Needs Attention Queue</div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Remove all jobs from the attention queue</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Remove all jobs from the attention queue. You can undo for two minutes afterwards.</div>
               </div>
               <button className="btn btn-danger" style={{ fontSize: 12 }} onClick={async () => {
-                if (!window.confirm('Clear all attention jobs? This cannot be undone.')) return
-                await window.api.clearAllAttentionJobs()
-                showToast?.('Attention queue cleared', 'success')
+                if (!window.confirm('Clear all attention jobs?')) return
+                const res = await window.api.clearAllAttentionJobs()
+                if (res?.undo?.token) offerUndo(res)
+                else showToast?.('Attention queue cleared', 'success')
               }}>Clear All</button>
             </div>
           </div>
@@ -2412,7 +2447,7 @@ export default function Settings({ showToast, active }) {
             <HiroLogo size={48} style={{ flexShrink: 0 }} />
             <div>
               <div style={{ fontSize: 20, fontWeight: 700 }}>Hiro</div>
-              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Version 1.0.0</div>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Version {appVersion || '—'}</div>
             </div>
           </div>
           <p style={{ fontSize: 14, lineHeight: 1.7, color: 'var(--text-muted)', marginBottom: 16 }}>
@@ -2508,6 +2543,7 @@ export default function Settings({ showToast, active }) {
             </p>
             <textarea
               value={improveModal.text}
+              aria-label="Improved resume text"
               onChange={e => setImproveModal(m => ({ ...m, text: e.target.value }))}
               style={{ flex: 1, minHeight: 340, marginBottom: 16, fontFamily: 'monospace', fontSize: 12 }}
             />

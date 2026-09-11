@@ -259,7 +259,7 @@ function OfferForm({ form, setForm, onSave, onCancel, saving }) {
   )
 
   return (
-    <div style={{ padding: 14, background: 'var(--bg)', borderRadius: 8, marginTop: 12 }}>
+    <div style={{ padding: 14, background: 'var(--surface2)', borderRadius: 8, marginTop: 12 }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
         <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Base salary{field('baseSalary', { type: 'number', min: 0, placeholder: '150000' })}</label>
         <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Bonus{field('bonus', { type: 'number', min: 0, placeholder: '20000' })}</label>

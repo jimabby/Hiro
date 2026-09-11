@@ -155,7 +155,7 @@ function BarChart({ data }) {
         const h = Math.max((d.count / max) * chartH, 2)
         const x = i * (barW + 6)
         const y = chartH - h
-        const label = new Date(d.date + 'T12:00:00').toLocaleDateString('en-AU', { weekday: 'short' })
+        const label = new Date(d.date + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short' })
         return (
           <g key={d.date}>
             <rect x={x} y={y} width={barW} height={h} fill="var(--accent)" rx={3} opacity={0.85} />
@@ -404,11 +404,11 @@ function RejectionPanel({ data }) {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 18 }}>
-        <div style={{ padding: 12, background: 'var(--bg)', borderRadius: 6, borderLeft: '3px solid var(--yellow)' }}>
+        <div style={{ padding: 12, background: 'var(--surface2)', borderRadius: 6, borderLeft: '3px solid var(--yellow)' }}>
           <div style={{ fontSize: 22, fontWeight: 700 }}>{data.preInterview}</div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>screened out — never interviewed</div>
         </div>
-        <div style={{ padding: 12, background: 'var(--bg)', borderRadius: 6, borderLeft: '3px solid var(--red)' }}>
+        <div style={{ padding: 12, background: 'var(--surface2)', borderRadius: 6, borderLeft: '3px solid var(--red)' }}>
           <div style={{ fontSize: 22, fontWeight: 700 }}>{data.postInterview}</div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>after interviewing ({postShare}%)</div>
         </div>
@@ -444,7 +444,7 @@ function RejectionPanel({ data }) {
       </div>
 
       {(data.insights || []).map((i, n) => (
-        <div key={n} style={{ padding: 10, background: 'var(--bg)', borderRadius: 6, marginTop: 8 }}>
+        <div key={n} style={{ padding: 10, background: 'var(--surface2)', borderRadius: 6, marginTop: 8 }}>
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 3 }}>{i.title}</div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>{i.detail}</div>
         </div>
@@ -656,7 +656,7 @@ export default function Analytics({ active }) {
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
             <span style={{ fontWeight: 600, fontSize: 14 }}>Applications — Last {timeRange} Days</span>
-            <select value={timeRange} onChange={e => setTimeRange(Number(e.target.value))} style={{ width: 'auto', fontSize: 12, padding: '4px 8px' }}>
+            <select value={timeRange} aria-label="Time range" onChange={e => setTimeRange(Number(e.target.value))} style={{ width: 'auto', fontSize: 12, padding: '4px 8px' }}>
               <option value={7}>7 days</option>
               <option value={14}>14 days</option>
               <option value={30}>30 days</option>
