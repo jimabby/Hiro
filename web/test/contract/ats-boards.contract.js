@@ -9,6 +9,13 @@
 //
 // The boards below are large public employers who have used the same ATS for years.
 // If one of them goes away the suite says so rather than pretending to pass.
+//
+// A provider may list several boards, tried in order, because a company that
+// stops hiring serves a perfectly valid, perfectly empty list — Zego's Workable
+// board did exactly that and failed the weekly run over nothing but a hiring
+// freeze. The first board with jobs is the one checked. That cannot hide a real
+// contract break: a renamed field parses every board to nothing, and when no
+// candidate yields a job the provider still fails.
 
 const { PROVIDERS } = require('../../electron/services/scraper/ats')
 
@@ -23,19 +30,19 @@ const note = (msg) => console.log(`      ${msg}`)
 
 // Public boards, chosen for longevity rather than relevance.
 const BOARDS = [
-  { provider: 'greenhouse', slug: 'gitlab' },
-  { provider: 'lever', slug: 'leverdemo' },
-  { provider: 'ashby', slug: 'ashby' },
-  { provider: 'workable', slug: 'zego' },
-  { provider: 'recruitee', slug: 'vandebron' },
+  { provider: 'greenhouse', slugs: ['gitlab'] },
+  { provider: 'lever', slugs: ['leverdemo'] },
+  { provider: 'ashby', slugs: ['ashby'] },
+  { provider: 'workable', slugs: ['skroutz', 'blueground', 'zego'] },
+  { provider: 'recruitee', slugs: ['vandebron'] },
   // The one whose descriptions are not in the list response, so the detail
   // endpoint is exercised separately below.
-  { provider: 'smartrecruiters', slug: 'Ubisoft2' },
+  { provider: 'smartrecruiters', slugs: ['Ubisoft2'] },
   // The only provider whose list is markup. It is therefore the one most worth
   // checking against the live site: the others break when a documented JSON
   // field is renamed, which is rare and announced, while this one breaks when
   // iCIMS restyles a results page, which is neither.
-  { provider: 'icims', slug: 'careers-peraton' },
+  { provider: 'icims', slugs: ['careers-peraton'] },
 ]
 
 async function fetchWithTimeout(url, { html = false, ms = 20000 } = {}) {
@@ -54,45 +61,65 @@ async function fetchWithTimeout(url, { html = false, ms = 20000 } = {}) {
   }
 }
 
+// Fetch and parse one board. Returns { skip } for anything that says nothing
+// about the contract (unreachable, renamed, rate-limited), { status } for an
+// unexpected HTTP error, and otherwise the parsed jobs.
+async function probe(spec, slug) {
+  const url = spec.listUrl(slug)
+  // iCIMS serves markup rather than JSON; everything from parse() down is the
+  // same contract either way.
+  const html = spec.responseType === 'html'
+  let res
+  try {
+    res = await fetchWithTimeout(url, { html })
+  } catch (err) {
+    return { skip: `could not reach the endpoint (${err.message})` }
+  }
+  // A 404 means the board was renamed or made private. That is worth knowing —
+  // the fixture needs updating — but it is not a contract change.
+  if (res.status === 404) return { skip: `board "${slug}" no longer exists; pick another public board` }
+  if (res.status === 429 || res.status === 403) return { skip: 'rate-limited by the provider' }
+  if (!res.ok) return { status: res.status }
+  const data = html ? await res.text() : await res.json()
+  // A moved iCIMS template raises here rather than parsing to nothing, which
+  // is the whole point of that adapter — so let it fail the run loudly.
+  const parsed = spec.parse(data, slug)
+  return { url, html, parsed: Array.isArray(parsed) ? parsed : [] }
+}
+
 async function main() {
-  for (const { provider, slug } of BOARDS) {
+  for (const { provider, slugs } of BOARDS) {
     const spec = PROVIDERS[provider]
-    const url = spec.listUrl(slug)
-    // iCIMS serves markup rather than JSON; everything from parse() down is the
-    // same contract either way.
-    const html = spec.responseType === 'html'
-    let res
-    try {
-      res = await fetchWithTimeout(url, { html })
-    } catch (err) {
-      console.log(`SKIP  ${spec.label}: could not reach the endpoint (${err.message})`)
-      continue
+    let result = null
+    let emptyBoards = 0
+    const skipped = []
+    for (const slug of slugs) {
+      const r = await probe(spec, slug)
+      if (r.skip) { skipped.push(`${slug}: ${r.skip}`); continue }
+      if (r.status || r.parsed.length) { result = r; break }
+      emptyBoards++
+      note(`${spec.label}: "${slug}" answered with no jobs; trying the next board`)
     }
 
-    // A 404 means the board was renamed or made private. That is worth knowing —
-    // the test fixture needs updating — but it is not a contract change.
-    if (res.status === 404) {
-      console.log(`SKIP  ${spec.label}: board "${slug}" no longer exists; pick another public board`)
+    if (!result && emptyBoards === 0) {
+      console.log(`SKIP  ${spec.label}: ${skipped.join('; ') || 'no board to try'}`)
       continue
     }
-    if (res.status === 429 || res.status === 403) {
-      console.log(`SKIP  ${spec.label}: rate-limited by the provider`)
-      continue
-    }
-    if (!res.ok) {
-      check(`${spec.label} responds`, res.status, 200)
+    if (result?.status) {
+      check(`${spec.label} responds`, result.status, 200)
       continue
     }
 
     ran++
-    const data = html ? await res.text() : await res.json()
-    // A moved iCIMS template raises here rather than parsing to nothing, which
-    // is the whole point of that adapter — so let it fail the run loudly.
-    const parsed = spec.parse(data, slug)
+    const parsed = result?.parsed || []
+    const url = result?.url
+    const html = result?.html
 
     // The shape assertions. Each one names a field the scraper would silently
-    // drop every job over.
-    check(`${spec.label} returns a list of jobs`, Array.isArray(parsed) && parsed.length > 0, true)
+    // drop every job over. Every candidate board coming back empty is reported
+    // here as a failure: one quiet employer is a hiring freeze, all of them is a
+    // renamed field.
+    check(`${spec.label} returns a list of jobs`, parsed.length > 0, true)
     if (!parsed.length) continue
     note(`${parsed.length} jobs parsed from ${url}`)
 
