@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   View, Text, ScrollView, TouchableOpacity, TextInput,
-  Linking, StyleSheet,
+  Linking, StyleSheet, KeyboardAvoidingView, Platform, Alert, RefreshControl, BackHandler,
 } from 'react-native'
 import { radius, statusLabel, SETTABLE_STATUSES, useTheme, useStatusColors } from '../theme'
 import NextAction from '../components/NextAction'
+import { formatFull } from '../dates'
 
 // Rows that were never submitted have nothing to chase — there is no recruiter on
 // the other end of a held draft. Mirrors UNSENT_STATUSES on the desktop.
@@ -23,6 +24,11 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
   const [savingComment, setSavingComment] = useState(false)
   const [savedComment, setSavedComment] = useState(false)
   const [reviewQueued, setReviewQueued] = useState('')
+  const [reviewBusy, setReviewBusy] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  // The note as last saved, so the button can say whether there is anything to
+  // save and leaving with an edit in flight can be caught.
+  const [savedText, setSavedText] = useState('')
 
   const load = useCallback(async () => {
     try {
@@ -34,6 +40,7 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
       }
       setApp(data)
       setComment(data.comment || '')
+      setSavedText(data.comment || '')
       setError('')
     } catch (err) {
       setError(/404/.test(err.message) ? 'Application not found on the desktop.' : err.message)
@@ -43,22 +50,88 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
   useEffect(() => { load() }, [load])
 
   async function setStatus(status) {
+    if (status === app?.status) return
+    const previous = app?.status
+    // Optimistic, because a chip that waits a network round trip before lighting
+    // up reads as a missed tap and gets tapped again. Rolled back on failure.
+    setApp(a => ({ ...a, status }))
     try {
       await client.updateStatus(id, status)
-      setApp(a => ({ ...a, status }))
+      setError('')
     } catch (err) {
+      setApp(a => ({ ...a, status: previous }))
       setError(err.message)
     }
   }
+
+  async function onRefresh() {
+    setRefreshing(true)
+    await load()
+    setRefreshing(false)
+  }
+
+  // Approving or rejecting a held draft. Both used to be fire-and-forget: a
+  // failure (no review_requests table, offline) threw into nowhere and the
+  // button looked like it had done nothing, inviting a second tap.
+  async function review(action) {
+    setReviewBusy(true)
+    setError('')
+    try {
+      await client.requestReviewAction(id, action)
+      setReviewQueued(action === 'approve'
+        ? 'Approval queued — the desktop submits it on its next sync.'
+        : 'Rejection queued — nothing will be sent.')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setReviewBusy(false)
+    }
+  }
+
+  function confirmReject() {
+    Alert.alert(
+      'Reject this draft?',
+      'Nothing is sent to the employer, and the job is filed as skipped.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Reject', style: 'destructive', onPress: () => review('reject') },
+      ]
+    )
+  }
+
+  // An unsaved note is the one thing on this screen that is lost by leaving it.
+  function goBack() {
+    if (comment === savedText) return onBack()
+    Alert.alert('Discard your note?', 'The note has changes that have not been saved.', [
+      { text: 'Keep editing', style: 'cancel' },
+      { text: 'Save', onPress: async () => { if (await saveComment()) onBack() } },
+      { text: 'Discard', style: 'destructive', onPress: onBack },
+    ])
+  }
+
+  // Android back closes this page, through the same unsaved-note check as the
+  // on-screen link. Newer handlers run first, so this one beats the shell's.
+  const goBackRef = useRef(goBack)
+  goBackRef.current = goBack
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      goBackRef.current()
+      return true
+    })
+    return () => sub.remove()
+  }, [])
 
   async function saveComment() {
     setSavingComment(true)
     try {
       await client.updateComment(id, comment)
+      setSavedText(comment)
       setSavedComment(true)
       setTimeout(() => setSavedComment(false), 2500)
+      return true
     } catch (err) {
       setError(err.message)
+      return false
     } finally {
       setSavingComment(false)
     }
@@ -68,8 +141,20 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
   try { screeningQa = JSON.parse(app?.screening_qa || '[]') } catch { /* legacy rows */ }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
-      <TouchableOpacity onPress={onBack}
+    // The notes field sits mid-page; without this the iOS keyboard covers it
+    // and the Save button under it. Android resizes the window itself.
+    <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+      // "handled" so Save works on the first tap with the keyboard up, rather
+      // than the first tap only dismissing the keyboard.
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="interactive"
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
+    >
+      <TouchableOpacity onPress={goBack} style={styles.backBtn}
+        hitSlop={{ top: 10, bottom: 10, left: 10, right: 20 }}
         accessibilityRole="button" accessibilityLabel="Back to applications">
         <Text style={styles.back}>‹ Applications</Text>
       </TouchableOpacity>
@@ -82,23 +167,40 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
           <Text style={styles.title}>{app.job_title}</Text>
           <Text style={styles.company}>{app.company} · {app.platform}</Text>
           {!!app.salary && <Text style={styles.muted}>{app.salary}</Text>}
-          <Text style={styles.muted}>Applied {(app.applied_at || '').slice(0, 16)}</Text>
+          {!!app.applied_at && (
+            <Text style={styles.muted}>
+              {app.status === 'held' || app.status === 'skipped' ? 'Found' : 'Applied'} {formatFull(app.applied_at)}
+            </Text>
+          )}
+
+          {/* The cloud copy could not be fully opened on this phone. Saying so
+              beats a page that silently lacks its cover letter. */}
+          {(!!app.documents_pending || !!app.meta_pending) && (
+            <Text style={styles.pendingNote}>
+              {app.documents_pending
+                || 'Some details are encrypted and could not be opened on this phone. Sign in again, or view them on the desktop.'}
+            </Text>
+          )}
 
           {app.status === 'held' && client.requestReviewAction && (
             <View style={styles.card}>
               <Text style={styles.cardTitle}>Waiting for review</Text>
               <Text style={styles.body}>Queue a decision for the desktop. Approval submits only when its browser session is available.</Text>
               <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
-                <TouchableOpacity style={styles.saveBtn}
+                <TouchableOpacity style={[styles.saveBtn, { flex: 1 }, (reviewBusy || !!reviewQueued) && styles.btnDisabled]}
+                  disabled={reviewBusy || !!reviewQueued}
                   accessibilityRole="button" accessibilityLabel="Approve this draft on the desktop"
                   accessibilityHint="Queues the approval; the desktop submits it when its browser session is available"
-                  onPress={async () => { await client.requestReviewAction(id, 'approve'); setReviewQueued('Approval queued') }}><Text style={styles.saveBtnText}>Approve on desktop</Text></TouchableOpacity>
-                <TouchableOpacity style={[styles.saveBtn, { backgroundColor: colors.red }]}
+                  accessibilityState={{ disabled: reviewBusy || !!reviewQueued, busy: reviewBusy }}
+                  onPress={() => review('approve')}><Text style={styles.saveBtnText}>Approve</Text></TouchableOpacity>
+                <TouchableOpacity style={[styles.saveBtn, { flex: 1, backgroundColor: colors.red }, (reviewBusy || !!reviewQueued) && styles.btnDisabled]}
+                  disabled={reviewBusy || !!reviewQueued}
                   accessibilityRole="button" accessibilityLabel="Reject this draft"
                   accessibilityHint="Nothing is sent and the job is filed as skipped"
-                  onPress={async () => { await client.requestReviewAction(id, 'reject'); setReviewQueued('Rejection queued') }}><Text style={styles.saveBtnText}>Reject</Text></TouchableOpacity>
+                  accessibilityState={{ disabled: reviewBusy || !!reviewQueued, busy: reviewBusy }}
+                  onPress={confirmReject}><Text style={styles.saveBtnText}>Reject</Text></TouchableOpacity>
               </View>
-              {!!reviewQueued && <Text style={[styles.muted, { marginTop: 8 }]}>{reviewQueued}</Text>}
+              {!!reviewQueued && <Text style={[styles.muted, { marginTop: 8 }]} accessibilityLiveRegion="polite">{reviewQueued}</Text>}
             </View>
           )}
 
@@ -152,6 +254,7 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
                     key={s}
                     style={[styles.statusChip, { borderColor: active ? c : colors.border, backgroundColor: active ? c + '26' : 'transparent' }]}
                     onPress={() => setStatus(s)}
+                    hitSlop={{ top: 4, bottom: 4, left: 2, right: 2 }}
                     accessibilityRole="radio"
                     accessibilityState={{ selected: active, checked: active }}
                     accessibilityLabel={statusLabel(s)}
@@ -174,9 +277,10 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
               placeholderTextColor={colors.textMuted}
               multiline
             />
-            <TouchableOpacity style={styles.saveBtn} onPress={saveComment} disabled={savingComment}
+            <TouchableOpacity style={[styles.saveBtn, (savingComment || comment === savedText) && !savedComment && styles.btnDisabled]}
+              onPress={saveComment} disabled={savingComment || comment === savedText}
               accessibilityRole="button" accessibilityLabel="Save note"
-              accessibilityState={{ disabled: savingComment, busy: savingComment }}>
+              accessibilityState={{ disabled: savingComment || comment === savedText, busy: savingComment }}>
               <Text style={styles.saveBtnText}>
                 {savingComment ? 'Saving…' : savedComment ? '✓ Saved' : 'Save Note'}
               </Text>
@@ -219,13 +323,17 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
         </>
       )}
     </ScrollView>
+    </KeyboardAvoidingView>
   )
 }
 
 // Rebuilt per palette — see useTheme() in ../theme.
 const makeStyles = (c) => StyleSheet.create({
   root: { flex: 1, backgroundColor: c.bg },
-  back: { color: c.accent, fontSize: 15, marginBottom: 14 },
+  backBtn: { alignSelf: 'flex-start', minHeight: 36, justifyContent: 'center', marginBottom: 8 },
+  back: { color: c.accent, fontSize: 16 },
+  pendingNote: { color: c.yellow, fontSize: 12, lineHeight: 17, marginTop: 8 },
+  btnDisabled: { opacity: 0.5 },
   error: { color: c.red, fontSize: 13, marginBottom: 10 },
   muted: { color: c.textMuted, fontSize: 12, marginTop: 2 },
   title: { fontSize: 20, fontWeight: '700', color: c.text },
@@ -237,17 +345,17 @@ const makeStyles = (c) => StyleSheet.create({
   cardTitle: { fontSize: 14, fontWeight: '600', color: c.text, marginBottom: 6 },
   body: { fontSize: 13, color: c.text, lineHeight: 19 },
   question: { fontSize: 13, color: c.textMuted, fontWeight: '600', marginBottom: 2 },
-  statusRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  statusChip: { borderWidth: 1, borderRadius: 14, paddingHorizontal: 10, paddingVertical: 5 },
-  statusChipText: { fontSize: 12, textTransform: 'capitalize', fontWeight: '600' },
+  statusRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  statusChip: { borderWidth: 1, borderRadius: 18, paddingHorizontal: 14, minHeight: 36, justifyContent: 'center' },
+  statusChipText: { fontSize: 13, fontWeight: '600' },
   commentInput: {
     backgroundColor: c.surface2, borderWidth: 1, borderColor: c.border,
     borderRadius: radius, padding: 10, color: c.text, fontSize: 13,
-    minHeight: 70, textAlignVertical: 'top',
+    minHeight: 90, textAlignVertical: 'top',
   },
   saveBtn: {
     backgroundColor: c.accent, borderRadius: radius,
-    paddingVertical: 9, alignItems: 'center', marginTop: 10,
+    paddingVertical: 12, minHeight: 44, justifyContent: 'center', alignItems: 'center', marginTop: 10,
   },
   saveBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
 })

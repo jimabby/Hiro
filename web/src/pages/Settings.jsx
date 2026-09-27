@@ -383,7 +383,10 @@ export default function Settings({ showToast, active }) {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 16 }}>
+      {/* auto-fit rather than a fixed three: at the 900px minimum window the
+          content column is ~570px, and three cards' buttons and prose could not
+          shrink that far, so the row ran off the right edge behind a scrollbar. */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 16, marginBottom: 16 }}>
       {/* LinkedIn */}
       <div className="card" style={{ marginBottom: 0, display: 'flex', flexDirection: 'column' }}>
         <h3 style={{ marginBottom: 8, fontSize: 15 }}>LinkedIn Account</h3>
@@ -1525,7 +1528,7 @@ export default function Settings({ showToast, active }) {
             ))}
           </div>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
           {['Seek', 'Indeed', 'LinkedIn'].map(p => (
             <div className="form-group" key={p}>
               <label htmlFor={`set-f42-${p}`}>Daily Limit — {p}</label>
@@ -1660,7 +1663,7 @@ export default function Settings({ showToast, active }) {
             </div>
             <ParseCheck resume={r} />
             <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 6 }}>
-              {r.text.slice(0, 120).replace(/\n/g, ' ')}…
+              {(r.text || '').slice(0, 120).replace(/\n/g, ' ')}…
             </div>
           </div>
         ))}

@@ -394,7 +394,7 @@ export function StorageCard() {
       {info ? (
         <div>
           <div style={{ fontSize: 24, fontWeight: 700, marginBottom: 12 }}>{formatBytes(info.dbSize)}</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 10 }}>
             {[
               { label: 'Applications', count: info.counts.applications },
               { label: 'Attention Jobs', count: info.counts.attentionJobs },

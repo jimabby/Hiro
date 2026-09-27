@@ -4,7 +4,10 @@
 // through Date objects can be knocked off by an hour of DST.
 
 const { createChecker } = require('./helpers')
-const { localDateIn, todayLocal, describeDue, isOverdue, isDueOrOverdue, daysBetweenDates } = require('../src/dates')
+const {
+  localDateIn, todayLocal, describeDue, isOverdue, isDueOrOverdue, daysBetweenDates,
+  parseInstant, parseLocal, calendarDaysFrom, relativeDay, formatWhen, formatDay,
+} = require('../src/dates')
 
 const { check, done } = createChecker()
 
@@ -92,5 +95,45 @@ check('an unparseable date is null', daysBetweenDates('not-a-date', '2026-09-05'
 for (const [from, to] of [['2026-03-27', '2026-04-03'], ['2026-10-23', '2026-10-30']]) {
   check(`${from} to ${to} is exactly 7 days across a clock change`, daysBetweenDates(from, to), 7)
 }
+
+// ── Instants from the desktop ────────────────────────────────────
+// The LAN API sends SQLite's datetime('now'): UTC with no zone marker. Read as
+// local time, it put an application sent at lunch in Sydney at 2am.
+check('a SQLite timestamp is read as UTC',
+  parseInstant('2026-08-06 02:15:00').toISOString(), '2026-08-06T02:15:00.000Z')
+check('an ISO instant is unchanged',
+  parseInstant('2026-08-06T02:15:00Z').toISOString(), '2026-08-06T02:15:00.000Z')
+check('garbage parses to null', parseInstant('not a date'), null)
+check('empty parses to null', parseInstant(''), null)
+
+// A bare date is a local day, not UTC midnight.
+const bare = parseLocal('2026-08-06')
+check('a bare date is local midnight',
+  [bare.getFullYear(), bare.getMonth(), bare.getDate(), bare.getHours()], [2026, 7, 6, 0])
+const wall = parseLocal('2026-08-06 14:30')
+check('a wall-clock time keeps its hour', [wall.getDate(), wall.getHours(), wall.getMinutes()], [6, 14, 30])
+
+// Calendar days, not rounded milliseconds: 7am tomorrow seen at 8pm tonight is
+// 11 hours away, which rounding called "today".
+const evening = new Date(2026, 7, 6, 20, 0, 0)
+check('7am tomorrow at 8pm tonight is tomorrow',
+  calendarDaysFrom(new Date(2026, 7, 7, 7, 0, 0), evening), 1)
+check('relative: tomorrow', relativeDay(new Date(2026, 7, 7, 7, 0, 0), evening), 'tomorrow')
+check('relative: later today', relativeDay(new Date(2026, 7, 6, 23, 0, 0), evening), 'today')
+check('relative: next week', relativeDay(new Date(2026, 7, 13, 9, 0, 0), evening), 'in 7 days')
+check('relative: yesterday', relativeDay(new Date(2026, 7, 5, 9, 0, 0), evening), 'yesterday')
+
+check('formatWhen: today shows the time',
+  formatWhen(new Date(2026, 7, 6, 14, 5, 0).toISOString(), evening), 'Today 2:05 pm')
+check('formatWhen: yesterday',
+  formatWhen(new Date(2026, 7, 5, 9, 0, 0).toISOString(), evening), 'Yesterday 9:00 am')
+check('formatWhen: earlier this year',
+  formatWhen(new Date(2026, 1, 3, 9, 0, 0).toISOString(), evening), '3 Feb')
+check('formatWhen: another year carries it',
+  formatWhen(new Date(2025, 11, 30, 9, 0, 0).toISOString(), evening), '30 Dec 2025')
+check('formatWhen: nothing is empty', formatWhen(null, evening), '')
+
+check('formatDay names the weekday', formatDay('2026-09-29'), 'Tue 29 Sep')
+check('formatDay passes junk through', formatDay('soon'), 'soon')
 
 done()

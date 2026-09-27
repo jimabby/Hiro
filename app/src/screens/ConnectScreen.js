@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef } from 'react'
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   KeyboardAvoidingView, Platform, ScrollView,
@@ -26,6 +26,7 @@ export default function ConnectScreen({ onConnected }) {
   // Pairing: a one-time code exchanged for a token belonging to this phone.
   const [pairCode, setPairCode] = useState('')
   const [scanning, setScanning] = useState(false)
+  const passwordRef = useRef(null)
 
   async function connect() {
     const conn = { host: host.trim(), port: Number(port) || 4823, token: token.trim() }
@@ -132,6 +133,14 @@ export default function ConnectScreen({ onConnected }) {
         autoCapitalize="none"
         autoCorrect={false}
         keyboardType="email-address"
+        // So the phone's password manager can fill both fields in one tap —
+        // typing a strong password on a phone keyboard is where sign-in fails.
+        textContentType="username"
+        autoComplete="email"
+        returnKeyType="next"
+        onSubmitEditing={() => passwordRef.current?.focus()}
+        submitBehavior="submit"
+        accessibilityLabel="Email"
       />
 
       <Text style={styles.label}>Password</Text>
@@ -139,11 +148,17 @@ export default function ConnectScreen({ onConnected }) {
         style={styles.input}
         value={password}
         onChangeText={setPassword}
+        ref={passwordRef}
         placeholder="password"
         placeholderTextColor={colors.textMuted}
         autoCapitalize="none"
         autoCorrect={false}
         secureTextEntry
+        textContentType="password"
+        autoComplete="current-password"
+        returnKeyType="go"
+        onSubmitEditing={signInCloud}
+        accessibilityLabel="Password"
       />
 
       {!!error && <Text style={styles.error}>{error}</Text>}
@@ -187,6 +202,9 @@ export default function ConnectScreen({ onConnected }) {
         autoCapitalize="characters"
         autoCorrect={false}
         maxLength={8}
+        returnKeyType="go"
+        onSubmitEditing={() => pair()}
+        accessibilityLabel="Pairing code"
       />
 
       <TouchableOpacity
@@ -310,7 +328,7 @@ const makeStyles = (c) => StyleSheet.create({
     flexDirection: 'row', backgroundColor: c.surface2, borderRadius: radius,
     padding: 4, marginBottom: 22,
   },
-  toggleBtn: { flex: 1, paddingVertical: 9, alignItems: 'center', borderRadius: radius - 2 },
+  toggleBtn: { flex: 1, paddingVertical: 9, minHeight: 40, justifyContent: 'center', alignItems: 'center', borderRadius: radius - 2 },
   toggleActive: { backgroundColor: c.accent },
   toggleText: { color: c.textMuted, fontSize: 13, fontWeight: '600' },
   toggleTextActive: { color: '#fff' },
@@ -318,8 +336,8 @@ const makeStyles = (c) => StyleSheet.create({
   label: { color: c.textMuted, fontSize: 12, fontWeight: '500', marginBottom: 4 },
   input: {
     backgroundColor: c.surface2, borderWidth: 1, borderColor: c.border,
-    borderRadius: radius, paddingHorizontal: 12, paddingVertical: 10,
-    color: c.text, fontSize: 14, marginBottom: 16,
+    borderRadius: radius, paddingHorizontal: 12, paddingVertical: 10, minHeight: 46,
+    color: c.text, fontSize: 16, marginBottom: 16,
   },
   error: { color: c.red, fontSize: 13, marginBottom: 12 },
   button: {

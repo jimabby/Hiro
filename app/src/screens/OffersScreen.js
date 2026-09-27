@@ -16,6 +16,7 @@ import {
   View, Text, ScrollView, RefreshControl, StyleSheet, TouchableOpacity,
 } from 'react-native'
 import { radius, radiusLg, useTheme } from '../theme'
+import { formatDay } from '../dates'
 
 // How the deadline is coloured. An offer with two days left and one with three
 // weeks left must not look the same — that is the whole premise of the page.
@@ -208,7 +209,7 @@ function OfferCard({ offer, open, onToggle, settled = false }) {
             <Text style={styles.settledTag}>{DECISION_LABELS[offer.decision] || offer.decision}</Text>
           ) : (
             <Text style={[styles.deadline, { color: u.color }]}>
-              {u.label}{offer.respond_by ? ` · by ${offer.respond_by}` : ''}
+              {u.label}{offer.respond_by ? ` · by ${formatDay(offer.respond_by)}` : ''}
             </Text>
           )}
           {offer.excitement != null && (
@@ -236,7 +237,7 @@ function OfferCard({ offer, open, onToggle, settled = false }) {
               Sign in again to re-derive the key, or read it on the desktop.
             </Text>
           )}
-          {!!offer.start_date && <Detail label="Starts" value={offer.start_date} />}
+          {!!offer.start_date && <Detail label="Starts" value={formatDay(offer.start_date)} />}
           {!!offer.location && <Detail label="Location" value={offer.location} />}
           {!!offer.remote && <Detail label="Remote" value={offer.remote} />}
           {!!offer.equity && <Detail label="Equity" value={offer.equity} />}

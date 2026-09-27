@@ -8,8 +8,8 @@
 // never stores anything and never talks to the network; the caller does the
 // pairing so a failure lands in the same error line as a typed code.
 
-import { useState, useMemo } from 'react'
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native'
+import { useState, useMemo, useEffect } from 'react'
+import { View, Text, TouchableOpacity, StyleSheet, BackHandler } from 'react-native'
 import { CameraView, useCameraPermissions } from 'expo-camera'
 import { radius, useTheme } from '../theme'
 
@@ -28,6 +28,16 @@ export default function QrPairScanner({ onScanned, onCancel }) {
   // pair request is sent a dozen times and every attempt after the first fails
   // against a code that has already been spent.
   const [handled, setHandled] = useState(false)
+
+  // The scanner is an overlay, not a screen, so Android back would otherwise
+  // skip past it and close the app from the pairing page.
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      onCancel()
+      return true
+    })
+    return () => sub.remove()
+  }, [onCancel])
 
   if (!permission) {
     return (
@@ -128,6 +138,6 @@ const makeStyles = (c) => StyleSheet.create({
     paddingVertical: 12, paddingHorizontal: 24, marginTop: 18,
   },
   buttonText: { color: '#fff', fontSize: 15, fontWeight: '600' },
-  cancel: { marginTop: 22 },
+  cancel: { marginTop: 22, minHeight: 44, paddingHorizontal: 20, justifyContent: 'center' },
   cancelText: { color: c.textMuted, fontSize: 14 },
 })

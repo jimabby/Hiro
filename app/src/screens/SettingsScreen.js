@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { View, Text, TouchableOpacity, StyleSheet, Alert, Linking } from 'react-native'
+import { View, Text, TouchableOpacity, StyleSheet, Alert, Linking, ScrollView } from 'react-native'
 import { radius, useTheme } from '../theme'
 import { deleteAccount } from '../supabase'
 import { enablePush, disablePush, getPermissionStatus } from '../push'
@@ -45,6 +45,22 @@ export default function SettingsScreen({ client, connection, onDisconnect }) {
     )
   }
 
+  // One tap on a big red button used to act immediately. For a LAN pairing that
+  // throws away this phone's token, and getting back means a new code from the
+  // desktop — too much to lose to a stray thumb.
+  function confirmDisconnect() {
+    Alert.alert(
+      isCloud ? 'Sign out?' : 'Disconnect from the desktop?',
+      isCloud
+        ? 'You will need your email and password to sign in again.'
+        : 'This phone forgets its pairing. To reconnect you will need a new pairing code from the desktop.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: isCloud ? 'Sign out' : 'Disconnect', style: 'destructive', onPress: onDisconnect },
+      ]
+    )
+  }
+
   async function doDeleteAccount() {
     setDeleting(true)
     setDeleteError('')
@@ -72,8 +88,11 @@ export default function SettingsScreen({ client, connection, onDisconnect }) {
   }
 
   return (
-    <View style={styles.root}>
-      <Text style={styles.title}>Settings</Text>
+    // Scrollable: in cloud mode the account, notifications, sign-out and
+    // deletion blocks are taller than a small phone, and a plain View clipped
+    // the legal links and the footer with no way to reach them.
+    <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+      <Text style={styles.title} accessibilityRole="header">Settings</Text>
 
       {isCloud ? (
         <View style={styles.card}>
@@ -144,7 +163,7 @@ export default function SettingsScreen({ client, connection, onDisconnect }) {
         </View>
       )}
 
-      <TouchableOpacity style={styles.btnDanger} onPress={onDisconnect}
+      <TouchableOpacity style={styles.btnDanger} onPress={confirmDisconnect}
         accessibilityRole="button" accessibilityLabel="Disconnect this phone from Hiro">
         <Text style={styles.btnDangerText}>{isCloud ? 'Sign out' : 'Disconnect'}</Text>
       </TouchableOpacity>
@@ -183,7 +202,7 @@ export default function SettingsScreen({ client, connection, onDisconnect }) {
         Hiro Mobile · companion to the Hiro desktop app{'\n'}
         {isCloud ? 'Synced privately to your Supabase project.' : 'All data stays on your computer.'}
       </Text>
-    </View>
+    </ScrollView>
   )
 }
 
@@ -201,37 +220,42 @@ function Row({ label, value }) {
 
 // Rebuilt per palette — see useTheme() in ../theme.
 const makeStyles = (c) => StyleSheet.create({
-  root: { flex: 1, backgroundColor: c.bg, padding: 16 },
+  root: { flex: 1, backgroundColor: c.bg },
+  // flexGrow so the legal links' marginTop: 'auto' still pins them to the
+  // bottom when everything fits.
+  content: { flexGrow: 1, padding: 16 },
   title: { fontSize: 22, fontWeight: '700', color: c.text, marginBottom: 16 },
   card: {
     backgroundColor: c.surface, borderWidth: 1, borderColor: c.border,
     borderRadius: radius, padding: 16, marginBottom: 16,
   },
   cardTitle: { fontSize: 14, fontWeight: '600', color: c.text, marginBottom: 10 },
-  row: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 5 },
+  row: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 5, gap: 12 },
   rowLabel: { color: c.textMuted, fontSize: 13 },
-  rowValue: { color: c.text, fontSize: 13, fontWeight: '500' },
+  // flexShrink so a long email address wraps inside the card instead of
+  // pushing past its edge.
+  rowValue: { color: c.text, fontSize: 13, fontWeight: '500', flexShrink: 1, textAlign: 'right' },
   hint: { color: c.textMuted, fontSize: 12, lineHeight: 17, marginBottom: 10 },
   btnGhost: {
     borderWidth: 1, borderColor: c.border, borderRadius: radius,
-    paddingVertical: 9, alignItems: 'center', marginTop: 10,
+    paddingVertical: 10, minHeight: 44, justifyContent: 'center', alignItems: 'center', marginTop: 10,
   },
   btnGhostText: { color: c.textMuted, fontSize: 13, fontWeight: '500' },
   btnDanger: {
     backgroundColor: c.red, borderRadius: radius,
-    paddingVertical: 12, alignItems: 'center',
+    paddingVertical: 12, minHeight: 46, justifyContent: 'center', alignItems: 'center',
   },
   btnDangerText: { color: '#fff', fontSize: 14, fontWeight: '600' },
   btnDeleteAccount: {
     borderWidth: 1, borderColor: c.red, borderRadius: radius,
-    paddingVertical: 11, alignItems: 'center', marginTop: 12,
+    paddingVertical: 11, minHeight: 44, justifyContent: 'center', alignItems: 'center', marginTop: 12,
   },
   btnDeleteAccountText: { color: c.red, fontSize: 13, fontWeight: '600' },
   deleteError: { color: c.red, fontSize: 12, marginTop: 8, textAlign: 'center' },
   deleteHint: { color: c.textMuted, fontSize: 11, textAlign: 'center', marginTop: 8, lineHeight: 16 },
   legalLinks: {
     flexDirection: 'row', justifyContent: 'center', alignItems: 'center',
-    gap: 10, marginTop: 'auto', paddingVertical: 8,
+    gap: 10, marginTop: 'auto', paddingTop: 24, paddingBottom: 8,
   },
   legalLinkText: { color: c.accent, fontSize: 13, fontWeight: '500' },
   legalDivider: { color: c.textMuted, fontSize: 13 },

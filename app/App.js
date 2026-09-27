@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
-import { View, Text, TouchableOpacity, StyleSheet, Alert, AppState } from 'react-native'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import { View, Text, TouchableOpacity, StyleSheet, Alert, AppState, BackHandler } from 'react-native'
 // React Native's own SafeAreaView is iOS-only and deprecated as of 0.80, and
 // SDK 54 draws Android edge-to-edge by default — so the old hardcoded 32px
 // Android padding would sit the header under some status bars and the tab bar
@@ -23,6 +23,11 @@ import SettingsScreen from './src/screens/SettingsScreen'
 
 const STORAGE_KEY = 'hiro.connection'
 
+// The icons are plain Unicode glyphs, and two of them (★ and ⚙) have emoji
+// forms: without U+FE0E iOS draws ⚙ as a colour emoji that ignores the tint,
+// so the selected tab could not be told apart by colour at all.
+const TEXT_STYLE = '\uFE0E'
+
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', icon: '▦' },
   { id: 'applications', label: 'Applications', icon: '☰' },
@@ -31,8 +36,8 @@ const TABS = [
   // rather than hidden when there are none: both clients resolve a missing
   // table or an older desktop to an empty board, and the empty state says what
   // would fill it, which a tab that appears and disappears never could.
-  { id: 'offers', label: 'Offers', icon: '★' },
-  { id: 'settings', label: 'Settings', icon: '⚙' },
+  { id: 'offers', label: 'Offers', icon: `★${TEXT_STYLE}` },
+  { id: 'settings', label: 'Settings', icon: `⚙${TEXT_STYLE}` },
 ]
 
 export default function App() {
@@ -56,6 +61,41 @@ function AppContent() {
   const [tab, setTab] = useState('dashboard')
   // Set when a notification tap names a specific application to open.
   const [deepLinkedApplication, setDeepLinkedApplication] = useState(null)
+  // Bumped when the Applications tab is tapped while already selected, which
+  // on both platforms means "take me back to the top of this tab".
+  const [applicationsReset, setApplicationsReset] = useState(0)
+
+  const openApplication = useCallback((id) => {
+    setTab('applications')
+    setDeepLinkedApplication(id)
+  }, [])
+
+  const selectTab = useCallback((id) => {
+    if (id === tab && id === 'applications') setApplicationsReset(n => n + 1)
+    setTab(id)
+  }, [tab])
+
+  // Android's back button. Without a handler it finishes the activity from any
+  // screen, so backing out of an application quit the app. Back returns to the
+  // Dashboard, and only exits from there.
+  //
+  // Registered once and read through a ref: React Native runs the NEWEST handler
+  // first, so this one has to stay the oldest for an open application (which
+  // registers its own, to check for an unsaved note) to get the press before it.
+  const tabRef = useRef(tab)
+  tabRef.current = tab
+  const signedIn = !!connection
+  useEffect(() => {
+    if (!signedIn) return
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (tabRef.current !== 'dashboard') {
+        setTab('dashboard')
+        return true
+      }
+      return false
+    })
+    return () => sub.remove()
+  }, [signedIn])
 
   useEffect(() => {
     (async () => {
@@ -167,12 +207,13 @@ function AppContent() {
     <SafeAreaView style={styles.root}>
       <StatusBar style={statusBarStyle} />
       <View style={styles.content}>
-        {tab === 'dashboard' && <DashboardScreen client={client} />}
+        {tab === 'dashboard' && <DashboardScreen client={client} onOpenApplication={openApplication} />}
         {tab === 'applications' && (
           <ApplicationsScreen
             client={client}
             openApplicationId={deepLinkedApplication}
             onOpened={() => setDeepLinkedApplication(null)}
+            resetSignal={applicationsReset}
           />
         )}
         {tab === 'offers' && <OffersScreen client={client} />}
@@ -189,7 +230,7 @@ function AppContent() {
           <TouchableOpacity
             key={t.id}
             style={styles.tabItem}
-            onPress={() => setTab(t.id)}
+            onPress={() => selectTab(t.id)}
             accessibilityRole="tab"
             accessibilityLabel={t.label}
             accessibilityState={{ selected: tab === t.id }}

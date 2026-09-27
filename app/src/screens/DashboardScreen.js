@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { View, Text, ScrollView, RefreshControl, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, Linking, Platform, AppState } from 'react-native'
+import { View, Text, ScrollView, RefreshControl, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, Linking, Platform, AppState, Keyboard } from 'react-native'
 import { radius, statusLabel, useTheme, useStatusColors } from '../theme'
 import { describeDue, isOverdue } from '../components/NextAction'
 import { enqueue, flush, getPending } from '../scanQueue'
+import { parseLocal, relativeDay, calendarDaysFrom, formatWhen, clockTime, formatDay } from '../dates'
 
-export default function DashboardScreen({ client }) {
+export default function DashboardScreen({ client, onOpenApplication }) {
   // Palette and stylesheet follow the phone's appearance setting. Named
   // `colors` so every inline reference below reads unchanged.
   const colors = useTheme()
@@ -58,6 +59,8 @@ export default function DashboardScreen({ client }) {
   }, [client])
 
   async function onRunScan() {
+    if (scanBusy) return
+    Keyboard.dismiss()
     setScanBusy(true)
     setScanMsg('')
     const req = { keywords: keywords.trim(), location: '', createdAt: new Date().toISOString() }
@@ -168,11 +171,16 @@ export default function DashboardScreen({ client }) {
   return (
     <ScrollView
       style={styles.root}
-      contentContainerStyle={{ padding: 16 }}
+      contentContainerStyle={{ padding: 16, paddingBottom: 32 }}
+      // Without "handled" the first tap on "Run scan now" with the keyboard up
+      // only dismissed the keyboard, and the scan needed a second tap.
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
     >
       <Text style={styles.title}>Dashboard</Text>
       {!!error && <Text style={styles.error}>{error}</Text>}
+      {!stats && !error && <ActivityIndicator style={{ marginVertical: 24 }} color={colors.accent} />}
 
       {/* Trigger a scan on the desktop (LAN connection only) */}
       {client.canScan && (
@@ -184,7 +192,7 @@ export default function DashboardScreen({ client }) {
               ? 'scanning now…'
               : scanStatus.busy ? 'busy (applying)' : 'idle'}
             {scanStatus.queued > 0 ? ` · ${scanStatus.queued} queued` : ''}
-            {scanStatus.lastScanAt ? ` · last ${new Date(scanStatus.lastScanAt).toLocaleString()}` : ''}
+            {scanStatus.lastScanAt ? ` · last ${formatWhen(scanStatus.lastScanAt)}` : ''}
           </Text>
         )}
         {/* A failed scan used to be indistinguishable from one that found
@@ -199,6 +207,9 @@ export default function DashboardScreen({ client }) {
           value={keywords}
           onChangeText={setKeywords}
           autoCapitalize="none"
+          returnKeyType="go"
+          onSubmitEditing={onRunScan}
+          accessibilityLabel="Scan keywords"
         />
         <TouchableOpacity style={[styles.scanBtn, scanBusy && { opacity: 0.6 }]} onPress={onRunScan} disabled={scanBusy}
           accessibilityRole="button" accessibilityLabel="Run a scan now"
@@ -242,6 +253,18 @@ export default function DashboardScreen({ client }) {
       </View>
       )}
 
+      {/* First run: nothing has been sent yet, and a wall of zeros explains
+          nothing. Say where the numbers come from. */}
+      {stats && !stats.totalAllTime && !(stats.byStatus || []).length && (
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Nothing here yet</Text>
+          <Text style={styles.muted}>
+            Applications appear once the Hiro desktop app has run its first scan.
+            {client.canScan ? ' You can start one from here.' : ''}
+          </Text>
+        </View>
+      )}
+
       {stats && (
         <>
           <View style={styles.statRow}>
@@ -277,7 +300,12 @@ export default function DashboardScreen({ client }) {
                 {dueActions.length} follow-up{dueActions.length === 1 ? '' : 's'} due
               </Text>
               {dueActions.map(a => (
-                <View key={a.id} style={styles.attentionRow}>
+                <TouchableOpacity key={a.id} style={styles.attentionRow}
+                  disabled={!onOpenApplication}
+                  onPress={() => onOpenApplication?.(a.id)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${a.next_action_note || 'Follow up'}: ${a.job_title} at ${a.company}, ${describeDue(a.next_action_at)}`}
+                  accessibilityHint="Opens the application">
                   <View style={{ flex: 1 }}>
                     <Text style={styles.attentionTitle} numberOfLines={1}>
                       {a.next_action_note || 'Follow up'}
@@ -287,7 +315,8 @@ export default function DashboardScreen({ client }) {
                   <Text style={[styles.attentionScore, {
                     color: isOverdue(a.next_action_at) ? colors.red : colors.accent,
                   }]}>{describeDue(a.next_action_at)}</Text>
-                </View>
+                  <Text style={styles.chevron} importantForAccessibility="no">›</Text>
+                </TouchableOpacity>
               ))}
             </View>
           )}
@@ -298,21 +327,31 @@ export default function DashboardScreen({ client }) {
             <View style={[styles.card, { borderLeftWidth: 3, borderLeftColor: colors.green }]}>
               <Text style={styles.cardTitle}>Upcoming interviews</Text>
               {interviews.map(iv => {
-                const when = new Date(String(iv.scheduled_at).replace(' ', 'T'))
-                const days = Math.round((when - new Date()) / 86400000)
-                const rel = days <= 0 ? 'today' : days === 1 ? 'tomorrow' : `in ${days} days`
+                // scheduled_at is the desktop's wall-clock time, and may be a
+                // bare date — parseLocal keeps a bare date on its own day.
+                const when = parseLocal(iv.scheduled_at)
+                if (!when) return null
+                const days = calendarDaysFrom(when)
+                const rel = relativeDay(when)
                 const hasTime = iv.has_time === true || iv.has_time === 1
+                const appId = iv.application_id
                 return (
-                  <View key={iv.id} style={styles.attentionRow}>
+                  <TouchableOpacity key={iv.id} style={styles.attentionRow}
+                    disabled={appId == null || !onOpenApplication}
+                    onPress={() => onOpenApplication?.(appId)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Interview: ${iv.job_title} at ${iv.company}, ${rel}${hasTime ? ` at ${clockTime(when)}` : ''}`}
+                    accessibilityHint={appId != null ? 'Opens the application' : undefined}>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.attentionTitle} numberOfLines={1}>{iv.job_title}</Text>
                       <Text style={styles.muted} numberOfLines={1}>
-                        {iv.company} · {when.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}
-                        {hasTime ? ` at ${when.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ' (time not detected)'}
+                        {iv.company} · {formatDay(iv.scheduled_at)}
+                        {hasTime ? ` at ${clockTime(when)}` : ' (time not detected)'}
                       </Text>
                     </View>
                     <Text style={[styles.attentionScore, { color: days <= 1 ? colors.green : colors.textMuted }]}>{rel}</Text>
-                  </View>
+                    {appId != null && <Text style={styles.chevron} importantForAccessibility="no">›</Text>}
+                  </TouchableOpacity>
                 )
               })}
             </View>
@@ -327,8 +366,8 @@ export default function DashboardScreen({ client }) {
                 <View key={d.date} style={styles.chartRow}
                   accessible
                   accessibilityRole="text"
-                  accessibilityLabel={`${d.date}: ${d.count} application${d.count === 1 ? '' : 's'}`}>
-                  <Text style={styles.chartLabel}>{d.date.slice(5)}</Text>
+                  accessibilityLabel={`${formatDay(d.date)}: ${d.count} application${d.count === 1 ? '' : 's'}`}>
+                  <Text style={styles.chartLabel}>{formatDay(d.date).split(' ')[0]}</Text>
                   <View style={styles.chartTrack}>
                     <View style={[styles.chartBar, { width: `${(d.count / maxPerDay) * 100}%` }]} />
                   </View>
@@ -433,16 +472,16 @@ const makeStyles = (c) => StyleSheet.create({
   muted: { color: c.textMuted, fontSize: 13 },
   input: {
     backgroundColor: c.bg, borderWidth: 1, borderColor: c.border, borderRadius: radius,
-    color: c.text, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, marginTop: 10,
+    color: c.text, paddingHorizontal: 12, paddingVertical: 10, fontSize: 15, marginTop: 10, minHeight: 44,
   },
   scanBtn: {
-    backgroundColor: c.accent, borderRadius: radius, paddingVertical: 12,
-    alignItems: 'center', marginTop: 10,
+    backgroundColor: c.accent, borderRadius: radius, paddingVertical: 12, minHeight: 46,
+    alignItems: 'center', justifyContent: 'center', marginTop: 10,
   },
   scanBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
   cancelBtn: {
     borderWidth: 1, borderColor: c.red, borderRadius: radius,
-    paddingVertical: 10, alignItems: 'center', marginTop: 8,
+    paddingVertical: 10, minHeight: 44, alignItems: 'center', justifyContent: 'center', marginTop: 8,
   },
   cancelBtnText: { color: c.red, fontSize: 13, fontWeight: '600' },
   liveLog: {
@@ -465,11 +504,12 @@ const makeStyles = (c) => StyleSheet.create({
   chartValue: { width: 24, fontSize: 11, color: c.text, textAlign: 'right' },
   row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6, gap: 8 },
   attentionRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8,
+    flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10, minHeight: 44,
     borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border,
   },
   attentionTitle: { color: c.text, fontSize: 13, fontWeight: '600' },
   attentionScore: { color: c.yellow, fontSize: 13, fontWeight: '700' },
+  chevron: { color: c.textFaint, fontSize: 20, marginLeft: -2 },
   dot: { width: 8, height: 8, borderRadius: 4 },
   rowLabel: { flex: 1, color: c.text, fontSize: 13, textTransform: 'capitalize' },
   rowValue: { color: c.textMuted, fontSize: 13, fontWeight: '600' },

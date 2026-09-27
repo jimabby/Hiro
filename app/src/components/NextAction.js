@@ -3,7 +3,7 @@ import { View, Text, TouchableOpacity, TextInput, StyleSheet } from 'react-nativ
 import { radius, useTheme } from '../theme'
 // Pure date helpers live in src/dates.js so they can be unit-tested without a
 // React Native runtime; re-exported here so the screens have one import.
-import { localDateIn, todayLocal, describeDue, isOverdue } from '../dates'
+import { localDateIn, todayLocal, describeDue, isOverdue, formatDay } from '../dates'
 
 export { localDateIn, todayLocal, describeDue, isOverdue }
 
@@ -74,7 +74,7 @@ export default function NextAction({ app, onSave, onComplete }) {
               {app.next_action_note || 'Follow up'}
             </Text>
             <Text style={[styles.muted, overdue && styles.overdueText]}>
-              {describeDue(due)} · {String(due).slice(0, 10)}
+              {describeDue(due)} · {formatDay(String(due).slice(0, 10))}
             </Text>
           </View>
           <TouchableOpacity style={styles.btn} disabled={busy} onPress={clear}
@@ -102,6 +102,8 @@ export default function NextAction({ app, onSave, onComplete }) {
             onChangeText={setNote}
             placeholder="What needs doing?"
             placeholderTextColor={colors.textMuted}
+            returnKeyType="done"
+            accessibilityLabel="Follow-up note"
           />
           <View style={styles.quickRow}>
             {QUICK.map(q => (
@@ -144,28 +146,41 @@ const makeStyles = (c) => StyleSheet.create({
   input: {
     backgroundColor: c.bg,
     color: c.text,
+    borderWidth: 1,
+    borderColor: c.border,
     borderRadius: 8,
     paddingHorizontal: 10,
-    paddingVertical: 8,
-    fontSize: 13,
+    paddingVertical: 10,
+    minHeight: 44,
+    fontSize: 14,
     marginBottom: 10,
   },
-  quickRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  // Four equal buttons in a row, each tall enough to hit with a thumb. They
+  // used to be ~30pt chips, the smallest targets in the app for the one action
+  // most likely to be taken standing up.
+  quickRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   quick: {
+    flexGrow: 1,
+    flexBasis: '22%',
+    alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: c.bg,
+    borderWidth: 1,
+    borderColor: c.border,
     borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 8,
+    minHeight: 42,
   },
-  quickText: { color: c.accent, fontSize: 12, fontWeight: '600' },
+  quickText: { color: c.accent, fontSize: 13, fontWeight: '600' },
   btn: {
     backgroundColor: c.accent,
     borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    paddingHorizontal: 16,
+    minHeight: 38,
+    justifyContent: 'center',
   },
-  btnText: { color: '#fff', fontSize: 12, fontWeight: '600' },
-  btnGhost: { marginTop: 10, alignSelf: 'flex-start' },
-  btnGhostText: { color: c.accent, fontSize: 12, fontWeight: '600' },
+  btnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  btnGhost: { marginTop: 6, alignSelf: 'flex-start', minHeight: 36, justifyContent: 'center' },
+  btnGhostText: { color: c.accent, fontSize: 13, fontWeight: '600' },
   error: { color: c.red, fontSize: 12, marginTop: 8 },
 })
