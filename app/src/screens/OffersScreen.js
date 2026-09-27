@@ -11,7 +11,7 @@
 // on the desktop: those are not decisions to take one-handed on a train, and a
 // mistap here is not recoverable the way a mistyped note is.
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   View, Text, ScrollView, RefreshControl, StyleSheet, TouchableOpacity,
 } from 'react-native'
@@ -45,7 +45,7 @@ const DECISION_LABELS = {
   declined: 'Declined',
 }
 
-export default function OffersScreen({ client }) {
+export default function OffersScreen({ client, active = true }) {
   // Palette and stylesheet follow the phone's appearance setting. Named
   // `colors` so every inline reference below reads unchanged.
   const colors = useTheme()
@@ -68,6 +68,14 @@ export default function OffersScreen({ client }) {
   }, [client])
 
   useEffect(() => { load() }, [load])
+
+  // Kept mounted between visits; a deadline is exactly the thing that must not
+  // be shown stale, so reload each time the tab comes back.
+  const wasActive = useRef(active)
+  useEffect(() => {
+    if (active && !wasActive.current) load()
+    wasActive.current = active
+  }, [active, load])
 
   async function onRefresh() {
     setRefreshing(true)

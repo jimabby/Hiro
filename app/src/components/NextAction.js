@@ -1,20 +1,20 @@
 import { useState, useMemo } from 'react'
-import { View, Text, TouchableOpacity, TextInput, StyleSheet } from 'react-native'
+import { View, Text, TouchableOpacity, TextInput, StyleSheet, Platform, useColorScheme } from 'react-native'
+import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker'
 import { radius, useTheme } from '../theme'
 // Pure date helpers live in src/dates.js so they can be unit-tested without a
 // React Native runtime; re-exported here so the screens have one import.
-import { localDateIn, todayLocal, describeDue, isOverdue, formatDay } from '../dates'
+import { localDateIn, localDateOf, todayLocal, describeDue, isOverdue, formatDay, parseLocal } from '../dates'
 
 export { localDateIn, todayLocal, describeDue, isOverdue }
 
 // Booking the next follow-up, from the phone.
 //
 // Deciding "chase them Thursday" is exactly the sort of thing done away from the
-// desk — on the train, after a call — so it must not be desktop-only. It also
-// must not require a date picker: there is no cross-platform inline picker in
-// bare React Native, and a modal spinner for "in three days" is more friction
-// than the feature is worth. Relative buttons cover every real case; an exact
-// date is a rare enough need to leave to the desktop.
+// desk — on the train, after a call — so it must not be desktop-only. The
+// relative buttons are the fast path and cover most cases; "Pick a date" is for
+// the rest ("they said to call after the 14th"), using the platform's own
+// picker: an inline calendar on iOS, the system dialog on Android.
 
 const QUICK = [
   { label: 'Tomorrow', days: 1 },
@@ -33,21 +33,51 @@ export default function NextAction({ app, onSave, onComplete }) {
   const [note, setNote] = useState(app?.next_action_note || '')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  // iOS only: the inline calendar, and the day selected on it but not yet saved.
+  const [picking, setPicking] = useState(false)
+  const [picked, setPicked] = useState(null)
+  const scheme = useColorScheme()
 
   const due = app?.next_action_at
   const overdue = isOverdue(due)
 
-  async function commit(days) {
+  async function commitDate(date) {
     setBusy(true)
     setError('')
     try {
-      await onSave({ date: localDateIn(days), note })
+      await onSave({ date, note })
       setOpen(false)
+      setPicking(false)
     } catch (err) {
       setError(err.message)
     } finally {
       setBusy(false)
     }
+  }
+
+  const commit = (days) => commitDate(localDateIn(days))
+
+  // Opens on the current follow-up when there is one, else a week out — the
+  // most common choice, so the calendar starts in the right month.
+  const initialPick = () => {
+    const current = due && parseLocal(String(due).slice(0, 10))
+    return current && current >= parseLocal(todayLocal()) ? current : parseLocal(localDateIn(7))
+  }
+
+  function pickDate() {
+    if (Platform.OS === 'android') {
+      DateTimePickerAndroid.open({
+        value: initialPick(),
+        mode: 'date',
+        minimumDate: new Date(),
+        onChange: (event, date) => {
+          if (event.type === 'set' && date) commitDate(localDateOf(date))
+        },
+      })
+      return
+    }
+    setPicked(initialPick())
+    setPicking(true)
   }
 
   async function clear() {
@@ -115,7 +145,34 @@ export default function NextAction({ app, onSave, onComplete }) {
               </TouchableOpacity>
             ))}
           </View>
-          <TouchableOpacity style={styles.btnGhost} onPress={() => setOpen(false)}
+          {picking && Platform.OS === 'ios' ? (
+            <View style={styles.pickerWrap}>
+              <DateTimePicker
+                value={picked || initialPick()}
+                mode="date"
+                display="inline"
+                minimumDate={new Date()}
+                accentColor={colors.accent}
+                themeVariant={scheme === 'light' ? 'light' : 'dark'}
+                onChange={(_, date) => date && setPicked(date)}
+              />
+              <TouchableOpacity style={[styles.btn, styles.pickerConfirm]} disabled={busy || !picked}
+                onPress={() => picked && commitDate(localDateOf(picked))}
+                accessibilityRole="button"
+                accessibilityLabel={picked ? `Follow up on ${formatDay(localDateOf(picked))}` : 'Choose a day'}
+                accessibilityState={{ disabled: busy || !picked, busy }}>
+                <Text style={styles.btnText}>
+                  {picked ? `Follow up ${formatDay(localDateOf(picked))}` : 'Choose a day'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <TouchableOpacity style={styles.btnGhost} onPress={pickDate} disabled={busy}
+              accessibilityRole="button" accessibilityLabel="Pick an exact date for the follow-up">
+              <Text style={styles.btnGhostText}>Pick a date…</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity style={styles.btnGhost} onPress={() => { setOpen(false); setPicking(false) }}
             accessibilityRole="button" accessibilityLabel="Close the follow-up picker">
             <Text style={styles.btnGhostText}>Cancel</Text>
           </TouchableOpacity>
@@ -180,6 +237,8 @@ const makeStyles = (c) => StyleSheet.create({
     justifyContent: 'center',
   },
   btnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  pickerWrap: { marginTop: 8 },
+  pickerConfirm: { alignItems: 'center', marginTop: 4, minHeight: 42 },
   btnGhost: { marginTop: 6, alignSelf: 'flex-start', minHeight: 36, justifyContent: 'center' },
   btnGhostText: { color: c.accent, fontSize: 13, fontWeight: '600' },
   error: { color: c.red, fontSize: 12, marginTop: 8 },

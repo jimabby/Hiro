@@ -12,10 +12,16 @@
 // everyone east of Greenwich, which is the same bug the desktop's date handling
 // is careful to avoid.
 
+// A Date's LOCAL calendar day as YYYY-MM-DD — what a date picker's selection
+// means, whatever time of day it happens to carry.
+function localDateOf(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 function localDateIn(days = 0) {
   const d = new Date()
   d.setDate(d.getDate() + days)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  return localDateOf(d)
 }
 
 function todayLocal() {
@@ -150,6 +156,6 @@ function formatDay(value) {
 }
 
 module.exports = {
-  localDateIn, todayLocal, describeDue, isOverdue, isDueOrOverdue, daysBetweenDates,
+  localDateIn, localDateOf, todayLocal, describeDue, isOverdue, isDueOrOverdue, daysBetweenDates,
   parseInstant, parseLocal, calendarDaysFrom, relativeDay, formatWhen, formatFull, formatDay, clockTime,
 }

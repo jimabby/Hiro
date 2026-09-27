@@ -156,13 +156,13 @@ pipeline was for, and the one the rest of the app had nothing to say about.
 ### Mobile Companion
 - **Hiro Mobile** ([app/](app/)) — Expo React Native app, connects either over your local network **or** via the cloud
 - **On-the-go dashboard** — stats, 7-day chart, status and platform breakdowns, upcoming interviews, and the Needs Attention queue (all available over the cloud as well as LAN)
-- **Manage applications** — search, filter, update statuses, and add notes from your phone
+- **Manage applications** — search, filter, sort, update statuses, and add notes from your phone; swipe a row (or long-press it) to book a follow-up or mark it Interview or Rejected in one move, with badges on the tab bar for follow-ups due, drafts to review and offers about to expire
 - **Trigger a scan from your phone** — queue a scan (with optional keyword override); over LAN it runs on the desktop immediately (or the moment the desktop is next turned on), and over the cloud the desktop picks it up on its next sync cycle (~2 minutes) — so you can kick off a scan from anywhere. Requests are saved on the phone if neither is reachable and delivered automatically later
 - **Watch scans live** — while the desktop scans, the phone shows a live "scanning now…" indicator (works over the cloud too) and, over Wi-Fi, a real-time feed of the desktop's activity log with a remote **Cancel scan** button. Polling stops when the app is backgrounded, and gives up with a "lost contact with the desktop" note rather than spinning forever if the desktop goes away mid-scan
 - **See what is on the table** — the Offers board, with its deadlines, on the phone
 - **Push notifications** — recruiter replies, interview reminders, offers about to expire, follow-ups coming due, closing dates, review-queue items and failed scans, sent by your desktop while you are away from it. Tapping one opens what it was about
 - **Light and dark, following the phone** — the companion app tracks the phone's own appearance setting rather than staying dark, which is what a phone that switches itself at sunset needs
-- **Follow-ups from your phone** — book or clear a next action on any application; due and overdue ones lead the dashboard
+- **Follow-ups from your phone** — book or clear a next action on any application, one tap for the usual intervals or an exact date from the calendar; due and overdue ones lead the dashboard
 - **Registered on your account** — the phone appears in the desktop's device list with its session age, so it can be seen and signed out. It checks its own standing on every foreground and signs itself out if revoked
 - **App Store-ready** — in-app account deletion, privacy policy, EAS build config (see [app/README.md](app/README.md))
 - **Two ways to connect:**

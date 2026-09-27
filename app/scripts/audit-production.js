@@ -2,8 +2,11 @@ const { spawnSync } = require('child_process')
 const path = require('path')
 
 // These two image-size parsers are reached through Expo/Metro's developer
-// asset pipeline, have no fixed release, and never parse remote input in Hiro.
-const allowed = new Set([1138808, 1138809])
+// asset pipeline and never parse remote input in Hiro. The fixed release is
+// image-size 2.x, whose API Metro's 1.x call sites cannot use, so it cannot be
+// forced with an override. npm re-issued both under new ids (GHSA-5p2g-fcmc-qvqq,
+// GHSA-w3rx-r6r6-pgpr); the old ids stay so an older npm cache still passes.
+const allowed = new Set([1138808, 1138809, 1239765, 1239766])
 
 // Invoke npm through Node so this works identically on Windows, where spawning
 // npm.cmd directly without a shell returns EINVAL, and on CI.

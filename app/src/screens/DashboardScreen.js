@@ -5,7 +5,7 @@ import { describeDue, isOverdue } from '../components/NextAction'
 import { enqueue, flush, getPending } from '../scanQueue'
 import { parseLocal, relativeDay, calendarDaysFrom, formatWhen, clockTime, formatDay } from '../dates'
 
-export default function DashboardScreen({ client, onOpenApplication }) {
+export default function DashboardScreen({ client, active = true, onOpenApplication }) {
   // Palette and stylesheet follow the phone's appearance setting. Named
   // `colors` so every inline reference below reads unchanged.
   const colors = useTheme()
@@ -86,6 +86,14 @@ export default function DashboardScreen({ client, onOpenApplication }) {
 
   useEffect(() => { load() }, [load])
 
+  // Tabs stay mounted, so returning to this one is not a remount. Reload on the
+  // way back in, or the tiles show whatever was true when it was last on screen.
+  const wasActive = useRef(active)
+  useEffect(() => {
+    if (active && !wasActive.current) load()
+    wasActive.current = active
+  }, [active, load])
+
   // Live scan progress: while the desktop is scanning (or scans are queued),
   // poll the status — and over LAN also the activity log, so the user can
   // watch the scan work ("Found 14 jobs on Seek… applying…") in real time.
@@ -111,7 +119,9 @@ export default function DashboardScreen({ client, onOpenApplication }) {
   }, [])
 
   useEffect(() => {
-    if (!scanActive || !foreground || scanPollLost) return
+    // Paused while another tab is in front, as it is while the phone is locked:
+    // nobody is watching the feed, and returning reloads everything anyway.
+    if (!scanActive || !foreground || !active || scanPollLost) return
     let cancelled = false
     let finishing = false
     // The exit condition is derived from scanStatus, and a failed tick used to
@@ -145,7 +155,7 @@ export default function DashboardScreen({ client, onOpenApplication }) {
     const id = setInterval(tick, client.getLogs ? 4000 : 10000)
     tick()
     return () => { cancelled = true; clearInterval(id) }
-  }, [scanActive, foreground, scanPollLost, client, load])
+  }, [scanActive, foreground, active, scanPollLost, client, load])
 
   async function onCancelScan() {
     setCancelBusy(true)

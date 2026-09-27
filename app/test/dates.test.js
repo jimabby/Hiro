@@ -6,7 +6,7 @@
 const { createChecker } = require('./helpers')
 const {
   localDateIn, todayLocal, describeDue, isOverdue, isDueOrOverdue, daysBetweenDates,
-  parseInstant, parseLocal, calendarDaysFrom, relativeDay, formatWhen, formatDay,
+  localDateOf, parseInstant, parseLocal, calendarDaysFrom, relativeDay, formatWhen, formatDay,
 } = require('../src/dates')
 
 const { check, done } = createChecker()
@@ -135,5 +135,10 @@ check('formatWhen: nothing is empty', formatWhen(null, evening), '')
 
 check('formatDay names the weekday', formatDay('2026-09-29'), 'Tue 29 Sep')
 check('formatDay passes junk through', formatDay('soon'), 'soon')
+
+// A picker hands back a Date at some time of day; late evening must still be
+// that day, not tomorrow's UTC date.
+check('localDateOf keeps a late-evening pick on its day', localDateOf(new Date(2026, 8, 30, 23, 30)), '2026-09-30')
+check('localDateOf keeps an early-morning pick on its day', localDateOf(new Date(2026, 8, 30, 0, 15)), '2026-09-30')
 
 done()

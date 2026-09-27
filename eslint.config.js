@@ -90,6 +90,7 @@ module.exports = [
       'app/src/httpJson.js',
       'app/src/stats.js',
       'app/src/dates.js',
+      'app/src/listing.js',
       'app/test/**/*.js',
       'app/scripts/**/*.js',
       'app/babel.config.js',

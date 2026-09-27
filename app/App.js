@@ -20,6 +20,8 @@ import DashboardScreen from './src/screens/DashboardScreen'
 import ApplicationsScreen from './src/screens/ApplicationsScreen'
 import OffersScreen from './src/screens/OffersScreen'
 import SettingsScreen from './src/screens/SettingsScreen'
+import { useBadges } from './src/useBadges'
+import { badgeText } from './src/listing'
 
 const STORAGE_KEY = 'hiro.connection'
 
@@ -27,6 +29,14 @@ const STORAGE_KEY = 'hiro.connection'
 // forms: without U+FE0E iOS draws ⚙ as a colour emoji that ignores the tint,
 // so the selected tab could not be told apart by colour at all.
 const TEXT_STYLE = '\uFE0E'
+
+// What each tab's badge counts, for the spoken label — a bare number read after
+// "Offers" says nothing about what it is a number of.
+const BADGE_MEANING = {
+  dashboard: (n) => `${n} follow-up${n === 1 ? '' : 's'} due`,
+  applications: (n) => `${n} draft${n === 1 ? '' : 's'} waiting for review`,
+  offers: (n) => `${n} offer${n === 1 ? '' : 's'} due within three days`,
+}
 
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', icon: '▦' },
@@ -64,6 +74,13 @@ function AppContent() {
   // Bumped when the Applications tab is tapped while already selected, which
   // on both platforms means "take me back to the top of this tab".
   const [applicationsReset, setApplicationsReset] = useState(0)
+  // Tabs are mounted the first time they are opened and then kept, hidden, so
+  // switching away and back keeps the search, filter, sort, scroll position and
+  // any open application — they used to be rebuilt from scratch on every tap.
+  const [visited, setVisited] = useState(() => new Set(['dashboard']))
+  useEffect(() => {
+    setVisited(v => (v.has(tab) ? v : new Set(v).add(tab)))
+  }, [tab])
 
   const openApplication = useCallback((id) => {
     setTab('applications')
@@ -132,6 +149,7 @@ function AppContent() {
     }
     setConnection(conn)
     setTab('dashboard')
+    setVisited(new Set(['dashboard']))
   }, [])
 
   const handleDisconnect = useCallback(async () => {
@@ -190,6 +208,8 @@ function AppContent() {
     })
   }, [userId])
 
+  const [badges, refreshBadges] = useBadges(client, tab)
+
   if (connection === undefined) {
     return <View style={styles.root} />
   }
@@ -207,18 +227,32 @@ function AppContent() {
     <SafeAreaView style={styles.root}>
       <StatusBar style={statusBarStyle} />
       <View style={styles.content}>
-        {tab === 'dashboard' && <DashboardScreen client={client} onOpenApplication={openApplication} />}
-        {tab === 'applications' && (
-          <ApplicationsScreen
-            client={client}
-            openApplicationId={deepLinkedApplication}
-            onOpened={() => setDeepLinkedApplication(null)}
-            resetSignal={applicationsReset}
-          />
+        {visited.has('dashboard') && (
+          <View style={[styles.content, tab !== 'dashboard' && styles.hidden]}>
+            <DashboardScreen client={client} active={tab === 'dashboard'} onOpenApplication={openApplication} />
+          </View>
         )}
-        {tab === 'offers' && <OffersScreen client={client} />}
-        {tab === 'settings' && (
-          <SettingsScreen client={client} connection={connection} onDisconnect={handleDisconnect} />
+        {(visited.has('applications') || deepLinkedApplication != null) && (
+          <View style={[styles.content, tab !== 'applications' && styles.hidden]}>
+            <ApplicationsScreen
+              client={client}
+              active={tab === 'applications'}
+              openApplicationId={deepLinkedApplication}
+              onOpened={() => setDeepLinkedApplication(null)}
+              resetSignal={applicationsReset}
+              onChanged={refreshBadges}
+            />
+          </View>
+        )}
+        {visited.has('offers') && (
+          <View style={[styles.content, tab !== 'offers' && styles.hidden]}>
+            <OffersScreen client={client} active={tab === 'offers'} />
+          </View>
+        )}
+        {visited.has('settings') && (
+          <View style={[styles.content, tab !== 'settings' && styles.hidden]}>
+            <SettingsScreen client={client} connection={connection} onDisconnect={handleDisconnect} />
+          </View>
         )}
       </View>
       {/* The app's only global navigation, so it is the one control that has to
@@ -226,20 +260,27 @@ function AppContent() {
           importantForAccessibility="no" a screen reader announces the character
           name ("black square", "trigram for heaven") ahead of the real label. */}
       <View style={styles.tabBar} accessibilityRole="tablist">
-        {TABS.map(t => (
+        {TABS.map(t => {
+          const count = badges[t.id] || 0
+          return (
           <TouchableOpacity
             key={t.id}
             style={styles.tabItem}
             onPress={() => selectTab(t.id)}
             accessibilityRole="tab"
-            accessibilityLabel={t.label}
+            accessibilityLabel={count ? `${t.label}, ${BADGE_MEANING[t.id](count)}` : t.label}
             accessibilityState={{ selected: tab === t.id }}
           >
-            <Text
-              style={[styles.tabIcon, tab === t.id && styles.tabActive]}
-              importantForAccessibility="no"
-              accessibilityElementsHidden
-            >{t.icon}</Text>
+            <View importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
+              <Text style={[styles.tabIcon, tab === t.id && styles.tabActive]}>{t.icon}</Text>
+              {/* Offers is urgent rather than countable, so it gets red; the
+                  other two are work waiting, in the accent. */}
+              {count > 0 && (
+                <View style={[styles.badge, t.id === 'offers' && styles.badgeUrgent]}>
+                  <Text style={styles.badgeText}>{badgeText(count)}</Text>
+                </View>
+              )}
+            </View>
             <Text
               style={[styles.tabLabel, tab === t.id && styles.tabActive]}
               importantForAccessibility="no"
@@ -250,7 +291,8 @@ function AppContent() {
                 a rule under it. */}
             {tab === t.id && <View style={styles.tabUnderline} />}
           </TouchableOpacity>
-        ))}
+          )
+        })}
       </View>
     </SafeAreaView>
   )
@@ -263,6 +305,7 @@ const makeStyles = (c) => StyleSheet.create({
     backgroundColor: c.bg,
   },
   content: { flex: 1 },
+  hidden: { display: 'none' },
   tabBar: {
     flexDirection: 'row',
     borderTopWidth: 1,
@@ -276,6 +319,13 @@ const makeStyles = (c) => StyleSheet.create({
   tabIcon: { fontSize: 18, color: c.textMuted },
   tabLabel: { fontSize: 11, color: c.textMuted, marginTop: 2 },
   tabActive: { color: c.accent },
+  badge: {
+    position: 'absolute', top: -4, left: 12, minWidth: 18, height: 18, borderRadius: 9,
+    paddingHorizontal: 5, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: c.accent, borderWidth: 2, borderColor: c.surface,
+  },
+  badgeUrgent: { backgroundColor: c.red },
+  badgeText: { color: '#fff', fontSize: 10, fontWeight: '700', lineHeight: 12 },
   tabUnderline: {
     position: 'absolute', bottom: 0, height: 2, width: 28,
     borderRadius: 1, backgroundColor: c.accent,

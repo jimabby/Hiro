@@ -6,12 +6,13 @@ import {
 import { radius, statusLabel, SETTABLE_STATUSES, useTheme, useStatusColors } from '../theme'
 import NextAction from '../components/NextAction'
 import { formatFull } from '../dates'
+import { selection, success, failure } from '../haptics'
 
 // Rows that were never submitted have nothing to chase — there is no recruiter on
 // the other end of a held draft. Mirrors UNSENT_STATUSES on the desktop.
 const UNSENT = ['skipped', 'held']
 
-export default function ApplicationDetailScreen({ client, id, onBack }) {
+export default function ApplicationDetailScreen({ client, id, onBack, active = true, onChanged }) {
   // Palette and stylesheet follow the phone's appearance setting. Named
   // `colors` so every inline reference below reads unchanged.
   const colors = useTheme()
@@ -54,12 +55,15 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
     const previous = app?.status
     // Optimistic, because a chip that waits a network round trip before lighting
     // up reads as a missed tap and gets tapped again. Rolled back on failure.
+    selection()
     setApp(a => ({ ...a, status }))
     try {
       await client.updateStatus(id, status)
       setError('')
+      onChanged?.()
     } catch (err) {
       setApp(a => ({ ...a, status: previous }))
+      failure()
       setError(err.message)
     }
   }
@@ -78,10 +82,13 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
     setError('')
     try {
       await client.requestReviewAction(id, action)
+      success()
+      onChanged?.()
       setReviewQueued(action === 'approve'
         ? 'Approval queued — the desktop submits it on its next sync.'
         : 'Rejection queued — nothing will be sent.')
     } catch (err) {
+      failure()
       setError(err.message)
     } finally {
       setReviewBusy(false)
@@ -111,20 +118,24 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
 
   // Android back closes this page, through the same unsaved-note check as the
   // on-screen link. Newer handlers run first, so this one beats the shell's.
+  // Only while this tab is on screen: tabs stay mounted, and a hidden detail
+  // page must not swallow back presses meant for the tab in front of it.
   const goBackRef = useRef(goBack)
   goBackRef.current = goBack
   useEffect(() => {
+    if (!active) return
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       goBackRef.current()
       return true
     })
     return () => sub.remove()
-  }, [])
+  }, [active])
 
   async function saveComment() {
     setSavingComment(true)
     try {
       await client.updateComment(id, comment)
+      success()
       setSavedText(comment)
       setSavedComment(true)
       setTimeout(() => setSavedComment(false), 2500)
@@ -214,10 +225,14 @@ export default function ApplicationDetailScreen({ client, id, onBack }) {
               onSave={async ({ date, note }) => {
                 const res = await client.setNextAction(id, { date, note })
                 if (res?.success === false) throw new Error(res.reason || 'Could not save.')
+                success()
+                onChanged?.()
                 setApp(a => ({ ...a, next_action_at: date, next_action_note: note }))
               }}
               onComplete={async () => {
                 await client.completeNextAction(id)
+                success()
+                onChanged?.()
                 setApp(a => ({ ...a, next_action_at: null, next_action_note: '' }))
               }}
             />
