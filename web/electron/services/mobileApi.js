@@ -20,10 +20,36 @@ let server = null
 // 'no_response' from the stale sweep; both were missing here.
 const VALID_STATUSES = ['applied', 'interview', 'rejected', 'offer', 'pending', 'no_response', 'skipped', 'held', 'withdrawn']
 
+// Statuses the phone can show but never set. Both are states the desktop
+// reaches by its own decision, and both are a loaded gun: approving a 'held'
+// row submits it, and "apply anyway" on a 'skipped' one tailors and submits it.
+// Moving an application that was already sent into either would re-arm a
+// submission to an employer who has the application already.
+const DESKTOP_ONLY_STATUSES = new Set(['held', 'skipped'])
+
 // The token is read on every single request. Reading it from disk each time
 // also meant an OS-keychain decrypt per request, so cache it in memory and
 // invalidate explicitly whenever it changes.
 let cachedToken = null
+
+// The two network-policy switches, cached for the same reason as the token:
+// they are consulted on every request, including ones refused before any
+// verification, and a config load is a file parse plus keychain unwraps.
+// Refreshed on start() and whenever Settings are saved (refreshPolicy).
+let policy = null
+
+function refreshPolicy() {
+  const cfg = configService.load()
+  policy = {
+    allowTailscale: !!cfg.mobileApiAllowTailscale,
+    allowLegacyToken: cfg.mobileApiAllowLegacyToken !== false,
+  }
+  return policy
+}
+
+function currentPolicy() {
+  return policy || refreshPolicy()
+}
 
 function getToken() {
   if (cachedToken) return cachedToken
@@ -185,7 +211,10 @@ function authCheck(ip, token) {
     return { ok: true, device }
   }
 
-  if (timingSafeEqualStr(token, getToken())) {
+  // The shared token predates pairing and is sent in the clear on every
+  // request. Once every device has paired it is pure exposure, so it can be
+  // switched off — a request presenting it is then just a failed attempt.
+  if (currentPolicy().allowLegacyToken && token && timingSafeEqualStr(token, getToken())) {
     failures.delete(ip)
     return { ok: true, legacy: true }
   }
@@ -205,7 +234,7 @@ setInterval(() => {
 // True only for loopback and the RFC1918 / RFC4193 private ranges the phone
 // can legitimately be on. Node reports IPv4 peers over a dual-stack socket as
 // "::ffff:192.168.1.5", so unwrap that form before testing.
-function isPrivateAddress(addr) {
+function isPrivateAddress(addr, { allowTailscale = false } = {}) {
   if (!addr || addr === 'unknown') return false
   let ip = addr
   const zone = ip.indexOf('%') // strip IPv6 scope id, e.g. fe80::1%en0
@@ -222,12 +251,18 @@ function isPrivateAddress(addr) {
     if (a === 192 && b === 168) return true
     if (a === 172 && b >= 16 && b <= 31) return true
     if (a === 169 && b === 254) return true // link-local
+    // 100.64.0.0/10 — Tailscale's address space, and also carrier-grade NAT.
+    // Only when the user has said they use a tailnet: on a mobile carrier the
+    // same range holds strangers.
+    if (allowTailscale && a === 100 && b >= 64 && b <= 127) return true
     return false
   }
 
   const lower = ip.toLowerCase()
   // fc00::/7 unique-local and fe80::/10 link-local.
-  return /^f[cd]/.test(lower) || lower.startsWith('fe80:')
+  if (/^f[cd]/.test(lower) || lower.startsWith('fe80:')) return true
+  // Tailscale's IPv6 range, under the same opt-in as its IPv4 one.
+  return allowTailscale && lower.startsWith('fd7a:115c:a1e0:')
 }
 
 function getLanAddresses() {
@@ -398,7 +433,7 @@ async function handle(req, res) {
   // answer the open internet. The token travels in cleartext over HTTP, so a
   // reachable endpoint is a harvestable one. Refuse anything that isn't a
   // private-range peer, before the token is even compared.
-  if (!isPrivateAddress(ip)) {
+  if (!isPrivateAddress(ip, { allowTailscale: currentPolicy().allowTailscale })) {
     logger.append(`Mobile API: refused non-local client ${ip}`)
     return json(res, 403, { error: 'Forbidden' })
   }
@@ -514,6 +549,9 @@ async function handle(req, res) {
       const body = await readBody(req)
       if (!VALID_STATUSES.includes(body.status)) {
         return json(res, 400, { error: `status must be one of: ${VALID_STATUSES.join(', ')}` })
+      }
+      if (DESKTOP_ONLY_STATUSES.has(body.status)) {
+        return json(res, 400, { error: `'${body.status}' is set by the desktop only.` })
       }
       database.updateApplicationStatus(Number(statusMatch[1]), body.status)
       return json(res, 200, { success: true })
@@ -640,6 +678,7 @@ function start() {
   const cfg = configService.load()
   const port = cfg.mobileApiPort || 4823
   getToken() // ensure a token exists before the first client connects
+  refreshPolicy()
   // Long-dead device entries cost a keychain unwrap on every signed request.
   try {
     const { removed } = pairing.pruneExpiredDevices(configService)
@@ -695,6 +734,8 @@ function getInfo() {
     // only so installs that paired before this existed keep working.
     devices: pairing.listDevices(configService),
     tokenTtlDays: pairing.normaliseTtlDays(cfg.mobileTokenTtlDays),
+    allowLegacyToken: cfg.mobileApiAllowLegacyToken !== false,
+    allowTailscale: !!cfg.mobileApiAllowTailscale,
     pairingCode: pairing.getActiveCode(),
   }
 }
@@ -731,7 +772,7 @@ module.exports = {
   listDevices: () => pairing.listDevices(configService),
   revokeDevice: (id) => pairing.revokeDevice(configService, id),
   revokeAllDevices: () => pairing.revokeAll(configService),
-  start, stop, getInfo, regenerateToken, isPrivateAddress,
+  start, stop, getInfo, regenerateToken, isPrivateAddress, refreshPolicy,
   // exported for tests
   lockoutFor, recordFailure, verifySignedRequest, describeSignatureFailure,
   _resetThrottle: () => { failures.clear(); seenNonces.clear() },

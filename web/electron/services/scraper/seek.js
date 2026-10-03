@@ -36,6 +36,7 @@ function cssEscape(str) {
 
 const seekSession = require('../seekSession')
 const { resolveAnswer } = require('../screeningAnswers')
+const { isAiConfigured } = require('../ai/configured')
 
 async function scrape(cfg) {
   const { jobKeywords, jobLocation, salaryMin } = cfg
@@ -341,7 +342,7 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
       }
 
       // Dynamically detect and answer screening questions on this step
-      if (cfg.aiProvider && cfg.aiApiKey) {
+      if (isAiConfigured(cfg)) {
         // Helper: get/cache an AI answer for a question. Every answer it hands
         // back is also recorded on `screeningQa` so the finished application
         // shows what was actually submitted on the user's behalf — the detail

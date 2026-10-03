@@ -8,6 +8,8 @@ let lastSelectorReport = null
 function getSelectorReport() { return lastSelectorReport }
 const indeedSession = require('../indeedSession')
 const { resolveAnswer } = require('../screeningAnswers')
+const { isAiConfigured } = require('../ai/configured')
+const { indeedSearchUrl } = require('./indeedRegion')
 
 // See seek.js — one page of results goes stale within days once already-seen
 // listings are skipped.
@@ -64,10 +66,7 @@ async function scrape(cfg) {
   lastSelectorReport = null
 
   try {
-    const query = encodeURIComponent(jobKeywords)
-    const location = encodeURIComponent(jobLocation || 'Australia')
-    const salary = salaryMin ? `&salary=${salaryMin}` : ''
-    const base = `https://au.indeed.com/jobs?q=${query}&l=${location}${salary}`
+    const base = indeedSearchUrl({ indeedRegion: cfg.indeedRegion, jobKeywords, jobLocation, salaryMin })
 
     for (let pageNum = 0; pageNum < pages; pageNum++) {
       // Indeed pages by result offset in tens, not by page number.
@@ -291,7 +290,7 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
       }
 
       // Dynamically detect and answer screening questions on this step
-      if (cfg.aiProvider && cfg.aiApiKey) {
+      if (isAiConfigured(cfg)) {
         // Every answer handed back is recorded on `screeningQa` so the saved
         // application shows what was actually submitted for the user.
         // Shared with seek.js and linkedin.js — see services/screeningAnswers.js

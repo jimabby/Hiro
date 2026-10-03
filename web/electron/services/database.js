@@ -60,6 +60,29 @@ function fsyncFile(file, flags) {
   finally { if (fd !== null) try { fs.closeSync(fd) } catch {} }
 }
 
+// Windows lets another process hold a file open in a way that refuses a rename
+// over it — antivirus scanning the database the moment it changes, a backup
+// client, the search indexer. Each lock lasts milliseconds, and failing the
+// write on the first one threw out of whatever user action caused it while the
+// in-memory database had already moved on. A few short retries ride it out.
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES'])
+const RENAME_ATTEMPTS = 6
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+function renameWithRetry(from, to, rename = fs.renameSync) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return rename(from, to)
+    } catch (err) {
+      if (!RENAME_RETRY_CODES.has(err.code) || attempt >= RENAME_ATTEMPTS) throw err
+      sleepSync(15 * attempt)
+    }
+  }
+}
+
 function persist() {
   if (!db || persistDepth > 0) return
   // Encryption rides on the existing atomic write rather than replacing it: the
@@ -75,7 +98,7 @@ function persist() {
     // encryption off — the default — the umask alone decided who could read it.
     fs.writeFileSync(tmp, data, { mode: 0o600 })
     fsyncFile(tmp, 'r+')
-    fs.renameSync(tmp, DB_PATH)
+    renameWithRetry(tmp, DB_PATH)
     try { fs.chmodSync(DB_PATH, 0o600) } catch { /* Windows ignores this */ }
     fsyncFile(CONFIG_DIR, 'r')
   } catch (err) {
@@ -1133,10 +1156,14 @@ function getStatusHistory(applicationId) {
 }
 
 function updateApplicationStatus(id, status) {
-  const current = queryOne('SELECT status FROM applications WHERE id = ?', [id])
-  run("UPDATE applications SET status = ?, updated_at = datetime('now'), cloud_dirty = 1 WHERE id = ?", [status, id])
-  if (current && current.status !== status) recordStatusChange(id, status)
-  return { success: true }
+  // One write, not two. Every persist re-exports and rewrites the whole file,
+  // and the status change and its history row were each paying for one.
+  return batch(() => {
+    const current = queryOne('SELECT status FROM applications WHERE id = ?', [id])
+    run("UPDATE applications SET status = ?, updated_at = datetime('now'), cloud_dirty = 1 WHERE id = ?", [status, id])
+    if (current && current.status !== status) recordStatusChange(id, status)
+    return { success: true }
+  })
 }
 
 function updateApplicationAfterApply(id, tailoredResume, coverLetter, screeningQa) {
@@ -2024,6 +2051,45 @@ function getTodayHeldCountByPlatform(platform) {
      WHERE platform = ? AND status = 'held' AND applied_at >= ${TODAY_START}`,
     [platform]
   )?.c || 0
+}
+
+// The user's own edit of a held draft, before they approve it.
+//
+// Approve-or-reject was the only choice, so a draft the guard stopped over one
+// invented line had to be thrown away whole and paid for again. The edit is
+// written to the row (approving submits exactly this) and frozen as its own
+// snapshot, so the history shows what the model wrote and what the user sent
+// instead. `flags` is what the guard still objects to after the edit.
+// The base a held draft was tailored from, and the model that tailored it.
+// Neither lives on the application row — they are frozen on the snapshots —
+// and an edit has to be checked against the same base the scan used, or the
+// fabrication guard compares the edit with nothing and passes everything.
+function getDraftOrigin(applicationId) {
+  return queryOne(`
+    SELECT base_resume, provider, model FROM application_snapshots
+    WHERE application_id = ? AND base_resume IS NOT NULL AND base_resume != ''
+    ORDER BY taken_at DESC, id DESC LIMIT 1
+  `, [applicationId]) || { base_resume: '', provider: null, model: null }
+}
+
+function saveHeldDraftEdit(id, { tailoredResume, coverLetter, flags = [] } = {}) {
+  const row = queryOne('SELECT * FROM applications WHERE id = ?', [id])
+  if (!row) return { success: false, reason: 'Application not found' }
+  if (row.status !== 'held') return { success: false, reason: `This application is already "${row.status}" — only a held draft can be edited.` }
+  const resume = typeof tailoredResume === 'string' ? tailoredResume : row.tailored_resume
+  const letter = typeof coverLetter === 'string' ? coverLetter : row.cover_letter
+  batch(() => {
+    run(`UPDATE applications SET tailored_resume = ?, cover_letter = ?, fabrication_flags = ?,
+         updated_at = datetime('now'), cloud_dirty = 1 WHERE id = ?`,
+    [resume || '', letter || '', JSON.stringify(flags || []), id])
+    const origin = getDraftOrigin(id)
+    recordSnapshot(id, 'edited', {
+      base_resume: origin.base_resume, resume_name: row.resume_name,
+      tailored_resume: resume, cover_letter: letter,
+      match_score: row.match_score, status: 'held', provider: origin.provider, model: origin.model,
+    })
+  })
+  return { success: true, flags: flags || [] }
 }
 
 function holdApplicationDraft(id, data) {
@@ -3975,4 +4041,6 @@ module.exports = {
   setEncryption, getEncryptionStatus,
   exportRecoveryKey: () => dbCrypto.exportRecoveryKey(),
   importRecoveryKey: (text) => dbCrypto.importRecoveryKey(text),
+  saveHeldDraftEdit, getDraftOrigin,
+  renameWithRetry, // exported for tests
 }

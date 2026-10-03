@@ -179,6 +179,14 @@ const DEFAULTS = {
   jobKeywords: '',
   jobLocation: '',
   salaryMin: 0,
+  // Comma-separated words that rule a job out by its title or company before
+  // any model call — "senior, clearance, recruitment". Whole words only.
+  excludeKeywords: '',
+  // 'any' | 'remote' | 'flexible' (remote or hybrid). Listings that never say
+  // are kept. See services/jobFilters.js.
+  workArrangement: 'any',
+  // Which country's Indeed to search — see scraper/indeedRegion.js.
+  indeedRegion: 'au',
   masterResume: '',
   resumes: [],
   defaultResumeId: '',
@@ -254,12 +262,22 @@ const DEFAULTS = {
   mobileApiEnabled: false,
   mobileApiPort: 4823,
   mobileApiToken: '',
+  // The pre-pairing shared token. Kept working by default so a phone that has
+  // not re-paired is not locked out on upgrade, but it travels in cleartext on
+  // every request — turn it off once every device has paired.
+  mobileApiAllowLegacyToken: true,
+  // Accept phones on a Tailscale tailnet (100.64.0.0/10). Off by default:
+  // that range is also carrier-grade NAT, which is not a network the user owns.
+  mobileApiAllowTailscale: false,
   pendingScans: [],   // scan requests queued (e.g. from the mobile app) waiting to run
   campaigns: [],
   enableContactReminders: true,
   enableBackupDrills: true,
   lastBackupDrill: null,
   lastScanAt: null,
+  // How the last real scan or batch ended, so a failure overnight is still on
+  // the dashboard after a restart. Written by the scheduler only.
+  lastScanOutcome: null,
   // Cloud sync (Supabase) — shared account so desktop + phone see one dataset.
   cloudSyncEnabled: false,
   supabaseUrl: '',

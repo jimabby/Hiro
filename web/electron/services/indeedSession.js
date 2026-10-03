@@ -5,6 +5,7 @@ const { launchOptions } = require('./scraper/utils')
 const fs = require('fs')
 const path = require('path')
 const { CONFIG_DIR } = require('./config')
+const { resolveIndeedRegion } = require('./scraper/indeedRegion')
 
 const STORAGE_PATH = path.join(CONFIG_DIR, 'indeed-storage.json')
 
@@ -39,7 +40,10 @@ async function loginWithBrowser(onStatus) {
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     })
     const page = await context.newPage()
-    await page.goto('https://au.indeed.com', { waitUntil: 'domcontentloaded' })
+    // The region the scraper searches, so the session cookie is issued for the
+    // host it will actually be presented to.
+    const { host } = resolveIndeedRegion(require('./config').load().indeedRegion)
+    await page.goto(`https://${host}`, { waitUntil: 'domcontentloaded' })
 
     onStatus('Please click Sign in (top right) and log in. The window will close automatically.')
 

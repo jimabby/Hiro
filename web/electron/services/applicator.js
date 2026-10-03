@@ -10,6 +10,7 @@ const automationHealth = require('./automationHealth')
 const resumeExperiment = require('./resumeExperiment')
 const { inspectTailoring, inspectCoverLetter, describeFlags } = require('./fabricationGuard')
 const { detectInjection, describeInjection } = require('./ai/untrusted')
+const { excludedKeyword, matchesWorkPreference } = require('./jobFilters')
 
 // Pick the resume to use for a given job. A rule matches when any of its
 // comma-separated keywords appears in the job title or description; the first
@@ -79,6 +80,11 @@ function findRecruiterEmail(cfg, job, log) {
 
 let cancelled = false
 
+// Listings the work-arrangement preference turned away this session. Not saved
+// to the database — they were never scored, and a preference changed later
+// should see them again — but held here so each scan does not re-fetch them.
+const rejectedByPreference = new Set()
+
 // Only one apply flow (scheduled scan, batch, or manual apply) may run at a
 // time: they share the screening-question prompt and browser resources, and a
 // manual apply mid-scan would interleave with the scan's own submissions.
@@ -106,6 +112,17 @@ function isBusy() {
 
 function cancel() {
   cancelled = true
+}
+
+// Stop a bulk approve or bulk retry after the job in hand. Distinct from the
+// scheduler's cancelScan, which only acts while a SCAN is running — the bulk
+// runs never set the scheduler's flag, so a twenty-draft approval used to be
+// impossible to stop short of quitting. The submission already under way is
+// allowed to finish: abandoning a form half-filled is worse than one more.
+function cancelBulk() {
+  if (!busy) return { success: false, reason: 'Nothing is running.' }
+  cancelled = true
+  return { success: true }
 }
 
 async function run(cfg, callbacks) {
@@ -281,7 +298,21 @@ async function doRun(cfg, { log, notifyAttention }) {
     // platform's results down with it.
     const filtered = jobs.filter(j => j?.job_url && !blacklist.includes(String(j.company || '').toLowerCase()))
 
-    for (const job of filtered) {
+    // Excluded keywords: the user's own "never" list, checked against the
+    // title and company before anything is fetched or scored. See jobFilters.js
+    // for why this is whole-word and why the description is not searched.
+    const excluded = []
+    const eligible = filtered.filter(j => {
+      const hit = excludedKeyword(j, cfg.excludeKeywords)
+      if (hit) excluded.push({ job: j, keyword: hit })
+      return !hit
+    })
+    if (excluded.length > 0) {
+      log(`${name}: ${excluded.length} listing${excluded.length === 1 ? '' : 's'} excluded by keyword `
+        + `(${[...new Set(excluded.map(e => e.keyword))].join(', ')})`)
+    }
+
+    for (const job of eligible) {
       if (cancelled || batchAttempts >= batchLimit) { if (cancelled) log('Scan cancelled.'); return summary() }
 
       // Some structured board adapters omit the redundant platform field. It
@@ -309,6 +340,7 @@ async function doRun(cfg, { log, notifyAttention }) {
       // applications meant every scan re-scored, re-tailored and re-submitted
       // it, and added another duplicate Needs Attention entry each time.
       if (database.hasSeenJobUrl(job.job_url)) continue
+      if (cfg.workArrangement && cfg.workArrangement !== 'any' && rejectedByPreference.has(job.job_url)) continue
 
       // Skip companies applied to inside the cooldown window. This is a
       // rate-limit on spamming one employer, not a permanent ban — see
@@ -346,6 +378,17 @@ async function doRun(cfg, { log, notifyAttention }) {
       }
 
       job.job_description = jobDescription
+
+      // Remote / hybrid preference. Needs the description, so it sits after the
+      // fetch — but still before every model call. A job turned away here is
+      // remembered for the life of the process so the next scan does not fetch
+      // its page again just to reach the same answer.
+      const where = matchesWorkPreference(cfg.workArrangement, job, jobDescription)
+      if (!where.ok) {
+        rejectedByPreference.add(job.job_url)
+        log(`  Skipping "${job.job_title}" — listed as ${where.arrangement}, and you asked for ${cfg.workArrangement === 'remote' ? 'remote only' : 'remote or hybrid'}`)
+        continue
+      }
 
       // Have we already paid for this exact advert under a different URL?
       //
@@ -741,28 +784,49 @@ async function addAttentionJob(job, cfg, log, notifyAttention) {
   notifyAttention(attentionJob)
 }
 
-// Shared helper: tailor resume, generate cover letter, submit application
-async function tailorAndApply(job, cfg, log) {
+// Shared helper: tailor resume, generate cover letter, submit application.
+//
+// `reuseDrafts` is set for Needs Attention, whose rows now carry the documents
+// drafted when the job was found — and which the page shows the user, under a
+// reason string that says they are ready. Generating fresh ones here meant the
+// user read one résumé, pressed Apply, and a different one they had never seen
+// went to the employer, after paying for both. The stored drafts still go
+// through every check below, so one the fabrication guard objected to the
+// first time is stopped again and lands in Review, where it can be edited.
+async function tailorAndApply(job, cfg, log, { reuseDrafts = false } = {}) {
   const platformMap = { Seek: seek, Indeed: indeed, LinkedIn: linkedin }
   const scraper = platformMap[job.platform]
   if (!scraper) return { success: false, reason: `No scraper for platform: ${job.platform}` }
 
-  log(`Tailoring resume for ${job.job_title} at ${job.company}...`)
+  const storedResume = reuseDrafts ? String(job.tailored_resume || '').trim() : ''
+  const storedLetter = reuseDrafts ? String(job.cover_letter || '').trim() : ''
+
   let tailoredResume = cfg.masterResume
-  try {
-    tailoredResume = stripMarkdown(await aiAdapter.tailorResume(cfg.aiProvider, cfg.aiApiKey, job.job_description || job.job_title, cfg.masterResume, cfg.geminiModel))
-    log('Resume tailored')
-  } catch (err) {
-    log(`Resume tailoring error: ${err.message}`)
+  if (storedResume) {
+    tailoredResume = job.tailored_resume
+    log(`Using the resume already drafted for ${job.job_title} at ${job.company}`)
+  } else {
+    log(`Tailoring resume for ${job.job_title} at ${job.company}...`)
+    try {
+      tailoredResume = stripMarkdown(await aiAdapter.tailorResume(cfg.aiProvider, cfg.aiApiKey, job.job_description || job.job_title, cfg.masterResume, cfg.geminiModel))
+      log('Resume tailored')
+    } catch (err) {
+      log(`Resume tailoring error: ${err.message}`)
+    }
   }
 
-  log('Generating cover letter...')
   let coverLetter = ''
-  try {
-    coverLetter = stripMarkdown(await aiAdapter.generateCoverLetter(cfg.aiProvider, cfg.aiApiKey, job.job_description || job.job_title, cfg.masterResume, cfg.geminiModel, cfg.coverLetterTone, cfg.coverLetterTemplate))
-    log('Cover letter generated')
-  } catch (err) {
-    log(`Cover letter error: ${err.message}`)
+  if (storedLetter) {
+    coverLetter = job.cover_letter
+    log('Using the cover letter already drafted')
+  } else {
+    log('Generating cover letter...')
+    try {
+      coverLetter = stripMarkdown(await aiAdapter.generateCoverLetter(cfg.aiProvider, cfg.aiApiKey, job.job_description || job.job_title, cfg.masterResume, cfg.geminiModel, cfg.coverLetterTone, cfg.coverLetterTemplate))
+      log('Cover letter generated')
+    } catch (err) {
+      log(`Cover letter error: ${err.message}`)
+    }
   }
 
   // The same three checks the scan path applies, for the same reason: this
@@ -837,7 +901,7 @@ async function doApplyAttentionJob(jobId, cfg, log) {
     }
   }
 
-  const result = await tailorAndApply(job, cfg, log)
+  const result = await tailorAndApply(job, cfg, log, { reuseDrafts: true })
 
   if (result.heldForFabrication) {
     database.insertApplication({
@@ -895,6 +959,12 @@ async function applySkippedJob(jobId, cfg, log) {
 async function doApplySkippedJob(jobId, cfg, log) {
   const job = database.getApplication(jobId)
   if (!job) return { success: false, reason: 'Job not found' }
+  // Only a job that was never sent can be "applied to anyway". Without this an
+  // id belonging to an application already submitted would be tailored and
+  // submitted to the same employer a second time.
+  if (job.status !== 'skipped') {
+    return { success: false, reason: `This application is already "${job.status}" — only skipped jobs can be applied to from here.` }
+  }
 
   cfg = resolveActiveResume(cfg, job, log)
 
@@ -971,6 +1041,36 @@ async function doApproveHeld(id, cfg, log) {
   return result
 }
 
+// Save the user's edit of a held draft, and say what the guard still makes of
+// it. The same checks the scan ran, against the same base, so an edit that
+// removes the invented line visibly clears the flag — and one that does not is
+// still shown, because the user may approve it anyway, knowingly. Objections
+// about the LISTING are kept as they were: no edit to a résumé changes what
+// the advert said.
+function editHeldDraft(id, { tailoredResume, coverLetter } = {}) {
+  const row = database.getApplication(id)
+  if (!row) return { success: false, reason: 'Application not found' }
+  if (row.status !== 'held') return { success: false, reason: `This application is already "${row.status}" — only a held draft can be edited.` }
+  const resume = typeof tailoredResume === 'string' ? tailoredResume : (row.tailored_resume || '')
+  const letter = typeof coverLetter === 'string' ? coverLetter : (row.cover_letter || '')
+
+  let previous = []
+  try { previous = JSON.parse(row.fabrication_flags || '[]') } catch { previous = [] }
+  const listingFlags = (Array.isArray(previous) ? previous : []).filter(f => f?.kind === 'listing-injection')
+
+  const base = database.getDraftOrigin(id).base_resume || ''
+  const fabrication = inspectTailoring(base, resume)
+  const letterClaims = inspectCoverLetter(base, letter, {
+    company: row.company, jobTitle: row.job_title,
+  })
+  const flags = [
+    ...fabrication.flags,
+    ...letterClaims.flags.map(f => ({ ...f, kind: `cover-letter ${f.kind}` })),
+    ...listingFlags,
+  ]
+  return database.saveHeldDraftEdit(id, { tailoredResume: resume, coverLetter: letter, flags })
+}
+
 // Approve several held drafts in one pass, spacing submissions the way a scan
 // does — a burst of rapid applies is exactly what these sites flag.
 async function approveHeldApplications(ids, cfg, log) {
@@ -1000,7 +1100,7 @@ async function approveHeldApplications(ids, cfg, log) {
   // real failures: nothing went wrong, and they are still held.
   const declined = results.filter(r => r.cancelledByUser).length
   log(`Approval run finished: ${succeeded} of ${results.length} submitted${declined ? `, ${declined} declined and still held` : ''}.`)
-  return { success: true, succeeded, declined, failed: results.length - succeeded - declined, results }
+  return { success: true, succeeded, declined, failed: results.length - succeeded - declined, stopped: results.length < ids.length, results }
 }
 
 // Retry several Needs Attention jobs in one pass. Holds `busy` for the whole
@@ -1035,11 +1135,11 @@ async function applyAttentionJobs(jobIds, cfg, log) {
   }
   const succeeded = results.filter(r => r.success).length
   log(`Bulk retry finished: ${succeeded} of ${results.length} applied.`)
-  return { success: true, succeeded, failed: results.length - succeeded, results }
+  return { success: true, succeeded, failed: results.length - succeeded, stopped: results.length < jobIds.length, results }
 }
 
 module.exports = {
-  run, cancel, isBusy, applyAttentionJob, applyAttentionJobs, applySkippedJob,
-  approveHeldApplication, approveHeldApplications,
+  run, cancel, cancelBulk, isBusy, applyAttentionJob, applyAttentionJobs, applySkippedJob,
+  approveHeldApplication, approveHeldApplications, editHeldDraft,
   selectResume, shouldHoldForReview, // exported for tests
 }

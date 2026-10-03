@@ -184,8 +184,16 @@ export default function Review({ active, showToast, onCountChange }) {
   const [hold, setHold] = useState(null)
   const [showDiff, setShowDiff] = useState(false)
   const [busy, setBusy] = useState(false)
+  // A multi-draft approval in progress, and whether the user has asked it to
+  // stop. Bulk runs space submissions minutes apart, so they need a way out.
+  const [bulkRunning, setBulkRunning] = useState(false)
+  const [stopping, setStopping] = useState(false)
   const [log, setLog] = useState([])
   const [confirmReject, setConfirmReject] = useState(null)
+  // Editing the open draft. Null when not editing; otherwise the working copy
+  // of both documents, so Cancel throws the edit away without touching the row.
+  const [edit, setEdit] = useState(null)
+  const [savingEdit, setSavingEdit] = useState(false)
   const logRef = useRef(null)
 
   const load = useCallback(async () => {
@@ -231,9 +239,47 @@ export default function Review({ active, showToast, onCountChange }) {
   const allSelected = held.length > 0 && selected.size === held.length
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(held.map(h => h.id)))
 
+  async function loadHold(id) {
+    try {
+      setHold(await window.api.getHoldExplanation?.(id) || { flags: [], diff: [], hasBase: false })
+    } catch {
+      setHold({ flags: [], diff: [], hasBase: false })
+    }
+  }
+
+  function startEdit() {
+    setEdit({ resume: detail?.tailored_resume || '', letter: detail?.cover_letter || '' })
+  }
+
+  async function saveEdit() {
+    if (!detail || !edit) return
+    setSavingEdit(true)
+    try {
+      const res = await window.api.editHeldDraft(detail.id, { tailoredResume: edit.resume, coverLetter: edit.letter })
+      if (!res?.success) {
+        showToast?.(res?.reason || 'Could not save the edit', 'error')
+        return
+      }
+      setDetail(prev => prev ? { ...prev, tailored_resume: edit.resume, cover_letter: edit.letter } : prev)
+      setEdit(null)
+      const left = Array.isArray(res.flags) ? res.flags.filter(f => f?.kind !== 'listing-injection').length : 0
+      showToast?.(left === 0
+        ? 'Edit saved — nothing in the documents is flagged now'
+        : `Edit saved — ${left} thing${left === 1 ? '' : 's'} still could not be checked against your resume`,
+      left === 0 ? 'success' : 'info')
+      setHold(null)
+      loadHold(detail.id)
+    } catch (err) {
+      showToast?.(`Could not save the edit: ${err.message}`, 'error')
+    } finally {
+      setSavingEdit(false)
+    }
+  }
+
   async function openDetail(row) {
     // The list query omits the document columns — fetch the full row so the
     // drafted resume and cover letter can actually be read before approving.
+    setEdit(null)
     setHold(null)
     setShowDiff(false)
     try {
@@ -245,16 +291,14 @@ export default function Review({ active, showToast, onCountChange }) {
     // Separately, and allowed to fail on its own: the guard's objections and
     // the base-vs-tailored diff. A build without the handler, or a row from
     // before it existed, must still open the draft.
-    try {
-      setHold(await window.api.getHoldExplanation?.(row.id) || { flags: [], diff: [], hasBase: false })
-    } catch {
-      setHold({ flags: [], diff: [], hasBase: false })
-    }
+    await loadHold(row.id)
   }
 
   async function approve(ids) {
     if (ids.length === 0) return
     setBusy(true)
+    setBulkRunning(ids.length > 1)
+    setStopping(false)
     setLog([])
     try {
       const res = ids.length === 1
@@ -266,7 +310,7 @@ export default function Review({ active, showToast, onCountChange }) {
         else showToast?.(res?.reason || 'Could not submit', 'error')
       } else {
         showToast?.(
-          `${res?.succeeded || 0} of ${ids.length} submitted${res?.failed ? ` — ${res.failed} failed` : ''}`,
+          `${res?.succeeded || 0} of ${ids.length} submitted${res?.failed ? ` — ${res.failed} failed` : ''}${res?.stopped ? ' — stopped early; the rest are still held' : ''}`,
           res?.failed ? 'error' : 'success'
         )
       }
@@ -274,9 +318,16 @@ export default function Review({ active, showToast, onCountChange }) {
       showToast?.(`Submit failed: ${err.message}`, 'error')
     } finally {
       setBusy(false)
+      setBulkRunning(false)
+      setStopping(false)
       setDetail(null)
       load()
     }
+  }
+
+  async function stopBulk() {
+    setStopping(true)
+    try { await window.api.cancelBulkApply() } catch { /* the run ends on its own anyway */ }
   }
 
   async function reject(id) {
@@ -433,7 +484,17 @@ export default function Review({ active, showToast, onCountChange }) {
 
       {busy && log.length > 0 && (
         <div className="card" style={{ marginTop: 16 }}>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>Submitting…</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              {stopping ? 'Stopping after the current submission…' : 'Submitting…'}
+            </div>
+            {bulkRunning && (
+              <button className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }}
+                onClick={stopBulk} disabled={stopping}>
+                Stop after this one
+              </button>
+            )}
+          </div>
           <div ref={logRef} style={{
             maxHeight: 180, overflowY: 'auto', fontFamily: 'monospace', fontSize: 11,
             color: 'var(--text-muted)', whiteSpace: 'pre-wrap',
@@ -463,7 +524,7 @@ export default function Review({ active, showToast, onCountChange }) {
                   {detail.salary ? detail.salary : 'Salary not listed in the ad'}
                 </div>
               </div>
-              <button className="btn btn-ghost" onClick={() => setDetail(null)}>Close</button>
+              <button className="btn btn-ghost" onClick={() => { setEdit(null); setDetail(null) }}>Close</button>
             </div>
 
             {detail.match_explanation && (
@@ -485,24 +546,51 @@ export default function Review({ active, showToast, onCountChange }) {
                 objection, quoted, with the line that caused it. */}
             <HoldReason hold={hold} showDiff={showDiff} onToggleDiff={() => setShowDiff(v => !v)} />
 
-            <section style={{ marginTop: 20 }}>
+            {/* Fix the line the guard objected to instead of throwing the whole
+                draft away. Approving submits exactly what is saved here. */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+              {edit ? (
+                <>
+                  <button className="btn btn-ghost btn-sm" disabled={savingEdit} onClick={() => setEdit(null)}>Cancel edit</button>
+                  <button className="btn btn-primary btn-sm" disabled={savingEdit} onClick={saveEdit}>
+                    {savingEdit ? 'Saving…' : 'Save edit'}
+                  </button>
+                </>
+              ) : (
+                <button className="btn btn-ghost btn-sm" disabled={busy} onClick={startEdit}>Edit documents</button>
+              )}
+            </div>
+
+            <section style={{ marginTop: 12 }}>
               <h3 style={{ fontSize: 13, marginBottom: 8 }}>Cover letter that would be sent</h3>
-              <pre style={{
-                background: 'var(--surface2)', borderRadius: 8, padding: 14, fontSize: 12,
-                whiteSpace: 'pre-wrap', fontFamily: 'inherit', color: 'var(--text)', margin: 0,
-                maxHeight: 260, overflowY: 'auto',
-              }}>{detail.cover_letter || '(none generated)'}</pre>
+              {edit ? (
+                <textarea aria-label="Cover letter" value={edit.letter}
+                  onChange={e => setEdit(prev => ({ ...prev, letter: e.target.value }))}
+                  style={{ width: '100%', minHeight: 220, fontSize: 12, fontFamily: 'inherit' }} />
+              ) : (
+                <pre style={{
+                  background: 'var(--surface2)', borderRadius: 8, padding: 14, fontSize: 12,
+                  whiteSpace: 'pre-wrap', fontFamily: 'inherit', color: 'var(--text)', margin: 0,
+                  maxHeight: 260, overflowY: 'auto',
+                }}>{detail.cover_letter || '(none generated)'}</pre>
+              )}
             </section>
 
             <section style={{ marginTop: 20 }}>
               <h3 style={{ fontSize: 13, marginBottom: 8 }}>
                 Tailored resume {detail.resume_name ? <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>· from “{detail.resume_name}”</span> : null}
               </h3>
-              <pre style={{
-                background: 'var(--surface2)', borderRadius: 8, padding: 14, fontSize: 12,
-                whiteSpace: 'pre-wrap', fontFamily: 'inherit', color: 'var(--text)', margin: 0,
-                maxHeight: 300, overflowY: 'auto',
-              }}>{detail.tailored_resume || '(master resume, untailored)'}</pre>
+              {edit ? (
+                <textarea aria-label="Tailored resume" value={edit.resume}
+                  onChange={e => setEdit(prev => ({ ...prev, resume: e.target.value }))}
+                  style={{ width: '100%', minHeight: 300, fontSize: 12, fontFamily: 'inherit' }} />
+              ) : (
+                <pre style={{
+                  background: 'var(--surface2)', borderRadius: 8, padding: 14, fontSize: 12,
+                  whiteSpace: 'pre-wrap', fontFamily: 'inherit', color: 'var(--text)', margin: 0,
+                  maxHeight: 300, overflowY: 'auto',
+                }}>{detail.tailored_resume || '(master resume, untailored)'}</pre>
+              )}
             </section>
 
             {/* Screening answers are written by the form filler at submission
@@ -524,7 +612,9 @@ export default function Review({ active, showToast, onCountChange }) {
                 : <span />}
               <div style={{ display: 'flex', gap: 8 }}>
                 <button className="btn btn-ghost" disabled={busy} onClick={() => setConfirmReject(detail)}>Reject</button>
-                <button className="btn btn-primary" disabled={busy} onClick={() => approve([detail.id])}>
+                <button className="btn btn-primary" disabled={busy || !!edit}
+                  title={edit ? 'Save or cancel your edit first' : undefined}
+                  onClick={() => approve([detail.id])}>
                   {busy ? 'Submitting…' : 'Approve & submit'}
                 </button>
               </div>

@@ -94,6 +94,123 @@ async function main() {
   check('manual retry snapshot keeps the base resume', manualSnapshot.base_resume.includes('Jane Example'), true)
   check('manual retry forwards the confirmation callback', receivedConfirm === confirmSubmit, true)
 
+  // ── Needs Attention submits the drafts it showed ────────────────
+  // The page displays the résumé and cover letter drafted when the job was
+  // found. Applying used to write new ones, so what went to the employer was
+  // not what the user had read — and both were paid for.
+  db.insertAttentionJob({
+    ...job('drafted', 'Drafted Co'), platform: 'Seek', job_description: 'Build APIs.', match_score: 90,
+    tailored_resume: 'Jane Example\nSoftware Engineer at Acme\nThe version the user read',
+    cover_letter: 'Dear Drafted Co, the letter the user read.',
+  })
+  const drafted = db.getAttentionJobs().find(row => row.company === 'Drafted Co')
+  let tailorCalls = 0
+  let letterCalls = 0
+  ai.tailorResume = async (_p, _k, _j, resume) => { tailorCalls++; return resume }
+  const priorLetter = ai.generateCoverLetter
+  ai.generateCoverLetter = async () => { letterCalls++; return 'A brand new letter' }
+  let sent = null
+  seek.apply = async (_url, resume, letter) => { sent = { resume, letter }; return { success: true, screeningQa: [] } }
+  await applicator.applyAttentionJob(drafted.id, baseCfg, () => {})
+  check('the stored resume is not regenerated', tailorCalls, 0)
+  check('the stored cover letter is not regenerated', letterCalls, 0)
+  check('the resume the user read is the one sent', sent?.resume.includes('The version the user read'), true)
+  check('the letter the user read is the one sent', sent?.letter, 'Dear Drafted Co, the letter the user read.')
+  ai.generateCoverLetter = priorLetter
+
+  // ── Only a skipped job can be applied to "anyway" ───────────────
+  const already = db.getApplications().find(row => row.company === 'Drafted Co')
+  let resubmitted = false
+  seek.apply = async () => { resubmitted = true; return { success: true, screeningQa: [] } }
+  const refused = await applicator.applySkippedJob(already.id, baseCfg, () => {})
+  check('an application already sent is refused', refused.success, false)
+  check('and nothing is submitted again', resubmitted, false)
+
+  // ── Excluded keywords cost nothing ──────────────────────────────
+  // A listing ruled out by the user's own "never" list must not reach the
+  // description fetch, let alone the scorer.
+  const senior = { ...job('senior'), job_title: 'Senior Software Engineer' }
+  const plain = job('plain-title')
+  jobs = [senior, plain]
+  let fetched = []
+  seek.getJobDescription = async (url) => { fetched.push(url); return 'Build reliable software.' }
+  scoreCalls = 0
+  ai.scoreMatchWithExplanation = async () => { scoreCalls++; return { score: 90, explanation: 'Strong.' } }
+  seek.apply = async () => ({ success: true, screeningQa: [] })
+  await applicator.run({ ...baseCfg, dailyLimitSeek: 50, excludeKeywords: 'senior, clearance' }, { log: () => {}, notifyAttention: () => {} })
+  check('an excluded title is never fetched', fetched.includes(senior.job_url), false)
+  check('an excluded title is never scored', scoreCalls, 1)
+  check('an excluded title is not saved', db.hasSeenJobUrl(senior.job_url), false)
+  check('other listings still go through', db.hasSeenJobUrl(plain.job_url), true)
+
+  // ── Work-arrangement preference ─────────────────────────────────
+  const onsite = job('onsite-role')
+  const remote = job('remote-role')
+  const silent = job('silent-role')
+  jobs = [onsite, remote, silent]
+  const descriptions = {
+    [onsite.job_url]: 'This is an office-based role, five days in our Sydney office.',
+    [remote.job_url]: 'Fully remote within Australia.',
+    [silent.job_url]: 'Build reliable software.',
+  }
+  fetched = []
+  seek.getJobDescription = async (url) => { fetched.push(url); return descriptions[url] }
+  scoreCalls = 0
+  await applicator.run({ ...baseCfg, dailyLimitSeek: 50, workArrangement: 'remote' }, { log: () => {}, notifyAttention: () => {} })
+  check('an on-site job is not scored when remote is required', db.hasSeenJobUrl(onsite.job_url), false)
+  check('a remote job is scored', db.hasSeenJobUrl(remote.job_url), true)
+  check('a job that never says is kept', db.hasSeenJobUrl(silent.job_url), true)
+  check('only the two eligible jobs reached the scorer', scoreCalls, 2)
+  fetched = []
+  jobs = [onsite]
+  await applicator.run({ ...baseCfg, dailyLimitSeek: 50, workArrangement: 'remote' }, { log: () => {}, notifyAttention: () => {} })
+  check('a job turned away is not fetched again this session', fetched.length, 0)
+  seek.getJobDescription = async () => 'Build reliable software.'
+
+  // ── Editing a held draft ────────────────────────────────────────
+  ai.tailorResume = async () => 'Jane Example\nSoftware Engineer at Acme\nAWS Certified Solutions Architect'
+  jobs = [job('to-edit')]
+  await applicator.run({ ...baseCfg, dailyLimitSeek: 50 }, { log: () => {}, notifyAttention: () => {} })
+  const heldDraft = db.getApplications().find(row => row.job_url === job('to-edit').job_url)
+  check('the invented credential holds the draft', heldDraft.status, 'held')
+  const stillFlagged = applicator.editHeldDraft(heldDraft.id, {
+    tailoredResume: 'Jane Example\nSoftware Engineer at Acme\nAWS Certified Solutions Architect\nTeam player',
+  })
+  check('an edit that keeps the claim is saved', stillFlagged.success, true)
+  check('and the claim is still flagged', stillFlagged.flags.some(f => f.kind === 'credential'), true)
+  const cleared = applicator.editHeldDraft(heldDraft.id, {
+    tailoredResume: 'Jane Example\nSoftware Engineer at Acme\nTeam player',
+    coverLetter: 'Dear team, a letter I wrote myself.',
+  })
+  check('an edit that removes the claim clears the flag', cleared.flags.length, 0)
+  const edited = db.getApplication(heldDraft.id)
+  check('the edited resume is what approval will send', edited.tailored_resume.includes('AWS'), false)
+  check('the edited letter is stored', edited.cover_letter, 'Dear team, a letter I wrote myself.')
+  check('the draft is still held until approved', edited.status, 'held')
+  check('the edit is frozen as its own version', db.getSnapshots(heldDraft.id).some(snap => snap.reason === 'edited'), true)
+  const sentRow = db.getApplications().find(row => row.status === 'applied')
+  check('a sent application cannot be edited', applicator.editHeldDraft(sentRow.id, { tailoredResume: 'x' }).success, false)
+  ai.tailorResume = async (_p, _k, _j, resume) => resume
+
+  // ── Bulk runs can be stopped ────────────────────────────────────
+  check('stopping with nothing running says so', applicator.cancelBulk().success, false)
+  const bulkIds = []
+  for (const id of ['bulk-a', 'bulk-b', 'bulk-c']) {
+    db.insertAttentionJob({ ...job(id, `Bulk ${id}`), platform: 'Seek', job_description: 'Build APIs.', match_score: 90 })
+    bulkIds.push(db.getAttentionJobs().find(row => row.company === `Bulk ${id}`).id)
+  }
+  let bulkApplies = 0
+  seek.apply = async () => {
+    bulkApplies++
+    // The user presses Stop while the first submission is in flight.
+    if (bulkApplies === 1) check('stopping a running bulk retry is accepted', applicator.cancelBulk().success, true)
+    return { success: true, screeningQa: [] }
+  }
+  const bulk = await applicator.applyAttentionJobs(bulkIds, baseCfg, () => {})
+  check('the job in hand is finished', bulkApplies, 1)
+  check('the rest are not attempted', bulk.results.length, 1)
+  check('the run reports that it stopped early', bulk.stopped, true)
+
   // ── A pause is not a block ──────────────────────────────────────
   // Both mean missing results, but only one is a fault. Reporting a cooldown
   // through `blocked` put a self-imposed back-off down the failure channel: a

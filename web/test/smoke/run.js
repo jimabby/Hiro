@@ -143,9 +143,22 @@ async function mockExternals(electronApp) {
 }
 
 async function main() {
-  console.log(`Installing the packaged app into ${INSTALL_DIR}`)
-  const { executablePath, installer } = install(INSTALL_DIR)
-  note(`installer: ${path.basename(installer)}`)
+  // HIRO_SMOKE_EXECUTABLE drives an already-built binary — typically
+  // dist-electron/win-unpacked/Hiro.exe from `electron-builder --dir` — instead
+  // of running the installer. For local runs only: a real install registers
+  // shortcuts and an uninstaller on the developer's own machine. CI never sets
+  // it, so the release gate still exercises the installer.
+  let executablePath
+  if (process.env.HIRO_SMOKE_EXECUTABLE) {
+    executablePath = path.resolve(process.env.HIRO_SMOKE_EXECUTABLE)
+    if (!fs.existsSync(executablePath)) throw new Error(`HIRO_SMOKE_EXECUTABLE does not exist: ${executablePath}`)
+    note('installer: skipped (HIRO_SMOKE_EXECUTABLE)')
+  } else {
+    console.log(`Installing the packaged app into ${INSTALL_DIR}`)
+    const installed = install(INSTALL_DIR)
+    executablePath = installed.executablePath
+    note(`installer: ${path.basename(installed.installer)}`)
+  }
   note(`executable: ${executablePath}`)
 
   fs.mkdirSync(PROFILE_DIR, { recursive: true })

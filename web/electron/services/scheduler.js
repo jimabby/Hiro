@@ -28,6 +28,26 @@ let batchSchedule = [] // today's planned batch times for UI
 // a failed scan from one that simply found nothing. Without this, runScan's
 // catch swallowed the error and lastScanAt was stamped either way.
 let lastScanOutcome = null // { at, ok, error, source, blocked[] }
+let outcomeLoaded = false
+
+// Kept in memory for the hot path and written to config so it outlives the
+// process. The dashboard banner exists so "a failed overnight scan is still
+// visible the next morning" — and a desktop restarted in the meantime used to
+// forget the failure entirely.
+function recordOutcome(outcome) {
+  lastScanOutcome = outcome
+  outcomeLoaded = true
+  try { configService.update({ lastScanOutcome: outcome }) } catch { /* the in-memory copy still serves */ }
+}
+
+function currentOutcome(cfg) {
+  if (!outcomeLoaded) {
+    outcomeLoaded = true
+    const saved = cfg?.lastScanOutcome
+    if (saved && typeof saved === 'object' && saved.at) lastScanOutcome = saved
+  }
+  return lastScanOutcome
+}
 // Score distribution from the most recent test scan, kept in memory so the
 // Analytics page can recommend a match threshold from real scored jobs.
 let lastDryRun = null // { at, scores[], wouldApply, threshold }
@@ -354,7 +374,15 @@ async function runBatch(batchSize) {
     log(`Batch error: ${batchError}`)
   } finally {
     running = false
-    lastScanOutcome = {
+    // A batch is a real scan — it reads every enabled platform until its limit
+    // is reached — so it stamps lastScanAt exactly as a full scan does. It
+    // never did, and on a smart schedule that left lastScanAt null forever:
+    // the phone showed no "last scan" at all, and the dashboard's failure
+    // banners, which were keyed on it, never appeared.
+    if (!batchCancelled) {
+      try { configService.update({ lastScanAt: new Date().toISOString() }) } catch {}
+    }
+    recordOutcome({
       at: new Date().toISOString(),
       ok: !batchError && !batchCancelled,
       cancelled: batchCancelled,
@@ -364,7 +392,7 @@ async function runBatch(batchSize) {
       held: batchHeld,
       scoringFailures: batchScoringFailures,
       source: batchCancelled ? 'cancel' : 'batch',
-    }
+    })
     cloudSync.updateScanStatus(false).catch(() => {})
     log(batchCancelled
       ? 'Batch cancelled.'
@@ -381,6 +409,14 @@ async function runBatch(batchSize) {
         blocked: batchBlocked,
         paused: batchPaused,
       }).catch(() => {})
+      // The same alarms a full scan raises. A smart schedule runs a dozen
+      // batches a day while nobody is watching, which makes it the mode that
+      // most needs them — and it was the one mode that never sent them.
+      if (batchError || batchBlocked.length) {
+        nativeNotify(batchError ? 'Batch failed' : 'Batch partially blocked',
+          batchError || `Blocked on ${batchBlocked.map(b => b.platform).join(', ')}`)
+        push.notifyScanFailed({ error: batchError, blocked: batchBlocked }).catch(() => {})
+      }
     }
     cloudSync.sync().catch(() => {})
     setImmediate(drainQueue)
@@ -627,7 +663,7 @@ async function runScan(overrides = {}) {
       // Record how the scan actually ended, so a failure is distinguishable
       // from a scan that simply found nothing (previously both looked alike),
       // and an abort from either.
-      lastScanOutcome = {
+      recordOutcome({
         at: new Date().toISOString(),
         ok: !scanError && !scanCancelled,
         cancelled: scanCancelled,
@@ -637,7 +673,7 @@ async function runScan(overrides = {}) {
         held: scanHeld,
         scoringFailures: scanScoringFailures,
         source: scanCancelled ? 'cancel' : (overrides.fromQueue ? 'queue' : (overrides.source || 'desktop')),
-      }
+      })
       if (overrides.campaignId) {
         try {
           database.recordCampaignRun({
@@ -717,6 +753,7 @@ async function runScan(overrides = {}) {
 
 function getScanInfo() {
   const cfg = configService.load()
+  const lastScanOutcome = currentOutcome(cfg)
   return {
     running,
     // A manual apply blocks scans just as a running scan does; the phone needs
@@ -890,10 +927,15 @@ function runStaleSweep() {
   }
 }
 
-async function runInboxCheck() {
+// `manual` is the "Check now" button: it runs even with the scheduled check
+// switched off, and it rethrows so the button can say what went wrong. It goes
+// through here rather than calling inbox.checkInbox directly so that a reply
+// found by hand is announced exactly like one found on the schedule — the
+// phone push and the webhook used to fire only for the latter.
+async function runInboxCheck({ manual = false } = {}) {
   try {
     const cfg = configService.load()
-    if (!cfg.enableInboxCheck || !cfg.gmailAddress || !cfg.gmailAppPassword) return
+    if (!manual && (!cfg.enableInboxCheck || !cfg.gmailAddress || !cfg.gmailAppPassword)) return
     const inbox = require('./inbox')
     log('Checking inbox for replies...')
     const result = await inbox.checkInbox()
@@ -921,6 +963,7 @@ async function runInboxCheck() {
     return result
   } catch (err) {
     log(`Inbox check error: ${err.message}`)
+    if (manual) throw err
   }
 }
 

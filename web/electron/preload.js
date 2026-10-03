@@ -282,7 +282,11 @@ contextBridge.exposeInMainWorld('api', {
   getHeldApplications: () => ipcRenderer.invoke('review:list'),
   approveHeldApplication: (id) => ipcRenderer.invoke('review:approve', id),
   approveHeldApplications: (ids) => ipcRenderer.invoke('review:approveMany', ids),
+  // Stops a bulk approve / bulk retry after the job in hand.
+  cancelBulkApply: () => ipcRenderer.invoke('apply:cancelBulk'),
   rejectHeldApplication: (id) => ipcRenderer.invoke('review:reject', id),
+  // Save edits to a held draft's resume / cover letter; returns remaining flags.
+  editHeldDraft: (id, edits) => ipcRenderer.invoke('review:editDraft', id, edits),
   getFollowUpDrafts: () => ipcRenderer.invoke('review:followUps'),
   approveFollowUpDraft: (id) => ipcRenderer.invoke('review:approveFollowUp', id),
   rejectFollowUpDraft: (id) => ipcRenderer.invoke('review:rejectFollowUp', id),

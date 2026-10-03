@@ -3,6 +3,7 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 // src/statuses.js for why these stopped living in each page.
 import { statusBadge, SETTABLE_STATUSES, FILTER_TABS } from '../statuses'
 import GettingStarted from '../components/GettingStarted'
+import { exportCsv } from '../exportCsv'
 
 function safeParseJSON(str) {
   try { return JSON.parse(str || '[]') } catch { return [] }
@@ -22,6 +23,7 @@ const SNAPSHOT_LABEL = {
   drafted: 'Drafted',
   submitted: 'Submitted',
   retailored: 'Re-tailored',
+  edited: 'Edited by you',
   'before-restore': 'Replaced',
 }
 
@@ -820,7 +822,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
 
       {/* Last-scan outcome. A toast is easy to miss and disappears — a failed
           overnight scan should still be visible the next morning. */}
-      {scanInfo?.lastScanError && !scanRunning && scanInfo.lastScanAt !== dismissedScanAt && (
+      {scanInfo?.lastScanError && !scanRunning && scanInfo.lastScanEndedAt !== dismissedScanAt && (
         <div className="card" style={{
           marginBottom: 16, padding: '12px 16px', display: 'flex',
           alignItems: 'center', justifyContent: 'space-between', gap: 12,
@@ -829,12 +831,12 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
           <div style={{ fontSize: 13 }}>
             <span style={{ color: 'var(--red)', fontWeight: 600 }}>Last scan failed</span>
             <span style={{ color: 'var(--text-muted)' }}>
-              {scanInfo.lastScanAt ? ` · ${new Date(scanInfo.lastScanAt).toLocaleString()}` : ''}
+              {scanInfo.lastScanEndedAt ? ` · ${new Date(scanInfo.lastScanEndedAt).toLocaleString()}` : ''}
               {' — '}{scanInfo.lastScanError}
             </span>
           </div>
           <button className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 10px', flexShrink: 0 }}
-            onClick={() => setDismissedScanAt(scanInfo.lastScanAt)}>
+            onClick={() => setDismissedScanAt(scanInfo.lastScanEndedAt)}>
             Dismiss
           </button>
         </div>
@@ -844,7 +846,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
           from a failure and from an empty result set: the listings exist, we
           just weren't allowed to see them, and the user has to act (back off,
           or re-authenticate) for the next scan to work. */}
-      {scanInfo?.lastScanBlocked?.length > 0 && !scanRunning && scanInfo.lastScanAt !== dismissedScanAt && (
+      {scanInfo?.lastScanBlocked?.length > 0 && !scanRunning && scanInfo.lastScanEndedAt !== dismissedScanAt && (
         <div className="card" style={{
           marginBottom: 16, padding: '12px 16px', display: 'flex',
           alignItems: 'flex-start', justifyContent: 'space-between', gap: 12,
@@ -866,7 +868,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
             </div>
           </div>
           <button className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 10px', flexShrink: 0 }}
-            onClick={() => setDismissedScanAt(scanInfo.lastScanAt)}>
+            onClick={() => setDismissedScanAt(scanInfo.lastScanEndedAt)}>
             Dismiss
           </button>
         </div>
@@ -1197,12 +1199,12 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
               <option value="LinkedIn">LinkedIn</option>
               <option value="ATS">Career Boards</option>
             </select>
-            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => window.api.exportCSV({
+            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => exportCsv({
               ...filter,
               // The inputs are in thousands; the query expects annual dollars.
               salaryFrom: filter.salaryFrom === '' ? '' : Number(filter.salaryFrom) * 1000,
               salaryTo: filter.salaryTo === '' ? '' : Number(filter.salaryTo) * 1000,
-            })}>Export CSV</button>
+            }, showToast)}>Export CSV</button>
             <button className="btn btn-ghost" onClick={loadData} style={{ whiteSpace: 'nowrap' }}>Refresh</button>
             {apps.length > 0 && (
               <button className="btn btn-ghost" style={{ fontSize: 12, color: 'var(--red)' }} onClick={clearAll}>Clear All</button>

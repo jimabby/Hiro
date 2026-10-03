@@ -167,15 +167,21 @@ const post = async (path, body) => {
   check('salary route served', (await get('/api/salary')).body.median, 120000)
 
   // ── Status vocabulary ───────────────────────────────────────────
-  // Every status the desktop can write must be settable from the phone, or the
-  // phone can display a status it isn't allowed to choose.
-  for (const status of ['applied', 'interview', 'offer', 'rejected', 'pending', 'no_response', 'skipped', 'held']) {
+  // Every status a user can choose on the desktop must be settable from the
+  // phone, or the phone shows a status it isn't allowed to choose.
+  for (const status of ['applied', 'interview', 'offer', 'rejected', 'pending', 'no_response', 'withdrawn']) {
     const res = await post('/api/applications/1/status', { status })
     check(`status '${status}' accepted`, res.status, 200)
   }
+  // 'held' and 'skipped' are the desktop's own decisions, and each re-arms a
+  // submission: approving a held row sends it, "apply anyway" on a skipped one
+  // sends it. A sent application moved into either could be sent twice.
+  for (const status of ['held', 'skipped']) {
+    check(`status '${status}' refused from a device`, (await post('/api/applications/1/status', { status })).status, 400)
+  }
   check('unknown status rejected', (await post('/api/applications/1/status', { status: 'maybe' })).status, 400)
   check('missing status rejected', (await post('/api/applications/1/status', {})).status, 400)
-  check('accepted statuses reached the database', statusWrites.length, 8)
+  check('only accepted statuses reached the database', statusWrites.length, 7)
 
   // ── Review queue over the LAN ───────────────────────────────────
   const heldRes = await get('/api/held')
@@ -213,6 +219,19 @@ const post = async (path, body) => {
 
   check('unknown route still 404s', (await get('/api/nope')).status, 404)
 
+  // ── The shared token can be switched off ────────────────────────
+  // It predates pairing and travels in the clear on every request. Once every
+  // phone has its own token, accepting it is pure exposure.
+  mobileApi._resetThrottle()
+  cfg.mobileApiAllowLegacyToken = false
+  mobileApi.refreshPolicy()
+  check('the shared token is refused once switched off', await call(cfg.mobileApiToken), 401)
+  check('the server reports the switch', mobileApi.getInfo().allowLegacyToken, false)
+  cfg.mobileApiAllowLegacyToken = true
+  mobileApi.refreshPolicy()
+  check('and accepted again when switched back on', await call(cfg.mobileApiToken), 200)
+  mobileApi._resetThrottle()
+
   // ── Stopping actually stops ─────────────────────────────────────
   // close() alone leaves keep-alive sockets serving requests, so turning the
   // mobile API off in Settings did not cut off a connected phone.
@@ -248,6 +267,14 @@ const post = async (path, body) => {
   check('public IPv6 refused', priv('2001:4860:4860::8888'), false)
   check('IPv4-mapped public refused', priv('::ffff:8.8.8.8'), false)
   check('unknown peer refused', priv('unknown'), false)
+
+  // Tailscale lives in 100.64.0.0/10, which is also carrier-grade NAT — a range
+  // full of strangers on a mobile network. Only on request.
+  check('a tailnet address is refused by default', priv('100.101.5.6'), false)
+  check('and served when Tailscale is allowed', priv('100.101.5.6', { allowTailscale: true }), true)
+  check('the edge of the range is inside', priv('100.127.255.254', { allowTailscale: true }), true)
+  check('just past it is not', priv('100.128.0.1', { allowTailscale: true }), false)
+  check('Tailscale IPv6 is served when allowed', priv('fd7a:115c:a1e0::1', { allowTailscale: true }), true)
 
   done()
 })()

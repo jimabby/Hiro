@@ -3,6 +3,8 @@ const mailProvider = require('./mailProvider')
 const configService = require('./config')
 const database = require('./database')
 const aiAdapter = require('./ai/index')
+const { isAiConfigured } = require('./ai/configured')
+const { isAcknowledgement, mightBeAcknowledgement } = require('./replyFilter')
 const { parseInterviewTime } = require('./dateParser')
 
 const REPLY_STATUSES = ['interview', 'rejected', 'offer', 'pending']
@@ -83,7 +85,19 @@ function parseSqliteUtc(s) {
 // a setup that can send but not read presents as "replies are never detected",
 // which is far harder to notice than a connection that simply fails.
 
-async function checkInbox() {
+// One check at a time. The schedule, the tray and the "Check now" button can
+// all start one, and two overlapping passes read the same messages and announce
+// the same reply twice — two pushes, two webhooks, two desktop notifications.
+// A caller that arrives mid-check shares the result of the check in flight.
+let inFlight = null
+
+function checkInbox() {
+  if (inFlight) return inFlight
+  inFlight = runCheck().finally(() => { inFlight = null })
+  return inFlight
+}
+
+async function runCheck() {
   const cfg = configService.load()
   if (!cfg.gmailAddress || !cfg.gmailAppPassword) {
     throw new Error('Email address and App Password required. Configure them in Settings.')
@@ -206,18 +220,32 @@ async function checkInbox() {
             // it whenever the subject already looks like an interview, even
             // when no AI provider is configured.
             let body = ''
-            const needsBody = !!(cfg.aiProvider && cfg.aiApiKey) || newStatus === 'interview'
+            // A subject that reads like an automated receipt needs its body
+            // read before it can be dismissed — see services/replyFilter.js.
+            const needsBody = isAiConfigured(cfg) || newStatus === 'interview'
+              || (newStatus === 'pending' && mightBeAcknowledgement(match.subject))
             if (needsBody) body = await fetchBodySnippet(client, match.uid)
 
-            if (cfg.aiProvider && cfg.aiApiKey) {
+            let acknowledgement = false
+            if (isAiConfigured(cfg)) {
               try {
                 const aiStatus = (await aiAdapter.classifyReply(
                   cfg.aiProvider, cfg.aiApiKey, match.subject, body, app.company, cfg.geminiModel
                 )) || ''
                 // Tolerate stray punctuation / wrapper text around the label.
+                if (aiStatus.includes('acknowledg')) acknowledgement = true
                 const matched = REPLY_STATUSES.find(s => aiStatus.includes(s))
                 if (matched) newStatus = matched
               } catch { /* keep keyword result */ }
+            }
+
+            // The ATS confirming it received the form. Not a reply: remember it
+            // was seen so it is not re-read, and leave the application where it
+            // was — still 'applied', still due its follow-up, and not counted as
+            // a response.
+            if (acknowledgement || (newStatus === 'pending' && isAcknowledgement(match.subject, body))) {
+              database.setLastReplyUid(app.id, match.uid)
+              continue
             }
             // An interview or offer reply is exactly the one worth keeping in
             // full, and the keyword path may have reached that verdict without

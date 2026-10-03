@@ -6,6 +6,7 @@ let lastSelectorReport = null
 function getSelectorReport() { return lastSelectorReport }
 const linkedinSession = require('../linkedinSession')
 const { resolveAnswer } = require('../screeningAnswers')
+const { isAiConfigured } = require('../ai/configured')
 
 // See seek.js — one page of results goes stale within days once already-seen
 // listings are skipped.
@@ -275,7 +276,7 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
       }
 
       // Dynamically detect and answer screening questions
-      if (cfg.aiProvider && cfg.aiApiKey) {
+      if (isAiConfigured(cfg)) {
         const labels = await page.$$('.jobs-easy-apply-modal label, label').catch(() => [])
         for (const labelEl of labels) {
           const questionText = await labelEl.evaluate(el => el.textContent?.trim()).catch(() => '')

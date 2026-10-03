@@ -37,6 +37,7 @@
 
 const database = require('./database')
 const aiAdapter = require('./ai/index')
+const { isAiConfigured } = require('./ai/configured')
 const applicationProfile = require('./applicationProfile')
 const { inspectScreeningAnswer, describeFlags } = require('./fabricationGuard')
 
@@ -130,7 +131,7 @@ async function resolveAnswer({ question, optionHint = '', cfg, log }) {
 
   // ── Model ──────────────────────────────────────────────────────
   let aiAnswer = ''
-  if (cfg.aiProvider && cfg.aiApiKey) {
+  if (isAiConfigured(cfg)) {
     try {
       aiAnswer = await aiAdapter.answerScreeningQuestion(
         cfg.aiProvider, cfg.aiApiKey,

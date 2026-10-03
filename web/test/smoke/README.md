@@ -2,6 +2,13 @@
 
 `npm run build:dry && npm run smoke`
 
+To drive an unpacked build without running the installer (which registers
+shortcuts and an uninstaller on your machine), build with
+`npx vite build && npx electron-builder --dir --publish never` and set
+`HIRO_SMOKE_EXECUTABLE` to the binary, e.g.
+`HIRO_SMOKE_EXECUTABLE=dist-electron/win-unpacked/Hiro.exe npm run smoke`.
+CI never sets it, so the release gate still installs.
+
 Installs the artifact from `dist-electron` the way a user's machine would, launches
 it, and drives the real renderer through Playwright's Electron support.
 

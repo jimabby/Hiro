@@ -74,6 +74,9 @@ export default function NeedsAttention({ active, onCountChange, showToast }) {
   const [selected, setSelected] = useState(null)
   const [applying, setApplying] = useState(null)
   const [applyLog, setApplyLog] = useState([])
+  // Set once the user asks a bulk retry to stop; the run finishes the job in
+  // hand and returns what it managed.
+  const [stopping, setStopping] = useState(false)
   const [applyResult, setApplyResult] = useState(null)
   const [search, setSearch] = useState('')
   const [platformFilter, setPlatformFilter] = useState('')
@@ -259,6 +262,7 @@ export default function NeedsAttention({ active, onCountChange, showToast }) {
     if (!window.confirm(`Retry AI Apply on ${ids.length} job${ids.length === 1 ? '' : 's'}? Each is submitted for real.`)) return
 
     setApplying('bulk')
+    setStopping(false)
     setApplyLog([`Retrying ${ids.length} job${ids.length === 1 ? '' : 's'}...`])
     setApplyResult(null)
     setSelected(null)
@@ -279,7 +283,7 @@ export default function NeedsAttention({ active, onCountChange, showToast }) {
       setApplyResult({
         success: result.succeeded > 0,
         bulk: true,
-        reason: `${result.succeeded} applied, ${result.failed} still need attention.`,
+        reason: `${result.succeeded} applied, ${result.failed} still need attention.${result.stopped ? ' Stopped early — the rest were not attempted.' : ''}`,
       })
       showToast?.(
         `${result.succeeded} of ${ids.length} applied`,
@@ -292,7 +296,13 @@ export default function NeedsAttention({ active, onCountChange, showToast }) {
     }
   }
 
+  async function stopBulk() {
+    setStopping(true)
+    try { await window.api.cancelBulkApply() } catch { /* the run ends on its own anyway */ }
+  }
+
   function closeApplyModal() {
+    setStopping(false)
     setApplying(null)
     setApplyLog([])
     setApplyResult(null)
@@ -579,7 +589,15 @@ export default function NeedsAttention({ active, onCountChange, showToast }) {
 
             {!applyResult && (
               <div style={{ marginTop: 12, color: 'var(--text-muted)', fontSize: 12, textAlign: 'center' }}>
-                A browser window will open — please do not close it.
+                {stopping
+                  ? 'Stopping after the current job…'
+                  : 'A browser window will open — please do not close it.'}
+              </div>
+            )}
+
+            {!applyResult && applying === 'bulk' && (
+              <div style={{ marginTop: 10, display: 'flex', justifyContent: 'center' }}>
+                <button className="btn btn-ghost" onClick={stopBulk} disabled={stopping}>Stop after this one</button>
               </div>
             )}
           </div>

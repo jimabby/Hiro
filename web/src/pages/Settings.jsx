@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import HiroLogo from '../components/HiroLogo'
+import { exportCsv } from '../exportCsv'
 import { answerAgeDays } from './settings/answerAge'
 import { MailServers } from './settings/MailServers'
 import { ParseCheck } from './settings/ParseCheck'
@@ -10,6 +11,14 @@ import { AtsBoards } from './settings/AtsBoards'
 import { UpdatePanel } from './settings/UpdatePanel'
 import { IndeedAccountCard, SeekAccountCard } from './settings/PlatformAccounts'
 import { BackupsCard, DataTransferCard, SettingsTransferCard, StorageCard } from './settings/DataPanels'
+
+// Mirrors electron/services/scraper/indeedRegion.js. The renderer has no module
+// access to the main process, and the list changes about never.
+const INDEED_REGIONS = [
+  ['au', 'Australia'], ['nz', 'New Zealand'], ['us', 'United States'], ['ca', 'Canada'],
+  ['uk', 'United Kingdom'], ['ie', 'Ireland'], ['sg', 'Singapore'], ['in', 'India'],
+  ['de', 'Germany'], ['nl', 'Netherlands'],
+]
 
 export default function Settings({ showToast, active }) {
   const [form, setForm] = useState(null)
@@ -1041,6 +1050,21 @@ export default function Settings({ showToast, active }) {
               Pairing below gives each phone its own token instead — one you can age out and
               withdraw from a single lost device.
             </p>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginTop: 10, fontSize: 12 }}>
+              <input type="checkbox" style={{ width: 'auto' }}
+                checked={form.mobileApiAllowLegacyToken !== false}
+                onChange={e => set('mobileApiAllowLegacyToken', e.target.checked)} />
+              Accept the shared token (turn off once every phone is paired — it is sent unencrypted)
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginTop: 6, fontSize: 12 }}>
+              <input type="checkbox" style={{ width: 'auto' }}
+                checked={!!form.mobileApiAllowTailscale}
+                onChange={e => set('mobileApiAllowTailscale', e.target.checked)} />
+              Allow phones on my Tailscale network (100.64.0.0/10) — only if you use Tailscale
+            </label>
+            <p style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 4, marginBottom: 0 }}>
+              These two take effect when you save settings.
+            </p>
 
             {/* ── QR pairing ───────────────────────────────────── */}
             <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
@@ -1453,6 +1477,39 @@ export default function Settings({ showToast, active }) {
           <div className="form-group">
             <label htmlFor="set-f37">Min Salary</label>
             <input id="set-f37" type="number" value={form.salaryMin} onChange={e => set('salaryMin', e.target.value)} />
+          </div>
+        </div>
+        <div className="form-group">
+          <label htmlFor="set-exclude-keywords">Exclude jobs whose title or company contains</label>
+          <input id="set-exclude-keywords" placeholder="e.g. senior, clearance, recruitment"
+            value={form.excludeKeywords || ''} onChange={e => set('excludeKeywords', e.target.value)} />
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+            Comma-separated, whole words. Checked before any AI call, so excluded listings cost nothing.
+            &ldquo;lead&rdquo; does not exclude &ldquo;Leadership&rdquo;.
+          </div>
+        </div>
+        <div className="form-row">
+          <div className="form-group">
+            <label htmlFor="set-work-arrangement">Work arrangement</label>
+            <select id="set-work-arrangement" value={form.workArrangement || 'any'}
+              onChange={e => set('workArrangement', e.target.value)}>
+              <option value="any">Any</option>
+              <option value="remote">Remote only</option>
+              <option value="flexible">Remote or hybrid</option>
+            </select>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              Ads that never say where the work happens are kept and scored.
+            </div>
+          </div>
+          <div className="form-group">
+            <label htmlFor="set-indeed-region">Indeed country</label>
+            <select id="set-indeed-region" value={form.indeedRegion || 'au'}
+              onChange={e => set('indeedRegion', e.target.value)}>
+              {INDEED_REGIONS.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+            </select>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              Log in to Indeed again after changing this — each country has its own session.
+            </div>
           </div>
         </div>
         <div className="form-group">
@@ -2234,7 +2291,7 @@ export default function Settings({ showToast, active }) {
                 <div style={{ fontWeight: 500, fontSize: 13 }}>Export Application History</div>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Download all applications as CSV</div>
               </div>
-              <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => window.api.exportCSV({})}>Export CSV</button>
+              <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => exportCsv({}, showToast)}>Export CSV</button>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 14px', background: 'var(--surface2)', borderRadius: 8 }}>
               <div>
