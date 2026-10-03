@@ -6,7 +6,16 @@ const path = require('path')
 // image-size 2.x, whose API Metro's 1.x call sites cannot use, so it cannot be
 // forced with an override. npm re-issued both under new ids (GHSA-5p2g-fcmc-qvqq,
 // GHSA-w3rx-r6r6-pgpr); the old ids stay so an older npm cache still passes.
-const allowed = new Set([1138808, 1138809, 1239765, 1239766])
+//
+// braces (GHSA 1240992, stack exhaustion on a crafted glob) and node-forge (GHSA
+// 1240912, lenient PKCS#1 v1.5 signature parsing) are reached ONLY through
+// @expo/cli — braces via Metro's file map, node-forge via the dev server's
+// code-signing certificates. Both run on the developer's machine at build time;
+// neither is imported by app code, so Metro never bundles either into the phone
+// app. Neither has a fixed release (3.0.3 and 1.4.0 are the latest), and npm's
+// only suggested "fix" is a downgrade to Expo SDK 44. Accepted by advisory id,
+// not by package, so a future advisory against either still fails the build.
+const allowed = new Set([1138808, 1138809, 1239765, 1239766, 1240992, 1240912])
 
 // Invoke npm through Node so this works identically on Windows, where spawning
 // npm.cmd directly without a shell returns EINVAL, and on CI.
