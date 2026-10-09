@@ -4,10 +4,10 @@ const { interviewQuestionsPrompt, followUpEmailPrompt, counterOfferPrompt, inter
 const { fence, FENCE_RULES } = require('./untrusted')
 const { parseScore, parseScoreWithExplanation } = require('./scoring')
 
-// Named so a model change is one edit rather than a dozen.
-const FAST_MODEL = 'gpt-4o-mini'
-const SMART_MODEL = 'gpt-4o'
-const DEEPSEEK_MODEL = 'deepseek-chat'
+// Defaults live in ./models.js; the writing tier is the user's choice.
+const { DEFAULT_MODELS, smartModel, isOpenAiReasoningModel } = require('./models')
+const FAST_MODEL = DEFAULT_MODELS.chatgpt.fast
+const DEEPSEEK_MODEL = DEFAULT_MODELS.deepseek.fast
 
 // Every OpenAI-compatible endpoint runs through this adapter; a "flavour" says
 // which one and what to call there. DeepSeek passed a bare baseURL string and
@@ -15,14 +15,15 @@ const DEEPSEEK_MODEL = 'deepseek-chat'
 // which worked for exactly two providers and could not express a third. A local
 // server (Ollama, LM Studio, llama.cpp) is a third: same wire protocol, its own
 // address, and a model name only the user knows.
-const OPENAI_FLAVOUR = { baseURL: undefined, provider: 'chatgpt', fast: FAST_MODEL, smart: SMART_MODEL }
-const DEEPSEEK_FLAVOUR = { baseURL: 'https://api.deepseek.com', provider: 'deepseek', fast: DEEPSEEK_MODEL, smart: DEEPSEEK_MODEL }
+const OPENAI_FLAVOUR = { baseURL: undefined, provider: 'chatgpt', fast: FAST_MODEL }
+const DEEPSEEK_FLAVOUR = { baseURL: 'https://api.deepseek.com', provider: 'deepseek', fast: DEEPSEEK_MODEL }
 
 // Accepts the legacy bare-string baseURL (DeepSeek) as well as a descriptor, so
-// deepseek.js needs no change.
+// deepseek.js needs no change. The smart tier is read at call time, so a model
+// changed in Settings applies to the next call without a restart.
 function resolve(flavour) {
-  if (!flavour) return OPENAI_FLAVOUR
-  if (typeof flavour === 'string') return { ...DEEPSEEK_FLAVOUR, baseURL: flavour }
+  if (!flavour) return { ...OPENAI_FLAVOUR, smart: smartModel('chatgpt') }
+  if (typeof flavour === 'string') return { ...DEEPSEEK_FLAVOUR, baseURL: flavour, smart: smartModel('deepseek') }
   const model = flavour.model || FAST_MODEL
   return {
     baseURL: flavour.baseURL,
@@ -45,11 +46,21 @@ function getClient(apiKey, baseURL) {
 // cap and cost accounting apply uniformly rather than being remembered at a
 // dozen call sites. Each flavour is recorded under its own provider name so the
 // cost breakdown stays honest.
+// OpenAI's reasoning models (gpt-5, o-series) reject `max_tokens` and any
+// non-default temperature, and spend part of the completion budget thinking —
+// a budget sized for the answer alone can come back empty. Only applied to
+// OpenAI itself: DeepSeek and local servers speak the older parameter.
+function adaptForModel(provider, params) {
+  if (provider !== 'chatgpt' || !isOpenAiReasoningModel(params.model)) return params
+  const { max_tokens, temperature: _t, ...rest } = params
+  return { ...rest, max_completion_tokens: (max_tokens || 1000) + 4000, reasoning_effort: 'low' }
+}
+
 async function complete(operation, flavour, apiKey, params) {
   const f = resolve(flavour)
   return withUsage(operation, f.provider, async () => {
     const client = getClient(apiKey, f.baseURL)
-    const response = await client.chat.completions.create(params)
+    const response = await client.chat.completions.create(adaptForModel(f.provider, params))
     return {
       value: response.choices?.[0]?.message?.content ?? '',
       model: params.model,
@@ -337,4 +348,18 @@ ${fence('BODY', body, 1500)}` }],
   return (text || '').trim().toLowerCase()
 }
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply, generateCounterOffer, draftInterviewAnswer }
+// See claude.js chat(). The system prompt travels as the first message, which
+// every OpenAI-compatible server (DeepSeek, Ollama, LM Studio) accepts.
+async function chat({ operation = 'chat', system = '', messages = [], maxTokens = 1200, tier = 'smart' }, apiKey, flavour) {
+  const f = resolve(flavour)
+  return complete(operation, flavour, apiKey, {
+    model: tier === 'fast' ? f.fast : f.smart,
+    max_tokens: maxTokens,
+    messages: [
+      ...(system ? [{ role: 'system', content: system }] : []),
+      ...messages.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content || '') })),
+    ],
+  })
+}
+
+module.exports = { chat, adaptForModel, resolve, testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply, generateCounterOffer, draftInterviewAnswer }

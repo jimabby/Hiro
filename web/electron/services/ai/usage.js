@@ -15,14 +15,23 @@ const database = require('../database')
 // the UI — treat it as an indication, not an invoice. Unknown models fall back
 // to zero rather than inventing a number.
 const PRICING = {
-  // Anthropic
+  // Anthropic. Haiku 5.5's rate is for prompts up to 100K tokens, which is
+  // every prompt Hiro sends.
+  'claude-haiku-5-5': { input: 0.1, output: 0.5 },
   'claude-haiku-4-5': { input: 1, output: 5 },
-  'claude-sonnet-5': { input: 3, output: 15 },
+  'claude-sonnet-5-5': { input: 2, output: 10 },
+  'claude-sonnet-5': { input: 2, output: 10 },
+  'claude-opus-5-5': { input: 4, output: 20 },
+  'claude-opus-5': { input: 5, output: 25 },
   // OpenAI
   'gpt-4o': { input: 2.5, output: 10 },
   'gpt-4o-mini': { input: 0.15, output: 0.6 },
+  'gpt-4.1': { input: 2, output: 8 },
+  'gpt-5': { input: 1.25, output: 10 },
+  'gpt-5-mini': { input: 0.25, output: 2 },
   // DeepSeek
   'deepseek-chat': { input: 0.27, output: 1.1 },
+  'deepseek-reasoner': { input: 0.55, output: 2.19 },
   // Google — Gemini model names are user-supplied, so these are prefixes.
   'gemini-2.5-flash': { input: 0.3, output: 2.5 },
   'gemini-2.5-pro': { input: 1.25, output: 10 },
@@ -34,8 +43,10 @@ const PRICING = {
 function priceFor(model) {
   const name = String(model || '').toLowerCase()
   if (PRICING[name]) return PRICING[name]
-  // Gemini model ids carry suffixes ("gemini-2.5-flash-preview-05-20").
-  const prefix = Object.keys(PRICING).find(k => name.startsWith(k))
+  // Gemini model ids carry suffixes ("gemini-2.5-flash-preview-05-20"). The
+  // LONGEST matching prefix wins: "claude-sonnet-5-5-x" must not be priced as
+  // "claude-sonnet-5", nor "gpt-4o-mini-x" as "gpt-4o".
+  const prefix = Object.keys(PRICING).filter(k => name.startsWith(k)).sort((a, b) => b.length - a.length)[0]
   return prefix ? PRICING[prefix] : null
 }
 
@@ -61,6 +72,8 @@ class BudgetExceededError extends Error {
 // A failure that retrying cannot fix (bad key, malformed request). Retrying
 // these just delays the error and burns the user's rate limit.
 function isPermanent(err) {
+  // A model that declined will decline the same input again.
+  if (err?.refusal) return true
   const status = err?.status ?? err?.statusCode ?? err?.response?.status
   if (status === 401 || status === 403 || status === 404 || status === 422) return true
   if (status === 400) return true

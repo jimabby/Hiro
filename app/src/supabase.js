@@ -455,6 +455,18 @@ export class CloudClient {
     return { cloud: true }
   }
 
+  // Batch approval over the cloud: one queued request per draft, processed by
+  // the desktop on its next sync. The desktop applies the same rules as on the
+  // local network and drops any it will not submit.
+  async approveDrafts(ids) {
+    const accepted = []
+    for (const id of ids) {
+      await this.requestReviewAction(id, 'approve')
+      accepted.push(id)
+    }
+    return { started: true, queued: true, accepted, refused: [] }
+  }
+
   async requestReviewAction(id, action) {
     if (!['approve', 'reject'].includes(action)) throw new Error('Invalid review action.')
     const { error } = await supabase.from('review_requests').upsert({

@@ -25,6 +25,7 @@ const Timeline = lazy(() => import('./pages/Timeline'))
 const Analytics = lazy(() => import('./pages/Analytics'))
 const Workbench = lazy(() => import('./pages/Workbench'))
 const Offers = lazy(() => import('./pages/Offers'))
+const AskHiro = lazy(() => import('./pages/AskHiro'))
 import useModalFocus from './hooks/useModalFocus'
 import ErrorBoundary from './components/ErrorBoundary'
 import ShortcutHelp from './components/ShortcutHelp'
@@ -43,6 +44,8 @@ const NAV = [
   { id: 'analytics', label: 'Analytics', icon: '◔', shortcut: '7' },
   { id: 'settings', label: 'Settings', icon: '⚙', shortcut: '8' },
   { id: 'workbench', label: 'Workbench', icon: '+', shortcut: '9' },
+  // Last, and without a number: the digits are spoken for, in sidebar order.
+  { id: 'ask', label: 'Ask Hiro', icon: '✦' },
 ]
 
 export default function App() {
@@ -283,10 +286,10 @@ export default function App() {
       // blocking question left the app showing a tab the user can't reach.
       if (modalOpen) return
 
-      const num = parseInt(e.key, 10)
-      if (num >= 1 && num <= NAV.length) {
-        setPage(NAV[num - 1].id)
-      }
+      // Matched on each entry's own key, so an entry without one is never
+      // reachable by a digit that happens to equal its position.
+      const target = NAV.find(n => n.shortcut && n.shortcut === e.key)
+      if (target) setPage(target.id)
     }
     window.addEventListener('keydown', handleGlobalKey)
     return () => window.removeEventListener('keydown', handleGlobalKey)
@@ -367,6 +370,7 @@ export default function App() {
     offers: <Offers active={page === 'offers'} showToast={showToast} onOpenApplication={(id) => { setFocusApp(id); setPage('dashboard') }} />,
     workbench: <Workbench active={page === 'workbench'} showToast={showToast} />,
     settings: <Settings active={page === 'settings'} showToast={showToast} />,
+    ask: <AskHiro showToast={showToast} onNavigate={setPage} onOpenApplication={(id) => { setFocusApp(id); setPage('dashboard') }} />,
   }
 
   const badgeFor = (id) => (id === 'attention' ? attentionCount : id === 'review' ? heldCount : 0)
@@ -439,7 +443,7 @@ export default function App() {
               data-testid={`nav-${n.id}`}
               onClick={() => setPage(n.id)}
               aria-current={page === n.id ? 'page' : undefined}
-              title={`${n.label} — press ${n.shortcut}`}
+              title={n.shortcut ? `${n.label} — press ${n.shortcut}` : n.label}
               className={`nav-item${page === n.id ? ' nav-item-active' : ''}`}
             >
               <span className="nav-icon" aria-hidden="true">{n.icon}</span>
@@ -458,7 +462,7 @@ export default function App() {
                   }}
                 >{count}</span>
               )}
-              <span className="kbd" aria-hidden="true">{n.shortcut}</span>
+              {n.shortcut && <span className="kbd" aria-hidden="true">{n.shortcut}</span>}
             </button>
           )
         })}

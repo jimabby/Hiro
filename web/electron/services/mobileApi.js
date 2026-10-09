@@ -4,6 +4,7 @@ const crypto = require('crypto')
 const configService = require('./config')
 const pairing = require('./pairing')
 const database = require('./database')
+const phoneReview = require('./phoneReview')
 const scheduler = require('./scheduler')
 const logger = require('./logger')
 const featureHub = require('./featureHub')
@@ -31,6 +32,12 @@ const DESKTOP_ONLY_STATUSES = new Set(['held', 'skipped'])
 // also meant an OS-keychain decrypt per request, so cache it in memory and
 // invalidate explicitly whenever it changes.
 let cachedToken = null
+
+// Starts a batch approval on the desktop: (ids, device) → { ok, reason }. Set
+// by main.js, which owns the applicator — the same arrangement cloudSync uses
+// for onRemoteReview — so this module never requires the submission code.
+let approveDrafts = null
+function setApproveHandler(fn) { approveDrafts = typeof fn === 'function' ? fn : null }
 
 // The two network-policy switches, cached for the same reason as the token:
 // they are consulted on every request, including ones refused before any
@@ -627,6 +634,24 @@ async function handle(req, res) {
       return json(res, 200, database.getHeldApplications())
     }
 
+    // Approve several drafts from the phone. The desktop submits them, spaced
+    // the way it spaces any bulk approval, and replies as soon as the run has
+    // started — submissions take minutes and the phone polls /api/held. See
+    // phoneReview.js for which drafts qualify and which devices may ask.
+    if (req.method === 'POST' && path === '/api/held/approve') {
+      if (!phoneReview.deviceMayApprove(check.device)) {
+        return json(res, 403, { error: 'Only a paired phone can approve drafts. Re-pair this phone if it was set up before pairing existed.' })
+      }
+      if (!approveDrafts) return json(res, 503, { error: 'Approving from the phone is not available in this build.' })
+      const body = await readBody(req)
+      const { accepted, refused } = phoneReview.partition(body?.ids)
+      if (!accepted.length) return json(res, 200, { started: false, accepted, refused })
+      const started = approveDrafts(accepted, check.device)
+      if (!started.ok) return json(res, 409, { error: started.reason, accepted: [], refused })
+      logger.append(`Mobile API: "${check.device.name}" approved ${accepted.length} draft(s)`)
+      return json(res, 202, { started: true, accepted, refused })
+    }
+
     const rejectMatch = path.match(/^\/api\/held\/(\d+)\/reject$/)
     if (req.method === 'POST' && rejectMatch) {
       return json(res, 200, database.rejectHeldApplication(Number(rejectMatch[1])))
@@ -635,6 +660,14 @@ async function handle(req, res) {
     // Model spend, so a runaway scan is visible from the phone too.
     if (req.method === 'GET' && path === '/api/ai-usage') {
       return json(res, 200, database.getAiUsageSummary())
+    }
+
+    // The interview brief, from what the desktop has already prepared. Never
+    // generates: a tap on the phone must not spend money on the desktop's key.
+    const briefMatch = path.match(/^\/api\/applications\/(\d+)\/brief$/)
+    if (req.method === 'GET' && briefMatch) {
+      const brief = await require('./interviewBrief').buildBrief(Number(briefMatch[1]), { generate: false })
+      return json(res, 200, brief)
     }
 
     if (req.method === 'GET' && path === '/api/interviews') {
@@ -772,7 +805,7 @@ module.exports = {
   listDevices: () => pairing.listDevices(configService),
   revokeDevice: (id) => pairing.revokeDevice(configService, id),
   revokeAllDevices: () => pairing.revokeAll(configService),
-  start, stop, getInfo, regenerateToken, isPrivateAddress, refreshPolicy,
+  start, stop, getInfo, regenerateToken, isPrivateAddress, refreshPolicy, setApproveHandler,
   // exported for tests
   lockoutFor, recordFailure, verifySignedRequest, describeSignatureFailure,
   _resetThrottle: () => { failures.clear(); seenNonces.clear() },

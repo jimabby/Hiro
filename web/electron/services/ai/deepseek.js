@@ -3,7 +3,7 @@ const openai = require('./openai')
 
 const DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
 
-const testConnection = (apiKey) => openai.testConnection(apiKey, DEEPSEEK_BASE_URL)
+const testConnection = (apiKey, flavour) => openai.testConnection(apiKey, flavour || DEEPSEEK_BASE_URL)
 const tailorResume = (jobDesc, resume, apiKey) => openai.tailorResume(jobDesc, resume, apiKey, DEEPSEEK_BASE_URL)
 const answerScreeningQuestion = (q, jobDesc, resume, apiKey) => openai.answerScreeningQuestion(q, jobDesc, resume, apiKey, DEEPSEEK_BASE_URL)
 const generateTalkingPoints = (jobDesc, resume, apiKey) => openai.generateTalkingPoints(jobDesc, resume, apiKey, DEEPSEEK_BASE_URL)
@@ -19,4 +19,6 @@ const classifyReply = (subject, body, company, apiKey) => openai.classifyReply(s
 const generateCounterOffer = (input, apiKey) => openai.generateCounterOffer(input, apiKey, DEEPSEEK_BASE_URL)
 const draftInterviewAnswer = (input, apiKey) => openai.draftInterviewAnswer(input, apiKey, DEEPSEEK_BASE_URL)
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, generateCoverLetter, improveResume, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply, generateCounterOffer, draftInterviewAnswer }
+const chat = (input, apiKey) => openai.chat(input, apiKey, DEEPSEEK_BASE_URL)
+
+module.exports = { chat, testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, generateCoverLetter, improveResume, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply, generateCounterOffer, draftInterviewAnswer }

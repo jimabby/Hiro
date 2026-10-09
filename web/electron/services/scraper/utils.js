@@ -156,24 +156,54 @@ async function verifySubmission(pageOrFrame) {
   }
 }
 
-function stripMarkdown(text) {
-  return (text || '')
-    .replace(/```[\s\S]*?```/g, '')            // code fences
-    .replace(/`([^`]+)`/g, '$1')               // inline code
-    .replace(/\*\*(.*?)\*\*/g, '$1')           // **bold**
-    .replace(/__(.*?)__/g, '$1')               // __bold__
-    .replace(/\*(.*?)\*/g, '$1')               // *italic*
-    .replace(/_(.*?)_/g, '$1')                 // _italic_
-    .replace(/^#{1,6}\s+/gm, '')               // ## headings
-    .replace(/^\*\s+/gm, '- ')                 // * bullets → -
-    .replace(/^-{3,}\s*$/gm, '')               // --- dividers
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')   // [text](url) → text
-    .replace(/^\s*>\s?/gm, '')                 // > blockquotes
-    .replace(/\n{3,}/g, '\n\n')                // collapse excessive newlines
-    .trim()
+// One implementation, shared with the AI adapters — see ai/markdown.js for why
+// it must never touch the candidate's own text.
+const { stripMarkdown } = require('../ai/markdown')
+
+// Résumé layouts. "classic" is the original Hiro layout, unchanged; the others
+// vary type, colour and alignment over the same parsing of the text, so every
+// template reads the same sections the same way. All use the PDF standard
+// fonts, which every ATS text extractor handles — a decorative embedded font
+// is the commonest reason a good-looking PDF parses as gibberish.
+const RESUME_TEMPLATES = {
+  classic: {
+    label: 'Classic — centred, navy headings',
+    fonts: { regular: 'Helvetica', bold: 'Helvetica-Bold', italic: 'Helvetica-Oblique' },
+    colors: { name: '#1E3A5F', heading: '#1E3A5F', rule: '#2563EB', body: '#111827', muted: '#6B7280', faint: '#9CA3AF' },
+    margin: 54, nameSize: 24, headingSize: 10.5, bodySize: 10,
+    align: 'center', headingAlign: 'center', topRule: 1.8, headingRule: 0.5,
+  },
+  modern: {
+    label: 'Modern — left-aligned, teal accent',
+    fonts: { regular: 'Helvetica', bold: 'Helvetica-Bold', italic: 'Helvetica-Oblique' },
+    colors: { name: '#0F172A', heading: '#0F766E', rule: '#0F766E', body: '#1F2937', muted: '#4B5563', faint: '#6B7280' },
+    margin: 50, nameSize: 26, headingSize: 10.5, bodySize: 10,
+    align: 'left', headingAlign: 'left', topRule: 0, headingRule: 1,
+  },
+  compact: {
+    label: 'Compact — fits more on one page',
+    fonts: { regular: 'Helvetica', bold: 'Helvetica-Bold', italic: 'Helvetica-Oblique' },
+    colors: { name: '#111827', heading: '#111827', rule: '#9CA3AF', body: '#111827', muted: '#4B5563', faint: '#6B7280' },
+    margin: 38, nameSize: 18, headingSize: 9.5, bodySize: 9,
+    align: 'left', headingAlign: 'left', topRule: 0.8, headingRule: 0.4,
+  },
+  traditional: {
+    label: 'Traditional — serif, black and white',
+    fonts: { regular: 'Times-Roman', bold: 'Times-Bold', italic: 'Times-Italic' },
+    colors: { name: '#000000', heading: '#000000', rule: '#000000', body: '#000000', muted: '#333333', faint: '#555555' },
+    margin: 56, nameSize: 22, headingSize: 11, bodySize: 10.5,
+    align: 'center', headingAlign: 'left', topRule: 0.8, headingRule: 0.5,
+  },
 }
 
-async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
+function resumeTemplate(id) {
+  return RESUME_TEMPLATES[id] || RESUME_TEMPLATES.classic
+}
+
+async function buildResumePDF(tailoredResume, candidateName, personalLinks, templateId = 'classic') {
+  const T = resumeTemplate(templateId)
+  const F = T.fonts
+
   const fs = require('fs')
   const PDFDocument = require('pdfkit')
 
@@ -193,12 +223,8 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
     else break
   }
 
-  const ML = 54, MR = 54, CW = 595 - ML - MR  // A4 width 595pt
-  const NAVY  = '#1E3A5F'
-  const BLUE  = '#2563EB'
-  const BODY  = '#111827'
-  const GREY  = '#6B7280'
-  const LGREY = '#9CA3AF'
+  const ML = T.margin, MR = T.margin, CW = 595 - ML - MR  // A4 width 595pt
+  const { name: NAVY, rule: BLUE, body: BODY, muted: GREY, faint: LGREY } = T.colors
 
   const KNOWN_SECTIONS = /^(summary|experience|professional experience|work experience|education|skills|technical skills|certifications|qualifications|awards|achievements|languages|interests|reference|references|honors|publications|volunteer|activities|projects|training|courses|objective|profile)$/i
 
@@ -232,8 +258,8 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
 
     // ── Name ─────────────────────────────────────────────────────────
     if (idx < lines.length) {
-      doc.fontSize(24).font('Helvetica-Bold').fillColor(NAVY)
-        .text(lines[idx++].trim(), ML, doc.y, { align: 'center', width: CW })
+      doc.fontSize(T.nameSize).font(F.bold).fillColor(NAVY)
+        .text(lines[idx++].trim(), ML, doc.y, { align: T.align, width: CW })
       doc.moveDown(0.15)
     }
 
@@ -292,9 +318,9 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
 
       const hasLinks = segments.some(s => s.url)
       if (hasLinks) {
-        doc.fontSize(9.5).font('Helvetica')
+        doc.fontSize(T.bodySize - 0.5).font(F.regular)
         const totalW = segments.reduce((w, s) => w + doc.widthOfString(s.text), 0)
-        const sx = ML + Math.max(0, (CW - totalW) / 2)
+        const sx = T.align === 'center' ? ML + Math.max(0, (CW - totalW) / 2) : ML
         for (let i = 0; i < segments.length; i++) {
           const s = segments[i], last = i === segments.length - 1
           doc.fillColor(s.url ? BLUE : GREY)
@@ -304,8 +330,8 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
           else doc.text(s.text, opts)
         }
       } else {
-        doc.fontSize(9.5).font('Helvetica').fillColor(GREY)
-          .text(items.join('   |   '), ML, doc.y, { align: 'center', width: CW })
+        doc.fontSize(T.bodySize - 0.5).font(F.regular).fillColor(GREY)
+          .text(items.join('   |   '), ML, doc.y, { align: T.align, width: CW })
       }
       doc.moveDown(0.3)
     }
@@ -316,15 +342,15 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
     if (idx < lines.length) {
       const nextLine = lines[idx].trim()
       if (!isSectionHeader(nextLine) && JOB_TITLE_RE.test(nextLine) && nextLine.length < 60) {
-        doc.fontSize(11).font('Helvetica').fillColor(BODY)
-          .text(nextLine, ML, doc.y, { align: 'center', width: CW })
+        doc.fontSize(T.bodySize + 1).font(F.regular).fillColor(BODY)
+          .text(nextLine, ML, doc.y, { align: T.align, width: CW })
         doc.moveDown(0.2)
         idx++
       }
     }
 
     // ── Full-width divider ────────────────────────────────────────────
-    doc.moveTo(ML, doc.y).lineTo(ML + CW, doc.y).strokeColor(BLUE).lineWidth(1.8).stroke()
+    if (T.topRule) doc.moveTo(ML, doc.y).lineTo(ML + CW, doc.y).strokeColor(BLUE).lineWidth(T.topRule).stroke()
     doc.moveDown(0.55)
 
     // ── Body ──────────────────────────────────────────────────────────
@@ -365,10 +391,10 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
         afterDateLine = false
         firstEntryInSection = true
         doc.moveDown(0.5)
-        doc.fontSize(10.5).font('Helvetica-Bold').fillColor(NAVY)
-          .text(headerText, ML, doc.y, { align: 'center', width: CW })
+        doc.fontSize(T.headingSize).font(F.bold).fillColor(T.colors.heading)
+          .text(headerText, ML, doc.y, { align: T.headingAlign, width: CW })
         const ry = doc.y + 2
-        doc.moveTo(ML, ry).lineTo(ML + CW, ry).strokeColor(BLUE).lineWidth(0.5).stroke()
+        if (T.headingRule) doc.moveTo(ML, ry).lineTo(ML + CW, ry).strokeColor(BLUE).lineWidth(T.headingRule).stroke()
         doc.moveDown(0.4)
         continue
       }
@@ -381,7 +407,7 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
 
       // Education sub-lines (degree, date) — indented, smaller, grey, no bullet
       if (entryBullet && !entryStart && !isExplicitBullet) {
-        doc.fontSize(9.5).font('Helvetica').fillColor(GREY)
+        doc.fontSize(T.bodySize - 0.5).font(F.regular).fillColor(GREY)
           .text(t, ML + INDENT, doc.y, { width: CW - INDENT, lineGap: 1 })
         doc.moveDown(0.05)
         continue
@@ -390,7 +416,7 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
       // Company/location sub-line right after a role+date line
       if (afterDateLine && !isExplicitBullet && !isSectionHeader(t)) {
         afterDateLine = false
-        doc.fontSize(9.5).font('Helvetica-Oblique').fillColor(GREY)
+        doc.fontSize(T.bodySize - 0.5).font(F.italic).fillColor(GREY)
           .text(t, ML, doc.y, { width: CW, lineGap: 1 })
         doc.moveDown(0.12)
         continue
@@ -417,12 +443,12 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
         if (autoBullet && colonIdx > 0 && colonIdx < 45) {
           const label = bt.slice(0, colonIdx)
           const rest = bt.slice(colonIdx)
-          doc.fontSize(10).font('Helvetica-Bold').fillColor(BODY)
+          doc.fontSize(T.bodySize).font(F.bold).fillColor(BODY)
             .text(`•   ${label}`, ML + 8, doc.y, { width: CW - 8, continued: true })
-          doc.font('Helvetica')
+          doc.font(F.regular)
             .text(rest, { width: CW - 8, lineGap: 1.5 })
         } else {
-          doc.fontSize(10).font('Helvetica').fillColor(BODY)
+          doc.fontSize(T.bodySize).font(F.regular).fillColor(BODY)
             .text(`•   ${bt}`, ML + 8, doc.y, { width: CW - 8, lineGap: 1.5 })
         }
         doc.moveDown(0.1)
@@ -436,9 +462,9 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
         firstEntryInSection = false
         afterDateLine = true
         const { left, right } = dateSplit
-        doc.fontSize(11).font('Helvetica-Bold').fillColor(NAVY)
+        doc.fontSize(T.bodySize + 1).font(F.bold).fillColor(NAVY)
           .text(left, ML, doc.y, { width: CW, continued: true })
-        doc.fontSize(9.5).font('Helvetica').fillColor(LGREY)
+        doc.fontSize(T.bodySize - 0.5).font(F.regular).fillColor(LGREY)
           .text(`   ${right}`, { width: CW, align: 'right' })
         doc.moveDown(0.08)
         continue
@@ -449,10 +475,10 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
       if (peekNext && isDateOnlyLine(peekNext) && !isDateOnlyLine(t)) {
         if (!firstEntryInSection) doc.moveDown(0.35)
         firstEntryInSection = false
-        doc.fontSize(11).font('Helvetica-Bold').fillColor(NAVY)
+        doc.fontSize(T.bodySize + 1).font(F.bold).fillColor(NAVY)
           .text(t, ML, doc.y, { width: CW })
         idx++
-        doc.fontSize(9.5).font('Helvetica-Oblique').fillColor(LGREY)
+        doc.fontSize(T.bodySize - 0.5).font(F.italic).fillColor(LGREY)
           .text(peekNext, ML, doc.y, { width: CW })
         doc.moveDown(0.15)
         continue
@@ -460,14 +486,14 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks) {
 
       // Standalone date line (not preceded by a role heading — fallback)
       if (isDateOnlyLine(t)) {
-        doc.fontSize(9.5).font('Helvetica-Oblique').fillColor(LGREY)
+        doc.fontSize(T.bodySize - 0.5).font(F.italic).fillColor(LGREY)
           .text(t, ML, doc.y, { width: CW })
         doc.moveDown(0.1)
         continue
       }
 
       // Plain body line (summary prose, etc.)
-      doc.fontSize(10).font('Helvetica').fillColor(BODY)
+      doc.fontSize(T.bodySize).font(F.regular).fillColor(BODY)
         .text(t, ML, doc.y, { width: CW, lineGap: 1.5 })
     }
 
@@ -724,7 +750,7 @@ async function buildResumeFile(tailoredResume, cfg) {
     }
   }
 
-  return buildResumePDF(tailoredResume, candidateName, cfg?.personalLinks)
+  return buildResumePDF(tailoredResume, candidateName, cfg?.personalLinks, cfg?.resumeTemplate)
 }
 
 async function buildAnalyticsReportPDF(data) {
@@ -926,4 +952,4 @@ function safeConfig() {
   try { return require('../config').load() } catch { return null }
 }
 
-module.exports = { randomUserAgent, randomDelay, humanType, stripMarkdown, verifySubmission, confirmSubmission, detectBlock, blockReason, BlockedError, gotoResultsPage, buildResumePDF, buildResumeDocx, buildCoverLetterPDF, buildAnalyticsReportPDF, tailorDocx, buildResumeFile, createSelectorProbe, launchOptions, proxyFor }
+module.exports = { RESUME_TEMPLATES, randomUserAgent, randomDelay, humanType, stripMarkdown, verifySubmission, confirmSubmission, detectBlock, blockReason, BlockedError, gotoResultsPage, buildResumePDF, buildResumeDocx, buildCoverLetterPDF, buildAnalyticsReportPDF, tailorDocx, buildResumeFile, createSelectorProbe, launchOptions, proxyFor }

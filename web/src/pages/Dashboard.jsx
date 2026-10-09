@@ -3,6 +3,8 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 // src/statuses.js for why these stopped living in each page.
 import { statusBadge, SETTABLE_STATUSES, FILTER_TABS } from '../statuses'
 import GettingStarted from '../components/GettingStarted'
+import InterviewBrief from '../components/InterviewBrief'
+import ProposeTimes from '../components/ProposeTimes'
 import { exportCsv } from '../exportCsv'
 
 function safeParseJSON(str) {
@@ -290,6 +292,13 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [resumeExpanded, setResumeExpanded] = useState(false)
   const [interviewQuestions, setInterviewQuestions] = useState(null)
+  // The application whose interview brief is open, if any.
+  const [briefFor, setBriefFor] = useState(null)
+  // The application whose "when are you free" reply is being drafted.
+  const [proposeFor, setProposeFor] = useState(null)
+  // Recent news about the selected application's employer.
+  const [companyNews, setCompanyNews] = useState(null)
+  const [loadingNews, setLoadingNews] = useState(false)
   // Whether the prep that was just generated actually drew on the employer's
   // replies. Worth saying out loud — questions built from the correspondence
   // are a different thing from questions built from the job ad.
@@ -710,6 +719,8 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
 
   return (
     <div>
+      {briefFor && <InterviewBrief applicationId={briefFor} onClose={() => setBriefFor(null)} showToast={showToast} />}
+      {proposeFor && <ProposeTimes applicationId={proposeFor} onClose={() => setProposeFor(null)} showToast={showToast} />}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700 }}>Dashboard</h1>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -1048,6 +1059,11 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                     background: days <= 1 ? 'var(--green)' : 'var(--surface)',
                     color: days <= 1 ? '#fff' : 'var(--text-muted)',
                   }}>{rel}</span>
+                  <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }}
+                    onClick={(e) => { e.stopPropagation(); setBriefFor(iv.application_id) }}
+                    title="Everything for this interview on one page: what they said, recent news, likely questions and your answers">
+                    Brief
+                  </button>
                   <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }}
                     onClick={async (e) => {
                       e.stopPropagation()
@@ -1444,6 +1460,29 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                     }
                   }}>
                   {loadingQuestions ? 'Generating...' : 'Interview Questions'}
+                </button>
+              )}
+              <button className="btn btn-ghost" style={{ fontSize: 12 }}
+                disabled={loadingNews}
+                onClick={async () => {
+                  setLoadingNews(true)
+                  const res = await window.api.getCompanyResearch(selected.company)
+                  setLoadingNews(false)
+                  setCompanyNews(res?.success ? { company: selected.company, ...res.research } : { company: selected.company, error: res?.error || 'Could not look that up' })
+                }}>
+                {loadingNews ? 'Searching…' : 'Company News'}
+              </button>
+              {['interview', 'offer'].includes(selected.status) && (
+                <button className="btn btn-ghost" style={{ fontSize: 12 }}
+                  onClick={() => setBriefFor(selected.id)}>
+                  Interview Brief
+                </button>
+              )}
+              {['interview', 'pending'].includes(selected.status) && (
+                <button className="btn btn-ghost" style={{ fontSize: 12 }}
+                  onClick={() => setProposeFor(selected.id)}
+                  title="Find free times in your calendar and draft a reply offering them">
+                  Propose Times
                 </button>
               )}
               {selected.job_description && (
@@ -1869,6 +1908,22 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                     </div>
                   </details>
                 ))}
+              </div>
+            )}
+
+            {companyNews && companyNews.company === selected.company && (
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ marginBottom: 6 }}>In the news — {companyNews.company}</label>
+                {companyNews.error && <div style={{ fontSize: 12, color: 'var(--red)' }}>{companyNews.error}</div>}
+                {companyNews.summary && <div style={{ fontSize: 13, whiteSpace: 'pre-wrap', marginBottom: 8 }}>{companyNews.summary}</div>}
+                {companyNews.headlines?.length ? (
+                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12 }}>
+                    {companyNews.headlines.map((h, i) => (
+                      <li key={i}><a href={h.url} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>{h.title}</a>
+                        <span style={{ color: 'var(--text-muted)' }}> — {h.source ? `${h.source}, ` : ''}{h.date}</span></li>
+                    ))}
+                  </ul>
+                ) : !companyNews.error && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No headlines from the last year.</div>}
               </div>
             )}
 

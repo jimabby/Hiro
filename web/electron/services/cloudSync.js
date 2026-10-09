@@ -764,8 +764,14 @@ async function pollReviewRequests(c) {
       await onRemoteReview(request)
       logger.append(`Cloud review: ${request.action} processed for application ${request.application_local_id}`)
     } catch (err) {
-      // A browser session may be temporarily unavailable. Put the command back
-      // rather than turning a phone's visible "queued" confirmation into loss.
+      // A desktop that is busy right now is worth asking again: put the
+      // command back rather than turning the phone's "queued" into loss. Any
+      // other failure is final — re-queuing it meant the same doomed approval
+      // was retried on every sync, forever.
+      if (!err.retryable) {
+        logger.append(`Cloud review for application ${request.application_local_id} not completed: ${err.message}`)
+        continue
+      }
       await c.from('review_requests').upsert({
         id: request.id, user_id: user.id, application_local_id: request.application_local_id,
         action: request.action,
@@ -1199,4 +1205,5 @@ module.exports = {
   // exported for tests
   ensureSession, expiryOf,
   _resetSession: () => { user = null; sessionExpiresAt = 0 },
+  _pollReviewRequests: (c, testUser, handler) => { user = testUser; onRemoteReview = handler; return pollReviewRequests(c) },
 }

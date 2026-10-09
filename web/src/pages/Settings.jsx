@@ -5,6 +5,8 @@ import { answerAgeDays } from './settings/answerAge'
 import { MailServers } from './settings/MailServers'
 import { ParseCheck } from './settings/ParseCheck'
 import { ApplicationProfile } from './settings/ApplicationProfile'
+import { ContactDetails } from './settings/ContactDetails'
+import { ResumeTemplate } from './settings/ResumeTemplate'
 import { ProxySettings } from './settings/ProxySettings'
 import { AnswerBank } from './settings/AnswerBank'
 import { AtsBoards } from './settings/AtsBoards'
@@ -49,6 +51,14 @@ export default function Settings({ showToast, active }) {
   const [improvingId, setImprovingId] = useState(null)
   const [improveModal, setImproveModal] = useState(null) // { sourceId, sourceName, text }
   const [testingAi, setTestingAi] = useState(false)
+  // The writing-model menu for Claude / ChatGPT / DeepSeek, from the main
+  // process so the renderer and the adapters cannot disagree about defaults.
+  const [modelMenu, setModelMenu] = useState(null)
+  useEffect(() => {
+    let live = true
+    window.api.getModelChoices?.().then(m => { if (live) setModelMenu(m || null) }).catch(() => {})
+    return () => { live = false }
+  }, [])
   const [testingEmail, setTestingEmail] = useState(false)
   const [aiResult, setAiResult] = useState(null)
   const [emailResult, setEmailResult] = useState(null)
@@ -235,9 +245,11 @@ export default function Settings({ showToast, active }) {
 
   async function testAI() {
     setTestingAi(true); setAiResult(null)
-    // A local server names its own model in the same argument slot Gemini uses
-    // — see NAMES_OWN_MODEL in services/ai/index.js.
-    const model = form.aiProvider === 'local' ? form.localAiModel : form.geminiModel
+    // Test the model on screen for this provider, so a mistyped id fails here
+    // rather than on the first scan.
+    const model = form.aiProvider === 'local' ? form.localAiModel
+      : form.aiProvider === 'gemini' ? form.geminiModel
+      : (form.aiWritingModel?.[form.aiProvider] || '')
     const res = await window.api.testAiConnection(form.aiProvider, form.aiApiKey, model)
     setTestingAi(false); setAiResult(res)
   }
@@ -364,6 +376,26 @@ export default function Settings({ showToast, active }) {
               </span>
             </div>
           </>
+        )}
+        {['claude', 'chatgpt', 'deepseek'].includes(form.aiProvider) && (
+          <div className="form-group">
+            <label htmlFor="set-writing-model">Writing model</label>
+            <input id="set-writing-model" list="set-writing-model-options"
+              value={form.aiWritingModel?.[form.aiProvider] || ''}
+              onChange={e => set('aiWritingModel', { ...(form.aiWritingModel || {}), [form.aiProvider]: e.target.value.trim() })}
+              placeholder={modelMenu?.defaults?.[form.aiProvider]?.smart || 'Default'}
+            />
+            <datalist id="set-writing-model-options">
+              {(modelMenu?.choices?.[form.aiProvider] || []).map(c => (
+                <option key={c.id} value={c.id}>{c.label}</option>
+              ))}
+            </datalist>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              Writes your résumés and cover letters. Leave blank for the default. Scoring and
+              classification stay on the provider's cheaper model. Analytics compares documents
+              by the model that wrote them, so a change here starts a fresh comparison.
+            </span>
+          </div>
         )}
         {form.aiProvider === 'gemini' && (
           <div className="form-group">
@@ -502,6 +534,27 @@ export default function Settings({ showToast, active }) {
             <span style={{ color: emailResult.success ? 'var(--green)' : 'var(--red)', fontSize: 13 }}>
               {emailResult.success ? '✓ Connected' : `✗ ${emailResult.error}`}
             </span>
+          )}
+        </div>
+
+        {/* Job alerts as a source of listings */}
+        <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: 4 }}>
+            <input type="checkbox" style={{ width: 'auto' }} checked={!!form.jobAlertsEnabled}
+              onChange={e => set('jobAlertsEnabled', e.target.checked)} />
+            Find jobs in my LinkedIn, Seek and Indeed alert emails
+          </label>
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '0 0 8px 22px' }}>
+            Each scan reads the job-alert emails these boards send you and scores the listings in them
+            alongside what the search finds. Set up the alerts on each board as usual; only mail from the
+            boards themselves is read. A board's listings are only used when that board is turned on above.
+          </p>
+          {form.jobAlertsEnabled && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', margin: '0 0 0 22px', fontSize: 12 }}>
+              <input type="checkbox" style={{ width: 'auto' }} checked={!!form.jobAlertsOnly}
+                onChange={e => set('jobAlertsOnly', e.target.checked)} />
+              Use alerts instead of searching — never load the boards' search pages (fewer CAPTCHAs and blocks)
+            </label>
           )}
         </div>
 
@@ -900,6 +953,35 @@ export default function Settings({ showToast, active }) {
               }}>Disconnect</button>
           </>
         )}
+      </div>
+
+      {/* Hours offered when proposing interview times (services/availability.js). */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <h3 style={{ marginBottom: 6, fontSize: 15 }}>Interview Availability</h3>
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+          Used by <strong>Propose Times</strong> when a recruiter asks when you are free. Slots are checked
+          against your connected calendar and every interview in Hiro; nothing is sent for you.
+        </p>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          <div className="form-group">
+            <label htmlFor="avail-start">From</label>
+            <input id="avail-start" type="time" value={form.availabilityStart || '09:00'} onChange={e => set('availabilityStart', e.target.value)} />
+          </div>
+          <div className="form-group">
+            <label htmlFor="avail-end">Until</label>
+            <input id="avail-end" type="time" value={form.availabilityEnd || '17:00'} onChange={e => set('availabilityEnd', e.target.value)} />
+          </div>
+          <div className="form-group">
+            <label htmlFor="avail-duration">Length (minutes)</label>
+            <input id="avail-duration" type="number" min="15" max="240" step="15" value={form.availabilityDurationMin ?? 45}
+              onChange={e => set('availabilityDurationMin', Number(e.target.value))} />
+          </div>
+          <div className="form-group">
+            <label htmlFor="avail-days">Look ahead (days)</label>
+            <input id="avail-days" type="number" min="1" max="21" value={form.availabilityDays ?? 7}
+              onChange={e => set('availabilityDays', Number(e.target.value))} />
+          </div>
+        </div>
       </div>
 
       {/* Webhook Notifications */}
@@ -1458,6 +1540,12 @@ export default function Settings({ showToast, active }) {
 
       {/* The facts every form asks for, answered without a model call. */}
       <ApplicationProfile form={form} set={set} />
+
+      {/* Name, email and phone for career-site forms Hiro fills. */}
+      <ContactDetails form={form} set={set} />
+
+      {/* The layout of generated résumé PDFs. */}
+      <ResumeTemplate form={form} set={set} onPreview={setPdfModal} showToast={showToast} />
 
       {/* Answers worked out once, kept for the next time the question comes up. */}
       <AnswerBank showToast={showToast} />

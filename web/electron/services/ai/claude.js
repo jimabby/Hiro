@@ -3,20 +3,51 @@ const { withUsage } = require('./usage')
 const { interviewQuestionsPrompt, followUpEmailPrompt, counterOfferPrompt, interviewAnswerPrompt } = require('./prompts')
 const { fence, FENCE_RULES } = require('./untrusted')
 const { parseScore, parseScoreWithExplanation } = require('./scoring')
+const { smartModel, fastModel } = require('./models')
 
-// Two tiers, named so a model change is one edit rather than thirteen.
-//   FAST  — short, structured, cheap: connection tests, scores, labels, lists.
-//   SMART — long-form writing quality matters: resumes, cover letters, prep.
-const FAST_MODEL = 'claude-haiku-4-5'
-const SMART_MODEL = 'claude-sonnet-5'
+// Two tiers. The models themselves are chosen in ./models.js — the writing
+// tier is the user's choice in Settings — so a new generation is a menu entry,
+// not an edit here.
+//   fast()  — short, structured, cheap: connection tests, scores, labels, lists.
+//   smart() — long-form writing quality matters: resumes, cover letters, prep.
+//
+// None of these calls benefit from a reasoning trace (they are single-shot
+// rewrites returning bounded text), and max_tokens caps thinking AND response
+// together — so a request sized for the answer alone can come back as nothing
+// but truncated reasoning. Thinking is therefore kept to the lowest setting each
+// model ACCEPTS, which differs by model and is a 400 when it is wrong:
+//   - Sonnet 5.5 rejects {type:'disabled'}; its off switch is 'between_tools'.
+//   - Opus 5.5 and Fable cannot turn thinking off at all; low effort is the
+//     lever, and the request gets headroom for the thinking it will do.
+//   - Haiku 5.5 (at its default effort), Sonnet 5, Opus 5 and the 4.x models
+//     accept {type:'disabled'}.
+function requestShape(model) {
+  if (/^claude-sonnet-5-5/.test(model)) return { model, thinking: { type: 'between_tools' } }
+  if (/^claude-(opus-5-5|fable|mythos)/.test(model)) return { model, output_config: { effort: 'low' }, thinkingHeadroom: 4000 }
+  return { model, thinking: { type: 'disabled' } }
+}
 
-// Claude Sonnet 5 runs adaptive thinking when `thinking` is omitted, and
-// max_tokens caps thinking AND response text together — so a request sized for
-// the answer alone can return nothing but truncated reasoning. None of these
-// calls benefit from a reasoning trace (they're single-shot rewrites returning
-// bounded text), so thinking is switched off explicitly rather than by leaving
-// the parameter out.
-const SMART = { model: SMART_MODEL, thinking: { type: 'disabled' } }
+const fast = () => requestShape(fastModel('claude'))
+const smart = () => requestShape(smartModel('claude'))
+
+// Server-side fallback re-runs a declined request on another model inside the
+// same call. Claude API only, and only the models that support it; Haiku has
+// no server-side fallback.
+function supportsServerFallback(model) {
+  return /^claude-(sonnet-5-5|opus-5-5|opus-5$|fable)/.test(model)
+}
+
+// A request the model declined. Not retryable — the same input gets the same
+// answer — and it must never be read as an empty document: an empty tailored
+// résumé is worse than none.
+class RefusalError extends Error {
+  constructor(category) {
+    super(`The model declined this request${category ? ` (${category})` : ''}. Try again with a different AI model in Settings.`)
+    this.name = 'RefusalError'
+    this.refusal = true
+    this.category = category || null
+  }
+}
 
 // Strip markdown code fences that AI models sometimes wrap JSON in
 function parseJSON(text) {
@@ -27,22 +58,29 @@ function parseJSON(text) {
 // Single entry point for every request. Routing all of them through withUsage
 // means retry/backoff, the monthly budget cap and cost accounting are applied
 // uniformly instead of being remembered at thirteen call sites.
-async function complete(operation, apiKey, params) {
+async function complete(operation, apiKey, shapedParams) {
+  const { thinkingHeadroom = 0, ...params } = shapedParams
+  if (thinkingHeadroom) params.max_tokens = (params.max_tokens || 0) + thinkingHeadroom
   return withUsage(operation, 'claude', async () => {
     const client = new Anthropic({ apiKey })
-    const response = await client.messages.create(params)
-    // With thinking disabled the first block is the text; be defensive anyway
-    // so a future response shape can't throw a TypeError mid-scan.
-    const text = response.content?.find(b => b.type === 'text')?.text
-      ?? response.content?.[0]?.text
-      ?? ''
-    return { value: text, model: params.model, usage: response.usage }
+    const response = supportsServerFallback(params.model)
+      ? await client.beta.messages.create({ ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' })
+      : await client.messages.create(params)
+    // A decline is an HTTP 200 with stop_reason 'refusal' — check before
+    // reading content, or a refusal reads as an empty answer.
+    if (response.stop_reason === 'refusal') throw new RefusalError(response.stop_details?.category)
+    // Read by block type, not position: a response can open with a thinking
+    // or progress-update block.
+    const text = response.content?.find(b => b.type === 'text')?.text ?? ''
+    return { value: text, model: response.model || params.model, usage: response.usage }
   })
 }
 
-async function testConnection(apiKey) {
+async function testConnection(apiKey, model) {
+  // Tests the model the user picked when one is given, so a mistyped model id
+  // fails here rather than on the first scan.
   await complete('testConnection', apiKey, {
-    model: FAST_MODEL,
+    ...(model ? requestShape(model) : fast()),
     max_tokens: 10,
     messages: [{ role: 'user', content: 'hi' }],
   })
@@ -50,7 +88,7 @@ async function testConnection(apiKey) {
 
 async function tailorResume(jobDescription, masterResume, apiKey) {
   const text = await complete('tailorResume', apiKey, {
-    ...SMART,
+    ...smart(),
     max_tokens: 2000,
     messages: [{
       role: 'user',
@@ -73,7 +111,7 @@ ${masterResume}`,
 
 async function answerScreeningQuestion(question, jobDescription, masterResume, apiKey) {
   const text = await complete('answerScreeningQuestion', apiKey, {
-    model: FAST_MODEL,
+    ...fast(),
     max_tokens: 500,
     messages: [{
       role: 'user',
@@ -107,7 +145,7 @@ Return ONLY the answer, no commentary.`,
 
 async function generateTalkingPoints(jobDescription, masterResume, apiKey) {
   const text = await complete('generateTalkingPoints', apiKey, {
-    model: FAST_MODEL,
+    ...fast(),
     max_tokens: 600,
     messages: [{
       role: 'user',
@@ -128,7 +166,7 @@ RESUME: ${masterResume.slice(0, 1000)}`,
 
 async function scoreMatch(jobDescription, masterResume, apiKey) {
   const text = await complete('scoreMatch', apiKey, {
-    model: FAST_MODEL,
+    ...fast(),
     max_tokens: 50,
     messages: [{
       role: 'user',
@@ -151,7 +189,7 @@ async function generateCoverLetter(jobDescription, masterResume, apiKey, _gemini
   const toneInstruction = tone === 'casual' ? 'Write in a warm, approachable, conversational tone.' : tone === 'confident' ? 'Write with assertive, direct confidence — lead with impact.' : ''
   const templateInstruction = template ? `Use the following as the structural base, filling in job-specific details:\n\n${template}\n\n` : ''
   const text = await complete('generateCoverLetter', apiKey, {
-    ...SMART,
+    ...smart(),
     max_tokens: 800,
     messages: [{
       role: 'user',
@@ -180,7 +218,7 @@ ${masterResume}`,
 
 async function scoreMatchWithExplanation(jobDescription, masterResume, apiKey) {
   const text = await complete('scoreMatchWithExplanation', apiKey, {
-    model: FAST_MODEL,
+    ...fast(),
     max_tokens: 200,
     messages: [{ role: 'user', content: `Score how well this resume matches this job description.
 Return JSON only: { "score": 85, "explanation": "one sentence explanation" }
@@ -202,7 +240,7 @@ RESUME: ${masterResume.slice(0, 1000)}` }],
 
 async function generateInterviewQuestions(jobDescription, masterResume, apiKey, _model, replyContext) {
   const text = await complete('generateInterviewQuestions', apiKey, {
-    ...SMART,
+    ...smart(),
     max_tokens: 3000,
     messages: [{ role: 'user', content: interviewQuestionsPrompt(jobDescription, masterResume, replyContext) }],
   })
@@ -212,7 +250,7 @@ async function generateInterviewQuestions(jobDescription, masterResume, apiKey, 
 
 async function generateFollowUpQuestion(question, userAnswer, jobDescription, apiKey) {
   const text = await complete('generateFollowUpQuestion', apiKey, {
-    model: FAST_MODEL,
+    ...fast(),
     max_tokens: 300,
     messages: [{ role: 'user', content: `You are an interview coach. The candidate was asked this interview question and gave the answer below. Generate ONE follow-up probe question an interviewer might ask to dig deeper.
 Return ONLY the follow-up question text, nothing else.
@@ -226,7 +264,7 @@ JOB CONTEXT: ${(jobDescription || '').slice(0, 500)}` }],
 
 async function analyzeKeywordGap(jobDescription, masterResume, apiKey) {
   const text = await complete('analyzeKeywordGap', apiKey, {
-    model: FAST_MODEL,
+    ...fast(),
     max_tokens: 600,
     messages: [{ role: 'user', content: `Analyze which key skills and qualifications from this job are present or missing in this resume.
 Return JSON only, no code fences: { "missing": ["skill1", ...], "present": ["skill2", ...] }
@@ -241,7 +279,7 @@ RESUME: ${masterResume.slice(0, 800)}` }],
 
 async function generateFollowUpEmail(jobTitle, company, masterResume, apiKey, _model, stage) {
   const text = await complete('generateFollowUpEmail', apiKey, {
-    ...SMART,
+    ...smart(),
     max_tokens: 400,
     messages: [{ role: 'user', content: followUpEmailPrompt(jobTitle, company, masterResume, stage) }],
   })
@@ -250,7 +288,7 @@ async function generateFollowUpEmail(jobTitle, company, masterResume, apiKey, _m
 
 async function generateCounterOffer(input, apiKey) {
   return complete('generateCounterOffer', apiKey, {
-    ...SMART,
+    ...smart(),
     max_tokens: 700,
     messages: [{ role: 'user', content: counterOfferPrompt(input) }],
   })
@@ -258,7 +296,7 @@ async function generateCounterOffer(input, apiKey) {
 
 async function draftInterviewAnswer(input, apiKey) {
   return complete('draftInterviewAnswer', apiKey, {
-    ...SMART,
+    ...smart(),
     max_tokens: 600,
     messages: [{ role: 'user', content: interviewAnswerPrompt(input) }],
   })
@@ -266,7 +304,7 @@ async function draftInterviewAnswer(input, apiKey) {
 
 async function improveResume(resumeText, apiKey) {
   const text = await complete('improveResume', apiKey, {
-    ...SMART,
+    ...smart(),
     max_tokens: 4000,
     messages: [{
       role: 'user',
@@ -288,7 +326,7 @@ ${resumeText}`,
 // 'interview' | 'rejected' | 'offer' | 'pending'.
 async function classifyReply(subject, body, company, apiKey) {
   const text = await complete('classifyReply', apiKey, {
-    model: FAST_MODEL,
+    ...fast(),
     max_tokens: 10,
     messages: [{ role: 'user', content: `Classify this reply to a job application at "${company}" into exactly one label:
 - interview: invites/schedules an interview, phone screen, or call
@@ -308,4 +346,16 @@ ${fence('BODY', body, 1500)}` }],
   return (text || '').trim().toLowerCase()
 }
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply, generateCounterOffer, draftInterviewAnswer }
+// A free-form exchange for features that compose their own prompt (Ask Hiro,
+// company research, scheduling replies). `messages` alternate user/assistant;
+// `tier` picks the cheap model or the writing model.
+async function chat({ operation = 'chat', system = '', messages = [], maxTokens = 1200, tier = 'smart' }, apiKey) {
+  return complete(operation, apiKey, {
+    ...(tier === 'fast' ? fast() : smart()),
+    max_tokens: maxTokens,
+    ...(system ? { system } : {}),
+    messages: messages.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content || '') })),
+  })
+}
+
+module.exports = { chat, RefusalError, requestShape, testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply, generateCounterOffer, draftInterviewAnswer }

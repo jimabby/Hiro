@@ -5,6 +5,7 @@ import {
 } from 'react-native'
 import { radius, statusLabel, SETTABLE_STATUSES, useTheme, useStatusColors } from '../theme'
 import NextAction from '../components/NextAction'
+import InterviewBriefCard from '../components/InterviewBriefCard'
 import { formatFull } from '../dates'
 import { selection, success, failure } from '../haptics'
 
@@ -243,6 +244,10 @@ export default function ApplicationDetailScreen({ client, id, onBack, active = t
               <Text style={styles.cardTitle}>Match: {app.match_score}%</Text>
               {!!app.match_explanation && <Text style={styles.body}>{app.match_explanation}</Text>}
             </View>
+          )}
+
+          {['interview', 'offer'].includes(app.status) && client.getInterviewBrief && (
+            <InterviewBriefCard client={client} applicationId={app.id} />
           )}
 
           {app.status !== 'held' && <View style={styles.card}>

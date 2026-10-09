@@ -7,11 +7,13 @@
 ## Features
 
 ### Automation
+- **Job-alert emails as a source** *(optional)* — LinkedIn, Seek and Indeed already email you new matches from your saved searches, with no bot defences in the way. Hiro reads those alerts from the mailbox it already checks, pulls the job links out of them (through the boards' tracking redirects), and scores them alongside what the search finds. Only mail from the boards' own domains is read, and only links shaped like a posting on that board are taken. With **alerts instead of searching** on, the boards' search pages are never loaded at all — the fix for a platform that keeps throwing CAPTCHAs. A listing whose email names no company is looked up from the posting's own `JobPosting` data, and dropped rather than guessed if that fails, since company-level rules (blacklist, cooldown, duplicates) cannot apply to it
 - **Multi-platform scraping** — Seek, Indeed, LinkedIn (with stealth session login), walking a configurable number of result pages per scan (default 3) so repeat scans keep finding new listings instead of re-reading the same first page
 - **Indeed in your country** — choose which Indeed to search (Australia, New Zealand, the US, Canada, the UK, Ireland, Singapore, India, Germany or the Netherlands). The login window opens on the same country, since each one keeps its own session
 - **Excluded keywords** — words that rule a job out by its title or company ("senior, clearance, recruitment"), checked before any AI call so an excluded listing costs nothing. Whole words only: "lead" does not exclude "Leadership"
 - **Remote / hybrid preference** — remote only, or remote or hybrid. Read from the listing first, then the description, before scoring. An ad that never says where the work happens is kept, because silently dropping a real job is the costlier mistake
 - **Company career boards** — watch specific employers directly on Greenhouse, Lever, Ashby, Workable, Recruitee, SmartRecruiters, **Workday**, **BambooHR**, **Personio** or **iCIMS**. Workday is the largest enterprise ATS by a wide margin, and a lot of real openings were invisible without it; it is identified by the careers URL rather than a name, because the data centre in that URL (wd1, wd3, wd5…) differs per employer and cannot be guessed. iCIMS was excluded for years and is the exception that proves the rule: it still publishes no free JSON board API, so only the *discovery* step reads markup, and every job's title, description, company and location come from the `schema.org/JobPosting` block iCIMS puts on each posting — a W3C standard, not an employer's template. The objection that kept it out was that a restyled page would report as "this company has no openings"; that is now answered rather than tolerated, because the results container is emitted even for a search that matched nothing, so an empty board and a moved template are told apart and only the second one raises. These publish structured JSON, need no login, and have no bot defenses, so they're far steadier than the aggregators. Their application forms are custom per company and can't be automated, so matches land in Needs Attention with the tailored resume and cover letter already written. Boards are validated when you add them, so a typo in the slug is caught immediately rather than as an empty scan three days later
+- **Fill Application on company career sites** — career-board matches used to end in Needs Attention with "open the posting and paste". Fill Application opens the form in a visible browser and fills what Hiro knows: name, email, phone and links (from Settings, or read off your résumé), the tailored résumé and cover letter as uploads or text, and screening questions through the same profile → cache → model path the auto-apply scrapers use, with the fabrication check on every model answer. Greenhouse, Lever, Ashby and Workday render one layout for every employer, so they fill most completely; multi-page forms get a **Fill this page** button for each step. Three things it never does: press Submit (you review and send it), answer equal-opportunity questions or tick consent boxes (those are your statements to make), and overwrite anything already in a field. What it left is outlined in amber and listed in a panel on the page, along with anything the fabrication guard objected to. When the platform's confirmation page appears the application is recorded as Applied; otherwise Hiro asks whether you sent it
 - **Review before submit** *(optional)* — draft everything, send nothing. Jobs clearing the match threshold are fully prepared and held on the Review page until you approve them. Approving submits the documents already written, so it costs no extra AI calls. Rejecting files the job as skipped so it isn't re-drafted
 - **Edit a held draft before approving it** — fix the one line the fabrication guard objected to rather than throwing the whole draft away. The edit is re-checked against the same base résumé, so a removed claim visibly clears its flag, and it is kept as its own version in the history
 - **Bulk runs can be stopped** — approving or retrying many jobs at once shows a *Stop after this one* button; the submission in hand finishes and the rest are left untouched
@@ -120,7 +122,14 @@ pipeline was for, and the one the rest of the app had nothing to say about.
 - **ATS readability check** — Keyword Gap says whether the résumé says the right things; this says whether a machine can read it at all. Your document is run back through the same parsers an applicant tracking system uses, and what comes out is shown to you. It catches the failure that is silent by construction: a two-column layout, a contact block in a Word header, or a résumé built from a table looks immaculate on screen and comes out of a parser as interleaved fragments, or with no phone number, or as three characters of text — and the rejection arrives with no feedback attached, so someone can send two hundred applications into it. Advisory only: it never blocks a submission and never edits a document
 - **Blacklist Company** — instantly exclude a company from all future scans
 - **Which version won** — the version history already showed what changed between two drafts; the version that was live when the application reached interview is now marked, so a rewrite can be judged on its result rather than on how the diff reads
-- **Full tailored resume and screening Q&A** — download resume as DOCX
+- **Full tailored resume and screening Q&A** — download the resume as DOCX or PDF, in the résumé layout chosen in Settings
+- **Interview brief** — one page for the night before: when (with the employer's own time zone if they wrote one), your notes, what they said, what has been in the news, the likely questions with your saved answers or a draft, and questions to ask them. Prepared automatically the evening before each interview (from 6pm by default) and sent to your phone; the likely questions and the news are fetched once and cached, so opening it again costs nothing
+- **Company news** — recent headlines about the employer from Google News, with a short summary. The model sees only the headlines (fenced as untrusted text, told to add nothing), and the headlines are always shown beside the summary so it can be checked
+- **Propose times** — when a recruiter asks when you are free, Hiro reads the busy time in your connected calendar (the primary calendar as well as Hiro's own) and every interview it knows about, finds slots inside your working hours spread across the coming days, and drafts the reply. The reply is a template rather than model output, so the times in it are exactly the ones that were checked. Nothing is sent: copy it, or open it in your mail app
+
+### Ask Hiro
+- **Questions about your own search, in plain words** — "which applications have gone quiet?", "what do I owe this week?", "which platform gets me interviews?". Answered from a snapshot of your applications, interviews and offers (never your documents), fenced as untrusted text since titles and company names come from job ads, with instructions to say so when the data does not hold the answer
+- **It suggests; you act** — the assistant can propose at most two actions: a scan with given keywords, opening a page, or opening one of your applications. Each appears as a button. Anything else it proposes is dropped, and a scan started this way holds its drafts for review like a phone request does
 
 ### Analytics & Timeline
 - **Every chart carries its numbers** — each one has a "Show data" table and a CSV export, and is labelled for screen readers with a summary of what it actually shows rather than what kind of chart it is. The picture and the table are built from one source, so they cannot drift apart. Before this the page was almost entirely SVG, which is to say almost entirely invisible to assistive technology, and the only way to get the underlying figures was to re-derive them from the applications export
@@ -135,6 +144,10 @@ pipeline was for, and the one the rest of the app had nothing to say about.
 - **Timeline page** — collapsible day-by-day history of all applications grouped by platform. Days are local calendar days: the "Today" / "Yesterday" labels compare dates rather than dividing hours, so they read correctly in the morning, and both ways of expanding a day (one at a time, or Expand All) convert local midnight to UTC before querying, so they show the same jobs
 
 ### Settings
+- **Writing model** — choose the model that writes résumés and cover letters for Claude, ChatGPT or DeepSeek (Claude Sonnet 5.5 by default; Opus 5.5 for stronger writing, Haiku 5.5 for the lowest cost), or type a newer model's id. Scoring and classification stay on the provider's cheap model. The connection test checks the model you picked, and the model recorded against each application is the one that actually wrote it — so "which version won" compares like with like
+- **Résumé layout** — Classic, Modern, Compact or Traditional for every résumé PDF Hiro builds, with a preview using your own résumé. All use the PDF standard fonts that applicant tracking systems read reliably
+- **Contact details** — name, email, phone and location for career-site forms; blank fields are read off your résumé
+- **Interview availability** — working hours, slot length and how far ahead Propose Times looks
 - **Cover letter tone** — Professional, Casual & Warm, or Confident & Direct
 - **Cover letter template** — optional structural base for AI to fill in
 - **Daily scan time picker** — choose exactly when the automated scan runs
@@ -166,6 +179,8 @@ pipeline was for, and the one the rest of the app had nothing to say about.
 - **Trigger a scan from your phone** — queue a scan (with optional keyword override); over LAN it runs on the desktop immediately (or the moment the desktop is next turned on), and over the cloud the desktop picks it up on its next sync cycle (~2 minutes) — so you can kick off a scan from anywhere. Requests are saved on the phone if neither is reachable and delivered automatically later
 - **Watch scans live** — while the desktop scans, the phone shows a live "scanning now…" indicator (works over the cloud too) and, over Wi-Fi, a real-time feed of the desktop's activity log with a remote **Cancel scan** button. Polling stops when the app is backgrounded, and gives up with a "lost contact with the desktop" note rather than spinning forever if the desktop goes away mid-scan
 - **See what is on the table** — the Offers board, with its deadlines, on the phone
+- **Approve drafts in batches** — filter Applications to Held, tick up to ten drafts (or Select all) and approve them behind one confirmation; the desktop submits them a few seconds apart. Paired phones only — never the browser extension or the old shared token — and drafts Hiro flagged, or career-board drafts, stay on the desktop, where the evidence for approving them is. The same rules apply to approvals queued over the cloud, and an approval that can never succeed is now reported once instead of being retried on every sync
+- **Interview brief on the phone** — the night-before brief on any application at interview or offer stage, opened from its notification. Read-only: the phone never makes the desktop spend on generating it
 - **Push notifications** — recruiter replies, interview reminders, offers about to expire, follow-ups coming due, closing dates, review-queue items and failed scans, sent by your desktop while you are away from it. Tapping one opens what it was about
 - **Light and dark, following the phone** — the companion app tracks the phone's own appearance setting rather than staying dark, which is what a phone that switches itself at sunset needs
 - **Follow-ups from your phone** — book or clear a next action on any application, one tap for the usual intervals or an exact date from the calendar; due and overdue ones lead the dashboard
@@ -205,7 +220,7 @@ Hiro/
 | Database | sql.js (WebAssembly SQLite, no native build required) |
 | Scraping | Playwright + playwright-extra + stealth plugin (Chromium) |
 | Scheduling | node-cron |
-| Email | Nodemailer (Gmail SMTP) |
+| Email | Nodemailer (SMTP) and ImapFlow (IMAP) — any provider |
 | AI | Claude / ChatGPT / DeepSeek / Gemini (user's choice) |
 
 ---
@@ -326,8 +341,8 @@ Sessions are stored at `~/.hiro/` and reused automatically.
 
 | Provider | Notes |
 |---|---|
-| Claude (Anthropic) | Recommended. Best at resume tailoring and cover letters |
-| ChatGPT (OpenAI) | GPT-4o or GPT-4-turbo work well |
+| Claude (Anthropic) | Recommended. Best at resume tailoring and cover letters. Sonnet 5.5 writes, Haiku 5.5 scores; Opus 5.5 can be chosen as the writing model |
+| ChatGPT (OpenAI) | GPT-4o by default; GPT-4.1 and the GPT-5 reasoning models can be chosen as the writing model |
 | DeepSeek | Cost-effective option |
 | Gemini (Google) | Enter your model name (e.g. `gemini-2.5-flash`) — check [aistudio.google.com](https://aistudio.google.com) for available models |
 | Local model | Any OpenAI-compatible server on your machine — Ollama, LM Studio, llama.cpp. No API key, no bill, nothing leaves the device |
@@ -367,7 +382,7 @@ that catches it.
 
 ```bash
 cd web
-npm test              # 72 hermetic main-process suites + the renderer suites  (~40s)
+npm test              # 94 hermetic main-process suites + the renderer suites  (~60s)
 npm run test:main     # just the main-process suites (plain node)
 npm run test:renderer # just the renderer suites (vitest + jsdom)
 npm run lint

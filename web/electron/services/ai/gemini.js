@@ -228,4 +228,14 @@ ${fence('BODY', body, 1500)}`)
   return (text || '').trim().toLowerCase()
 }
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply, generateCounterOffer, draftInterviewAnswer }
+// See claude.js chat(). Gemini names the assistant role 'model'; the system
+// prompt is sent as systemInstruction.
+async function chat({ operation = 'chat', system = '', messages = [], maxTokens = 1200 }, apiKey, modelName) {
+  return complete(operation, apiKey, modelName, {
+    ...(system ? { systemInstruction: { role: 'system', parts: [{ text: system }] } } : {}),
+    contents: messages.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: String(m.content || '') }] })),
+    generationConfig: { maxOutputTokens: maxTokens },
+  })
+}
+
+module.exports = { chat, testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply, generateCounterOffer, draftInterviewAnswer }

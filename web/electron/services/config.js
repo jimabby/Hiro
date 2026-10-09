@@ -136,6 +136,11 @@ const DEFAULTS = {
   aiProvider: '',
   aiApiKey: '',
   geminiModel: '',
+  // The model that writes résumés and cover letters, per provider, for the
+  // providers Hiro names models for (Claude, ChatGPT, DeepSeek). Blank means
+  // the default in services/ai/models.js. Gemini and local models keep their
+  // own fields below.
+  aiWritingModel: {},
   // ─── Local model (aiProvider: 'local') ─────────────────────────
   // An OpenAI-compatible server on this machine — Ollama, LM Studio,
   // llama.cpp. Nothing leaves the device and nothing is billed. See
@@ -242,6 +247,21 @@ const DEFAULTS = {
   inboxCheckWeekdaysOnly: false,
   inboxCheckHours: 2,
   lastInboxCheck: null,
+  // ─── Proposing interview times (services/availability.js) ───────
+  availabilityStart: '09:00',
+  availabilityEnd: '17:00',
+  availabilityDurationMin: 45,
+  availabilityDays: 7,
+  // ─── Interview brief (services/interviewBrief.js) ───────────────
+  // Prepared and announced the evening before each interview, from this hour.
+  interviewBriefEnabled: true,
+  interviewBriefHour: 18,
+  // ─── Job alerts (services/jobAlerts.js) ────────────────────────
+  // Read LinkedIn / Seek / Indeed alert emails as a source of listings.
+  jobAlertsEnabled: false,
+  // Use the alerts INSTEAD of loading the boards' search pages.
+  jobAlertsOnly: false,
+  lastJobAlertCheck: null,
   // After this many days with no reply, an application moves to 'no_response'
   // so it stops inflating the response-rate denominator. 0 disables the sweep
   // and leaves everything at 'applied' indefinitely.
@@ -251,6 +271,11 @@ const DEFAULTS = {
   // stale within days.
   scrapePages: 3,
   personalLinks: { portfolio: '', github: '', linkedin: '' },
+  // Layout of generated résumé PDFs — see RESUME_TEMPLATES in scraper/utils.js.
+  resumeTemplate: 'classic',
+  // For career-site forms (services/formAssist). Blank fields are read off the
+  // résumé; see services/contactDetails.js.
+  contactDetails: { fullName: '', email: '', phone: '', location: '' },
   webhooks: [],
   enableWeeklyReport: false,
   enableDesktopNotifications: true,

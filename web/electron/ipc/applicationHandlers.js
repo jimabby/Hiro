@@ -178,6 +178,27 @@ function registerApplicationHandlers({ ipcMain, scheduler, getWindow }) {
   // Stop a bulk approve or bulk retry after the submission in hand.
   ipcMain.handle('apply:cancelBulk', () => applicator.cancelBulk())
 
+  // ─── Fill a career-site form, submit by hand ─────────────────────
+  // Resolves when the browser window closes. `source` is 'attention' or 'held'.
+  // Résumé routing applies exactly as it does to an automatic apply.
+  const formAssist = require('../services/formAssist')
+  const resolveCfg = (cfg, job) => applicator.resolveActiveResume(cfg, job, attentionLog)
+  ipcMain.handle('formAssist:open', async (_, source, id) => {
+    try {
+      return await formAssist.open({ source, id }, { log: attentionLog, resolveCfg })
+    } catch (err) {
+      return { success: false, reason: err.message }
+    }
+  })
+  // The person says they sent it, when the confirmation page was not seen.
+  ipcMain.handle('formAssist:markSubmitted', (_, payload) => {
+    try {
+      return formAssist.markSubmitted(payload || {}, { resolveCfg })
+    } catch (err) {
+      return { success: false, reason: err.message }
+    }
+  })
+
   function attentionLog(msg) {
     logger.append(`[attention-apply] ${msg}`)
     if (getWindow() && !getWindow().isDestroyed()) {

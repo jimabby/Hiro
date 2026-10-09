@@ -374,6 +374,16 @@ app.whenReady().then(async () => {
   if (cfg.launchOnLogin) tray.applyLoginItem(true, { startMinimised: cfg.startMinimised })
 
   scheduler.init(mainWindow)
+  // Batch approval from a paired phone (services/phoneReview.js). Started and
+  // left to run: the phone is answered at once and watches the held list drain.
+  mobileApi.setApproveHandler((ids, device) => {
+    if (applicator.isBusy()) return { ok: false, reason: 'A scan or another apply is running on the desktop — try again when it finishes.' }
+    reviewLog(`Approving ${ids.length} draft(s) requested from ${device?.name || 'a phone'}`)
+    applicator.approveHeldApplications(ids, configService.load(), reviewLog)
+      .catch(err => reviewLog(`Phone approval failed: ${err.message}`))
+      .finally(() => scheduler.processQueue().catch(() => {}))
+    return { ok: true }
+  })
   if (cfg.mobileApiEnabled) mobileApi.start()
   cloudSync.init({
     // A device attaching itself to the account is a security event, so it is
@@ -391,9 +401,21 @@ app.whenReady().then(async () => {
         if (!result?.success) throw new Error(result?.reason || 'Held application could not be rejected.')
         return result
       }
+      // The same rules the local-network route applies — see phoneReview.js.
+      const verdict = require('./services/phoneReview').canApprove(database.getApplication(id))
+      if (!verdict.ok) {
+        reviewLog(`Phone approval not carried out: ${verdict.reason}`)
+        return { success: false, reason: verdict.reason }
+      }
       const saved = configService.load()
       const result = await applicator.approveHeldApplication(id, saved, reviewLog)
-      if (!result?.success) throw new Error(result?.reason || 'Submission could not be completed.')
+      if (!result?.success) {
+        const err = new Error(result?.reason || 'Submission could not be completed.')
+        // Only a busy desktop is worth asking again. Anything else — a declined
+        // confirmation, a failed form — is reported once, not retried forever.
+        err.retryable = applicator.isBusy() || /currently running/i.test(result?.reason || '')
+        throw err
+      }
       return result
     },
   }).catch(() => {})
@@ -450,7 +472,7 @@ ipcMain.handle('config:secretError', () => configService.getSecretError())
 // inbox). The renderer's form is a snapshot from page load — saving it
 // verbatim would clobber anything these services wrote since.
 const RUNTIME_CONFIG_KEYS = [
-  'pendingScans', 'lastScanAt', 'lastInboxCheck', 'lastCloudSyncAt',
+  'pendingScans', 'lastScanAt', 'lastInboxCheck', 'lastCloudSyncAt', 'lastJobAlertCheck',
   'cloudSyncEnabled', 'supabaseEmail', 'supabaseRefreshToken',
   'cloudDataKey',
   'mobileApiEnabled', 'mobileApiToken',
@@ -534,9 +556,16 @@ ipcMain.handle('cloud:syncNow', async () => {
 })
 
 // ─── IPC: AI test ───────────────────────────────────────────────
-ipcMain.handle('ai:test', async (_, provider, apiKey, geminiModel) => {
+ipcMain.handle('ai:modelChoices', () => {
+  const { MODEL_CHOICES, DEFAULT_MODELS } = require('./services/ai/models')
+  return { choices: MODEL_CHOICES, defaults: DEFAULT_MODELS }
+})
+
+// `model` is the model on screen for the chosen provider — the Gemini name, the
+// local server's model, or the writing model picked for Claude/ChatGPT/DeepSeek.
+ipcMain.handle('ai:test', async (_, provider, apiKey, model) => {
   try {
-    await aiAdapter.testConnection(provider, apiKey, geminiModel)
+    await aiAdapter.testConnection(provider, apiKey, model)
     return { success: true }
   } catch (err) {
     return { success: false, error: err.message }
@@ -878,7 +907,7 @@ ipcMain.handle('resume:download', async (_, resumeText, suggestedName, format = 
         const { buildResumePDF } = require('./services/scraper/utils')
         const candidateName = (resumeText || '').split('\n').find(l => l.trim())?.trim() || 'Resume'
         const cfg = configService.load()
-        const tmpPath = await buildResumePDF(resumeText, candidateName, cfg.personalLinks)
+        const tmpPath = await buildResumePDF(resumeText, candidateName, cfg.personalLinks, cfg.resumeTemplate)
         fs.copyFileSync(tmpPath, filePath)
       }
     } else {
@@ -943,7 +972,28 @@ ipcMain.handle('resume:getPDFBase64', async (_, resumeText, originalPath, origin
     const { buildResumePDF } = require('./services/scraper/utils')
     const candidateName = (resumeText || '').split('\n').find(l => l.trim())?.trim() || 'Resume'
     const cfg = configService.load()
-    const tmpPath = await buildResumePDF(resumeText, candidateName, cfg.personalLinks)
+    const tmpPath = await buildResumePDF(resumeText, candidateName, cfg.personalLinks, cfg.resumeTemplate)
+    return { success: true, url: stashPdfPreview(fs.readFileSync(tmpPath)) }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+// ─── IPC: résumé templates ───────────────────────────────────────
+ipcMain.handle('resume:templates', () => {
+  const { RESUME_TEMPLATES } = require('./services/scraper/utils')
+  return Object.entries(RESUME_TEMPLATES).map(([id, t]) => ({ id, label: t.label }))
+})
+// Preview one template with the user's own résumé, before choosing it.
+ipcMain.handle('resume:previewTemplate', async (_, templateId) => {
+  try {
+    const fs = require('fs')
+    const { buildResumePDF } = require('./services/scraper/utils')
+    const cfg = configService.load()
+    const text = cfg.masterResume || ''
+    if (!text.trim()) return { success: false, error: 'Add a résumé first.' }
+    const candidateName = text.split('\n').find(l => l.trim())?.trim() || 'Resume'
+    const tmpPath = await buildResumePDF(text, candidateName, cfg.personalLinks, templateId)
     return { success: true, url: stashPdfPreview(fs.readFileSync(tmpPath)) }
   } catch (err) {
     return { success: false, error: err.message }
@@ -1032,6 +1082,60 @@ ipcMain.handle('db:exportCSV', async (_, filters) => {
 // ─── IPC: Timeline & Analytics data ──────────────────────────────
 ipcMain.handle('db:getApplicationsByDate', () => database.getApplicationsByDate())
 ipcMain.handle('db:getApplicationsPerDay', (_, days) => database.getApplicationsPerDay(days || 7))
+
+// ─── IPC: interview brief and company research ──────────────────
+ipcMain.handle('interview:brief', async (_, applicationId, opts = {}) => {
+  try {
+    const brief = await require('./services/interviewBrief').buildBrief(applicationId, { refreshResearch: !!opts.refresh })
+    return { success: true, brief }
+  } catch (err) { return { success: false, error: err.message } }
+})
+ipcMain.handle('interview:briefText', async (_, applicationId) => {
+  try {
+    const ib = require('./services/interviewBrief')
+    return { success: true, text: ib.toText(await ib.buildBrief(applicationId, { generate: false })) }
+  } catch (err) { return { success: false, error: err.message } }
+})
+ipcMain.handle('company:research', async (_, company, opts = {}) => {
+  try {
+    const research = await require('./services/companyResearch').research(company, { refresh: !!opts.refresh })
+    return { success: true, research }
+  } catch (err) { return { success: false, error: err.message } }
+})
+
+// ─── IPC: proposing interview times ─────────────────────────────
+ipcMain.handle('availability:propose', async (_, applicationId) => {
+  try {
+    const calendarSync = require('./services/calendarSync')
+    const result = await require('./services/availability').propose(applicationId, { getBusy: calendarSync.getBusy })
+    return { success: true, ...result }
+  } catch (err) { return { success: false, error: err.message } }
+})
+
+// Open a drafted email in the user's own mail app. mailto: only — the
+// navigation guard above refuses every non-http scheme, and this must not
+// become a way round it for anything else.
+ipcMain.handle('shell:openMailDraft', (_, { to = '', subject = '', body = '' } = {}) => {
+  const address = String(to).trim()
+  if (address && !/^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(address)) return { success: false, error: 'That is not an email address.' }
+  const url = `mailto:${encodeURIComponent(address)}?subject=${encodeURIComponent(String(subject))}&body=${encodeURIComponent(String(body))}`
+  shell.openExternal(url)
+  return { success: true }
+})
+
+// ─── IPC: Ask Hiro ───────────────────────────────────────────────
+ipcMain.handle('ask:question', async (_, question, history) => {
+  try {
+    return { success: true, ...(await require('./services/askHiro').ask(question, history)) }
+  } catch (err) { return { success: false, error: err.message } }
+})
+// A scan Ask Hiro suggested and the user then pressed the button for. Queued
+// like a phone request, so it holds drafts for review rather than submitting.
+ipcMain.handle('ask:runScan', (_, keywords) => {
+  const k = String(keywords || '').trim().slice(0, 200)
+  if (!k) return { success: false, error: 'No keywords.' }
+  return { success: true, request: scheduler.requestScan({ keywords: k, source: 'ask-hiro' }) }
+})
 
 // ─── IPC: AI features ────────────────────────────────────────────
 // `applicationId` is optional. When present, the employer's own replies are

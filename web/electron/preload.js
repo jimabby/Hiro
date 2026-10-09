@@ -23,7 +23,22 @@ contextBridge.exposeInMainWorld('api', {
   // from a value that was never set, and the UI must not present them alike.
   getConfigSecretError: () => ipcRenderer.invoke('config:secretError'),
   saveConfig: (config) => ipcRenderer.invoke('config:save', config),
-  testAiConnection: (provider, apiKey, geminiModel) => ipcRenderer.invoke('ai:test', provider, apiKey, geminiModel),
+  testAiConnection: (provider, apiKey, model) => ipcRenderer.invoke('ai:test', provider, apiKey, model),
+  getModelChoices: () => ipcRenderer.invoke('ai:modelChoices'),
+  // Night-before interview brief, and recent news about an employer.
+  getInterviewBrief: (applicationId, opts) => ipcRenderer.invoke('interview:brief', applicationId, opts),
+  getInterviewBriefText: (applicationId) => ipcRenderer.invoke('interview:briefText', applicationId),
+  getCompanyResearch: (company, opts) => ipcRenderer.invoke('company:research', company, opts),
+  // Free interview slots from the calendar, and a drafted reply offering them.
+  proposeInterviewTimes: (applicationId) => ipcRenderer.invoke('availability:propose', applicationId),
+  openMailDraft: (draft) => ipcRenderer.invoke('shell:openMailDraft', draft),
+  // Ask Hiro: questions about your own job search; suggested scans run only
+  // when the user presses the button.
+  askHiro: (question, history) => ipcRenderer.invoke('ask:question', question, history),
+  askHiroRunScan: (keywords) => ipcRenderer.invoke('ask:runScan', keywords),
+  // Résumé PDF layouts, and a preview of one with the user's own résumé.
+  getResumeTemplates: () => ipcRenderer.invoke('resume:templates'),
+  previewResumeTemplate: (id) => ipcRenderer.invoke('resume:previewTemplate', id),
   testEmailConnection: (email, password, overrides) => ipcRenderer.invoke('email:test', email, password, overrides),
   describeMailServers: (cfg) => ipcRenderer.invoke('email:describeServers', cfg),
 
@@ -96,6 +111,9 @@ contextBridge.exposeInMainWorld('api', {
   // main process; this carries only the token that names them.
   undoDelete: (token) => ipcRenderer.invoke('db:undoDelete', token),
   applyAttentionJob: (id) => ipcRenderer.invoke('attention:apply', id),
+  // Open a career-site form in a visible browser and fill it; never submits.
+  openFormAssist: (source, id) => ipcRenderer.invoke('formAssist:open', source, id),
+  markFormSubmitted: (payload) => ipcRenderer.invoke('formAssist:markSubmitted', payload),
   applyAttentionJobs: (ids) => ipcRenderer.invoke('attention:applyMany', ids),
   onAttentionLog: (cb) => subscribe('attention:log', cb),
   applySkippedJob: (id) => ipcRenderer.invoke('application:applySkipped', id),

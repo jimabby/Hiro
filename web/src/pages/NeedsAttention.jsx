@@ -73,6 +73,7 @@ export default function NeedsAttention({ active, onCountChange, showToast }) {
   const [jobs, setJobs] = useState([])
   const [selected, setSelected] = useState(null)
   const [applying, setApplying] = useState(null)
+  const [filling, setFilling] = useState(null)
   const [applyLog, setApplyLog] = useState([])
   // Set once the user asks a bulk retry to stop; the run finishes the job in
   // hand and returns what it managed.
@@ -229,6 +230,33 @@ export default function NeedsAttention({ active, onCountChange, showToast }) {
     const failed = ids.length - done.size
     if (failed) showToast?.(`${verb} ${done.size} job${done.size === 1 ? '' : 's'}, ${failed} failed`, 'error')
     else showToast?.(`${verb} ${done.size} job${done.size === 1 ? '' : 's'}`, 'success')
+  }
+
+  // Open the posting in Hiro's browser with the form filled in. Resolves when
+  // that window closes; the person presses Submit themselves.
+  async function fillForm(job) {
+    setFilling(job.id)
+    setSelected(null)
+    showToast?.('Opening the form — review it in the browser window and submit it yourself.', 'info')
+    try {
+      const res = await window.api.openFormAssist('attention', job.id)
+      if (!res?.success) { showToast?.(res?.reason || 'Could not open the form', 'error'); return }
+      let sent = res.submitted
+      if (!sent && window.confirm(`Did you submit your application for ${job.job_title} at ${job.company}?\n\nOK records it as Applied. Cancel keeps it here.`)) {
+        const marked = await window.api.markFormSubmitted({ source: 'attention', id: job.id })
+        sent = !!marked?.success
+        if (!sent) showToast?.(marked?.reason || 'Could not record it', 'error')
+      }
+      if (sent) {
+        setJobs(prev => prev.filter(j => j.id !== job.id))
+        onCountChange(prev => Math.max(0, prev - 1))
+        showToast?.(`Recorded: applied to ${job.job_title} at ${job.company}`, 'success')
+      }
+    } catch (err) {
+      showToast?.(`Form error: ${err.message}`, 'error')
+    } finally {
+      setFilling(null)
+    }
   }
 
   async function aiApply(job) {
@@ -443,9 +471,15 @@ export default function NeedsAttention({ active, onCountChange, showToast }) {
                     disabled={applying !== null}>
                     {applying === job.id ? 'Applying...' : 'AI Apply'}
                   </button>
-                  <a className="btn btn-primary" href={job.job_url} target="_blank" rel="noreferrer"
+                  <button className="btn btn-primary" style={{ fontSize: 12, padding: '6px 12px' }}
+                    title="Opens the form with your details, résumé and answers filled in. You review it and press Submit."
+                    onClick={e => { e.stopPropagation(); fillForm(job) }}
+                    disabled={filling !== null || !job.job_url}>
+                    {filling === job.id ? 'Form open…' : 'Fill Application'}
+                  </button>
+                  <a className="btn btn-ghost" href={job.job_url} target="_blank" rel="noreferrer"
                     style={{ fontSize: 12, padding: '6px 12px', textDecoration: 'none' }}
-                    onClick={e => e.stopPropagation()}>Apply Now</a>
+                    onClick={e => e.stopPropagation()}>Open Posting</a>
                   <button className="btn btn-ghost" style={{ fontSize: 12, padding: '6px 12px' }}
                     onClick={e => { e.stopPropagation(); dismiss(job.id) }}>
                     Dismiss

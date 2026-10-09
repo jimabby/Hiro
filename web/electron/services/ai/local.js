@@ -66,8 +66,10 @@ const classifyReply = (subject, body, company, apiKey, model) => openai.classify
 const generateCounterOffer = (input, apiKey, model) => openai.generateCounterOffer(input, key(apiKey), flavourFor(model))
 const draftInterviewAnswer = (input, apiKey, model) => openai.draftInterviewAnswer(input, key(apiKey), flavourFor(model))
 
+const chat = (input, apiKey, model) => openai.chat(input, key(apiKey), flavourFor(model))
+
 module.exports = {
-  testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch,
+  chat, testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch,
   scoreMatchWithExplanation, generateCoverLetter, improveResume, generateInterviewQuestions,
   generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply,
   generateCounterOffer, draftInterviewAnswer,

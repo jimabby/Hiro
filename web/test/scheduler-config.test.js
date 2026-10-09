@@ -42,7 +42,10 @@ cfg = { ...cfg, scheduledScanTime: 'not-a-time', dailyReportTime: '25:99' }
 let threw = null
 try { scheduler.restart(null) } catch (e) { threw = e.message }
 check('garbage times do not throw', threw, null)
-check('core and safety tasks still scheduled', scheduled.length, 4)
+// Five: scan, daily report, contact reminders, backup drill, and the
+// night-before interview brief (on by default — services/interviewBrief.js).
+check('core and safety tasks still scheduled', scheduled.length, 5)
+check('the interview brief check is among them', scheduled.filter(e => e === '*/10 * * * *').length >= 1, true)
 check('contact reminders are scheduled daily', scheduled.includes('0 9 * * *'), true)
 check('backup recovery drill is scheduled weekly', scheduled.includes('15 4 * * 0'), true)
 

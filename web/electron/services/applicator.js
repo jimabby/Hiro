@@ -5,6 +5,8 @@ const ats = require('./scraper/ats')
 const aiAdapter = require('./ai/index')
 const database = require('./database')
 const { randomDelay, stripMarkdown } = require('./scraper/utils')
+const { writingModel } = require('./ai/models')
+const jobAlerts = require('./jobAlerts')
 const { parseClosingDate } = require('./dateParser')
 const automationHealth = require('./automationHealth')
 const resumeExperiment = require('./resumeExperiment')
@@ -219,6 +221,21 @@ async function doRun(cfg, { log, notifyAttention }) {
     ? { dryRun: true, cancelled, scores: dryScores, wouldApply: dryWouldApply, threshold: cfg.matchThreshold, blocked, paused, scoringFailures, budgetStopped }
     : { dryRun: false, cancelled, found: foundCount, applied: batchCount, held: heldCount, blocked, paused, scoringFailures, budgetStopped })
 
+  // Listings from the boards' own alert emails (services/jobAlerts.js), sorted
+  // by board. They join that board's scraped results below. A mailbox that
+  // cannot be read costs this run its alerts, never the scan.
+  const alertJobs = new Map()
+  if (cfg.jobAlertsEnabled) {
+    try {
+      for (const job of await jobAlerts.collect(cfg, { log })) {
+        if (!alertJobs.has(job.platform)) alertJobs.set(job.platform, [])
+        alertJobs.get(job.platform).push(job)
+      }
+    } catch (err) {
+      log(err.message)
+    }
+  }
+
   for (const { name, scraper, limit } of scrapers) {
     if (cancelled || batchAttempts >= batchLimit) { if (cancelled) log('Scan cancelled.'); return summary() }
 
@@ -240,8 +257,15 @@ async function doRun(cfg, { log, notifyAttention }) {
       continue
     }
 
+    const fromAlerts = alertJobs.get(name) || []
+    // "Alerts instead of searching": the board's search pages are not loaded at
+    // all, which is the whole point for anyone being throttled by one.
+    const alertsOnly = cfg.jobAlertsEnabled && cfg.jobAlertsOnly && name !== 'ATS'
     let jobs
-    try {
+    let scraped = false
+    if (alertsOnly) {
+      jobs = []
+    } else try {
       // `log` lets a scraper narrate work the caller cannot otherwise see —
       // the ATS adapter uses it to say when it is reading descriptions one at a
       // time, and when it has stopped short of a very long board.
@@ -264,6 +288,7 @@ async function doRun(cfg, { log, notifyAttention }) {
       if (jobs.length === 0) {
         log(`${name}: no listings matched. Widen the keywords or location if this persists.`)
       }
+      scraped = true
     } catch (err) {
       if (err.blocked) {
         // Distinct from an empty result set, and distinct from a selector
@@ -276,7 +301,9 @@ async function doRun(cfg, { log, notifyAttention }) {
         log(`${name}: scrape error — ${err.message}`)
         automationHealth.recordScrape(name, { error: err.message })
       }
-      continue
+      // A blocked search page does not make the alert emails any less real.
+      if (fromAlerts.length === 0) continue
+      jobs = []
     }
 
     // A zero-result scrape that was not blocked and did not error is the exact
@@ -287,10 +314,20 @@ async function doRun(cfg, { log, notifyAttention }) {
     // broke, and catches the partial break the streak heuristic cannot see —
     // cards found but one field unreadable, so every listing is discarded and
     // the scan reports a healthy-looking zero.
-    automationHealth.recordScrape(name, {
-      found: jobs.length,
-      selectors: scraper.getSelectorReport?.() || null,
-    })
+    if (scraped) {
+      automationHealth.recordScrape(name, {
+        found: jobs.length,
+        selectors: scraper.getSelectorReport?.() || null,
+      })
+    }
+
+    if (fromAlerts.length > 0) {
+      const known = new Set(jobs.map(j => j.job_url))
+      const added = fromAlerts.filter(j => !known.has(j.job_url))
+      jobs = [...jobs, ...added]
+      foundCount += added.length
+      log(`${name}: ${added.length} more from your job-alert emails`)
+    }
 
     const blacklist = (cfg.blacklistedCompanies || []).map(c => String(c).toLowerCase())
     // Defensive on both sides: a listing with no company name (a malformed card,
@@ -599,7 +636,7 @@ async function doRun(cfg, { log, notifyAttention }) {
           job_description: jobDescription, match_score: matchScore,
           match_explanation: `${matchExplanation || ''}${matchExplanation ? '\n\n' : ''}Held for review: ${detail}`,
           base_resume: jobCfg.masterResume || '', provider: jobCfg.aiProvider || '',
-          model: jobCfg.geminiModel || '', tailored_resume: tailoredResume,
+          model: writingModel(jobCfg), tailored_resume: tailoredResume,
           cover_letter: coverLetter, screening_qa: [], status: 'held',
           closing_date: job.closing_date, resume_id: jobCfg.activeResumeId,
           resume_name: jobCfg.activeResumeName, recruiter_email: recruiterEmail,
@@ -657,7 +694,7 @@ async function doRun(cfg, { log, notifyAttention }) {
           // Which model produced these documents, so two versions of the same
           // job can be judged against each other rather than just compared.
           provider: jobCfg.aiProvider || '',
-          model: jobCfg.geminiModel || '',
+          model: writingModel(jobCfg),
           tailored_resume: tailoredResume,
           cover_letter: coverLetter,
           screening_qa: [],
@@ -717,7 +754,7 @@ async function doRun(cfg, { log, notifyAttention }) {
           // Which model produced these documents, so two versions of the same
           // job can be judged against each other rather than just compared.
           provider: jobCfg.aiProvider || '',
-          model: jobCfg.geminiModel || '',
+          model: writingModel(jobCfg),
           tailored_resume: tailoredResume,
           cover_letter: coverLetter,
           // What the scraper actually answered on the application form.
@@ -908,7 +945,7 @@ async function doApplyAttentionJob(jobId, cfg, log) {
       ...job, base_resume: cfg.masterResume || '', tailored_resume: result.tailoredResume,
       cover_letter: result.coverLetter, screening_qa: [], status: 'held',
       resume_id: cfg.activeResumeId, resume_name: cfg.activeResumeName,
-      provider: cfg.aiProvider || '', model: cfg.geminiModel || '',
+      provider: cfg.aiProvider || '', model: writingModel(cfg),
       fabrication_flags: result.fabricationFlags,
       match_explanation: `${job.match_explanation || ''}${job.match_explanation ? '\n\n' : ''}Fabrication guard: ${describeFlags(result.fabricationFlags)}`,
     })
@@ -936,7 +973,7 @@ async function doApplyAttentionJob(jobId, cfg, log) {
       resume_id: cfg.activeResumeId,
       resume_name: cfg.activeResumeName,
       provider: cfg.aiProvider || '',
-      model: cfg.geminiModel || '',
+      model: writingModel(cfg),
       campaign_id: job.campaign_id, campaign_name: job.campaign_name,
     })
     database.dismissAttentionJob(jobId)
@@ -975,7 +1012,7 @@ async function doApplySkippedJob(jobId, cfg, log) {
       baseResume: cfg.masterResume || '', tailoredResume: result.tailoredResume,
       coverLetter: result.coverLetter, resumeId: cfg.activeResumeId,
       resumeName: cfg.activeResumeName, provider: cfg.aiProvider || '',
-      model: cfg.geminiModel || '', flags: result.fabricationFlags,
+      model: writingModel(cfg), flags: result.fabricationFlags,
     })
     log('Moved to Review; nothing was submitted.')
     return result
@@ -1141,5 +1178,6 @@ async function applyAttentionJobs(jobIds, cfg, log) {
 module.exports = {
   run, cancel, cancelBulk, isBusy, applyAttentionJob, applyAttentionJobs, applySkippedJob,
   approveHeldApplication, approveHeldApplications, editHeldDraft,
+  resolveActiveResume, // used by the career-site form assistant
   selectResume, shouldHoldForReview, // exported for tests
 }

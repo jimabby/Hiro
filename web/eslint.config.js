@@ -74,7 +74,7 @@ module.exports = [
   // `document` and `window` are real there. They are Node files everywhere
   // else, hence both global sets rather than a swap.
   {
-    files: ['electron/services/scraper/**/*.js'],
+    files: ['electron/services/scraper/**/*.js', 'electron/services/formAssist/**/*.js'],
     languageOptions: {
       globals: { ...globals.node, ...globals.browser },
     },

@@ -164,6 +164,17 @@ export class HiroClient {
   }
 
   getAttention() { return this.request('/api/attention') }
+
+  // Approve several held drafts at once. The desktop submits them and answers
+  // straight away with which ids it accepted and why any were refused (a
+  // flagged draft, a career-board job, one already sent). Paired phones only.
+  approveDrafts(ids) {
+    return this.request('/api/held/approve', { method: 'POST', body: JSON.stringify({ ids }) })
+  }
+
+  // The night-before interview brief, as the desktop has prepared it. LAN only:
+  // the brief is built from documents and replies that are not synced.
+  getInterviewBrief(id) { return this.request(`/api/applications/${id}/brief`) }
   getPerDay(days = 7) { return this.request(`/api/perday?days=${days}`) }
 
   // Follow-ups due today or overdue. An older desktop build has no such route,

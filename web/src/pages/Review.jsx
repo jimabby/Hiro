@@ -325,6 +325,29 @@ export default function Review({ active, showToast, onCountChange }) {
     }
   }
 
+  // Career-board drafts cannot be auto-submitted. Open the form filled in with
+  // this draft instead; the person presses Submit in the browser.
+  async function fillForm(row) {
+    setBusy(true)
+    showToast?.('Opening the form — review it in the browser window and submit it yourself.', 'info')
+    try {
+      const res = await window.api.openFormAssist('held', row.id)
+      if (!res?.success) { showToast?.(res?.reason || 'Could not open the form', 'error'); return }
+      let sent = res.submitted
+      if (!sent && window.confirm(`Did you submit your application for ${row.job_title} at ${row.company}?\n\nOK records it as Applied. Cancel keeps the draft held.`)) {
+        const marked = await window.api.markFormSubmitted({ source: 'held', id: row.id })
+        sent = !!marked?.success
+      }
+      if (sent) showToast?.('Recorded as Applied', 'success')
+    } catch (err) {
+      showToast?.(`Form error: ${err.message}`, 'error')
+    } finally {
+      setBusy(false)
+      setDetail(null)
+      load()
+    }
+  }
+
   async function stopBulk() {
     setStopping(true)
     try { await window.api.cancelBulkApply() } catch { /* the run ends on its own anyway */ }
@@ -612,11 +635,19 @@ export default function Review({ active, showToast, onCountChange }) {
                 : <span />}
               <div style={{ display: 'flex', gap: 8 }}>
                 <button className="btn btn-ghost" disabled={busy} onClick={() => setConfirmReject(detail)}>Reject</button>
-                <button className="btn btn-primary" disabled={busy || !!edit}
-                  title={edit ? 'Save or cancel your edit first' : undefined}
-                  onClick={() => approve([detail.id])}>
-                  {busy ? 'Submitting…' : 'Approve & submit'}
-                </button>
+                {detail.platform === 'ATS' ? (
+                  <button className="btn btn-primary" disabled={busy || !!edit || !detail.job_url}
+                    title={edit ? 'Save or cancel your edit first' : 'Opens the form filled in with this draft. You review it and press Submit.'}
+                    onClick={() => fillForm(detail)}>
+                    {busy ? 'Form open…' : 'Fill application'}
+                  </button>
+                ) : (
+                  <button className="btn btn-primary" disabled={busy || !!edit}
+                    title={edit ? 'Save or cancel your edit first' : undefined}
+                    onClick={() => approve([detail.id])}>
+                    {busy ? 'Submitting…' : 'Approve & submit'}
+                  </button>
+                )}
               </div>
             </div>
           </div>

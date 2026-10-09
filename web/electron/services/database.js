@@ -181,6 +181,12 @@ function createTables() {
       created_at TEXT DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS company_research (
+      company_key TEXT PRIMARY KEY,
+      data TEXT NOT NULL,
+      fetched_at TEXT DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS interview_prep (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       application_id INTEGER,
@@ -815,9 +821,11 @@ function insertApplication(data) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     data.job_title, data.company, data.platform, data.salary || '',
-    data.job_url, data.job_description, data.match_score,
+    // `?? null` because sql.js refuses to bind undefined, and a caller that
+    // omits an optional field should not take the insert down with it.
+    data.job_url ?? null, data.job_description ?? null, data.match_score ?? null,
     data.match_explanation || '',
-    data.tailored_resume, data.cover_letter || '',
+    data.tailored_resume ?? null, data.cover_letter || '',
     JSON.stringify(data.screening_qa || []),
     status,
     data.closing_date || null,
@@ -3134,6 +3142,22 @@ function markInterviewAnswerUsed(question, applicationId = null) {
 //
 // Returns the same shape getInterviewPrep does — a plain array, or null — so
 // callers cannot end up handling two shapes depending on which one they called.
+// ─── Company research cache ──────────────────────────────────────
+// What services/companyResearch.js found about an employer, keyed on the
+// normalised company name, so a brief, the job panel and Ask Hiro share one
+// lookup rather than each paying for it.
+function getCompanyResearch(companyKey) {
+  const row = queryOne('SELECT data, fetched_at FROM company_research WHERE company_key = ?', [companyKey])
+  if (!row) return null
+  try { return { ...JSON.parse(row.data), fetchedAt: row.fetched_at } } catch { return null }
+}
+
+function saveCompanyResearch(companyKey, data) {
+  run(`INSERT INTO company_research (company_key, data, fetched_at) VALUES (?, ?, datetime('now'))
+       ON CONFLICT(company_key) DO UPDATE SET data = excluded.data, fetched_at = excluded.fetched_at`,
+  [companyKey, JSON.stringify(data)])
+}
+
 function getInterviewPrepWithAnswers(applicationId) {
   const questions = getInterviewPrep(applicationId)
   if (!Array.isArray(questions)) return questions
@@ -4020,6 +4044,7 @@ module.exports = {
   stopFollowUps, resumeFollowUps,
   getApplicationsAwaitingReply, setLastReplyUid, markStaleApplications, OPEN_STATUSES,
   saveInterviewPrep, getInterviewPrep, deleteInterviewPrep, getInterviewPrepWithAnswers,
+  getCompanyResearch, saveCompanyResearch,
   getInterviewAnswer, listInterviewAnswers, saveInterviewAnswer, deleteInterviewAnswer,
   markInterviewAnswerUsed, answerKey,
   addInterviewEvent, upsertDetectedInterview, getInterviewEvents, getUpcomingInterviews, getInterviewEvent, deleteInterviewEvent,

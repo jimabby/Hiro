@@ -4,18 +4,9 @@ const deepseek = require('./deepseek')
 const gemini = require('./gemini')
 const local = require('./local')
 
-// Strip any markdown formatting that AI models add despite being told not to
-function stripMarkdown(text) {
-  return text
-    .replace(/\*\*(.*?)\*\*/g, '$1')   // **bold** → plain
-    .replace(/__(.*?)__/g, '$1')        // __bold__ → plain
-    .replace(/\*(.*?)\*/g, '$1')        // *italic* → plain
-    .replace(/_(.*?)_/g, '$1')          // _italic_ → plain
-    .replace(/^#{1,6}\s+/gm, '')        // ## headings → plain
-    .replace(/^\*\s+/gm, '- ')          // * bullets → -
-    .replace(/^-{3,}\s*$/gm, '')        // --- dividers → removed
-    .trim()
-}
+// See markdown.js — it only strips emphasis that is unambiguously formatting,
+// because this text goes to employers and must keep emails and URLs intact.
+const { stripMarkdown } = require('./markdown')
 
 function getAdapter(provider) {
   switch (provider) {
@@ -29,19 +20,26 @@ function getAdapter(provider) {
 }
 
 // The 4th adapter arg is the model name, but the OpenAI adapter reads that
-// position as its flavour — only forward it for providers that name their own
-// model, or a leftover geminiModel value breaks ChatGPT calls. A local server
-// also names its own model (whatever the user has pulled), so it shares the
-// slot; the local adapter falls back to its configured default when it's blank.
-const NAMES_OWN_MODEL = new Set(['gemini', 'local'])
-
+// position as its flavour — only forward it for Gemini, the one provider whose
+// model the `geminiModel` setting names. Every other provider reads its own
+// setting (see ./models.js). A local server used to share this slot, which let
+// a Gemini name left over from an earlier setup override the local model the
+// user had chosen, so Ollama was asked for "gemini-2.5-flash" and said 404.
 function modelFor(provider, geminiModel) {
-  return NAMES_OWN_MODEL.has(provider) ? geminiModel : undefined
+  return provider === 'gemini' ? geminiModel : undefined
 }
 
-// For Gemini, pass geminiModel as an extra arg (other adapters ignore it)
-async function testConnection(provider, apiKey, geminiModel) {
-  return getAdapter(provider).testConnection(apiKey, modelFor(provider, geminiModel))
+// The test is the one call that names its model explicitly: it should prove
+// the model on screen in Settings works, before it is saved.
+function testFlavour(provider, model) {
+  if (!model) return modelFor(provider, model)
+  if (provider === 'chatgpt') return { provider: 'chatgpt', model }
+  if (provider === 'deepseek') return { baseURL: 'https://api.deepseek.com', provider: 'deepseek', model }
+  return model
+}
+
+async function testConnection(provider, apiKey, model) {
+  return getAdapter(provider).testConnection(apiKey, testFlavour(provider, model))
 }
 
 async function tailorResume(provider, apiKey, jobDescription, masterResume, geminiModel) {
@@ -117,4 +115,10 @@ async function draftInterviewAnswer(provider, apiKey, input, geminiModel) {
   return stripMarkdown(result)
 }
 
-module.exports = { testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply, generateCounterOffer, draftInterviewAnswer }
+// A free-form exchange — see claude.js chat(). The reply is returned as the
+// model wrote it; callers that send it anywhere strip formatting themselves.
+async function chat(provider, apiKey, input, geminiModel) {
+  return getAdapter(provider).chat(input, apiKey, modelFor(provider, geminiModel))
+}
+
+module.exports = { chat, testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply, generateCounterOffer, draftInterviewAnswer }

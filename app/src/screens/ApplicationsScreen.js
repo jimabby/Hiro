@@ -23,6 +23,20 @@ const SWIPE_HINT_KEY = 'hiro.applications.swipeHintSeen'
 // interview with or be rejected by.
 const NO_QUICK_ACTIONS = ['held', 'skipped']
 
+// Drafts Hiro flagged (an unsupported claim, an ad aimed at AI) are approved on
+// the desktop, where the side-by-side diff is. The desktop enforces this too;
+// marking them here just saves a refusal.
+function isFlagged(item) {
+  try {
+    const flags = typeof item.fabrication_flags === 'string' ? JSON.parse(item.fabrication_flags || '[]') : item.fabrication_flags
+    return Array.isArray(flags) && flags.length > 0
+  } catch {
+    return false
+  }
+}
+const canPick = (item) => item.status === 'held' && item.platform !== 'ATS' && !isFlagged(item)
+const MAX_BATCH = 10
+
 export default function ApplicationsScreen({ client, active = true, openApplicationId, onOpened, resetSignal, onChanged }) {
   // Palette and stylesheet follow the phone's appearance setting. Named
   // `colors` so every inline reference below reads unchanged.
@@ -43,6 +57,11 @@ export default function ApplicationsScreen({ client, active = true, openApplicat
   // closes the last one.
   const [openRow, setOpenRow] = useState(null)
   const [showSwipeHint, setShowSwipeHint] = useState(false)
+  // Batch approval of held drafts: the ids ticked, and what the last run said.
+  const [picked, setPicked] = useState(() => new Set())
+  const [batchNote, setBatchNote] = useState('')
+  const [batchBusy, setBatchBusy] = useState(false)
+  const batchMode = statusFilter === 'held' && !!client.approveDrafts
 
   useEffect(() => {
     (async () => {
@@ -83,6 +102,69 @@ export default function ApplicationsScreen({ client, active = true, openApplicat
     if (active && !wasActive.current && selectedId == null) load()
     wasActive.current = active
   }, [active, load, selectedId])
+
+  // A different filter or a reload means a different list; ticks from the old
+  // one must not carry over to rows the user can no longer see.
+  useEffect(() => { setPicked(new Set()) }, [statusFilter, apps])
+
+  function togglePick(item) {
+    if (!canPick(item)) {
+      Alert.alert('Approve on the desktop', item.platform === 'ATS'
+        ? 'Career-board drafts are filled in and submitted from the desktop with Fill Application.'
+        : 'Hiro flagged something in this draft. Review it on the desktop, where you can see what it found.')
+      return
+    }
+    selection()
+    setPicked(prev => {
+      const next = new Set(prev)
+      if (next.has(item.id)) next.delete(item.id)
+      else if (next.size < MAX_BATCH) next.add(item.id)
+      return next
+    })
+  }
+
+  function pickAll() {
+    selection()
+    setPicked(new Set((sorted || []).filter(canPick).slice(0, MAX_BATCH).map(a => a.id)))
+  }
+
+  function confirmApprove() {
+    const n = picked.size
+    if (!n) return
+    Alert.alert(
+      `Submit ${n} application${n === 1 ? '' : 's'}?`,
+      'Each one is sent to the employer for real, from the desktop, a few seconds apart.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: `Submit ${n}`, onPress: approvePicked },
+      ]
+    )
+  }
+
+  async function approvePicked() {
+    setBatchBusy(true)
+    setBatchNote('')
+    try {
+      const res = await client.approveDrafts([...picked])
+      success()
+      const refused = res?.refused || []
+      const accepted = res?.accepted?.length || 0
+      setBatchNote([
+        accepted ? (res.queued
+          ? `${accepted} queued — the desktop submits them on its next sync.`
+          : `Submitting ${accepted} on the desktop. They leave this list as each one goes.`) : 'Nothing was submitted.',
+        ...refused.map(r => `Not sent: ${r.reason}`),
+      ].join('\n'))
+      setPicked(new Set())
+      onChanged?.()
+      setTimeout(() => { load() }, 4000)
+    } catch (err) {
+      failure()
+      setBatchNote(err.message)
+    } finally {
+      setBatchBusy(false)
+    }
+  }
 
   async function onRefresh() {
     setRefreshing(true)
@@ -301,6 +383,25 @@ export default function ApplicationsScreen({ client, active = true, openApplicat
         </TouchableOpacity>
       </View>
 
+      {batchMode && sorted && sorted.length > 0 && (
+        <View style={styles.batchBar}>
+          <TouchableOpacity onPress={pickAll} style={styles.sortBtn} accessibilityRole="button"
+            accessibilityLabel={`Select up to ${MAX_BATCH} drafts that can be approved from the phone`}>
+            <Text style={styles.sortText}>Select all</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.approveBtn, (!picked.size || batchBusy) && { opacity: 0.5 }]}
+            disabled={!picked.size || batchBusy}
+            onPress={confirmApprove}
+            accessibilityRole="button"
+            accessibilityLabel={`Approve and submit ${picked.size} selected drafts`}
+            accessibilityState={{ disabled: !picked.size || batchBusy, busy: batchBusy }}>
+            <Text style={styles.approveText}>{batchBusy ? 'Sending…' : `Approve ${picked.size || ''}`.trim()}</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+      {batchMode && !!batchNote && <Text style={styles.batchNote} accessibilityLiveRegion="polite">{batchNote}</Text>}
+
       {showSwipeHint && sorted && sorted.some(a => !NO_QUICK_ACTIONS.includes(a.status)) && (
         <TouchableOpacity style={styles.hint} onPress={dismissSwipeHint}
           accessibilityRole="button" accessibilityLabel="Tip: swipe a row left, or press and hold it, for quick actions. Tap to dismiss.">
@@ -351,9 +452,11 @@ export default function ApplicationsScreen({ client, active = true, openApplicat
                   // A tap on an open row closes it, rather than opening the
                   // application underneath the half-read actions.
                   if (openRow != null) { setOpenRow(null); return }
+                  // Reviewing drafts, a tap ticks; press and hold still opens.
+                  if (batchMode) { togglePick(item); return }
                   setSelectedId(item.id)
                 }}
-                onLongPress={() => showActionMenu(item)}
+                onLongPress={() => (batchMode ? setSelectedId(item.id) : showActionMenu(item))}
                 delayLongPress={350}
                 accessibilityRole="button"
                 accessibilityLabel={
@@ -361,12 +464,21 @@ export default function ApplicationsScreen({ client, active = true, openApplicat
                   + `${item.match_score != null ? ` ${item.match_score} percent match.` : ''}`
                   + `${item.next_action_at ? ` Follow-up ${describeDue(item.next_action_at)}${isOverdue(item.next_action_at) ? ', overdue' : ''}.` : ''}`
                 }
-                accessibilityHint="Opens the application"
+                accessibilityHint={batchMode ? 'Selects this draft. Press and hold to open it.' : 'Opens the application'}
                 accessibilityActions={actions.map(a => ({ name: a.key, label: (a.accessibilityLabel || a.label).replace('\n', ' ') }))}
                 onAccessibilityAction={(e) => actions.find(a => a.key === e.nativeEvent.actionName)?.onPress()}
               >
+                {batchMode && (
+                  <Text style={[styles.check, !canPick(item) && { opacity: 0.35 }]}
+                    accessibilityElementsHidden importantForAccessibility="no">
+                    {picked.has(item.id) ? '☑' : '☐'}
+                  </Text>
+                )}
                 <View style={{ flex: 1 }}>
                   <Text style={styles.itemTitle} numberOfLines={1}>{item.job_title}</Text>
+                  {batchMode && !canPick(item) && (
+                    <Text style={styles.itemDate}>{item.platform === 'ATS' ? 'Career board — submit from the desktop' : 'Flagged — review on the desktop'}</Text>
+                  )}
                   <Text style={styles.itemCompany} numberOfLines={1}>
                     {item.company} · {item.platform}
                   </Text>
@@ -455,4 +567,9 @@ const makeStyles = (c) => StyleSheet.create({
   itemScore: { color: c.accent, fontSize: 13, fontWeight: '700' },
   statusBadge: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2 },
   statusText: { fontSize: 10, fontWeight: '600', textTransform: 'uppercase' },
+  batchBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 },
+  approveBtn: { backgroundColor: c.green, borderRadius: radius, paddingHorizontal: 16, minHeight: 36, justifyContent: 'center' },
+  approveText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  batchNote: { color: c.textMuted, fontSize: 12, marginBottom: 6, lineHeight: 17 },
+  check: { fontSize: 20, color: c.accent, width: 24 },
 })

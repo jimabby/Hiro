@@ -17,6 +17,7 @@ let weeklyReportTask = null
 let staleTask = null
 let calendarTask = null
 let pushTask = null
+let briefTask = null
 let contactTask = null
 let backupDrillTask = null
 let campaignTasks = []
@@ -200,6 +201,19 @@ function startTasks() {
       pushTask = cron.schedule('*/10 * * * *', () => { push.runDueChecks().catch(() => {}) })
     } catch (err) {
       log(`Could not schedule notification checks: ${err.message}`)
+    }
+  }
+
+  // The night-before interview brief (services/interviewBrief.js). Runs whether
+  // or not push is on: the brief is prepared and announced on the desktop too,
+  // and the push ledger keeps each one to a single send.
+  if (cfg.interviewBriefEnabled !== false) {
+    try {
+      briefTask = cron.schedule('*/10 * * * *', () => {
+        require('./interviewBrief').runDue({ notify: nativeNotify }).catch(err => log(`Interview brief: ${err.message}`))
+      })
+    } catch (err) {
+      log(`Could not schedule interview briefs: ${err.message}`)
     }
   }
 
@@ -451,6 +465,7 @@ function stop({ abortRun = true } = {}) {
   staleTask = disposeTask(staleTask)
   calendarTask = disposeTask(calendarTask)
   pushTask = disposeTask(pushTask)
+  briefTask = disposeTask(briefTask)
   contactTask = disposeTask(contactTask)
   backupDrillTask = disposeTask(backupDrillTask)
   campaignTasks.forEach(disposeTask)

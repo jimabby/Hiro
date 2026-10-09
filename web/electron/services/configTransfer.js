@@ -22,7 +22,7 @@ const SCRYPT = { N: 16384, r: 8, p: 1, keylen: 32 }
 // machine would resurrect a stale scan queue, point the phone at the wrong
 // pairing token, or replay a dead Supabase session.
 const RUNTIME_KEYS = new Set([
-  'pendingScans', 'lastScanAt', 'lastInboxCheck', 'lastCloudSyncAt',
+  'pendingScans', 'lastScanAt', 'lastInboxCheck', 'lastCloudSyncAt', 'lastJobAlertCheck',
   'setupComplete', 'mobileApiToken', 'mobileApiEnabled',
   'supabaseRefreshToken', 'cloudSyncEnabled',
   'cloudDataKey',

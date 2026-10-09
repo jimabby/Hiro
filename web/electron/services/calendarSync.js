@@ -224,6 +224,32 @@ const google = {
     }
   },
 
+  // Busy intervals between two instants, for proposing interview times. Reads
+  // the primary calendar as well as Hiro's own, since a dedicated "Interviews"
+  // calendar says nothing about the rest of the user's week. Events marked
+  // "free" (transparent) and declined or cancelled ones do not block a slot.
+  async busy(cfg, from, to) {
+    const ids = [...new Set(['primary', cfg.calendarId || 'primary'])]
+    const out = []
+    for (const id of ids) {
+      let pageToken = null
+      do {
+        const params = new URLSearchParams({ timeMin: from.toISOString(), timeMax: to.toISOString(), singleEvents: 'true', orderBy: 'startTime', maxResults: '250' })
+        if (pageToken) params.set('pageToken', pageToken)
+        const page = await api('GET', `${GOOGLE_API}/calendars/${encodeURIComponent(id)}/events?${params}`)
+        for (const e of page.items || []) {
+          if (e.status === 'cancelled' || e.transparency === 'transparent') continue
+          if ((e.attendees || []).some(a => a.self && a.responseStatus === 'declined')) continue
+          const start = e.start?.dateTime || (e.start?.date ? `${e.start.date}T00:00:00` : null)
+          const end = e.end?.dateTime || (e.end?.date ? `${e.end.date}T00:00:00` : null)
+          if (start && end) out.push({ start: new Date(start), end: new Date(end) })
+        }
+        pageToken = page.nextPageToken || null
+      } while (pageToken)
+    }
+    return out
+  },
+
   async listCalendars() {
     const res = await api('GET', 'https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=writer')
     return (res.items || []).map(c => ({ id: c.id, label: c.summary, primary: !!c.primary }))
@@ -304,6 +330,23 @@ const outlook = {
         hasTime: e.isAllDay === false,
       })),
     }
+  },
+
+  // See google.busy. calendarView expands recurring events into instances.
+  // Graph returns times in UTC unless asked otherwise, with no 'Z' suffix.
+  async busy(cfg, from, to) {
+    const out = []
+    let url = `${GRAPH_API}/me/calendarView?startDateTime=${from.toISOString()}&endDateTime=${to.toISOString()}&$select=start,end,showAs,isCancelled&$top=200`
+    for (let page = 0; page < 20 && url; page++) {
+      const res = await api('GET', url)
+      for (const e of res.value || []) {
+        if (e.isCancelled || e.showAs === 'free') continue
+        const asUtc = v => new Date(/[zZ]|[+-]\d\d:\d\d$/.test(v) ? v : `${v}Z`)
+        if (e.start?.dateTime && e.end?.dateTime) out.push({ start: asUtc(e.start.dateTime), end: asUtc(e.end.dateTime) })
+      }
+      url = res['@odata.nextLink'] || null
+    }
+    return out
   },
 
   async listCalendars() {
@@ -553,8 +596,16 @@ function disconnect() {
   return calendarAuth.disconnect()
 }
 
+// Busy time from the connected calendar, or null when none is connected — the
+// caller then works from Hiro's own interviews alone, and says so.
+async function getBusy(from, to) {
+  const cfg = configService.load()
+  if (!cfg.calendarProvider || !calendarAuth.isConnected?.()) return null
+  return adapter(cfg.calendarProvider).busy(cfg, from, to)
+}
+
 module.exports = {
-  syncNow, listCalendars, getStatus, disconnect,
+  syncNow, listCalendars, getStatus, disconnect, getBusy,
   connect: calendarAuth.connect,
   // exported for tests
   localHash, toLocalSql, endOf,
