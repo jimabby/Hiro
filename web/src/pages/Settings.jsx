@@ -1,3 +1,4 @@
+import SyncHealth from '../components/SyncHealth'
 import { useState, useEffect, useRef } from 'react'
 import HiroLogo from '../components/HiroLogo'
 import { exportCsv } from '../exportCsv'
@@ -1268,15 +1269,7 @@ export default function Settings({ showToast, active }) {
               <span style={{ color: 'var(--text-muted)' }}>Signed in as </span>
               <strong>{cloudStatus.email}</strong>
             </div>
-            <div style={{ marginBottom: 10 }}>
-              <span style={{ color: 'var(--text-muted)' }}>Status: </span>
-              <span style={{ color: cloudStatus.error ? 'var(--red)' : 'var(--green)', fontWeight: 600 }}>
-                {cloudStatus.syncing ? 'Syncing…' : cloudStatus.error ? `Error: ${cloudStatus.error}` : 'Synced'}
-              </span>
-              {cloudStatus.lastSyncAt && !cloudStatus.error && (
-                <span style={{ color: 'var(--text-muted)' }}> · last {new Date(cloudStatus.lastSyncAt).toLocaleString()}</span>
-              )}
-            </div>
+            <SyncHealth />
             <div style={{ display: 'flex', gap: 8 }}>
               <button className="btn btn-ghost" style={{ fontSize: 12 }} disabled={cloudBusy} onClick={async () => {
                 setCloudBusy(true)

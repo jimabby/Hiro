@@ -6,6 +6,13 @@
 
 ## Features
 
+- **Sync health** — Settings shows pending application changes, deletions, failed uploads, the last successful sync, and a retry button. Cloud application identity uses UUIDs so merging desktops does not overwrite unrelated jobs with the same local row number.
+- **Saved application views** — save and reopen Dashboard filters and sorting, including minimum match score, salary range and applications with a follow-up scheduled.
+- **Application checklists** — add, edit, complete and delete per-job tasks with optional due dates on desktop or mobile. Checklists sync encrypted; desktop application details mark overdue tasks.
+- **Manageable offline scan queue** — the phone lists each queued search and its destination, with edit, retry and cancel controls. Requests only run on their original account or paired desktop; legacy requests with an unknown destination require cancellation and recreation.
+
+**Cloud upgrade:** run the updated [`supabase/schema.sql`](supabase/schema.sql) before using these clients, then update every connected desktop and phone. See [upgrade details](supabase/SETUP.md#companion-reconciliation-upgrade).
+
 ### Automation
 - **Job-alert emails as a source** *(optional)* — LinkedIn, Seek and Indeed already email you new matches from your saved searches, with no bot defences in the way. Hiro reads those alerts from the mailbox it already checks, pulls the job links out of them (through the boards' tracking redirects), and scores them alongside what the search finds. Only mail from the boards' own domains is read, and only links shaped like a posting on that board are taken. With **alerts instead of searching** on, the boards' search pages are never loaded at all — the fix for a platform that keeps throwing CAPTCHAs. A listing whose email names no company is looked up from the posting's own `JobPosting` data, and dropped rather than guessed if that fails, since company-level rules (blacklist, cooldown, duplicates) cannot apply to it
 - **Multi-platform scraping** — Seek, Indeed, LinkedIn (with stealth session login), walking a configurable number of result pages per scan (default 3) so repeat scans keep finding new listings instead of re-reading the same first page

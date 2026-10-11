@@ -91,7 +91,7 @@ function insertRow(run, table, row, skip = new Set()) {
 // Columns whose values describe this machine's relationship to a cloud project,
 // not the application. A merged row starts as unsynced and unseen, which is
 // what makes the next sync push it rather than believing it is already up there.
-const CLOUD_COLUMNS = new Set(['cloud_dirty', 'cloud_updated_at'])
+const CLOUD_COLUMNS = new Set(['cloud_dirty', 'cloud_updated_at', 'cloud_id'])
 
 function merge({ query, queryOne, run, batch }, data) {
   const added = {}

@@ -1,3 +1,5 @@
+import SavedViews from '../components/SavedViews'
+import ApplicationChecklist from '../components/ApplicationChecklist'
 import { useState, useEffect, useRef, useMemo } from 'react'
 // One description of the status vocabulary, shared with Timeline — see
 // src/statuses.js for why these stopped living in each page.
@@ -286,7 +288,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
   const [stats, setStats] = useState(null)
   const [apps, setApps] = useState([])
   const [selected, setSelected] = useState(null)
-  const [filter, setFilter] = useState({ status: '', platform: '', search: '', salaryFrom: '', salaryTo: '' })
+  const [filter, setFilter] = useState({ status: '', platform: '', search: '', salaryFrom: '', salaryTo: '', minMatch: '', dueOnly: false })
   const [sort, setSort] = useState({ key: 'applied_at', dir: 'desc' })
   const [currentPage, setCurrentPage] = useState(1)
   const [selectedIds, setSelectedIds] = useState(new Set())
@@ -453,6 +455,8 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
   // Sort + filter logic
   const filtered = useMemo(() => {
     let result = apps.filter(a => {
+      if (filter.minMatch && (a.match_score == null || a.match_score < Number(filter.minMatch))) return false
+      if (filter.dueOnly && !a.next_action_at) return false
       if (filter.status && a.status !== filter.status) return false
       if (filter.platform && a.platform !== filter.platform) return false
       if (filter.search) {
@@ -1160,6 +1164,11 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
           )
         })()}
 
+        <SavedViews filter={filter} sort={sort} onApply={view => { setFilter(view.filter); setSort(view.sort); setCurrentPage(1); setSelectedIds(new Set()) }} />
+        <div style={{ display: 'flex', gap: 12, marginBottom: 10 }}>
+          <label>Minimum match <input aria-label="Minimum match score" type="number" min="0" max="100" value={filter.minMatch || ''} onChange={e => setFilter(f => ({ ...f, minMatch: e.target.value }))} style={{ width: 80 }} /></label>
+          <label><input type="checkbox" checked={!!filter.dueOnly} onChange={e => setFilter(f => ({ ...f, dueOnly: e.target.checked }))} /> Has a follow-up scheduled</label>
+        </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-muted)' }}>{filtered.length} job{filtered.length !== 1 ? 's' : ''}</span>
@@ -1519,6 +1528,8 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
               <a href={selected.job_url} target="_blank" rel="noreferrer"
                 style={{ color: 'var(--accent)', fontSize: 13 }}>View original posting →</a>
             </div>
+
+            <ApplicationChecklist key={selected.id} applicationId={selected.id} />
 
             <div style={{ marginBottom: 16 }}>
               <label htmlFor="dash-f0" style={{ marginBottom: 6 }}>Comment</label>

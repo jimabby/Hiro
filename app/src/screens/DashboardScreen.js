@@ -3,6 +3,7 @@ import { View, Text, ScrollView, RefreshControl, StyleSheet, TextInput, Touchabl
 import { radius, statusLabel, useTheme, useStatusColors } from '../theme'
 import { describeDue, isOverdue } from '../components/NextAction'
 import { enqueue, flush, getPending } from '../scanQueue'
+import ScanQueue from '../components/ScanQueue'
 import { parseLocal, relativeDay, calendarDaysFrom, formatWhen, clockTime, formatDay } from '../dates'
 
 export default function DashboardScreen({ client, active = true, onOpenApplication }) {
@@ -75,10 +76,14 @@ export default function DashboardScreen({ client, active = true, onOpenApplicati
         setScanStatus(info)
         setScanMsg(info.running ? 'A scan is already running on the desktop — queued next.' : 'Scan queued — running on the desktop now.')
       }
-    } catch {
-      await enqueue(req)
-      setPendingCount((await getPending()).length)
-      setScanMsg('Desktop offline — saved. It will run when the desktop is turned on.')
+    } catch (err) {
+      try {
+        await enqueue(req, client)
+        setPendingCount((await getPending()).length)
+        setScanMsg(`Request saved for this connection. ${err.message || 'Destination unavailable.'}`)
+      } catch (queueError) {
+        setScanMsg(`Request was not saved: ${queueError.message}`)
+      }
     } finally {
       setScanBusy(false)
     }
@@ -189,6 +194,7 @@ export default function DashboardScreen({ client, active = true, onOpenApplicati
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
     >
       <Text style={styles.title}>Dashboard</Text>
+      <ScanQueue client={client} refreshKey={pendingCount} onChanged={setPendingCount} />
       {!!error && <Text style={styles.error}>{error}</Text>}
       {!stats && !error && <ActivityIndicator style={{ marginVertical: 24 }} color={colors.accent} />}
 

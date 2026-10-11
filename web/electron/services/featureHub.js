@@ -85,7 +85,31 @@ function saveOffer(id, data) { return database.saveOffer(Number(id), data || {})
 function deleteOffer(id) { return database.deleteOffer(Number(id)) }
 function replies(id) { return database.getRecruiterReplies(Number(id)) }
 
+function savedViews() { return configService.load().applicationViews || [] }
+function saveView(input = {}) {
+  const name = clean(input.name, 60)
+  if (!name) throw new Error('Name this view first.')
+  const all = savedViews()
+  if (!input.id && all.length >= 30) throw new Error('You can save up to 30 views.')
+  const f = input.filter || {}, sort = input.sort || {}
+  const view = {
+    id: all.some(v => v.id === input.id) ? input.id : crypto.randomUUID(), name,
+    filter: {
+      status: clean(f.status, 30), platform: clean(f.platform, 30), search: clean(f.search, 200),
+      salaryFrom: clean(f.salaryFrom, 12), salaryTo: clean(f.salaryTo, 12),
+      minMatch: clean(f.minMatch, 3), dueOnly: !!f.dueOnly,
+    },
+    sort: { key: ['applied_at', 'match_score', 'job_title', 'company', 'salary', 'status', 'platform'].includes(sort.key) ? sort.key : 'applied_at', dir: sort.dir === 'asc' ? 'asc' : 'desc' },
+  }
+  configService.update({ applicationViews: all.filter(v => v.id !== view.id).concat(view) })
+  return view
+}
+function deleteView(id) {
+  configService.update({ applicationViews: savedViews().filter(v => v.id !== id) })
+}
+
 module.exports = {
+  savedViews, saveView, deleteView,
   listCampaigns, saveCampaign, deleteCampaign, importJob,
   listContacts, dueContacts, saveContact, deleteContact, completeContact, snoozeContact,
   campaignAnalytics, insights,

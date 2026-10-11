@@ -170,3 +170,40 @@ whereas a base and bonus are what somebody is privately willing to pay *you*.
 
 Without this table the desktop skips the mirror quietly and the phone's Offers tab
 shows an empty board. Nothing else is affected.
+
+
+## Companion reconciliation upgrade
+
+Run the complete updated `schema.sql` in the Supabase SQL Editor before updating
+all connected desktop and mobile clients. The script is transactional and can be
+run repeatedly. This repository change does not execute it against your hosted
+project.
+
+- Applications use the cloud UUID primary key across devices. Desktop SQLite IDs
+  remain local; an existing cloud row is adopted only when its job URL, company
+  and title agree. Colliding local IDs restore as separate rows, preserving local
+  child records. Existing review requests and mirror links migrate to cloud UUIDs.
+- Each desktop owns its own interview, attention and offer mirrors. Legacy mirrors
+  remain until a matching replacement is successfully uploaded; unrelated or
+  unreadable legacy records are preserved.
+- Comments and checklists use separate encrypted envelopes. A phone comment update
+  never writes plaintext or overwrites the desktop metadata envelope. Existing
+  comments in that metadata remain readable until rewritten. Follow-up dates,
+  notes and completion state sync both ways; dates are stored as calendar dates.
+- Upgraded clients require the new columns/indexes for writes. Older desktops
+  cannot use the new mirror uniqueness constraints, so update all clients together.
+  Settings → Cloud Sync → Sync health shows failures and pending uploads; retry
+  after the schema upgrade. Never downgrade clients against the upgraded schema.
+- If desktop and phone edit the same application between syncs, desktop values win
+  and the discarded remote fields appear in the existing conflict log for recovery.
+
+The phone's offline queue is local to the phone. Signing into a different account
+or pairing to another desktop does not send the previous destination's requests.
+Requests from versions that did not record a destination are shown as unknown and
+can be cancelled, but are never automatically reassigned.
+
+Regression checks cover a real SQLite database and the phone CloudClient sharing
+a simulated cloud server (`web/test/companion-reconciliation.test.js`), plus queue
+isolation (`app/test/scan-queue.test.js`) and renderer controls. The schema has also
+been exercised on a temporary PostgreSQL instance for fresh installation, repeated
+execution, and upgrade from the preceding schema.

@@ -5,7 +5,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { pbkdf2 } from '@noble/hashes/pbkdf2.js'
 import { hkdf } from '@noble/hashes/hkdf.js'
 import { utf8ToBytes, bytesToHex } from '@noble/hashes/utils.js'
-import { AESEncryptionKey, AESSealedData, aesDecryptAsync } from 'expo-crypto'
+import { AESEncryptionKey, AESSealedData, aesDecryptAsync, aesEncryptAsync } from 'expo-crypto'
 import secureStore from './secureStore'
 
 const KEY_NAME = 'hiro.cloud-data-key'
@@ -67,4 +67,13 @@ export async function decryptCloudPayload(payload) {
   const err = new Error('This cloud payload is still encrypted with a retired key. Open Hiro on the desktop to re-upload it.')
   err.obsoleteEnvelope = true
   throw err
+}
+
+// Separate envelopes let the phone update comments without overwriting the
+// desktop's title/company/documents envelope.
+export async function encryptCloudPayload(value) {
+  if (!key64) throw new Error('Sign in again to encrypt this change.')
+  const key = await AESEncryptionKey.import(base64ToBytes(key64))
+  const sealed = await aesEncryptAsync(utf8ToBytes(JSON.stringify(value)), key)
+  return JSON.stringify({ v: ENVELOPE_VERSION, data: await sealed.combined('base64') })
 }

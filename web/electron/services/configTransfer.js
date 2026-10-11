@@ -25,7 +25,7 @@ const RUNTIME_KEYS = new Set([
   'pendingScans', 'lastScanAt', 'lastInboxCheck', 'lastCloudSyncAt', 'lastJobAlertCheck',
   'setupComplete', 'mobileApiToken', 'mobileApiEnabled',
   'supabaseRefreshToken', 'cloudSyncEnabled',
-  'cloudDataKey',
+  'cloudDataKey', 'cloudIdentityAccount', 'cloudFirstSyncChoice',
   'deviceId', 'deviceName', 'knownDeviceIds', 'mobileDevices',
   'calendarSyncCursor', 'lastCalendarSyncAt', 'encryptDatabase',
   'automationCooldowns',

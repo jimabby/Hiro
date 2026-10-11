@@ -49,7 +49,8 @@ export async function deleteAccount() {
 // desktop stopped. Extracted so a test can pin the two together.
 import { deriveStats, derivePerDay, isUnsent } from './stats'
 import { isDueOrOverdue, todayLocal, daysBetweenDates } from './dates'
-import { decryptCloudPayload } from './cloudCrypto'
+import { randomUUID } from 'expo-crypto'
+import { decryptCloudPayload, encryptCloudPayload } from './cloudCrypto'
 
 const VALID_STATUSES = ['applied', 'interview', 'offer', 'rejected', 'pending', 'no_response', 'skipped', 'held', 'withdrawn']
 
@@ -67,12 +68,12 @@ const LEGACY_COLUMNS = 'id, local_id, job_title, company, platform, salary, matc
 // take the applications list down rather than degrade the follow-up feature. So
 // they are requested separately and dropped on the first failure.
 const PIPELINE_COLUMNS = 'next_action_at, next_action_note'
-const BASE_COLUMNS = `${LEGACY_COLUMNS}, encrypted_meta`
+const BASE_COLUMNS = `${LEGACY_COLUMNS}, encrypted_meta, encrypted_comment`
 const SLIM_COLUMNS = `${BASE_COLUMNS}, ${PIPELINE_COLUMNS}`
 // Widest first, then drop one late addition at a time. Each tier is tried once
 // and the working one is remembered, so a project on an older schema pays for
 // the discovery a single time rather than on every refresh.
-const COLUMN_TIERS = [SLIM_COLUMNS, BASE_COLUMNS, LEGACY_COLUMNS]
+const COLUMN_TIERS = [SLIM_COLUMNS, BASE_COLUMNS, `${LEGACY_COLUMNS}, encrypted_meta`, LEGACY_COLUMNS]
 const CLOUD_PAGE_SIZE = 500
 
 async function selectAll(buildQuery, pageSize = CLOUD_PAGE_SIZE) {
@@ -92,6 +93,7 @@ async function selectAll(buildQuery, pageSize = CLOUD_PAGE_SIZE) {
 export class CloudClient {
   constructor(userId) {
     this.userId = userId
+    this.queueDestination = { key: `cloud:${url}:${userId}`, label: `Cloud account ${userId.slice(0, 8)} · ${url}` }
     // Scans still run on the desktop, but they CAN be requested through the
     // cloud: we insert into scan_requests and the desktop picks it up on its
     // next sync cycle (~2 minutes).
@@ -102,9 +104,9 @@ export class CloudClient {
     this._columns = null
   }
 
-  // Screens key off `id`; the cloud row's stable per-user key is `local_id`.
+  // Screens use the cloud UUID; installation-local integers are only for legacy deep links.
   _map(row) {
-    return { ...row, id: row.local_id ?? row.id }
+    return { ...row, id: row.id ?? row.local_id }
   }
 
   // Merge a row's encrypted metadata back over its blanked plaintext columns.
@@ -116,9 +118,10 @@ export class CloudClient {
   // columns hold rather than failing the whole list — one unreadable row must
   // never be able to blank the screen.
   async _withMeta(row) {
-    if (!row?.encrypted_meta) return row
+    if (!row) return row
     try {
-      Object.assign(row, await decryptCloudPayload(row.encrypted_meta) || {})
+      if (row.encrypted_meta) Object.assign(row, await decryptCloudPayload(row.encrypted_meta) || {})
+      if (row.encrypted_comment) Object.assign(row, await decryptCloudPayload(row.encrypted_comment) || {})
     } catch {
       row.meta_pending = true
     }
@@ -131,7 +134,7 @@ export class CloudClient {
       .from('applications')
       .select(columns)
       .eq('user_id', this.userId)
-      .order('applied_at', { ascending: false }))
+      .order('applied_at', { ascending: false }).order('id', { ascending: true }))
 
     // PostgREST reports an unknown column as PGRST204 / 42703. Walk down the
     // tiers until one works, then remember it.
@@ -190,7 +193,7 @@ export class CloudClient {
       .from('applications')
       .select('*')
       .eq('user_id', this.userId)
-      .eq('local_id', id)
+      .eq(typeof id === 'number' ? 'local_id' : 'id', id)
       .maybeSingle()
     if (error) throw new Error(error.message)
     if (!data) return null
@@ -210,13 +213,48 @@ export class CloudClient {
     return this._map(data)
   }
 
+  async getChecklist(id) {
+    const row = await this.getApplication(id)
+    if (!row) throw new Error('Application not found.')
+    const value = row.encrypted_checklist ? await decryptCloudPayload(row.encrypted_checklist) : null
+    return JSON.parse(value?.checklist || '[]')
+  }
+
+  async updateChecklist(id, change) {
+    const row = await this.getApplication(id)
+    if (!row) throw new Error('Application not found.')
+    const value = row.encrypted_checklist ? await decryptCloudPayload(row.encrypted_checklist) : null
+    const items = JSON.parse(value?.checklist || '[]')
+    const existing = items.find(t => t.id === change.id)
+    if (change.id && !existing) throw new Error('This task has changed. Refresh and try again.')
+    if (change.remove) items.splice(items.indexOf(existing), 1)
+    else {
+      const title = String(change.title ?? existing?.title ?? '').trim().slice(0, 200)
+      const due = change.due ?? existing?.due ?? ''
+      if (!title) throw new Error('Task title is required.')
+      if (due && !/^\d{4}-\d{2}-\d{2}$/.test(due)) throw new Error('Use a YYYY-MM-DD due date.')
+      if (!existing && items.length >= 100) throw new Error('An application can have at most 100 tasks.')
+      const item = { id: existing?.id || randomUUID(), title, due, done: !!(change.done ?? existing?.done ?? false) }
+      if (existing) items[items.indexOf(existing)] = item
+      else items.push(item)
+    }
+    const encrypted = await encryptCloudPayload({ checklist: JSON.stringify(items) })
+    // Refuse a stale read-modify-write rather than silently erase another device's task.
+    const { data, error } = await supabase.from('applications').update({ encrypted_checklist: encrypted, updated_at: new Date().toISOString() })
+      .eq('user_id', this.userId).eq('id', row.id).eq('updated_at', row.updated_at).select('id')
+    if (error) throw new Error(error.message)
+    if (!data?.length) throw new Error('The application changed on another device. Refresh and try again.')
+    this._cache = null
+    return items
+  }
+
   async updateStatus(id, status) {
     if (!VALID_STATUSES.includes(status)) throw new Error('Invalid application status.')
     const { error } = await supabase
       .from('applications')
       .update({ status, updated_at: new Date().toISOString() })
       .eq('user_id', this.userId)
-      .eq('local_id', id)
+      .eq(typeof id === 'number' ? 'local_id' : 'id', id)
     if (error) throw new Error(error.message)
     this._cache = null // next read must see the edit
     return { success: true }
@@ -226,9 +264,9 @@ export class CloudClient {
     comment = String(comment || '').slice(0, 5000)
     const { error } = await supabase
       .from('applications')
-      .update({ comment, updated_at: new Date().toISOString() })
+      .update({ comment: '', encrypted_comment: await encryptCloudPayload({ comment }), updated_at: new Date().toISOString() })
       .eq('user_id', this.userId)
-      .eq('local_id', id)
+      .eq(typeof id === 'number' ? 'local_id' : 'id', id)
     if (error) throw new Error(error.message)
     this._cache = null
     return { success: true }
@@ -239,15 +277,17 @@ export class CloudClient {
   // from here because deciding "chase them Thursday" is exactly the sort of thing
   // done away from the desk. `date` is a local YYYY-MM-DD, or null to clear.
   async setNextAction(id, { date, note } = {}) {
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Use a YYYY-MM-DD date.')
     const { error } = await supabase
       .from('applications')
       .update({
         next_action_at: date || null,
-        next_action_note: note || '',
+        next_action_note: String(note || '').slice(0, 5000),
+        next_action_done_at: null,
         updated_at: new Date().toISOString(),
       })
       .eq('user_id', this.userId)
-      .eq('local_id', id)
+      .eq(typeof id === 'number' ? 'local_id' : 'id', id)
     if (error) {
       if (/next_action/.test(error.message)) {
         throw new Error('Follow-up dates need the next_action columns — re-run supabase/schema.sql in your project.')
@@ -259,7 +299,12 @@ export class CloudClient {
   }
 
   async completeNextAction(id) {
-    return this.setNextAction(id, { date: null, note: '' })
+    const { error } = await supabase.from('applications').update({
+      next_action_at: null, next_action_done_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    }).eq('user_id', this.userId).eq(typeof id === 'number' ? 'local_id' : 'id', id)
+    if (error) throw new Error(error.message)
+    this._cache = null
+    return { success: true }
   }
 
   // Follow-ups due today or overdue, derived from the list already downloaded.
@@ -311,7 +356,7 @@ export class CloudClient {
   async getAttention() {
     const { data, error } = await supabase
       .from('attention_jobs')
-      .select('local_id, job_title, company, platform, salary, salary_min, salary_max, job_url, match_score, talking_points, reason, closing_date, found_at, encrypted_meta')
+      .select('id, local_id, job_title, company, platform, salary, salary_min, salary_max, job_url, match_score, talking_points, reason, closing_date, found_at, encrypted_meta')
       .eq('user_id', this.userId)
       .order('found_at', { ascending: false })
     if (error) return []
@@ -328,7 +373,7 @@ export class CloudClient {
     })()
     const { data, error } = await supabase
       .from('interview_events')
-      .select('local_id, application_local_id, scheduled_at, has_time, source, source_zone, source_local, note, job_title, company, platform, encrypted_meta')
+      .select('id, local_id, application_cloud_id, application_local_id, scheduled_at, has_time, source, source_zone, source_local, note, job_title, company, platform, encrypted_meta')
       .eq('user_id', this.userId)
       .gte('scheduled_at', today)
       .order('scheduled_at', { ascending: true })
@@ -336,7 +381,7 @@ export class CloudClient {
     if (error) return []
     return Promise.all((data || []).map(async (row) => {
       const r = await this._withMeta(row)
-      return { ...r, id: r.local_id, application_id: r.application_local_id }
+      return { ...r, id: r.id, application_id: r.application_cloud_id || r.application_local_id }
     }))
   }
 
@@ -354,7 +399,7 @@ export class CloudClient {
     try {
       ({ data, error } = await supabase
         .from('offers')
-        .select('local_id, application_local_id, job_title, company, platform, currency, base_salary, bonus, comparable_comp, comp_is_advertised, respond_by, start_date, decision, excitement, encrypted_meta')
+        .select('id, local_id, application_cloud_id, application_local_id, job_title, company, platform, currency, base_salary, bonus, comparable_comp, comp_is_advertised, respond_by, start_date, decision, excitement, encrypted_meta')
         .eq('user_id', this.userId)
         .order('respond_by', { ascending: true, nullsFirst: false }))
     } catch {
@@ -370,8 +415,8 @@ export class CloudClient {
       const total = r.base_salary == null ? null : r.base_salary + (r.bonus || 0)
       return {
         ...r,
-        id: r.local_id,
-        application_id: r.application_local_id,
+        id: r.id,
+        application_id: r.application_cloud_id || r.application_local_id,
         totalComp: total,
         // comparable_comp arrives already computed by the desktop, but it is
         // null whenever the money was encrypted — recompute from the decrypted
@@ -470,8 +515,8 @@ export class CloudClient {
   async requestReviewAction(id, action) {
     if (!['approve', 'reject'].includes(action)) throw new Error('Invalid review action.')
     const { error } = await supabase.from('review_requests').upsert({
-      user_id: this.userId, application_local_id: Number(id), action,
-    }, { onConflict: 'user_id,application_local_id' })
+      user_id: this.userId, application_cloud_id: id, action,
+    }, { onConflict: 'user_id,application_cloud_id' })
     if (error) throw new Error(/review_requests/.test(error.message)
       ? 'Remote review needs the review_requests table — re-run supabase/schema.sql.' : error.message)
     return { success: true, queued: true }

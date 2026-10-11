@@ -1,7 +1,7 @@
 // Cloud sync (Supabase). The local SQLite database stays the desktop's source
 // of truth; this service mirrors applications up to Supabase so the phone can
 // see them anywhere, and pulls phone-side status/comment edits back down.
-// Conflicts resolve last-write-wins on `updated_at`.
+// Conflicting edits keep the desktop value and record the remote value for recovery.
 
 const configService = require('./config')
 const database = require('./database')
@@ -22,6 +22,8 @@ let user = null
 let syncing = false
 let timer = null
 let lastError = null
+let failedItems = []
+let syncStage = null
 // Set when a sync pulled down rows this device had never seen, so Settings can
 // say "restored 42 applications from the cloud" instead of them just appearing.
 let lastRestore = null
@@ -112,6 +114,9 @@ function getStatus() {
     syncing,
     lastSyncAt: cfg.lastCloudSyncAt || null,
     error: lastError,
+    stage: syncStage,
+    failedItems,
+    pendingChanges: (() => { try { return database.getDirtyApplications().map(a => ({ id: a.id, title: a.job_title, company: a.company })) } catch { return [] } })(),
     lastRestore,
     // Status is polled by the UI and can be asked for before the database has
     // finished opening — never let a status read throw.
@@ -315,7 +320,10 @@ function localToCloud(a) {
   })
   return {
     user_id: user.id,
-    local_id: a.id,
+    id: a.cloud_id,
+    // Numeric IDs belong to one installation only. Legacy cloud rows retain
+    // theirs until updated; new rows use the existing UUID primary key.
+    local_id: null,
     job_title: encryptedMeta ? REDACTED : a.job_title,
     company: encryptedMeta ? REDACTED : a.company,
     platform: a.platform,
@@ -333,6 +341,11 @@ function localToCloud(a) {
     recruiter_email: encryptedPayload ? null : (a.recruiter_email || ''),
     encrypted_payload: encryptedPayload,
     encrypted_meta: encryptedMeta,
+    encrypted_comment: encryptMeta(dataKey, { comment: a.comment || '' }),
+    encrypted_checklist: encryptMeta(dataKey, { checklist: a.checklist || '[]' }),
+    next_action_at: a.next_action_at || null,
+    next_action_note: a.next_action_note || '',
+    next_action_done_at: a.next_action_done_at || null,
     status: a.status || 'applied',
     // Which resume was sent, and whether review mode is still holding this
     // back — the phone needs both to label the row honestly.
@@ -349,12 +362,16 @@ function localToCloud(a) {
 // Push rows with local changes the cloud hasn't seen, keyed by (user_id, local_id).
 // Pushing only dirty rows (instead of everything) means a phone edit that lands
 // mid-sync can no longer be blanket-overwritten by an unrelated push.
-async function pushDirty(c) {
-  const apps = database.getDirtyApplications()
+async function pushDirty(c, identifiedOnly = false) {
+  if (!identifiedOnly) database.ensureCloudIds?.()
+  const apps = database.getDirtyApplications().filter(a => !identifiedOnly || a.cloud_id)
   for (let i = 0; i < apps.length; i += 200) {
     const chunk = apps.slice(i, i + 200)
-    const { error } = await c.from('applications').upsert(chunk.map(localToCloud), { onConflict: 'user_id,local_id' })
-    if (error) throw new Error(error.message)
+    const { error } = await c.from('applications').upsert(chunk.map(localToCloud), { onConflict: 'id' })
+    if (error) {
+      failedItems = chunk.map(a => ({ id: a.id, title: a.job_title, error: error.message }))
+      throw new Error(error.message)
+    }
     // One database flush for the whole chunk. Each markCloudSynced is a write,
     // and sql.js serializes the entire database on every write — per-row
     // flushing meant up to 200 full-database writes per chunk.
@@ -382,9 +399,10 @@ async function pullChanges(c) {
     .from('applications')
     .select('*')
     .eq('user_id', user.id)
-    .order('local_id', { ascending: true }))
+    .order('id', { ascending: true }))
 
-  const localIds = new Set(database.getAllApplicationIds())
+  const tombstoneRows = database.getCloudTombstones?.() || []
+  const cloudTombstones = new Map(tombstoneRows.filter(r => r.cloud_id).map(r => [r.cloud_id, r.local_id]))
   // Deletions this desktop actually performed. Only these may be removed from
   // the cloud — see the note above pullChanges.
   const tombstoned = new Set(database.getTombstones())
@@ -430,21 +448,35 @@ async function pullChanges(c) {
           delete remote.encrypted_payload
         }
       }
-      if (remote.local_id == null) continue
-      if (!localIds.has(remote.local_id)) {
-        // Absent locally means one of two very different things, and the old
-        // code assumed the destructive one for both.
-        if (tombstoned.has(remote.local_id)) {
-          toDeleteRemotely.push(remote.local_id)
-        } else {
-          // Never seen here: fresh install, reset machine, or a row created on
-          // another desktop. Pull it down rather than destroying it.
+      for (const [column, field] of [['encrypted_comment', 'comment'], ['encrypted_checklist', 'checklist']]) {
+        if (remote[column]) {
+          Object.assign(remote, cloudCrypto.decrypt(dataKey, remote[column]) || {})
+        } else if (field === 'checklist') remote.checklist = '[]'
+      }
+      if (remote.id && cloudTombstones.has(remote.id)) {
+        toDeleteRemotely.push(remote.id)
+        continue
+      }
+      let local = remote.id ? database.getApplicationByCloudId?.(remote.id) : null
+      // Upgrade legacy rows only when the job identity agrees. A matching
+      // local number alone is never evidence that these are the same job.
+      const candidate = remote.local_id == null ? null : database.getApplication(remote.local_id)
+      if (!local && candidate && !candidate.cloud_id && remote.id &&
+          candidate.job_url && candidate.job_url === remote.job_url &&
+          candidate.company === remote.company && candidate.job_title === remote.job_title) {
+        database.setApplicationCloudId(candidate.id, remote.id)
+        local = { ...candidate, cloud_id: remote.id }
+      }
+      // Compatibility with legacy data transports without cloud UUIDs.
+      if (!remote.id && candidate) local = candidate
+      if (!local) {
+        if (!remote.id && tombstoned.has(remote.local_id)) toDeleteRemotely.push(remote.local_id)
+        else {
           database.restoreApplicationFromCloud(remote)
-          restored.push(remote.local_id)
+          restored.push(remote.id || remote.local_id)
         }
         continue
       }
-      const local = database.getApplication(remote.local_id)
 
       const remoteTime = remote.updated_at ? new Date(remote.updated_at).getTime() : 0
       const lastSeen = local.cloud_updated_at ? new Date(local.cloud_updated_at).getTime() : null
@@ -456,12 +488,12 @@ async function pullChanges(c) {
       // but silence made it indistinguishable from data loss — a status set on
       // the phone disappeared with no record it had ever existed.
       if (local.cloud_dirty) {
-        for (const field of ['status', 'comment']) {
+        for (const field of ['status', 'comment', 'next_action_at', 'next_action_note', 'next_action_done_at', 'checklist']) {
           const remoteValue = remote[field]
-          if (remoteValue == null || remoteValue === local[field]) continue
+          if (!Object.hasOwn(remote, field) || remoteValue === local[field]) continue
           try {
             database.recordSyncConflict({
-              applicationId: remote.local_id,
+              applicationId: local.id,
               field,
               localValue: local[field],
               remoteValue,
@@ -475,10 +507,13 @@ async function pullChanges(c) {
       const changes = {}
       if (remote.status && remote.status !== local.status) changes.status = remote.status
       if (remote.comment != null && remote.comment !== local.comment) changes.comment = remote.comment
+      for (const field of ['next_action_at', 'next_action_note', 'next_action_done_at', 'checklist']) {
+        if (Object.hasOwn(remote, field) && remote[field] !== local[field]) changes[field] = remote[field]
+      }
       if (Object.keys(changes).length > 0) {
-        database.applyCloudEdit(remote.local_id, changes, remote.updated_at)
+        database.applyCloudEdit(local.id, changes, remote.updated_at)
       } else {
-        database.markCloudSeen(remote.local_id, remote.updated_at)
+        database.markCloudSeen(local.id, remote.updated_at)
       }
     }
   })
@@ -492,16 +527,18 @@ async function pullChanges(c) {
       .from('applications')
       .delete()
       .eq('user_id', user.id)
-      .in('local_id', chunk)
+      .in(database.getCloudTombstones ? 'id' : 'local_id', chunk)
     if (delErr) throw new Error(delErr.message)
-    database.clearTombstones(chunk)
+    database.clearTombstones(chunk.map(id => cloudTombstones.get(id) ?? id))
   }
 
   // A tombstone whose row is no longer in the cloud has already been mirrored
   // (or never reached it). Without this the table would grow without bound and
   // re-issue a delete for the same id on every sync, forever.
-  const remoteIds = new Set((data || []).map(r => r.local_id))
-  const settled = [...tombstoned].filter(id => !remoteIds.has(id))
+  const remoteIds = new Set((data || []).map(r => r.id || r.local_id))
+  const settled = database.getCloudTombstones
+    ? tombstoneRows.filter(r => !r.cloud_id || !remoteIds.has(r.cloud_id)).map(r => r.local_id)
+    : [...tombstoned].filter(id => !remoteIds.has(id))
   if (settled.length > 0) database.clearTombstones(settled)
 
   // Rows still encrypted under a retired key. They are re-uploaded under the
@@ -551,10 +588,11 @@ function isMissingTable(error, table) {
 // was built from undefined and the delete removed every mirrored row on each
 // pass, immediately after upserting it.
 async function mirrorTable(c, table, rows, toCloud, localId = (r) => r.id) {
-  const payload = rows.map(toCloud)
+  const sourceDevice = deviceIdentity.ensureDeviceIdentity(configService).deviceId
+  const payload = rows.map(row => ({ ...toCloud(row), source_device: sourceDevice }))
   if (payload.length > 0) {
     for (let i = 0; i < payload.length; i += 200) {
-      const { error } = await c.from(table).upsert(payload.slice(i, i + 200), { onConflict: 'user_id,local_id' })
+      const { error } = await c.from(table).upsert(payload.slice(i, i + 200), { onConflict: 'user_id,source_device,local_id' })
       if (error) {
         if (isMissingTable(error, table)) return { skipped: true }
         throw new Error(error.message)
@@ -562,10 +600,40 @@ async function mirrorTable(c, table, rows, toCloud, localId = (r) => r.id) {
     }
   }
 
+  // Retire only legacy mirrors for which this upload supplied a replacement.
+  // Unmatched mirrors may be the only surviving copy from an offline desktop.
+  if (payload.length) {
+    const { data: legacy, error } = await c.from(table).select('*').eq('user_id', user.id).eq('source_device', 'legacy')
+    if (error && !isMissingTable(error, table)) throw new Error(error.message)
+    const dataKey = configService.load().cloudDataKey
+    const identify = row => row.encrypted_meta ? { ...row, ...cloudCrypto.decrypt(dataKey, row.encrypted_meta) } : row
+    const retire = []
+    for (const old of legacy || []) {
+      let match = false
+      try {
+        if (table === 'attention_jobs') {
+          const previous = identify(old)
+          match = !!previous.job_url && payload.some(row => {
+            const next = identify(row)
+            return next.job_url === previous.job_url && next.company === previous.company && next.job_title === previous.job_title
+          })
+        } else {
+          match = !!old.application_cloud_id && payload.some(row => row.application_cloud_id === old.application_cloud_id &&
+            (table !== 'interview_events' || row.scheduled_at === old.scheduled_at))
+        }
+      } catch { /* An unreadable legacy copy must be preserved. */ }
+      if (match) retire.push(old.id)
+    }
+    if (retire.length) {
+      const { error: retireError } = await c.from(table).delete().eq('user_id', user.id).eq('source_device', 'legacy').in('id', retire)
+      if (retireError) throw new Error(retireError.message)
+    }
+  }
+
   // Remove cloud rows whose local counterpart is gone. `not in` with an empty
   // list is invalid, so an empty local set is a plain delete-all instead.
   const keep = rows.map(localId)
-  let del = c.from(table).delete().eq('user_id', user.id)
+  let del = c.from(table).delete().eq('user_id', user.id).eq('source_device', sourceDevice)
   if (keep.length > 0) del = del.not('local_id', 'in', `(${keep.join(',')})`)
   const { error: delErr } = await del
   if (delErr) {
@@ -593,6 +661,7 @@ async function pushInterviews(c) {
       user_id: user.id,
       local_id: e.id,
       application_local_id: e.application_id,
+      application_cloud_id: database.getApplication(e.application_id)?.cloud_id || null,
       scheduled_at: e.scheduled_at,
       has_time: e.has_time === 1 || e.has_time === true,
       source: e.source || 'manual',
@@ -683,6 +752,7 @@ async function pushOffers(c) {
       // application a notification names.
       local_id: o.application_id,
       application_local_id: o.application_id,
+      application_cloud_id: database.getApplication(o.application_id)?.cloud_id || null,
       job_title: meta ? REDACTED : (o.job_title || ''),
       company: meta ? REDACTED : (o.company || ''),
       platform: o.platform || '',
@@ -747,21 +817,26 @@ async function pollReviewRequests(c) {
   let pending
   try {
     pending = await selectAll(() => c.from('review_requests')
-      .select('id, application_local_id, action')
+      .select('id, application_local_id, application_cloud_id, action')
       .eq('user_id', user.id)
       .order('created_at', { ascending: true }))
   } catch (error) {
     if (isMissingTable({ message: error.message }, 'review_requests')) return
     throw error
   }
+  pending = pending.filter(r => r.application_cloud_id
+    ? !!database.getApplicationByCloudId?.(r.application_cloud_id)
+    : false)
   if (!pending.length) return
   const { data: claimed, error } = await c.from('review_requests').delete()
     .eq('user_id', user.id).in('id', pending.map(r => r.id))
-    .select('id, application_local_id, action')
+    .select('id, application_local_id, application_cloud_id, action')
   if (error) throw new Error(error.message)
   for (const request of claimed || []) {
     try {
-      await onRemoteReview(request)
+      const local = database.getApplicationByCloudId(request.application_cloud_id)
+      if (!local) continue
+      await onRemoteReview({ ...request, application_local_id: local.id })
       logger.append(`Cloud review: ${request.action} processed for application ${request.application_local_id}`)
     } catch (err) {
       // A desktop that is busy right now is worth asking again: put the
@@ -773,7 +848,7 @@ async function pollReviewRequests(c) {
         continue
       }
       await c.from('review_requests').upsert({
-        id: request.id, user_id: user.id, application_local_id: request.application_local_id,
+        id: request.id, user_id: user.id, application_local_id: null, application_cloud_id: request.application_cloud_id,
         action: request.action,
       })
       logger.append(`Cloud review deferred for application ${request.application_local_id}: ${err.message}`)
@@ -1127,6 +1202,14 @@ async function sync() {
     // first and checking afterwards would push a revoked device's data up one
     // last time, which is precisely what revoking it was meant to stop.
     if (await checkRevocation(c)) return getStatus()
+    const identityConfig = configService.load()
+    const account = `${identityConfig.supabaseUrl}:${user.id}`
+    if (identityConfig.cloudIdentityAccount && identityConfig.cloudIdentityAccount !== account) {
+      database.resetCloudIdentity?.()
+      configService.update({ cloudFirstSyncChoice: null })
+    }
+    configService.update({ cloudIdentityAccount: account })
+
 
     // First contact with an account that already holds data. Stop before
     // touching anything in either direction — merging is only one of three
@@ -1138,10 +1221,16 @@ async function sync() {
       return getStatus()
     }
 
+    failedItems = []
     if (pendingRekey) {
-      await pushDirty(c)
+      // Known UUIDs can be safely rewritten after a password reset, before
+      // trying to decrypt ciphertext made with the old key. Unidentified
+      // legacy rows still need identity reconciliation before their first push.
+      syncStage = 'Refresh encryption'
+      await pushDirty(c, true)
       pendingRekey = false
     }
+    syncStage = 'Download changes'
     const pulled = await pullChanges(c) // normally apply phone edits first so we don't clobber them
     // Recovering rows from the cloud is a significant, user-visible event (it
     // is what a reinstall looks like) — report it rather than letting the
@@ -1150,7 +1239,9 @@ async function sync() {
       lastRestore = { count: pulled.restored, at: new Date().toISOString() }
       logger.append(`Cloud sync restored ${pulled.restored} application(s) not present on this device`)
     }
+    syncStage = 'Upload applications'
     await pushDirty(c)
+    syncStage = 'Update companion data'
     // Desktop-owned mirrors. Pushed after applications so an interview always
     // lands alongside an application row the phone can already resolve.
     await pushInterviews(c)
@@ -1172,6 +1263,7 @@ async function sync() {
     lastError = err.message
   } finally {
     syncing = false
+    if (!lastError) syncStage = null
   }
   return getStatus()
 }

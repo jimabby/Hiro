@@ -278,6 +278,12 @@ contextBridge.exposeInMainWorld('api', {
   revokePairedDevice: (id) => ipcRenderer.invoke('mobile:revokeDevice', id),
   revokeAllPairedDevices: () => ipcRenderer.invoke('mobile:revokeAllDevices'),
 
+  getSavedViews: () => ipcRenderer.invoke('features:views'),
+  saveView: (view) => ipcRenderer.invoke('features:saveView', view),
+  deleteView: (id) => ipcRenderer.invoke('features:deleteView', id),
+  getChecklist: (id) => ipcRenderer.invoke('features:checklist', id),
+  updateChecklist: (id, change) => ipcRenderer.invoke('features:updateChecklist', id, change),
+
   // Cloud sync (Supabase)
   cloudStatus: () => ipcRenderer.invoke('cloud:status'),
   cloudResolveFirstSync: (choice) => ipcRenderer.invoke('cloud:resolveFirstSync', choice),

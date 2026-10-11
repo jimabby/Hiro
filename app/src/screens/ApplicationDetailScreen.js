@@ -4,6 +4,7 @@ import {
   Linking, StyleSheet, KeyboardAvoidingView, Platform, Alert, RefreshControl, BackHandler,
 } from 'react-native'
 import { radius, statusLabel, SETTABLE_STATUSES, useTheme, useStatusColors } from '../theme'
+import ApplicationChecklist from '../components/ApplicationChecklist'
 import NextAction from '../components/NextAction'
 import InterviewBriefCard from '../components/InterviewBriefCard'
 import { formatFull } from '../dates'
@@ -245,6 +246,8 @@ export default function ApplicationDetailScreen({ client, id, onBack, active = t
               {!!app.match_explanation && <Text style={styles.body}>{app.match_explanation}</Text>}
             </View>
           )}
+
+          <ApplicationChecklist key={app.id} client={client} applicationId={app.id} />
 
           {['interview', 'offer'].includes(app.status) && client.getInterviewBrief && (
             <InterviewBriefCard client={client} applicationId={app.id} />

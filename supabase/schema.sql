@@ -1,3 +1,5 @@
+begin;
+
 -- Hiro cloud sync schema (Supabase / Postgres)
 -- Run this once in your Supabase project: SQL Editor → New query → paste → Run.
 --
@@ -434,3 +436,56 @@ create index if not exists idx_offers_user_respond_by
 -- alongside candid writing about an employer that was never meant to leave the
 -- machine.
 alter table public.offers add column if not exists encrypted_meta text;
+
+-- Companion reconciliation v2. Run this migration before updating clients.
+-- Applications already have UUID primary keys; new clients no longer publish
+-- installation-local integers as shared identity. Old numeric links remain for
+-- historical rows until those rows are upgraded by their desktop.
+alter table public.applications add column if not exists encrypted_comment text;
+alter table public.applications add column if not exists encrypted_checklist text;
+alter table public.applications add column if not exists next_action_done_at text;
+
+alter table public.review_requests alter column application_local_id drop not null;
+alter table public.review_requests add column if not exists application_cloud_id uuid references public.applications(id) on delete cascade;
+update public.review_requests r set application_cloud_id = a.id
+  from public.applications a
+  where r.application_cloud_id is null and r.user_id = a.user_id
+    and r.application_local_id = a.local_id;
+create unique index if not exists idx_review_requests_cloud_pending
+  on public.review_requests(user_id, application_cloud_id);
+
+-- Mirrors belong to an installation. A second desktop must never delete the
+-- first desktop's interviews, offers, or attention queue during its own sync.
+alter table public.interview_events add column if not exists source_device text not null default 'legacy';
+alter table public.attention_jobs add column if not exists source_device text not null default 'legacy';
+alter table public.offers add column if not exists source_device text not null default 'legacy';
+alter table public.interview_events add column if not exists application_cloud_id uuid references public.applications(id) on delete cascade;
+alter table public.offers add column if not exists application_cloud_id uuid references public.applications(id) on delete cascade;
+alter table public.interview_events drop constraint if exists interview_events_user_id_local_id_key;
+alter table public.attention_jobs drop constraint if exists attention_jobs_user_id_local_id_key;
+alter table public.offers drop constraint if exists offers_user_id_local_id_key;
+create unique index if not exists idx_interviews_device_local on public.interview_events(user_id, source_device, local_id);
+create unique index if not exists idx_attention_device_local on public.attention_jobs(user_id, source_device, local_id);
+create unique index if not exists idx_offers_device_local on public.offers(user_id, source_device, local_id);
+
+-- Preserve old mirrors and attach their existing cloud parent before an
+-- upgraded desktop stops publishing numeric application IDs. Matching legacy
+-- mirrors are retired only after a replacement has been uploaded successfully.
+update public.interview_events e set application_cloud_id = a.id
+  from public.applications a where e.application_cloud_id is null
+    and e.source_device = 'legacy' and e.user_id = a.user_id and e.application_local_id = a.local_id;
+update public.offers o set application_cloud_id = a.id
+  from public.applications a where o.application_cloud_id is null
+    and o.source_device = 'legacy' and o.user_id = a.user_id and o.application_local_id = a.local_id;
+
+-- A follow-up is a calendar day, never an instant in the desktop's timezone.
+do $$
+begin
+  if exists (select 1 from information_schema.columns where table_schema = 'public'
+      and table_name = 'applications' and column_name = 'next_action_at' and data_type = 'timestamp with time zone') then
+    alter table public.applications alter column next_action_at type date
+      using (next_action_at at time zone 'UTC')::date;
+  end if;
+end $$;
+
+commit;

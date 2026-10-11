@@ -549,7 +549,8 @@ ipcMain.handle('cloud:signOut', async () => ({ success: true, status: await clou
 
 ipcMain.handle('cloud:syncNow', async () => {
   try {
-    return { success: true, status: await cloudSync.sync() }
+    const status = await cloudSync.sync()
+    return { success: !status.error && !status.pendingFirstSync, error: status.error || (status.pendingFirstSync ? 'Choose how to combine this device first.' : null), status }
   } catch (err) {
     return { success: false, error: err.message }
   }

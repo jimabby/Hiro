@@ -574,6 +574,15 @@ async function handle(req, res) {
     // The follow-up date and note behind the desktop's Pipeline board. Writable
     // from the phone: deciding "chase them Thursday" is exactly the sort of thing
     // done away from the desk, and it needs no browser session.
+    const checklistMatch = path.match(/^\/api\/applications\/(\d+)\/checklist$/)
+    if (checklistMatch && req.method === 'GET') {
+      return json(res, 200, database.getChecklist(Number(checklistMatch[1])))
+    }
+    if (checklistMatch && req.method === 'POST') {
+      try { return json(res, 200, database.updateChecklist(Number(checklistMatch[1]), await readBody(req))) }
+      catch (err) { return json(res, 400, { error: err.message }) }
+    }
+
     const nextActionMatch = path.match(/^\/api\/applications\/(\d+)\/next-action$/)
     if (req.method === 'POST' && nextActionMatch) {
       const body = await readBody(req)

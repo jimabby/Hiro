@@ -7,7 +7,7 @@ const os = require('os')
 stub({
   './config': { load: () => ({}), update: () => ({}), CONFIG_DIR: os.tmpdir() },
   './logger': { append: () => {} },
-  './database': {},
+  './database': { getApplicationByCloudId: id => ({ id: Number(id.replace('cloud-', '')) }) },
 })
 const cloudSync = service('cloudSync')
 const { check, done } = createChecker()
@@ -32,16 +32,16 @@ function fakeClient(queue) {
   const user = { id: 'u1' }
   const seen = []
 
-  const permanent = fakeClient([{ id: 1, application_local_id: 7, action: 'approve' }])
+  const permanent = fakeClient([{ id: 1, application_cloud_id: 'cloud-7', action: 'approve' }])
   await cloudSync._pollReviewRequests(permanent, user, async (r) => { seen.push(r.application_local_id); throw new Error('Career-board drafts are submitted from the desktop') })
   check('the request was attempted', seen, [7])
   check('a permanent failure is not put back', permanent.requeued.length, 0)
 
-  const busy = fakeClient([{ id: 2, application_local_id: 8, action: 'approve' }])
+  const busy = fakeClient([{ id: 2, application_cloud_id: 'cloud-8', action: 'approve' }])
   await cloudSync._pollReviewRequests(busy, user, async () => { const e = new Error('A scan is currently running'); e.retryable = true; throw e })
-  check('a busy desktop puts it back for the next sync', busy.requeued.map(r => r.application_local_id), [8])
+  check('a busy desktop puts it back for the next sync', busy.requeued.map(r => r.application_cloud_id), ['cloud-8'])
 
-  const fine = fakeClient([{ id: 3, application_local_id: 9, action: 'reject' }])
+  const fine = fakeClient([{ id: 3, application_cloud_id: 'cloud-9', action: 'reject' }])
   await cloudSync._pollReviewRequests(fine, user, async () => ({ success: true }))
   check('a processed request is gone', fine.requeued.length, 0)
   done()

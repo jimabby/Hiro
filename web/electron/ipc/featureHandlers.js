@@ -1,6 +1,12 @@
+const database = require('../services/database')
 const featureHub = require('../services/featureHub')
 
 module.exports = function registerFeatureHandlers({ ipcMain, scheduler, getWindow }) {
+  ipcMain.handle('features:views', () => featureHub.savedViews())
+  ipcMain.handle('features:saveView', (_, view) => featureHub.saveView(view))
+  ipcMain.handle('features:deleteView', (_, id) => featureHub.deleteView(id))
+  ipcMain.handle('features:checklist', (_, id) => database.getChecklist(id))
+  ipcMain.handle('features:updateChecklist', (_, id, change) => database.updateChecklist(id, change))
   ipcMain.handle('features:campaigns', () => featureHub.listCampaigns())
   ipcMain.handle('features:saveCampaign', (_, campaign) => {
     const saved = featureHub.saveCampaign(campaign); scheduler.restart(getWindow()); return saved

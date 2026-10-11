@@ -40,6 +40,8 @@ export function makeApi(overrides = {}) {
     },
     __listenerCount: (channel) => (listeners.get(channel) || new Set()).size,
 
+    getSavedViews: vi.fn(async () => []),
+    getChecklist: vi.fn(async () => []),
     getConfig: vi.fn(async () => ({ setupComplete: true, resumes: [], masterResume: 'x' })),
     getConfigLoadError: vi.fn(async () => null),
     getConfigSecretError: vi.fn(async () => null),

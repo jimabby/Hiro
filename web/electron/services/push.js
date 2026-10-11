@@ -173,7 +173,7 @@ function notifyReply(app, classification) {
     dedupeKey: `reply:${app.id}:${classification || 'unclassified'}`,
     title: `${app.company} replied`,
     body: label ? `${app.company} ${label} — ${app.job_title}` : `New reply about ${app.job_title}`,
-    data: { applicationId: app.id },
+    data: { applicationId: database.getApplication(app.id)?.cloud_id || null },
   })
 }
 
@@ -248,7 +248,7 @@ async function checkInterviewReminders(cfg) {
       dedupeKey: `interview:${ev.id}:${hit}h:${ev.scheduled_at}`,
       title: hit <= 3 ? `Interview in ${Math.max(1, Math.round(hoursUntil))}h` : 'Interview tomorrow',
       body: `${ev.job_title || 'Interview'} at ${ev.company || 'unknown company'} — ${formatWhen(ev.scheduled_at, ev.has_time)}`,
-      data: { applicationId: ev.application_id, interviewId: ev.id },
+      data: { applicationId: database.getApplication(ev.application_id)?.cloud_id || null, interviewId: ev.id },
     })
   }
 }
@@ -263,7 +263,7 @@ async function checkExpiring(cfg) {
       dedupeKey: `expiring:${job.source}:${job.id}:${job.closing_date}`,
       title: 'Application closing soon',
       body: `${job.job_title} at ${job.company} closes ${job.closing_date}${job.source === 'attention' ? ' — still needs a manual application' : ' — still waiting for your approval'}`,
-      data: { applicationId: job.source === 'application' ? job.id : null, attentionId: job.source === 'attention' ? job.id : null },
+      data: { applicationId: job.source === 'application' ? database.getApplication(job.id)?.cloud_id || null : null, attentionId: job.source === 'attention' ? job.id : null },
     })
   }
 }
@@ -318,7 +318,7 @@ async function checkOfferDeadlines() {
       // The offer board, not the application behind it: what the reader wants
       // is the deadline, the number, and what else is on the table beside it —
       // the application detail would show them the job advert.
-      data: { applicationId: offer.application_id, tab: 'offers' },
+      data: { applicationId: database.getApplication(offer.application_id)?.cloud_id || null, tab: 'offers' },
     })
   }
 }
@@ -364,7 +364,7 @@ async function checkFollowUps() {
       dedupeKey: `follow-up:${app.id}:${app.next_action_at}`,
       title: 'Follow-up due',
       body: `${app.next_action_note || 'Follow up'} — ${app.job_title} at ${app.company}`,
-      data: { applicationId: app.id },
+      data: { applicationId: database.getApplication(app.id)?.cloud_id || null },
     })
   }
 }

@@ -1,3 +1,5 @@
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js'
 // HTTP client for the Hiro desktop companion API (web/electron/services/mobileApi.js)
 import { encryptPayload, decryptPayload, signedHeaders } from './secureProtocol'
 // Pure, CommonJS, and separately tested — see src/httpJson.js.
@@ -60,6 +62,7 @@ export class HiroClient {
   constructor({ host, port, token, secure = false }) {
     this.baseUrl = `http://${host}:${port}`
     this.token = token
+    this.queueDestination = { key: `lan:${bytesToHex(sha256(utf8ToBytes(`${this.baseUrl}:${token}`)))}`, label: `Desktop ${host}:${port}` }
     // Connections created by the one-time pairing flow use authenticated,
     // encrypted envelopes. Saved/manual connections from older Hiro releases
     // remain bearer-token compatible until the user re-pairs.
@@ -174,6 +177,9 @@ export class HiroClient {
 
   // The night-before interview brief, as the desktop has prepared it. LAN only:
   // the brief is built from documents and replies that are not synced.
+  getChecklist(id) { return this.request(`/api/applications/${id}/checklist`) }
+  updateChecklist(id, change) { return this.request(`/api/applications/${id}/checklist`, { method: 'POST', body: JSON.stringify(change) }) }
+
   getInterviewBrief(id) { return this.request(`/api/applications/${id}/brief`) }
   getPerDay(days = 7) { return this.request(`/api/perday?days=${days}`) }
 

@@ -614,6 +614,11 @@ function migrate() {
   // says where the application got to; this says what is owed and by when, which
   // is the difference between a list of past events and a working pipeline.
   // Stored as local "YYYY-MM-DD" (a follow-up is a day, not an instant).
+  // Cloud UUIDs are independent of the numeric IDs used by this installation.
+  try { db.run('ALTER TABLE applications ADD COLUMN cloud_id TEXT') } catch {}
+  try { db.run('ALTER TABLE applications ADD COLUMN checklist TEXT DEFAULT "[]"') } catch {}
+  try { db.run('ALTER TABLE deleted_applications ADD COLUMN cloud_id TEXT') } catch {}
+  db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_app_cloud_id ON applications(cloud_id)')
   try { db.run('ALTER TABLE applications ADD COLUMN next_action_at TEXT') } catch {}
   try { db.run('ALTER TABLE applications ADD COLUMN next_action_note TEXT DEFAULT ""') } catch {}
   // Set when a next action is completed, so a cleared reminder is not silently
@@ -973,7 +978,7 @@ function clearSyncConflicts() {
 function applyConflictResolution(id) {
   const conflict = queryOne('SELECT * FROM sync_conflicts WHERE id = ?', [id])
   if (!conflict) return { success: false, reason: 'Conflict not found' }
-  if (conflict.field !== 'status' && conflict.field !== 'comment') {
+  if (!['status', 'comment', 'next_action_at', 'next_action_note', 'next_action_done_at', 'checklist'].includes(conflict.field)) {
     return { success: false, reason: `Cannot re-apply the "${conflict.field}" field` }
   }
   const exists = queryOne('SELECT id FROM applications WHERE id = ?', [conflict.application_id])
@@ -1290,7 +1295,7 @@ function deleteApplication(id) {
     // Tombstone first: if the process dies mid-delete, an extra tombstone for a
     // row that still exists is harmless (sync skips tombstones whose row is
     // present), whereas a missing tombstone silently resurrects the row.
-    run('INSERT OR REPLACE INTO deleted_applications (local_id) VALUES (?)', [id])
+    run('INSERT OR REPLACE INTO deleted_applications (local_id, cloud_id) SELECT id, cloud_id FROM applications WHERE id = ?', [id])
     run('DELETE FROM applications WHERE id = ?', [id])
     run('DELETE FROM status_history WHERE application_id = ?', [id])
     run('DELETE FROM interview_prep WHERE application_id = ?', [id])
@@ -1315,7 +1320,7 @@ function clearAllApplications() {
     },
   }
   batch(() => {
-    run('INSERT OR REPLACE INTO deleted_applications (local_id) SELECT id FROM applications')
+    run('INSERT OR REPLACE INTO deleted_applications (local_id, cloud_id) SELECT id, cloud_id FROM applications')
     run('DELETE FROM applications')
     run('DELETE FROM status_history')
     run('DELETE FROM interview_prep')
@@ -1663,6 +1668,62 @@ function percentileFor(benchmark, value) {
 
 // ─── Cloud Sync Bookkeeping ──────────────────────────────────────
 
+function getApplicationByCloudId(id) {
+  return queryOne('SELECT * FROM applications WHERE cloud_id = ?', [id]) || null
+}
+
+function setApplicationCloudId(id, cloudId) {
+  run('UPDATE applications SET cloud_id = ? WHERE id = ?', [cloudId, id])
+}
+
+function resetCloudIdentity() {
+  batch(() => {
+    run('UPDATE applications SET cloud_id = NULL, cloud_dirty = 1, cloud_updated_at = NULL')
+    run('DELETE FROM deleted_applications')
+  })
+}
+
+function ensureCloudIds() {
+  batch(() => {
+    for (const row of query('SELECT id FROM applications WHERE cloud_id IS NULL')) {
+      setApplicationCloudId(row.id, require('crypto').randomUUID())
+    }
+  })
+}
+
+function getCloudTombstones() {
+  return query('SELECT local_id, cloud_id FROM deleted_applications WHERE local_id NOT IN (SELECT id FROM applications)')
+}
+
+function getChecklist(id) {
+  const row = getApplication(id)
+  if (!row) throw new Error('Application not found.')
+  const items = JSON.parse(row.checklist || '[]')
+  if (!Array.isArray(items)) throw new Error('The checklist is unreadable. Restore it from a backup.')
+  return items
+}
+
+function updateChecklist(id, input = {}) {
+  const items = getChecklist(id)
+  const existing = items.find(item => item.id === input.id)
+  if (input.id && !existing) throw new Error('Task not found. Refresh the checklist.')
+  if (input.remove) {
+    if (!existing) throw new Error('Task not found.')
+    items.splice(items.indexOf(existing), 1)
+  } else {
+    const title = String(input.title ?? existing?.title ?? '').trim().slice(0, 200)
+    const due = input.due ?? existing?.due ?? ''
+    if (!title) throw new Error('Task title is required.')
+    if (due && !/^\d{4}-\d{2}-\d{2}$/.test(due)) throw new Error('Use a YYYY-MM-DD due date.')
+    if (!existing && items.length >= 100) throw new Error('An application can have at most 100 tasks.')
+    const item = { id: existing?.id || require('crypto').randomUUID(), title, due, done: !!(input.done ?? existing?.done ?? false) }
+    if (existing) items[items.indexOf(existing)] = item
+    else items.push(item)
+  }
+  run("UPDATE applications SET checklist = ?, cloud_dirty = 1, updated_at = ? WHERE id = ?", [JSON.stringify(items), new Date().toISOString(), id])
+  return items
+}
+
 // Rows with local changes the cloud hasn't seen (new rows start dirty).
 function getDirtyApplications() {
   return query('SELECT * FROM applications WHERE cloud_dirty = 1 OR cloud_updated_at IS NULL')
@@ -1708,21 +1769,24 @@ function clearTombstones(ids) {
 // Inserted clean (cloud_dirty = 0) so restoring does not immediately re-push
 // everything it just pulled down.
 function restoreApplicationFromCloud(r) {
+  if (r.id && getApplicationByCloudId(r.id)) return
+  const targetId = r.local_id && !getApplication(r.local_id) ? r.local_id : null
   run(
     `INSERT OR IGNORE INTO applications
       (id, job_title, company, platform, salary, salary_min, salary_max, job_url,
        job_description, match_score, match_explanation, tailored_resume, cover_letter,
        screening_qa, comment, recruiter_email, status, resume_id, resume_name,
-       campaign_id, campaign_name, held_at, applied_at, updated_at, cloud_dirty, cloud_updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`,
+       campaign_id, campaign_name, held_at, applied_at, updated_at, cloud_dirty, cloud_updated_at, cloud_id, next_action_at, next_action_note, next_action_done_at, checklist)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?)`,
     [
-      r.local_id, r.job_title || '', r.company || '', r.platform || '', r.salary || '',
+      targetId, r.job_title || '', r.company || '', r.platform || '', r.salary || '',
       r.salary_min ?? null, r.salary_max ?? null, r.job_url || '', r.job_description || '',
       r.match_score ?? null, r.match_explanation || '', r.tailored_resume || '',
       r.cover_letter || '', r.screening_qa || '', r.comment || '', r.recruiter_email || '',
       r.status || 'applied', r.resume_id || null, r.resume_name || null,
       r.campaign_id || null, r.campaign_name || null,
       r.held_at || null, r.applied_at || null, r.updated_at || null, r.updated_at || null,
+      r.id || null, r.next_action_at || null, r.next_action_note || '', r.next_action_done_at || null, r.checklist || '[]',
     ]
   )
 }
@@ -1741,11 +1805,15 @@ function markCloudSeen(id, cloudUpdatedAt) {
 
 // Apply a phone-side edit locally WITHOUT marking the row dirty, so the next
 // push doesn't echo it straight back with a new timestamp.
-function applyCloudEdit(id, { status, comment }, cloudUpdatedAt) {
+function applyCloudEdit(id, changes, cloudUpdatedAt) {
+  const { status, comment } = changes
   const sets = ["updated_at = datetime('now')", 'cloud_updated_at = ?']
   const params = [cloudUpdatedAt]
   if (status != null) { sets.push('status = ?'); params.push(status) }
   if (comment != null) { sets.push('comment = ?'); params.push(comment) }
+  for (const field of ['next_action_at', 'next_action_note', 'next_action_done_at', 'checklist']) {
+    if (Object.hasOwn(changes, field)) { sets.push(`${field} = ?`); params.push(changes[field]) }
+  }
   params.push(id)
   run(`UPDATE applications SET ${sets.join(', ')} WHERE id = ?`, params)
   if (status != null) recordStatusChange(id, status) // phone edits show in the timeline too
@@ -4031,6 +4099,7 @@ module.exports = {
   findJobByContent, isContentSuppressed, getSalaryBenchmark, percentileFor, recordAiUsage, getAiUsageSummary, getMonthlyAiSpend, pruneAiUsage, clearAiUsage,
   UNSENT_STATUSES,
   updateApplicationAfterApply, updateApplicationComment, updateRecruiterEmail, deleteApplication, clearAllApplications,
+  resetCloudIdentity, getApplicationByCloudId, setApplicationCloudId, ensureCloudIds, getCloudTombstones, getChecklist, updateChecklist,
   getDirtyApplications, getAllApplicationIds, markCloudSynced, markCloudSeen, applyCloudEdit,
   countApplications, markAllDirty, getTombstones, clearTombstones, restoreApplicationFromCloud,
   getAttentionJobs, getAttentionJob, insertAttentionJob, dismissAttentionJob, deleteAttentionJob, clearAllAttentionJobs,
