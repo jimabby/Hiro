@@ -10,7 +10,7 @@ const { ipcMain } = require('electron')
 let nextId = 1
 
 function makeAskQuestion(win) {
-  return (question) => new Promise((resolve) => {
+  return (question, options) => new Promise((resolve) => {
     if (!win || win.isDestroyed()) return resolve('')
     const id = nextId++
 
@@ -24,11 +24,19 @@ function makeAskQuestion(win) {
       clearTimeout(timeout)
       ipcMain.removeListener('question:answer', handler)
     }
-    // 5 min timeout — must also drop the listener, or it lingers forever.
-    const timeout = setTimeout(() => { cleanup(); resolve('') }, 5 * 60 * 1000)
+    // 5 min timeout — must also drop the listener, or it lingers forever. The
+    // renderer is told too, so it closes the modal instead of leaving a dead
+    // question on screen whose answer would go nowhere.
+    const timeout = setTimeout(() => {
+      cleanup()
+      if (!win.isDestroyed()) win.webContents.send('question:cancel', { id })
+      resolve('')
+    }, 5 * 60 * 1000)
 
     ipcMain.on('question:answer', handler)
-    win.webContents.send('question:ask', { id, question })
+    // `options`, when given, are the labels a select or radio group accepts —
+    // the renderer can offer them as choices; the question text names them too.
+    win.webContents.send('question:ask', { id, question, ...(Array.isArray(options) && options.length ? { options } : {}) })
   })
 }
 

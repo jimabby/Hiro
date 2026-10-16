@@ -488,4 +488,58 @@ begin
   end if;
 end $$;
 
+-- ─── Schema version 2: incremental pull ───────────────────────────
+-- The desktop used to download every application in full on every two-minute
+-- sync to find the few the phone had changed. It now asks only for rows whose
+-- `synced_at` is past the last one it saw.
+--
+-- synced_at is stamped HERE, by a trigger, on every insert and update, never by
+-- a client. updated_at cannot do this job: the phone and the desktop both write
+-- it from their own clocks, so a phone running a few minutes slow would write a
+-- change that sorts before the desktop's cursor and is never fetched.
+--
+-- Backfill: adding the column stamps every existing row with the time this
+-- script ran. Nothing has to be done by hand. Each desktop's first sync after
+-- the upgrade has no cursor yet, so it downloads everything once, as before,
+-- and is incremental from then on.
+--
+-- Row identity needs no change here: `id` is already a uuid primary key that
+-- both desktops and the phone use, so (user_id, id) is unique across devices.
+alter table public.applications add column if not exists synced_at timestamptz not null default now();
+
+create or replace function public.hiro_touch_synced_at()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  new.synced_at := now();
+  return new;
+end;
+$$;
+
+drop trigger if exists applications_touch_synced_at on public.applications;
+create trigger applications_touch_synced_at
+  before insert or update on public.applications
+  for each row execute function public.hiro_touch_synced_at();
+
+create index if not exists idx_apps_user_synced
+  on public.applications (user_id, synced_at);
+
+-- What this file installs, so a client can tell a project that missed an
+-- upgrade from one that is broken. The desktop calls this before it syncs and,
+-- when the number is behind what it needs, tells the user to re-run this file
+-- rather than failing on whichever column it happens to touch first.
+-- Bump the number whenever this file gains something a client depends on, and
+-- REQUIRED_CLOUD_SCHEMA in web/electron/services/cloudSync.js with it.
+create or replace function public.hiro_schema_version()
+returns integer
+language sql
+immutable
+set search_path = ''
+as $$ select 2 $$;
+
+revoke execute on function public.hiro_schema_version() from public;
+grant execute on function public.hiro_schema_version() to anon, authenticated;
+
 commit;

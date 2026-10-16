@@ -207,3 +207,36 @@ a simulated cloud server (`web/test/companion-reconciliation.test.js`), plus que
 isolation (`app/test/scan-queue.test.js`) and renderer controls. The schema has also
 been exercised on a temporary PostgreSQL instance for fresh installation, repeated
 execution, and upgrade from the preceding schema.
+
+
+## Schema version 2: incremental sync and row-bound encryption
+
+Re-run the complete `schema.sql` in the SQL Editor, then update the desktop and
+the phone. The script is transactional and safe to run again.
+
+- **Schema version check.** The script now installs `hiro_schema_version()`.
+  The desktop calls it before every session's first sync. A project that has not
+  run this version stops syncing with a message that says to re-run
+  `schema.sql`. Nothing is written in either direction until it has been.
+- **Incremental pull.** `applications.synced_at` is stamped by a trigger on
+  every insert and update. The desktop keeps the last value it saw, in its own
+  database rather than in settings, and on each sync fetches only rows changed
+  since then (rewound five minutes to cover transactions that commit out of
+  order), plus a list of row ids that finds rows it has never seen and settles
+  deletions. *Backfill:* adding the column stamps existing rows with the time
+  of the upgrade. Each desktop's first sync afterwards downloads everything once
+  and is incremental from then on. Nothing needs doing by hand.
+- **Mirrors upload only what changed.** Interviews, Needs Attention and offers
+  are hashed locally, and only rows whose content changed are uploaded. If the
+  cloud holds a different number of rows than the desktop (for example after
+  "seed the account from this device" cascaded them away), everything is
+  uploaded again.
+- **Encrypted envelopes are bound to their row.** Each application envelope
+  (`encrypted_meta`, `encrypted_payload`, `encrypted_comment`,
+  `encrypted_checklist`) now carries a context naming the table, the row's id and
+  the column, authenticated as AES-GCM additional data. An envelope copied onto a
+  different row or column is refused instead of shown. Envelopes written before
+  this are still read, and the desktop re-uploads them in the bound form on its
+  next sync. **Update the phone app together with the desktop.** An older phone
+  cannot open bound envelopes and shows those rows as pending until it is
+  updated. The mirror tables' envelopes are not bound yet.

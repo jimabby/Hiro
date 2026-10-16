@@ -13,8 +13,13 @@ import { HiroClient } from './src/api'
 import { supabase, CloudClient } from './src/supabase'
 import { useTheme, useStatusBarStyle } from './src/theme'
 import { registerDevice, checkRevoked, clearPushToken } from './src/deviceRegistry'
-import { subscribeToTaps } from './src/push'
+import { subscribeToTaps, syncPushToken, subscribeToTokenRotation } from './src/push'
 import { loadCloudKey, clearCloudKey } from './src/cloudCrypto'
+import { clearCaches } from './src/offlineCache'
+import { useAppLock } from './src/useAppLock'
+import { useIncomingImports } from './src/useIncomingImports'
+import { importJobLink } from './src/importJob'
+import LockScreen from './src/screens/LockScreen'
 import ConnectScreen from './src/screens/ConnectScreen'
 import DashboardScreen from './src/screens/DashboardScreen'
 import ApplicationsScreen from './src/screens/ApplicationsScreen'
@@ -137,8 +142,42 @@ function AppContent() {
   const client = useMemo(() => {
     if (!connection) return null
     if (connection.mode === 'cloud') return new CloudClient(connection.userId)
-    return new HiroClient(connection)
+    // Two things the client learns while running are saved back to the stored
+    // connection without a re-render — the client already knows them, and
+    // rebuilding it would reset every screen holding it:
+    //   - the first reply bound to its request proves this desktop can bind
+    //     them; from then on an unbound reply is refused (src/responseBinding.js)
+    //   - a rotated device token and its new expiry (POST /api/rotate)
+    // Both merge into one running copy, so neither save overwrites the other.
+    const saved = { ...connection }
+    const persist = () => secureStore.setItem(STORAGE_KEY, JSON.stringify(saved)).catch(() => {})
+    const onTokenRotated = ({ token, expiresAt, device } = {}) => {
+      if (!token) return
+      saved.token = token
+      saved.expiresAt = expiresAt ?? device?.expiresAt ?? saved.expiresAt ?? null
+      if (Array.isArray(device?.scopes)) saved.scopes = device.scopes
+      persist()
+    }
+    const onResponseBinding = () => {
+      saved.responseBinding = true
+      persist()
+    }
+    return new HiroClient(
+      { ...connection, expiresAt: connection.expiresAt ?? null, onTokenRotated },
+      { onResponseBinding, onTokenRotated },
+    )
   }, [connection])
+
+  // A paired phone's token expires (90 days by default). Rotate it ahead of
+  // that on launch and on each return to the foreground — the client only acts
+  // inside the last 14 days, and saves the new token through onTokenRotated.
+  useEffect(() => {
+    if (!client?.rotateIfExpiringSoon) return
+    const run = () => { Promise.resolve().then(() => client.rotateIfExpiringSoon()).catch(() => {}) }
+    run()
+    const sub = AppState.addEventListener('change', (state) => { if (state === 'active') run() })
+    return () => sub.remove()
+  }, [client])
 
   const handleConnected = useCallback(async (conn) => {
     // Cloud sessions persist via Supabase; only LAN connections need storing.
@@ -158,12 +197,35 @@ function AppContent() {
       // no authority to write to its own device row, and a stale token means
       // notifications keep arriving on a phone that has signed out.
       await clearPushToken(connection.userId)
-      await supabase.auth.signOut()
+      // 'local': only this phone's session. The default ('global') revokes
+      // every refresh token on the account — it signed the DESKTOP out too.
+      await supabase.auth.signOut({ scope: 'local' })
       await clearCloudKey()
     }
     await secureStore.removeItem(STORAGE_KEY)
+    await clearCaches()
     setConnection(null)
   }, [connection])
+
+  // The desktop (or the cloud) no longer accepts this phone. Asked once per
+  // connection: every screen that notices would otherwise stack its own alert.
+  const pairingPrompted = useRef(false)
+  useEffect(() => { pairingPrompted.current = false }, [connection])
+  const handleNeedsPairing = useCallback(() => {
+    if (pairingPrompted.current) return
+    pairingPrompted.current = true
+    const cloud = connection?.mode === 'cloud'
+    Alert.alert(
+      cloud ? 'Sign in again' : 'Re-pair this phone',
+      cloud
+        ? 'Your session is no longer accepted. Sign in again to carry on.'
+        : 'The desktop no longer accepts this phone — it was revoked or its pairing expired. Pair it again with a new code from the desktop. Requests waiting to send stay listed so you can cancel them.',
+      [
+        { text: 'Later', style: 'cancel' },
+        { text: cloud ? 'Sign in' : 'Re-pair', onPress: () => { handleDisconnect() } },
+      ]
+    )
+  }, [connection, handleDisconnect])
 
   // ── This phone's standing on the account ─────────────────────────
   // Only the desktop used to register itself, so a phone holding a refresh token
@@ -178,6 +240,7 @@ function AppContent() {
     if (!userId) return
     if (await checkRevoked(userId)) {
       await clearCloudKey()
+      await clearCaches()
       setConnection(null)
       Alert.alert(
         'Signed out',
@@ -186,6 +249,9 @@ function AppContent() {
       return
     }
     await registerDevice(userId)
+    // Re-register the push token if one is on file: it may have rotated since
+    // the last launch, and nothing else would notice.
+    await syncPushToken(userId)
   }, [userId])
 
   useEffect(() => { verifyStanding() }, [verifyStanding])
@@ -197,6 +263,8 @@ function AppContent() {
     })
     return () => sub.remove()
   }, [userId, verifyStanding])
+
+  useEffect(() => subscribeToTokenRotation(userId), [userId])
 
   // Tapping a notification should land on what it was about, not just open the
   // app on whatever tab was last used.
@@ -210,15 +278,68 @@ function AppContent() {
 
   const [badges, refreshBadges] = useBadges(client, tab)
 
-  if (connection === undefined) {
+  const appLock = useAppLock()
+
+  // ── Job links shared into Hiro ──────────────────────────────────
+  // Held until there is a connection and the app is unlocked: a link can be
+  // what launched the app, before either is known.
+  const [incomingJob, setIncomingJob] = useState(null)
+  const [queueSignal, setQueueSignal] = useState(0)
+  useIncomingImports(useCallback((job) => {
+    if (!job) {
+      Alert.alert('No job link', 'What was shared has no web link in it, so there is nothing to import.')
+      return
+    }
+    setIncomingJob(job)
+  }, []))
+  useEffect(() => {
+    if (!incomingJob || connection === undefined || appLock.locked || appLock.settings === undefined) return
+    const job = incomingJob
+    setIncomingJob(null)
+    if (!client) {
+      Alert.alert('Connect first', 'Pair this phone with the Hiro desktop, then share the job again.')
+      return
+    }
+    Alert.alert('Import this job?', `${job.title ? `${job.title}\n` : ''}${job.url}\n\nIt goes to Needs Attention on the desktop.`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Import',
+        onPress: async () => {
+          const res = await importJobLink(client, job)
+          if (res.status === 'auth') { handleNeedsPairing(); return }
+          if (res.status === 'queued') setQueueSignal(n => n + 1)
+          Alert.alert(res.status === 'imported' ? 'Imported' : res.status === 'queued' ? 'Saved for later' : 'Not imported', res.message)
+        },
+      },
+    ])
+  }, [incomingJob, connection, client, appLock.locked, appLock.settings, handleNeedsPairing])
+
+  // Nothing is drawn until the lock setting has loaded: the content must not
+  // flash before the lock covers it.
+  if (connection === undefined || appLock.settings === undefined) {
     return <View style={styles.root} />
   }
+
+  // Drawn OVER the app rather than instead of it, so unlocking returns to the
+  // same tab, scroll position and open application. The content underneath is
+  // hidden from screen readers while it is covered.
+  const lockOverlay = appLock.locked && (
+    <View style={StyleSheet.absoluteFill}>
+      <LockScreen onUnlock={appLock.unlock} />
+    </View>
+  )
+  const coveredProps = appLock.locked
+    ? { importantForAccessibility: 'no-hide-descendants', accessibilityElementsHidden: true }
+    : {}
 
   if (!connection) {
     return (
       <SafeAreaView style={styles.root}>
         <StatusBar style={statusBarStyle} />
-        <ConnectScreen onConnected={handleConnected} />
+        <View style={styles.content} {...coveredProps}>
+          <ConnectScreen onConnected={handleConnected} />
+        </View>
+        {lockOverlay}
       </SafeAreaView>
     )
   }
@@ -226,74 +347,78 @@ function AppContent() {
   return (
     <SafeAreaView style={styles.root}>
       <StatusBar style={statusBarStyle} />
-      <View style={styles.content}>
-        {visited.has('dashboard') && (
-          <View style={[styles.content, tab !== 'dashboard' && styles.hidden]}>
-            <DashboardScreen client={client} active={tab === 'dashboard'} onOpenApplication={openApplication} />
-          </View>
-        )}
-        {(visited.has('applications') || deepLinkedApplication != null) && (
-          <View style={[styles.content, tab !== 'applications' && styles.hidden]}>
-            <ApplicationsScreen
-              client={client}
-              active={tab === 'applications'}
-              openApplicationId={deepLinkedApplication}
-              onOpened={() => setDeepLinkedApplication(null)}
-              resetSignal={applicationsReset}
-              onChanged={refreshBadges}
-            />
-          </View>
-        )}
-        {visited.has('offers') && (
-          <View style={[styles.content, tab !== 'offers' && styles.hidden]}>
-            <OffersScreen client={client} active={tab === 'offers'} />
-          </View>
-        )}
-        {visited.has('settings') && (
-          <View style={[styles.content, tab !== 'settings' && styles.hidden]}>
-            <SettingsScreen client={client} connection={connection} onDisconnect={handleDisconnect} />
-          </View>
-        )}
-      </View>
-      {/* The app's only global navigation, so it is the one control that has to
-          be reachable by every means. The icons are decorative glyphs — without
-          importantForAccessibility="no" a screen reader announces the character
-          name ("black square", "trigram for heaven") ahead of the real label. */}
-      <View style={styles.tabBar} accessibilityRole="tablist">
-        {TABS.map(t => {
-          const count = badges[t.id] || 0
-          return (
-          <TouchableOpacity
-            key={t.id}
-            style={styles.tabItem}
-            onPress={() => selectTab(t.id)}
-            accessibilityRole="tab"
-            accessibilityLabel={count ? `${t.label}, ${BADGE_MEANING[t.id](count)}` : t.label}
-            accessibilityState={{ selected: tab === t.id }}
-          >
-            <View importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
-              <Text style={[styles.tabIcon, tab === t.id && styles.tabActive]}>{t.icon}</Text>
-              {/* Offers is urgent rather than countable, so it gets red; the
-                  other two are work waiting, in the accent. */}
-              {count > 0 && (
-                <View style={[styles.badge, t.id === 'offers' && styles.badgeUrgent]}>
-                  <Text style={styles.badgeText}>{badgeText(count)}</Text>
-                </View>
-              )}
+      <View style={styles.content} {...coveredProps}>
+        <View style={styles.content}>
+          {visited.has('dashboard') && (
+            <View style={[styles.content, tab !== 'dashboard' && styles.hidden]}>
+              <DashboardScreen client={client} active={tab === 'dashboard'} onOpenApplication={openApplication}
+                onNeedsPairing={handleNeedsPairing} queueSignal={queueSignal} />
             </View>
-            <Text
-              style={[styles.tabLabel, tab === t.id && styles.tabActive]}
-              importantForAccessibility="no"
-              accessibilityElementsHidden
-            >{t.label}</Text>
-            {/* Colour is the only visual cue for the selected tab. That fails
-                anyone who cannot distinguish it, so the active tab also carries
-                a rule under it. */}
-            {tab === t.id && <View style={styles.tabUnderline} />}
-          </TouchableOpacity>
-          )
-        })}
+          )}
+          {(visited.has('applications') || deepLinkedApplication != null) && (
+            <View style={[styles.content, tab !== 'applications' && styles.hidden]}>
+              <ApplicationsScreen
+                client={client}
+                active={tab === 'applications'}
+                openApplicationId={deepLinkedApplication}
+                onOpened={() => setDeepLinkedApplication(null)}
+                resetSignal={applicationsReset}
+                onChanged={refreshBadges}
+              />
+            </View>
+          )}
+          {visited.has('offers') && (
+            <View style={[styles.content, tab !== 'offers' && styles.hidden]}>
+              <OffersScreen client={client} active={tab === 'offers'} />
+            </View>
+          )}
+          {visited.has('settings') && (
+            <View style={[styles.content, tab !== 'settings' && styles.hidden]}>
+              <SettingsScreen client={client} connection={connection} onDisconnect={handleDisconnect} appLock={appLock} />
+            </View>
+          )}
+        </View>
+        {/* The app's only global navigation, so it is the one control that has to
+            be reachable by every means. The icons are decorative glyphs — without
+            importantForAccessibility="no" a screen reader announces the character
+            name ("black square", "trigram for heaven") ahead of the real label. */}
+        <View style={styles.tabBar} accessibilityRole="tablist">
+          {TABS.map(t => {
+            const count = badges[t.id] || 0
+            return (
+            <TouchableOpacity
+              key={t.id}
+              style={styles.tabItem}
+              onPress={() => selectTab(t.id)}
+              accessibilityRole="tab"
+              accessibilityLabel={count ? `${t.label}, ${BADGE_MEANING[t.id](count)}` : t.label}
+              accessibilityState={{ selected: tab === t.id }}
+            >
+              <View importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
+                <Text style={[styles.tabIcon, tab === t.id && styles.tabActive]}>{t.icon}</Text>
+                {/* Offers is urgent rather than countable, so it gets red; the
+                    other two are work waiting, in the accent. */}
+                {count > 0 && (
+                  <View style={[styles.badge, t.id === 'offers' && styles.badgeUrgent]}>
+                    <Text style={styles.badgeText}>{badgeText(count)}</Text>
+                  </View>
+                )}
+              </View>
+              <Text
+                style={[styles.tabLabel, tab === t.id && styles.tabActive]}
+                importantForAccessibility="no"
+                accessibilityElementsHidden
+              >{t.label}</Text>
+              {/* Colour is the only visual cue for the selected tab. That fails
+                  anyone who cannot distinguish it, so the active tab also carries
+                  a rule under it. */}
+              {tab === t.id && <View style={styles.tabUnderline} />}
+            </TouchableOpacity>
+            )
+          })}
+        </View>
       </View>
+      {lockOverlay}
     </SafeAreaView>
   )
 }

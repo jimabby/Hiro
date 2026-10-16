@@ -105,5 +105,24 @@ if (!noble) {
   check('the envelope version both sides hard-code is 3', desktop.ENVELOPE_VERSION, 3)
   check('written payloads carry it', JSON.parse(payload).v, 3)
 
+  // ─── Row binding (AES-GCM additional data) ─────────────────────
+  // Both sides feed the envelope's `ctx` string to GCM as AAD, and the phone
+  // writes the same string for the rows it edits. The format is the contract:
+  // a drift here makes every comment the phone writes unreadable on the
+  // desktop, and vice versa. expo-crypto cannot run under Node, so the phone's
+  // template is read from its source.
+  const phoneSource = require('fs').readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'cloudCrypto.js'), 'utf8')
+  const template = phoneSource.match(/export const rowContext = \(table, rowId, column\) => `([^`]+)`/)?.[1]
+  check('the phone builds the row context the same way',
+    template?.replace('${table}', 'applications').replace('${rowId}', 'ID').replace('${column}', 'encrypted_comment'),
+    desktop.rowContext('applications', 'ID', 'encrypted_comment'))
+  check('the phone passes the context as additional data', /additionalData:\s*utf8ToBytes\(String\((env\.ctx|context)\)\)/.test(phoneSource), true)
+  const bound = desktop.encrypt(phoneKey, { comment: 'hi' }, desktop.rowContext('applications', 'ID', 'encrypted_comment'))
+  check('a bound envelope opens at its own row', desktop.decrypt(phoneKey, bound, desktop.rowContext('applications', 'ID', 'encrypted_comment')), { comment: 'hi' })
+  let moved = null
+  try { desktop.decrypt(phoneKey, bound, desktop.rowContext('applications', 'OTHER', 'encrypted_comment')) } catch (err) { moved = err }
+  check('and is refused at any other', moved?.misboundEnvelope, true)
+  check('an unbound envelope from an older client still opens', desktop.open(phoneKey, payload, 'anything').legacy, true)
+
   done()
 }

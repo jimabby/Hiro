@@ -21,19 +21,40 @@ const MIN_PLAUSIBLE_ANNUAL = 20000
 // ABN, a "$5,000,000 in funding" boast that leaked into the field).
 const MAX_PLAUSIBLE_ANNUAL = 2000000
 
-// Which period the figure is quoted in. Checked in order, longest first, so
-// "per annum" doesn't match on a bare "an".
-const PERIODS = [
-  { re: /\b(?:per\s+hour|hourly|an\s+hour|\/\s*hr|\/\s*hour|p\.?h\.?)\b/i, factor: HOURS_PER_YEAR },
-  { re: /\b(?:per\s+day|daily|a\s+day|\/\s*day|day\s+rate)\b/i, factor: DAYS_PER_YEAR },
-  { re: /\b(?:per\s+week|weekly|a\s+week|\/\s*wk|\/\s*week)\b/i, factor: WEEKS_PER_YEAR },
-  { re: /\b(?:per\s+month|monthly|a\s+month|\/\s*month|p\.?m\.?)\b/i, factor: MONTHS_PER_YEAR },
-  { re: /\b(?:per\s+annum|per\s+year|annually|annual|a\s+year|\/\s*yr|\/\s*year|p\.?a\.?)\b/i, factor: 1 },
+// Which period a figure is quoted in.
+//
+// Only a period written RIGHT AFTER a figure counts. The pattern used to be
+// searched for anywhere in the string, so "$120,000 + super, 2 days a week in
+// office" found "a week" and annualised a salary as a weekly wage (×52), and
+// "$95k, 9 am – 5 pm" found "pm" and read it as monthly (×12). In an advert the
+// period belongs to the number it follows ("$65 per hour", "$750/day",
+// "$1,800 p.w."); text further along is about something else.
+//
+// `(?![a-z])` rather than `\b` after the abbreviations: "p.a." ends in a dot,
+// and \b after a dot never matches at the end of the string.
+const END = '(?![a-z])'
+const PERIODS_AFTER = [
+  { re: new RegExp(`^\\s*(?:per\\s+hour|an\\s+hour|/\\s*(?:hr|hour)|p\\.?\\s?h\\.?${END}|hourly)`, 'i'), factor: HOURS_PER_YEAR },
+  { re: new RegExp(`^\\s*(?:per\\s+day|a\\s+day|/\\s*day|p\\.?\\s?d\\.?${END}|daily|day\\s+rate)`, 'i'), factor: DAYS_PER_YEAR },
+  { re: new RegExp(`^\\s*(?:per\\s+week|a\\s+week|/\\s*(?:wk|week)|p\\.?\\s?w\\.?${END}|weekly)`, 'i'), factor: WEEKS_PER_YEAR },
+  { re: new RegExp(`^\\s*(?:per\\s+month|a\\s+month|/\\s*(?:mo|mth|month)${END}|p\\.?\\s?m\\.?${END}|monthly)`, 'i'), factor: MONTHS_PER_YEAR },
+  { re: new RegExp(`^\\s*(?:per\\s+(?:annum|year)|a\\s+year|/\\s*(?:yr|year|annum)|p\\.?\\s?a\\.?${END}|annually|annual)`, 'i'), factor: 1 },
+]
+// The few phrasings that put the period first: "hourly rate of $65",
+// "day rate: $750". Only when the figure follows directly.
+const PERIODS_BEFORE = [
+  { re: /(?:hourly\s+rate|per\s+hour)(?:\s+of)?\s*:?\s*$/i, factor: HOURS_PER_YEAR },
+  { re: /(?:day|daily)\s+rate(?:\s+of)?\s*:?\s*$/i, factor: DAYS_PER_YEAR },
 ]
 
-function detectFactor(text) {
-  for (const { re, factor } of PERIODS) {
-    if (re.test(text)) return factor
+// The period of the first figure that states one. A range quotes its period
+// once, after the second figure ("$60 – $70 per hour"), and it applies to both.
+function detectFactor(text, figures) {
+  for (const f of figures) {
+    const after = text.slice(f.end)
+    for (const { re, factor } of PERIODS_AFTER) if (re.test(after)) return factor
+    const before = text.slice(0, f.start)
+    for (const { re, factor } of PERIODS_BEFORE) if (re.test(before)) return factor
   }
   return null
 }
@@ -57,7 +78,8 @@ function extractFigures(text) {
   let m
   while ((m = re.exec(text)) !== null) {
     const value = toNumber(m[1] ?? m[3], m[2] ?? m[4])
-    if (value != null && value > 0) out.push(value)
+    // Where it sits, so detectFactor can read the words beside it.
+    if (value != null && value > 0) out.push({ value, start: m.index, end: m.index + m[0].length })
   }
   return out
 }
@@ -72,7 +94,12 @@ const MAX_PLAUSIBLE_HOURLY = 250
 // When it doesn't, infer from magnitude: a bare "$65" is an hourly rate, "$750"
 // is a day rate, and "$95,000" is a salary — guessing wrong by a factor of
 // 2000 is worse than the small risk of the heuristic.
+//
+// A figure that already looks annual is never multiplied, even next to a
+// period word: "$120,000 a week" is a typo or a misplaced clause, and
+// multiplying it makes a $6m salary that hides the job from every filter.
 function annualise(value, statedFactor) {
+  if (statedFactor != null && statedFactor !== 1 && value >= MIN_PLAUSIBLE_ANNUAL) return value
   if (statedFactor != null) return Math.round(value * statedFactor)
   if (value < MAX_PLAUSIBLE_HOURLY) return Math.round(value * HOURS_PER_YEAR)
   if (value < MIN_PLAUSIBLE_ANNUAL) return Math.round(value * DAYS_PER_YEAR)
@@ -91,8 +118,9 @@ function parseSalary(text) {
   const s = text.trim()
   if (!s) return null
 
-  const factor = detectFactor(s)
-  const figures = extractFigures(s).map(v => annualise(v, factor)).filter(plausible)
+  const found = extractFigures(s)
+  const factor = detectFactor(s, found)
+  const figures = found.map(f => annualise(f.value, factor)).filter(plausible)
   if (figures.length === 0) return null
 
   const lo = Math.min(...figures)

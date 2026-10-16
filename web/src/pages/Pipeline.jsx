@@ -25,6 +25,17 @@ const STAGE_COLORS = {
   closed: 'var(--red)',
 }
 
+// The status a card takes when it is moved into a column — the inverse of the
+// stage derivation in database.getPipeline. Closed has two, so the menu offers
+// both and a drop picks the common one.
+export const STAGE_MOVES = {
+  applied: [{ status: 'applied', label: 'Applied' }],
+  waiting: [{ status: 'no_response', label: 'No reply yet' }],
+  interview: [{ status: 'interview', label: 'Interviewing' }],
+  offer: [{ status: 'offer', label: 'Offer' }],
+  closed: [{ status: 'rejected', label: 'Closed — rejected' }, { status: 'withdrawn', label: 'Closed — withdrawn' }],
+}
+
 // "in 3 days" is easier to act on than "2026-08-09"; the exact date is kept in
 // the title attribute for when it matters.
 function relativeDay(date, today) {
@@ -94,17 +105,30 @@ function NextActionEditor({ item, onSave, onCancel }) {
   )
 }
 
-function Card({ item, today, editing, onEdit, onSave, onCancel, onDone, onOpen }) {
+function Card({ item, today, editing, onEdit, onSave, onCancel, onDone, onOpen, stages, onMove, onDragStart, onDragEnd, dragging }) {
   const due = item.next_action_at
   const border = item.overdue ? 'var(--red)' : item.dueToday ? 'var(--accent)' : 'transparent'
 
   const open = editing ? undefined : () => onOpen(item)
+  // Every status this card could move to, other than the one it has.
+  const moves = (stages || []).flatMap(st => (STAGE_MOVES[st.id] || [])
+    .filter(m => m.status !== item.status)
+    .map(m => ({ ...m, stage: st.id })))
 
   return (
     <div
       className={`card${editing ? '' : ' card-interactive'}`}
-      style={{ padding: 12, marginBottom: 8, borderLeft: `3px solid ${border}` }}
+      style={{ padding: 12, marginBottom: 8, borderLeft: `3px solid ${border}`, opacity: dragging ? 0.5 : 1 }}
       onClick={open}
+      // Dragging is the quick way between columns; the "Move to…" menu below
+      // is the same thing for the keyboard and for anyone who can't drag.
+      draggable={!editing && !!onMove}
+      onDragStart={editing ? undefined : (e) => {
+        e.dataTransfer.effectAllowed = 'move'
+        e.dataTransfer.setData('text/plain', String(item.id))
+        onDragStart?.(item)
+      }}
+      onDragEnd={() => onDragEnd?.()}
       // Keyboard users could reach the buttons inside a card but never the card
       // itself, so opening an application was mouse-only.
       role={editing ? undefined : 'button'}
@@ -158,19 +182,42 @@ function Card({ item, today, editing, onEdit, onSave, onCancel, onDone, onOpen }
       {editing
         ? <NextActionEditor item={item} onSave={onSave} onCancel={onCancel} />
         : (
-          <button className="btn btn-ghost btn-sm" style={{ marginTop: 6 }}
-            onClick={(e) => { e.stopPropagation(); onEdit(item) }}>
-            {due ? 'Reschedule' : 'Set next action'}
-          </button>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6 }}>
+            <button className="btn btn-ghost btn-sm"
+              onClick={(e) => { e.stopPropagation(); onEdit(item) }}>
+              {due ? 'Reschedule' : 'Set next action'}
+            </button>
+            {onMove && moves.length > 0 && (
+              <select
+                aria-label={`Move ${item.job_title} at ${item.company} to another stage`}
+                value=""
+                onClick={e => e.stopPropagation()}
+                onKeyDown={e => e.stopPropagation()}
+                onChange={e => {
+                  const m = moves.find(x => x.status === e.target.value)
+                  if (m) onMove(item, m.status)
+                }}
+                style={{ fontSize: 11, padding: '2px 6px', marginLeft: 'auto', width: 'auto' }}
+              >
+                <option value="" disabled>Move to…</option>
+                {moves.map(m => <option key={m.status} value={m.status}>{m.label}</option>)}
+              </select>
+            )}
+          </div>
         )}
     </div>
   )
 }
 
-export default function Pipeline({ active, onOpenApplication }) {
+export default function Pipeline({ active, onOpenApplication, showToast }) {
   const [data, setData] = useState(null)
   const [editingId, setEditingId] = useState(null)
   const [error, setError] = useState(null)
+  // The card being dragged, and the column it is over.
+  const [dragItem, setDragItem] = useState(null)
+  const [dropStage, setDropStage] = useState(null)
+  // Announced politely, so a keyboard move is confirmed without a toast.
+  const [moved, setMoved] = useState('')
 
   const load = useCallback(async () => {
     try {
@@ -213,6 +260,50 @@ export default function Pipeline({ active, onOpenApplication }) {
 
   const openApplication = (item) => onOpenApplication?.(item.id)
 
+  // Same API the Dashboard's status menu uses, so a move here records status
+  // history and syncs exactly like any other status change.
+  const moveItem = async (item, status) => {
+    if (!status || status === item.status) return
+    const stageId = Object.keys(STAGE_MOVES).find(k => STAGE_MOVES[k].some(m => m.status === status))
+    const label = STAGE_MOVES[stageId]?.find(m => m.status === status)?.label || status
+    // Optimistic, so the card lands where it was dropped instead of snapping
+    // back for a round trip; the reload below corrects anything this got wrong.
+    setData(prev => prev && {
+      ...prev,
+      items: (prev.items || []).map(i => i.id === item.id ? { ...i, status, stage: stageId || i.stage } : i),
+    })
+    try {
+      const res = await window.api.updateApplicationStatus(item.id, status)
+      if (res?.success === false) throw new Error(res.reason || res.error || 'the status could not be changed')
+      setMoved(`Moved ${item.job_title} to ${label}`)
+    } catch (err) {
+      const msg = `Could not move ${item.job_title}: ${err.message}`
+      if (showToast) showToast(msg, 'error')
+      else setError(msg)
+    }
+    load()
+  }
+
+  const stageProps = (stage) => ({
+    onDragOver: (e) => {
+      if (!dragItem || dragItem.stage === stage.id) return
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+      if (dropStage !== stage.id) setDropStage(stage.id)
+    },
+    onDragLeave: (e) => {
+      if (!e.currentTarget.contains(e.relatedTarget)) setDropStage(s => (s === stage.id ? null : s))
+    },
+    onDrop: (e) => {
+      e.preventDefault()
+      const item = dragItem
+      setDragItem(null)
+      setDropStage(null)
+      if (!item || item.stage === stage.id) return
+      moveItem(item, STAGE_MOVES[stage.id]?.[0]?.status)
+    },
+  })
+
   const cardProps = (item) => ({
     item,
     today,
@@ -222,6 +313,11 @@ export default function Pipeline({ active, onOpenApplication }) {
     onCancel: () => setEditingId(null),
     onDone: completeAction,
     onOpen: openApplication,
+    stages: data?.stages || [],
+    onMove: moveItem,
+    onDragStart: setDragItem,
+    onDragEnd: () => { setDragItem(null); setDropStage(null) },
+    dragging: dragItem?.id === item.id,
   })
 
   if (!data) {
@@ -269,6 +365,9 @@ export default function Pipeline({ active, onOpenApplication }) {
       </p>
 
       {error && <p style={{ color: 'var(--red)', fontSize: 13, marginBottom: 16 }}>{error}</p>}
+      <span role="status" aria-live="polite" style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>
+        {moved}
+      </span>
 
       {empty && (
         <div className="card empty-state">
@@ -310,7 +409,12 @@ export default function Pipeline({ active, onOpenApplication }) {
             const items = byStage[stage.id] || []
             const needing = items.filter(i => !i.next_action_at && i.needsAction).length
             return (
-              <div key={stage.id} data-testid={`pipeline-stage-${stage.id}`}>
+              <div key={stage.id} data-testid={`pipeline-stage-${stage.id}`} {...stageProps(stage)}
+                style={{
+                  borderRadius: 'var(--radius)', minHeight: 80,
+                  outline: dropStage === stage.id ? '2px dashed var(--accent)' : 'none',
+                  outlineOffset: 4,
+                }}>
                 <div style={{
                   display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10,
                   paddingBottom: 6, borderBottom: `2px solid ${STAGE_COLORS[stage.id] || 'var(--border)'}`,

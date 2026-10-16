@@ -284,8 +284,63 @@ function getPath() {
 // where the lifetime of the file is known.
 function writePlainCopy(destPath) {
   const lines = readAll()
-  fs.writeFileSync(destPath, lines.length ? lines.join('\n') + '\n' : '')
+  // 0600 and exclusive-create: this is the decrypted history, and it must not be
+  // written into a file someone else created first or left readable to others.
+  fs.writeFileSync(destPath, lines.length ? lines.join('\n') + '\n' : '', { mode: 0o600, flag: 'wx' })
+  try { fs.chmodSync(destPath, 0o600) } catch { /* Windows ignores this */ }
   return destPath
+}
+
+// ─── Decrypted copies for "Open log" ─────────────────────────────────────
+//
+// An encrypted log is useless in an editor, so "Open log" hands the editor a
+// decrypted copy. That copy used to be written straight into the shared temp
+// directory with the default mode and never removed — a plaintext history of
+// the whole job search, readable by other accounts on a shared machine and left
+// behind indefinitely. Now each copy goes in a private directory of its own
+// (mkdtemp creates it 0700), the file is 0600, and it is deleted after a delay
+// long enough for any editor to have read it, and in any case when Hiro quits.
+const PLAIN_COPY_PREFIX = 'hiro-log-'
+const PLAIN_COPY_NAME = 'hiro-activity-log.txt'
+const PLAIN_COPY_TTL_MS = 5 * 60 * 1000
+const plainCopyDirs = new Set()
+
+function removePlainCopy(dir) {
+  try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* an editor may still hold it — quit cleans up */ }
+  if (!fs.existsSync(dir)) plainCopyDirs.delete(dir)
+}
+
+function writePrivatePlainCopy({ tmpDir = require('os').tmpdir(), ttlMs = PLAIN_COPY_TTL_MS } = {}) {
+  const dir = fs.mkdtempSync(path.join(tmpDir, PLAIN_COPY_PREFIX))
+  try { fs.chmodSync(dir, 0o700) } catch { /* Windows: the per-user temp dir's ACLs apply */ }
+  plainCopyDirs.add(dir)
+  const file = path.join(dir, PLAIN_COPY_NAME)
+  try {
+    writePlainCopy(file)
+  } catch (err) {
+    removePlainCopy(dir)
+    throw err
+  }
+  if (ttlMs > 0) setTimeout(() => removePlainCopy(dir), ttlMs).unref?.()
+  return file
+}
+
+// Called on quit. Also sweeps copies a previous run left behind when it crashed
+// before it could clean up — only directories that hold our file, so nothing
+// else that happens to share the prefix is touched.
+function removePlainCopies({ tmpDir = require('os').tmpdir() } = {}) {
+  for (const dir of [...plainCopyDirs]) removePlainCopy(dir)
+  try {
+    for (const name of fs.readdirSync(tmpDir)) {
+      if (!name.startsWith(PLAIN_COPY_PREFIX)) continue
+      const dir = path.join(tmpDir, name)
+      try {
+        if (fs.statSync(dir).isDirectory() && fs.existsSync(path.join(dir, PLAIN_COPY_NAME))) {
+          fs.rmSync(dir, { recursive: true, force: true })
+        }
+      } catch { /* busy, or not ours to remove */ }
+    }
+  } catch { /* temp dir unreadable */ }
 }
 
 function isEncrypted() {
@@ -359,7 +414,7 @@ function setEncryption(enabled) {
 }
 
 module.exports = {
-  append, tail, clear, getPath, readAll, writePlainCopy,
+  append, tail, clear, getPath, readAll, writePlainCopy, writePrivatePlainCopy, removePlainCopies,
   isEncrypted, getStatus, setEncryption,
   LOG_FILE, LOG_KEY_FILE,
   // exported for tests

@@ -2,13 +2,14 @@ import { useState, useEffect, useMemo } from 'react'
 import { View, Text, TouchableOpacity, StyleSheet, Alert, Linking, ScrollView } from 'react-native'
 import { radius, useTheme } from '../theme'
 import { deleteAccount } from '../supabase'
-import { enablePush, disablePush, getPermissionStatus } from '../push'
+import { enablePush, disablePush, getPushState } from '../push'
+import { TIMEOUT_CHOICES, describeTimeout } from '../appLock'
 
 const LEGAL_BASE = 'https://jimabby.github.io/card-assets/legal/hiro'
 export const PRIVACY_POLICY_URL = `${LEGAL_BASE}/privacy-policy.html`
 export const SUPPORT_URL = `${LEGAL_BASE}/support.html`
 
-export default function SettingsScreen({ client, connection, onDisconnect }) {
+export default function SettingsScreen({ client, connection, onDisconnect, appLock }) {
   // Palette and stylesheet follow the phone's appearance setting. Named
   // `colors` so every inline reference below reads unchanged.
   const colors = useTheme()
@@ -18,17 +19,31 @@ export default function SettingsScreen({ client, connection, onDisconnect }) {
   const [pinging, setPinging] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
-  // 'unknown' until the OS has been asked; the toggle must not claim "off" while
-  // permission is actually granted.
-  const [pushState, setPushState] = useState('unknown')
+  // 'checking' until the OS and this phone's device row have both answered; the
+  // toggle must not claim "off" while a token is actually registered.
+  const [pushState, setPushState] = useState('checking')
   const [pushBusy, setPushBusy] = useState(false)
   const [pushError, setPushError] = useState('')
+  const [lockBusy, setLockBusy] = useState(false)
+  const [lockError, setLockError] = useState('')
   const isCloud = connection.mode === 'cloud'
 
+  // The real state: a token registered on this phone's row AND the OS
+  // permission. Either alone used to read as "Enabled".
   useEffect(() => {
     if (!isCloud) return
-    getPermissionStatus().then(status => setPushState(status === 'granted' ? 'on' : 'off'))
-  }, [isCloud])
+    let live = true
+    getPushState(connection.userId).then(state => { if (live) setPushState(state) })
+    return () => { live = false }
+  }, [isCloud, connection.userId])
+
+  async function toggleLock() {
+    setLockBusy(true)
+    setLockError('')
+    const res = await appLock.setEnabled(!appLock.settings?.enabled)
+    if (!res.ok && res.reason) setLockError(res.reason)
+    setLockBusy(false)
+  }
 
   // In-app account deletion — required by App Store guideline 5.1.1(v) for any
   // app with account sign-in. Deletes the cloud account and every synced row;
@@ -135,8 +150,16 @@ export default function SettingsScreen({ client, connection, onDisconnect }) {
           <Row label="On this phone" value={
             pushState === 'on' ? 'Enabled'
               : pushState === 'off' ? 'Off'
-                : 'Checking…'
+                : pushState === 'blocked' ? 'Blocked in phone settings'
+                  : pushState === 'unknown' ? 'Unknown — offline?'
+                    : 'Checking…'
           } />
+          {pushState === 'blocked' && (
+            <Text style={styles.hint}>
+              The desktop is sending to this phone, but notifications for Hiro are turned off in
+              your phone’s settings, so none are shown.
+            </Text>
+          )}
 
           <TouchableOpacity style={styles.btnGhost} disabled={pushBusy}
             accessibilityRole="switch"
@@ -160,6 +183,44 @@ export default function SettingsScreen({ client, connection, onDisconnect }) {
             </Text>
           </TouchableOpacity>
           {!!pushError && <Text style={{ color: colors.red, fontSize: 12, marginTop: 8 }}>{pushError}</Text>}
+        </View>
+      )}
+
+      {!!appLock && (
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>App Lock</Text>
+          <Text style={styles.hint}>
+            Ask for Face ID, a fingerprint or your phone’s passcode when Hiro opens, so someone
+            holding your unlocked phone cannot read your applications.
+          </Text>
+          <Row label="Lock" value={appLock.settings?.enabled ? 'On' : 'Off'} />
+          <TouchableOpacity style={styles.btnGhost} disabled={lockBusy || !appLock.settings}
+            onPress={toggleLock}
+            accessibilityRole="switch" accessibilityLabel="App Lock"
+            accessibilityState={{ checked: !!appLock.settings?.enabled, disabled: lockBusy, busy: lockBusy }}>
+            <Text style={styles.btnGhostText}>
+              {lockBusy ? 'Working…' : (appLock.settings?.enabled ? 'Turn off App Lock' : 'Turn on App Lock')}
+            </Text>
+          </TouchableOpacity>
+          {!!lockError && <Text style={{ color: colors.red, fontSize: 12, marginTop: 8 }}>{lockError}</Text>}
+          {appLock.settings?.enabled && (
+            <>
+              <Text style={[styles.hint, { marginTop: 12, marginBottom: 6 }]}>Lock again after Hiro has been in the background:</Text>
+              <View style={styles.chips}>
+                {TIMEOUT_CHOICES.map(m => {
+                  const selected = appLock.settings.timeoutMinutes === m
+                  return (
+                    <TouchableOpacity key={m} onPress={() => appLock.setTimeoutMinutes(m)}
+                      style={[styles.chip, selected && styles.chipActive]}
+                      accessibilityRole="radio" accessibilityState={{ selected }}
+                      accessibilityLabel={`Lock ${describeTimeout(m).toLowerCase()}`}>
+                      <Text style={[styles.chipText, selected && styles.chipTextActive]}>{describeTimeout(m)}</Text>
+                    </TouchableOpacity>
+                  )
+                })}
+              </View>
+            </>
+          )}
         </View>
       )}
 
@@ -241,6 +302,14 @@ const makeStyles = (c) => StyleSheet.create({
     paddingVertical: 10, minHeight: 44, justifyContent: 'center', alignItems: 'center', marginTop: 10,
   },
   btnGhostText: { color: c.textMuted, fontSize: 13, fontWeight: '500' },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  chip: {
+    borderWidth: 1, borderColor: c.border, borderRadius: radius,
+    paddingHorizontal: 12, paddingVertical: 8, minHeight: 36, justifyContent: 'center',
+  },
+  chipActive: { borderColor: c.accent },
+  chipText: { color: c.textMuted, fontSize: 12 },
+  chipTextActive: { color: c.accent, fontWeight: '600' },
   btnDanger: {
     backgroundColor: c.red, borderRadius: radius,
     paddingVertical: 12, minHeight: 46, justifyContent: 'center', alignItems: 'center',

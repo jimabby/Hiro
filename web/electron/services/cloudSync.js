@@ -3,6 +3,7 @@
 // see them anywhere, and pulls phone-side status/comment edits back down.
 // Conflicting edits keep the desktop value and record the remote value for recovery.
 
+const crypto = require('crypto')
 const configService = require('./config')
 const database = require('./database')
 const logger = require('./logger')
@@ -305,19 +306,23 @@ function encryptMeta(dataKey, fields) {
 // is out of date", whereas a plausible-looking placeholder reads as data loss.
 const REDACTED = ''
 
+// Every application envelope is bound to its row and column (see
+// cloudCrypto.rowContext), so the server cannot move one onto another row.
+const bound = (a, column) => cloudCrypto.rowContext('applications', a.cloud_id, column)
+
 function localToCloud(a) {
   const dataKey = configService.load().cloudDataKey
   const encryptedPayload = dataKey ? cloudCrypto.encrypt(dataKey, {
     job_description: a.job_description || '', tailored_resume: a.tailored_resume || '',
     cover_letter: a.cover_letter || '', screening_qa: a.screening_qa || '',
     recruiter_email: a.recruiter_email || '',
-  }) : null
-  const encryptedMeta = encryptMeta(dataKey, {
+  }, bound(a, 'encrypted_payload')) : null
+  const encryptedMeta = dataKey ? cloudCrypto.encrypt(dataKey, {
     job_title: a.job_title || '', company: a.company || '',
     job_url: a.job_url || '', salary: a.salary || '',
     match_explanation: a.match_explanation || '', comment: a.comment || '',
     resume_name: a.resume_name || '', campaign_name: a.campaign_name || '',
-  })
+  }, bound(a, 'encrypted_meta')) : null
   return {
     user_id: user.id,
     id: a.cloud_id,
@@ -341,8 +346,8 @@ function localToCloud(a) {
     recruiter_email: encryptedPayload ? null : (a.recruiter_email || ''),
     encrypted_payload: encryptedPayload,
     encrypted_meta: encryptedMeta,
-    encrypted_comment: encryptMeta(dataKey, { comment: a.comment || '' }),
-    encrypted_checklist: encryptMeta(dataKey, { checklist: a.checklist || '[]' }),
+    encrypted_comment: dataKey ? cloudCrypto.encrypt(dataKey, { comment: a.comment || '' }, bound(a, 'encrypted_comment')) : null,
+    encrypted_checklist: dataKey ? cloudCrypto.encrypt(dataKey, { checklist: a.checklist || '[]' }, bound(a, 'encrypted_checklist')) : null,
     next_action_at: a.next_action_at || null,
     next_action_note: a.next_action_note || '',
     next_action_done_at: a.next_action_done_at || null,
@@ -392,22 +397,141 @@ async function pushDirty(c, identifiedOnly = false) {
 // differ from the one we last pushed/saw (cloud_updated_at)?" — never by
 // comparing the phone's clock against the desktop's, which silently dropped
 // edits whenever the two clocks disagreed.
-async function pullChanges(c) {
-  // Full rows, not just the editable columns: a row this device has never seen
-  // has to be reconstructable locally, and the cloud is the only copy left.
-  const data = await selectAll(() => c
-    .from('applications')
-    .select('*')
-    .eq('user_id', user.id)
-    .order('id', { ascending: true }))
+//
+// ─── Incremental pull ────────────────────────────────────────────
+//
+// This used to download every row in full on every two-minute sync — every
+// encrypted résumé and cover letter — decrypt all of them, and look each one up
+// locally, to find the handful the phone had touched. On a long history that is
+// megabytes per sync for nothing.
+//
+// Now each sync reads one light listing, every row's `id` and `synced_at` and
+// nothing else (a few dozen bytes a row), and downloads in full only:
+//
+//   - rows whose synced_at is past the stored cursor and not already seen at
+//     that exact stamp, and
+//   - rows this device has never seen at all: a reinstall, "use the cloud
+//     copy", a second desktop's new application. Their stamp can be older than
+//     the cursor, which is why a delta query alone would miss them.
+//
+// The same listing settles tombstones: an id that is no longer listed has gone.
+//
+// synced_at is stamped by a trigger on the SERVER (schema.sql), never by a
+// client, so a phone with a slow clock cannot write a change that sorts before
+// the cursor. The window behind the cursor (CURSOR_OVERLAP_MS) covers a
+// transaction that committed slightly out of order; rows inside it are
+// remembered with the stamp they were read at, so they are not downloaded again
+// on every sync while nothing changes.
+//
+// The cursor lives in the database (sync_state), not in config, because it
+// describes what this database already holds; a restored backup must not
+// inherit a cursor newer than its contents. With no cursor, or a project whose
+// schema predates synced_at, the pull is the old full download.
+const PULL_CURSOR_KEY = 'cloudPullCursor'
+const CURSOR_OVERLAP_MS = 5 * 60 * 1000
+const FETCH_BY_ID_CHUNK = 100
 
+// Decrypt one envelope column into the row. Returns 'ok', 'legacy' (readable,
+// but written before envelopes were bound to their row), 'obsolete' or
+// 'unreadable'.
+function openInto(remote, column, dataKey) {
+  if (!remote[column]) return 'ok'
+  try {
+    const { value, legacy } = cloudCrypto.open(dataKey, remote[column],
+      remote.id ? cloudCrypto.rowContext('applications', remote.id, column) : null)
+    Object.assign(remote, value || {})
+    return legacy ? 'legacy' : 'ok'
+  } catch (err) {
+    if (err.obsoleteEnvelope) return 'obsolete'
+    // Sealed for a different row: ignored, never applied. Logged rather than
+    // thrown so one tampered row cannot stop every other row from syncing.
+    if (err.misboundEnvelope) {
+      logger.append(`Cloud sync: ignored ${column} on cloud row ${remote.id} — it was sealed for a different row.`)
+      return 'unreadable'
+    }
+    throw err
+  }
+}
+
+async function fetchRowsById(c, ids) {
+  const rows = []
+  for (let i = 0; i < ids.length; i += FETCH_BY_ID_CHUNK) {
+    const chunk = ids.slice(i, i + FETCH_BY_ID_CHUNK)
+    rows.push(...await selectAll(() => c
+      .from('applications')
+      .select('*')
+      .eq('user_id', user.id)
+      .in('id', chunk)
+      .order('id', { ascending: true })))
+  }
+  return rows
+}
+
+function readCursor() {
+  try {
+    const state = JSON.parse(database.getSyncState?.(PULL_CURSOR_KEY) || 'null')
+    if (state && Number.isFinite(Date.parse(state.at))) return { at: state.at, seen: state.seen || {} }
+  } catch { /* an unreadable cursor is no cursor: one full download fixes it */ }
+  return null
+}
+
+// The newest stamp in the listing becomes the cursor, and every row inside the
+// overlap window behind it is remembered at the stamp it was read at.
+function writeCursor(rows) {
+  let newest = -Infinity, at = null
+  for (const r of rows) {
+    const t = Date.parse(r.synced_at || '')
+    if (Number.isFinite(t) && t > newest) { newest = t; at = r.synced_at }
+  }
+  if (!at) return
+  const seen = {}
+  for (const r of rows) {
+    const t = Date.parse(r.synced_at || '')
+    if (Number.isFinite(t) && t >= newest - CURSOR_OVERLAP_MS) seen[r.id] = r.synced_at
+  }
+  database.setSyncState?.(PULL_CURSOR_KEY, JSON.stringify({ at, seen }))
+}
+
+async function pullChanges(c, { incremental = false } = {}) {
   const tombstoneRows = database.getCloudTombstones?.() || []
   const cloudTombstones = new Map(tombstoneRows.filter(r => r.cloud_id).map(r => [r.cloud_id, r.local_id]))
+
+  let data
+  let listing = null
+  const cursor = incremental ? readCursor() : null
+  if (cursor) {
+    listing = await selectAll(() => c
+      .from('applications')
+      .select('id, synced_at')
+      .eq('user_id', user.id)
+      .order('id', { ascending: true }))
+    const since = Date.parse(cursor.at) - CURSOR_OVERLAP_MS
+    const known = database.getCloudVersions()
+    const wanted = listing.filter(({ id, synced_at: stamp }) => {
+      if (!id || cloudTombstones.has(id)) return false
+      if (!known.has(id)) return true
+      const t = Date.parse(stamp || '')
+      return Number.isFinite(t) && t >= since && cursor.seen[id] !== stamp
+    }).map(r => r.id)
+    data = wanted.length > 0 ? await fetchRowsById(c, wanted) : []
+  } else {
+    // Full rows, not just the editable columns: a row this device has never
+    // seen has to be reconstructable locally, and the cloud is the only copy.
+    data = await selectAll(() => c
+      .from('applications')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('id', { ascending: true }))
+  }
+
   // Deletions this desktop actually performed. Only these may be removed from
   // the cloud — see the note above pullChanges.
   const tombstoned = new Set(database.getTombstones())
   const toDeleteRemotely = []
   const restored = []
+  // Rows whose envelopes predate row binding. Re-uploaded on this sync's push,
+  // which rewrites them bound to their row.
+  const rebind = new Set()
 
   // Same reason as pushDirty: markCloudSeen/applyCloudEdit fire once per remote
   // row, and each one would otherwise serialize the whole database.
@@ -416,43 +540,32 @@ async function pullChanges(c) {
 
   database.batch(() => {
     for (const remote of data || []) {
+      let legacyEnvelope = false
       // The identifying fields, if this row was written by a client that
       // encrypts them. Merged before the documents so a row is whole either way,
       // and tolerant of both directions of version skew: a row from an older
       // client has no encrypted_meta and its plaintext columns are already
       // right, while a row from a newer one has blanked columns that this
       // restores.
-      if (remote.encrypted_meta) {
-        try {
-          Object.assign(remote, cloudCrypto.decrypt(dataKey, remote.encrypted_meta) || {})
-        } catch (err) {
-          if (!err.obsoleteEnvelope) throw err
-          obsoleteRows++
-        }
-        delete remote.encrypted_meta
+      //
+      // A row this device cannot decrypt is not a reason to abandon the pull.
+      // Encrypted fields simply stay as the desktop already has them, and
+      // pushDirty re-uploads them under the current key.
+      //
+      // encrypted_comment is opened AFTER encrypted_meta on purpose. The phone
+      // rewrites only encrypted_comment, so the comment inside meta can be
+      // older, and the newer one has to be the one left standing.
+      let obsolete = false
+      const hadChecklist = !!remote.encrypted_checklist
+      for (const column of ['encrypted_meta', 'encrypted_payload', 'encrypted_comment', 'encrypted_checklist']) {
+        const outcome = openInto(remote, column, dataKey)
+        if (outcome === 'legacy') legacyEnvelope = true
+        if (outcome === 'obsolete') obsolete = true
+        delete remote[column]
       }
-      if (remote.encrypted_payload) {
-        // A row this device cannot decrypt is not a reason to abandon the pull.
-        // It used to be: the throw escaped the loop and every remaining row —
-        // including perfectly readable ones — was skipped for good.
-        //
-        // The documents are the only encrypted part; status, comment and the
-        // rest of the row travel in clear, so the row is still worth applying.
-        // Encrypted fields simply stay as the desktop already has them, and
-        // pushDirty re-uploads them under the current key.
-        try {
-          Object.assign(remote, cloudCrypto.decrypt(dataKey, remote.encrypted_payload) || {})
-        } catch (err) {
-          if (!err.obsoleteEnvelope) throw err
-          obsoleteRows++
-          delete remote.encrypted_payload
-        }
-      }
-      for (const [column, field] of [['encrypted_comment', 'comment'], ['encrypted_checklist', 'checklist']]) {
-        if (remote[column]) {
-          Object.assign(remote, cloudCrypto.decrypt(dataKey, remote[column]) || {})
-        } else if (field === 'checklist') remote.checklist = '[]'
-      }
+      if (obsolete) obsoleteRows++
+      if (!hadChecklist) remote.checklist = '[]'
+
       if (remote.id && cloudTombstones.has(remote.id)) {
         toDeleteRemotely.push(remote.id)
         continue
@@ -477,6 +590,7 @@ async function pullChanges(c) {
         }
         continue
       }
+      if (legacyEnvelope && dataKey) rebind.add(local.id)
 
       const remoteTime = remote.updated_at ? new Date(remote.updated_at).getTime() : 0
       const lastSeen = local.cloud_updated_at ? new Date(local.cloud_updated_at).getTime() : null
@@ -516,7 +630,18 @@ async function pullChanges(c) {
         database.markCloudSeen(local.id, remote.updated_at)
       }
     }
+    // After the edits above, so the re-upload carries them.
+    for (const id of rebind) database.markCloudDirty?.(id)
   })
+
+  // An incremental pull only sees rows that changed, and a row this desktop
+  // deleted usually has not. The id listing is what says it is still there.
+  if (listing) {
+    const queued = new Set(toDeleteRemotely)
+    for (const { id } of listing) {
+      if (id && cloudTombstones.has(id) && !queued.has(id)) toDeleteRemotely.push(id)
+    }
+  }
 
   // Mirror only deletions this desktop explicitly recorded. Tombstones are
   // cleared per chunk AFTER the delete is confirmed, so an interrupted sync
@@ -534,8 +659,9 @@ async function pullChanges(c) {
 
   // A tombstone whose row is no longer in the cloud has already been mirrored
   // (or never reached it). Without this the table would grow without bound and
-  // re-issue a delete for the same id on every sync, forever.
-  const remoteIds = new Set((data || []).map(r => r.id || r.local_id))
+  // re-issue a delete for the same id on every sync, forever. The id listing,
+  // when there is one, is the complete set; the delta alone is not.
+  const remoteIds = new Set((listing || data || []).map(r => r.id || r.local_id))
   const settled = database.getCloudTombstones
     ? tombstoneRows.filter(r => !r.cloud_id || !remoteIds.has(r.cloud_id)).map(r => r.local_id)
     : [...tombstoned].filter(id => !remoteIds.has(id))
@@ -550,7 +676,18 @@ async function pullChanges(c) {
     database.markAllDirty?.()
   }
 
-  return { restored: restored.length, deleted: toDeleteRemotely.length, obsolete: obsoleteRows }
+  // Only once everything above has landed: a pull that threw part-way must be
+  // retried from the old cursor, not skipped past.
+  if (incremental) {
+    // The listing is the complete set when there was one; on a full download
+    // the rows themselves carry the stamps.
+    writeCursor(listing || data || [])
+  }
+
+  return {
+    restored: restored.length, deleted: toDeleteRemotely.length, obsolete: obsoleteRows,
+    fetched: (data || []).length, incremental: !!listing, rebound: rebind.size,
+  }
 }
 
 // ─── One-way mirrors (desktop → cloud) ───────────────────────────
@@ -560,9 +697,14 @@ async function pullChanges(c) {
 // `applications`) — a project that hasn't re-run schema.sql skips them quietly
 // rather than failing the whole sync.
 //
-// Full-set replacement rather than dirty-tracking: both tables are small
-// (dozens of rows), and the alternative is another pair of bookkeeping columns
-// for data the phone can't edit anyway.
+// The deletion side is still full-set. The upload side used to be too: every
+// row was re-sent on every two-minute sync, stamped updated_at = now, so the
+// cloud saw every interview and offer "change" thirty times an hour and the
+// phone could not tell a real edit from the heartbeat. Each row's plaintext is
+// now hashed (cloud_mirror_state) and only rows whose hash moved are uploaded.
+// The hash covers what goes INSIDE the envelope, not the envelope itself,
+// whose random IV changes on every encryption, plus a tag of the data key, so
+// signing in with a new password re-uploads everything under the new key.
 // "Does this project have the table yet?" — NOT "does the message mention the
 // table name?". The old substring test matched any error quoting the table,
 // including RLS denials ("new row violates row-level security policy for table
@@ -587,25 +729,52 @@ function isMissingTable(error, table) {
 // keyed by application_id and has no `id`, so without this the keep-list below
 // was built from undefined and the delete removed every mirrored row on each
 // pass, immediately after upserting it.
+//
+// `toCloud(row, seal)` builds the cloud row. It passes whatever belongs inside
+// the envelope through `seal`, which encrypts it and also records the plaintext
+// for the change hash.
 async function mirrorTable(c, table, rows, toCloud, localId = (r) => r.id) {
   const sourceDevice = deviceIdentity.ensureDeviceIdentity(configService).deviceId
-  const payload = rows.map(row => ({ ...toCloud(row), source_device: sourceDevice }))
-  if (payload.length > 0) {
-    for (let i = 0; i < payload.length; i += 200) {
-      const { error } = await c.from(table).upsert(payload.slice(i, i + 200), { onConflict: 'user_id,source_device,local_id' })
-      if (error) {
-        if (isMissingTable(error, table)) return { skipped: true }
-        throw new Error(error.message)
-      }
+  const dataKey = configService.load().cloudDataKey
+  const keyTag = dataKey ? crypto.createHash('sha256').update(dataKey).digest('hex').slice(0, 12) : 'clear'
+  const prepared = rows.map(row => {
+    let sealed = null
+    const seal = (fields) => { sealed = fields; return encryptMeta(dataKey, fields) }
+    const payload = { ...toCloud(row, seal), source_device: sourceDevice }
+    const { updated_at, encrypted_meta, ...clear } = payload
+    const hash = crypto.createHash('sha256').update(JSON.stringify([clear, sealed, keyTag])).digest('hex')
+    return { id: localId(row), payload, hash }
+  })
+
+  // A database without the bookkeeping (an older schema, a test double) uploads
+  // everything, which is the old behaviour and always correct.
+  const tracked = typeof database.getMirrorHashes === 'function'
+  const previous = tracked ? database.getMirrorHashes(table) : new Map()
+  let changed = prepared.filter(p => previous.get(p.id) !== p.hash)
+
+  const upload = async (items) => {
+    for (let i = 0; i < items.length; i += 200) {
+      const { error } = await c.from(table).upsert(items.slice(i, i + 200).map(p => p.payload), { onConflict: 'user_id,source_device,local_id' })
+      if (error) return error
+      // Recorded per chunk and only after the server accepted it, so a failed
+      // upload is retried next sync rather than believed.
+      if (tracked) database.setMirrorHashes(table, items.slice(i, i + 200).map(p => [p.id, p.hash]))
     }
+    return null
   }
+
+  const upError = await upload(changed)
+  if (upError) {
+    if (isMissingTable(upError, table)) return { skipped: true }
+    throw new Error(upError.message)
+  }
+  const payload = changed.map(p => p.payload)
 
   // Retire only legacy mirrors for which this upload supplied a replacement.
   // Unmatched mirrors may be the only surviving copy from an offline desktop.
   if (payload.length) {
     const { data: legacy, error } = await c.from(table).select('*').eq('user_id', user.id).eq('source_device', 'legacy')
     if (error && !isMissingTable(error, table)) throw new Error(error.message)
-    const dataKey = configService.load().cloudDataKey
     const identify = row => row.encrypted_meta ? { ...row, ...cloudCrypto.decrypt(dataKey, row.encrypted_meta) } : row
     const retire = []
     for (const old of legacy || []) {
@@ -640,7 +809,26 @@ async function mirrorTable(c, table, rows, toCloud, localId = (r) => r.id) {
     if (isMissingTable(delErr, table)) return { skipped: true }
     throw new Error(delErr.message)
   }
-  return { skipped: false, count: payload.length }
+  if (tracked) database.pruneMirrorHashes(table, keep)
+
+  // The hashes say what this desktop uploaded, not what the cloud still holds.
+  // Rows can vanish server-side without this desktop doing anything: "seed the
+  // account from this device" deletes applications, and the mirrors cascade
+  // with them. So the count is checked against the local set, and any
+  // difference means "upload everything again" rather than trusting the hashes.
+  if (tracked && rows.length > 0) {
+    const { count, error: countError } = await c.from(table)
+      .select('local_id', { count: 'exact', head: true })
+      .eq('user_id', user.id).eq('source_device', sourceDevice)
+    if (!countError && typeof count === 'number' && count !== rows.length) {
+      const already = new Set(changed.map(p => p.id))
+      const rest = prepared.filter(p => !already.has(p.id))
+      const again = await upload(rest)
+      if (again && !isMissingTable(again, table)) throw new Error(again.message)
+      changed = changed.concat(rest)
+    }
+  }
+  return { skipped: false, count: changed.length }
 }
 
 // Both mirrors below denormalise the job title and company onto their rows so
@@ -651,9 +839,8 @@ async function mirrorTable(c, table, rows, toCloud, localId = (r) => r.id) {
 // are model output about the user, so they travel inside it too.
 async function pushInterviews(c) {
   const rows = database.getAllInterviewEventsForSync()
-  const dataKey = configService.load().cloudDataKey
-  return mirrorTable(c, 'interview_events', rows, (e) => {
-    const meta = encryptMeta(dataKey, {
+  return mirrorTable(c, 'interview_events', rows, (e, seal) => {
+    const meta = seal({
       note: e.note || '', job_title: e.job_title || '',
       company: e.company || '', job_url: e.job_url || '',
     })
@@ -679,9 +866,8 @@ async function pushInterviews(c) {
 
 async function pushAttentionJobs(c) {
   const rows = database.getAttentionJobs()
-  const dataKey = configService.load().cloudDataKey
-  return mirrorTable(c, 'attention_jobs', rows, (j) => {
-    const meta = encryptMeta(dataKey, {
+  return mirrorTable(c, 'attention_jobs', rows, (j, seal) => {
+    const meta = seal({
       job_title: j.job_title || '', company: j.company || '',
       job_url: j.job_url || '', salary: j.salary || '',
       talking_points: j.talking_points || '[]', reason: j.reason || '',
@@ -733,9 +919,8 @@ async function pushOffers(c) {
   } catch {
     return { skipped: true }
   }
-  const dataKey = configService.load().cloudDataKey
-  return mirrorTable(c, 'offers', rows, (o) => {
-    const meta = encryptMeta(dataKey, {
+  return mirrorTable(c, 'offers', rows, (o, seal) => {
+    const meta = seal({
       job_title: o.job_title || '', company: o.company || '',
       job_url: o.job_url || '', currency: o.currency || '',
       base_salary: o.base_salary ?? null, bonus: o.bonus ?? null,
@@ -872,6 +1057,49 @@ async function updateScanStatus(running) {
   } catch { /* best-effort */ }
 }
 
+// ─── Cloud schema version ────────────────────────────────────────
+//
+// The desktop, the phone and the Supabase project are upgraded separately, and
+// the project is the one nobody upgrades: schema.sql is pasted into the SQL
+// editor by hand. A project that missed an upgrade did not fail cleanly. A
+// select naming a new column failed, the error said "column does not exist",
+// and nothing told the user the fix was to re-run one file.
+//
+// schema.sql now defines hiro_schema_version(), returning the version the file
+// last installed. The desktop checks it once per session before reading or
+// writing anything, and a project that is behind gets a sentence saying what to
+// do. Bump REQUIRED_CLOUD_SCHEMA together with the function in schema.sql.
+const REQUIRED_CLOUD_SCHEMA = 2
+let verifiedSchemaFor = null
+
+function staleSchemaError(found) {
+  const err = new Error(
+    `Your Supabase project's schema is out of date (version ${found || 'unknown'}, this version of Hiro needs ${REQUIRED_CLOUD_SCHEMA}). `
+    + 'Open the Supabase SQL editor, paste the whole of supabase/schema.sql and run it, then sync again. '
+    + 'Re-running it is safe: it only adds what is missing.')
+  err.staleSchema = true
+  return err
+}
+
+// Returns the cloud version, or null for a client that has no RPC at all (the
+// test doubles), which is treated as "unknown" and keeps the full-download pull.
+async function checkCloudSchema(c) {
+  if (typeof c.rpc !== 'function') return null
+  if (verifiedSchemaFor === clientKey + '\n' + user?.id) return REQUIRED_CLOUD_SCHEMA
+  const { data, error } = await c.rpc('hiro_schema_version')
+  if (error) {
+    // No such function: a project that has never run a schema.sql with it.
+    if (error.code === 'PGRST202' || error.code === '42883' || /hiro_schema_version/i.test(String(error.message || ''))) {
+      throw staleSchemaError(null)
+    }
+    throw new Error(error.message)
+  }
+  const version = Number(data)
+  if (!Number.isFinite(version) || version < REQUIRED_CLOUD_SCHEMA) throw staleSchemaError(version)
+  verifiedSchemaFor = clientKey + '\n' + user?.id
+  return version
+}
+
 // ─── First-sync gate and device registration ─────────────────────
 
 // Count both sides without modifying either.
@@ -912,7 +1140,12 @@ async function resolveFirstSync(choice) {
       // leaves a full set of tombstones that the next pull would replay as
       // deletions against the very cloud rows being restored — destroying the
       // account's data instead of copying it.
-      database.clearAllApplications()
+      //
+      // The interview answer bank is kept. It has never been synced, so the
+      // account's copy has nothing to replace it with, and "use the cloud
+      // copy" of applications was never a request to delete hand-written
+      // answers.
+      database.clearAllApplications({ keepAnswerBank: true })
       database.clearTombstones(database.getTombstones())
     } else if (choice === 'local') {
       const { error } = await c.from('applications').delete().eq('user_id', user.id)
@@ -1175,7 +1408,16 @@ async function getPushTargets() {
     .from('devices')
     .select('device_id, push_token, push_enabled, revoked_at')
     .eq('user_id', user.id)
-  if (error) return []
+  // Signed in, and the lookup itself failed (network, RLS, an expired token).
+  // That is NOT "no devices": returning [] made push.js record the reminder as
+  // sent to nobody, and its dedupe key then suppressed it for good. Throwing
+  // lets the caller release the key and try again on the next pass. Not being
+  // signed in, above, is still a genuine empty list.
+  if (error) {
+    const err = new Error(`Could not read the device list: ${error.message}`)
+    err.retryable = true
+    throw err
+  }
   return (data || [])
     .filter(d => d.push_token && d.push_enabled !== false && !d.revoked_at)
     .map(d => ({ deviceId: d.device_id, token: d.push_token }))
@@ -1210,6 +1452,11 @@ async function sync() {
     }
     configService.update({ cloudIdentityAccount: account })
 
+    // Before the first-sync gate, which already queries the applications
+    // table: a stale project should be reported as stale, not as whatever
+    // column error its first query happens to hit.
+    syncStage = 'Check cloud schema'
+    const cloudSchema = await checkCloudSchema(c)
 
     // First contact with an account that already holds data. Stop before
     // touching anything in either direction — merging is only one of three
@@ -1231,7 +1478,9 @@ async function sync() {
       pendingRekey = false
     }
     syncStage = 'Download changes'
-    const pulled = await pullChanges(c) // normally apply phone edits first so we don't clobber them
+    // Phone edits first so the push cannot clobber them. Incremental only on a
+    // project known to have the server-stamped synced_at column.
+    const pulled = await pullChanges(c, { incremental: cloudSchema != null })
     // Recovering rows from the cloud is a significant, user-visible event (it
     // is what a reinstall looks like) — report it rather than letting the
     // database silently repopulate.
@@ -1298,4 +1547,9 @@ module.exports = {
   ensureSession, expiryOf,
   _resetSession: () => { user = null; sessionExpiresAt = 0 },
   _pollReviewRequests: (c, testUser, handler) => { user = testUser; onRemoteReview = handler; return pollReviewRequests(c) },
+  _pullChanges: (c, testUser, options) => { user = testUser; return pullChanges(c, options) },
+  _mirrorTable: (c, testUser, ...args) => { user = testUser; return mirrorTable(c, ...args) },
+  _checkCloudSchema: (c, testUser) => { user = testUser; verifiedSchemaFor = null; return checkCloudSchema(c) },
+  _localToCloud: (a, testUser) => { user = testUser; return localToCloud(a) },
+  REQUIRED_CLOUD_SCHEMA,
 }

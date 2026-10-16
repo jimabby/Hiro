@@ -8,7 +8,7 @@
 // never stores anything and never talks to the network; the caller does the
 // pairing so a failure lands in the same error line as a typed code.
 
-import { useState, useMemo, useEffect } from 'react'
+import { useRef, useMemo, useEffect } from 'react'
 import { View, Text, TouchableOpacity, StyleSheet, BackHandler } from 'react-native'
 import { CameraView, useCameraPermissions } from 'expo-camera'
 import { radius, useTheme } from '../theme'
@@ -26,8 +26,10 @@ export default function QrPairScanner({ onScanned, onCancel }) {
   const [permission, requestPermission] = useCameraPermissions()
   // The camera fires repeatedly while the code stays in frame; without this the
   // pair request is sent a dozen times and every attempt after the first fails
-  // against a code that has already been spent.
-  const [handled, setHandled] = useState(false)
+  // against a code that has already been spent. A ref, not state: the camera
+  // can deliver the next frame before a state update re-renders this callback,
+  // so a `handled` read from state was still false and onScanned fired twice.
+  const handled = useRef(false)
 
   // The scanner is an overlay, not a screen, so Android back would otherwise
   // skip past it and close the app from the pairing page.
@@ -74,7 +76,7 @@ export default function QrPairScanner({ onScanned, onCancel }) {
           facing="back"
           barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
           onBarcodeScanned={({ data }) => {
-            if (handled) return
+            if (handled.current) return
             let payload
             try {
               payload = JSON.parse(data)
@@ -88,7 +90,7 @@ export default function QrPairScanner({ onScanned, onCancel }) {
             // desktop rather than carried in the QR, so the version here says
             // which desktop is on the other end and not which fields to read.
             if (!payload || !SUPPORTED_QR_VERSIONS.includes(payload.v) || !payload.code || !payload.host) return
-            setHandled(true)
+            handled.current = true
             onScanned(payload)
           }}
         />

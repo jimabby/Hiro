@@ -124,6 +124,17 @@ function registerApplicationHandlers({ ipcMain, scheduler, getWindow }) {
   })
   ipcMain.handle('db:getStats', () => database.getStats())
 
+  // Proof of submission (services/submissionProof.js): the confirmation page
+  // captured after a verified submit, as a data URL, or null when there is none.
+  ipcMain.handle('application:screenshot', (_, id) => {
+    try {
+      const file = database.getSubmissionScreenshot(Number(id))
+      return { success: true, dataUrl: require('../services/submissionProof').readDataUrl(file) }
+    } catch (err) {
+      return { success: false, reason: err.message, dataUrl: null }
+    }
+  })
+
   // ─── IPC: AI Apply from Needs Attention ─────────────────────────
   ipcMain.handle('application:applySkipped', async (_, jobId) => {
     try {
@@ -253,8 +264,28 @@ function registerApplicationHandlers({ ipcMain, scheduler, getWindow }) {
     try { return applicator.editHeldDraft(Number(id), edits || {}) } catch (err) { return { success: false, reason: err.message } }
   })
 
+  // Rejects hand back an undo token, like deletes. The previous state stays
+  // here; the renderer only ever holds the token. Keyed by token so rejecting
+  // two drafts in a row leaves both undoable while their toasts are up.
+  const pendingRejects = new Map()
   ipcMain.handle('review:reject', (_, id) => {
-    try { return database.rejectHeldApplication(id) } catch (err) { return { success: false, error: err.message } }
+    try {
+      const result = database.rejectHeldApplication(id)
+      if (!result?.success || !result.previous) return result
+      const now = Date.now()
+      for (const [t, entry] of pendingRejects) if (now > entry.expiresAt) pendingRejects.delete(t)
+      const token = require('crypto').randomUUID()
+      pendingRejects.set(token, { id, previous: result.previous, expiresAt: now + UNDO_TTL_MS })
+      return { success: true, undo: { token, label: 'Draft rejected — filed as skipped so it will not be re-drafted' } }
+    } catch (err) { return { success: false, error: err.message } }
+  })
+
+  ipcMain.handle('review:undoReject', (_, token) => {
+    const entry = pendingRejects.get(token)
+    pendingRejects.delete(token)
+    if (!entry) return { success: false, error: 'There is nothing left to undo.' }
+    if (Date.now() > entry.expiresAt) return { success: false, error: 'That undo has expired.' }
+    try { return database.restoreRejectedApplication(entry.id, entry.previous) } catch (err) { return { success: false, error: err.message } }
   })
 
   ipcMain.handle('review:followUps', () => database.getFollowUpDrafts())
@@ -272,7 +303,7 @@ function registerApplicationHandlers({ ipcMain, scheduler, getWindow }) {
       if (!draft || draft.status !== 'held') return { success: false, reason: 'Follow-up draft not found' }
       const cfg = configService.load()
       await emailService.sendFollowUpEmail({
-        job_title: draft.job_title, company: draft.company,
+        id: draft.application_id, job_title: draft.job_title, company: draft.company,
         recruiter_email: draft.recipient,
       }, draft.body, cfg)
       // resolveFollowUpDraft marks the application's follow-up decided; the email

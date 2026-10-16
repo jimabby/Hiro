@@ -16,6 +16,7 @@ import {
   View, Text, ScrollView, RefreshControl, StyleSheet, TouchableOpacity,
 } from 'react-native'
 import { radius, radiusLg, useTheme } from '../theme'
+import { messageFor } from '../requestErrors'
 import { formatDay } from '../dates'
 
 // How the deadline is coloured. An offer with two days left and one with three
@@ -63,7 +64,7 @@ export default function OffersScreen({ client, active = true }) {
       setBoard(await client.getOffers())
       setError('')
     } catch (err) {
-      setError(err.message)
+      setError(messageFor(err))
     }
   }, [client])
 

@@ -44,8 +44,11 @@ const { check, done } = createChecker()
 const phoneSource = fs.readFileSync(path.join(__dirname, '../../app/src/supabase.js'), 'utf8')
 const sandbox = {
   supabase: server, url: cfg.supabaseUrl, console, randomUUID: crypto.randomUUID,
-  decryptCloudPayload: async p => encryption.decrypt(cfg.cloudDataKey, p),
-  encryptCloudPayload: async p => encryption.encrypt(cfg.cloudDataKey, p),
+  // Same signatures as app/src/cloudCrypto.js: an optional row context that
+  // binds the envelope to the row it is written to.
+  decryptCloudPayload: async (p, context) => encryption.decrypt(cfg.cloudDataKey, p, context),
+  encryptCloudPayload: async (p, context) => encryption.encrypt(cfg.cloudDataKey, p, context),
+  rowContext: encryption.rowContext,
 }
 vm.createContext(sandbox)
 vm.runInContext(phoneSource.slice(phoneSource.indexOf('const VALID_STATUSES')).replace('export class CloudClient', 'class CloudClient') + '\nglobalThis.Client = CloudClient;', sandbox)

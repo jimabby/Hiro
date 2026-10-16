@@ -24,7 +24,10 @@ const ACK_PATTERNS = [
 // A receipt that turns into a verdict partway down is not a receipt. "Thank you
 // for your interest in Acme — unfortunately…" is the commonest rejection
 // opening there is, and skipping it would leave the application open forever.
-const DECISION_PATTERN = /unfortunately|regret|not .*mov(?:e|ing) forward|not .*proceed|not .*progress|unsuccessful|other candidates?|position (?:has been|was) filled|invite you to (?:an )?interview|schedule (?:a|an|your) (?:call|interview|chat)|pleased to offer|offer of employment/i
+// Bounded and word-anchored for the same reason as inbox.js classifySubject:
+// "not .*progress" also matched "…not hesitate to contact us. Your application
+// is in progress", which made an ordinary receipt look like a decision.
+const DECISION_PATTERN = /\bunfortunately\b|\bregret\b|\bnot\b[^.]{0,40}\bmov(?:e|ing) forward\b|\bnot\b[^.]{0,30}\bproceed(?:ing)?\b|\bnot\b[^.]{0,30}\bprogress(?:ing)?\b|\bunsuccessful\b|\bother candidates?\b|\bposition (?:has been|was) filled\b|\binvite you to (?:an )?interview\b|\bschedule (?:a|an|your) (?:call|interview|chat)\b|\bpleased to offer\b|\boffer of employment\b/i
 
 function isAcknowledgement(subject, body = '') {
   const head = `${subject || ''}\n${String(body || '').slice(0, 600)}`

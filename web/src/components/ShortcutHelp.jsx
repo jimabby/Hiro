@@ -7,6 +7,7 @@
 // has taught people; the button in the sidebar footer is for everyone else.
 
 export const SHORTCUTS = [
+  { keys: ['Ctrl', 'K'], what: 'Command palette — jump to a page, action or application' },
   { keys: ['1', '…', '9'], what: 'Switch page (in sidebar order)' },
   { keys: ['/'], what: 'Focus the search box on the Dashboard' },
   { keys: ['↑', '↓'], what: 'Previous / next application while one is open' },

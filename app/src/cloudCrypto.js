@@ -52,13 +52,29 @@ export async function clearCloudKey() {
   await secureStore.removeItem(KEY_NAME)
 }
 
-export async function decryptCloudPayload(payload) {
+// The row an envelope belongs to: table, cloud id and column, fed to AES-GCM
+// as additional authenticated data. Must match rowContext() in the desktop's
+// cloudCrypto.js exactly — see the note there on why envelopes are bound.
+export const rowContext = (table, rowId, column) => `hiro:${table}:${rowId}:${column}`
+
+// `expectedContext` is where the caller found this envelope. When given, an
+// envelope bound to a different row is refused rather than shown, because a
+// valid tag only proves the key holder wrote it, not that it belongs here.
+// Envelopes from before binding carry no `ctx` and are still read.
+export async function decryptCloudPayload(payload, expectedContext = null) {
   if (!payload) return null
   if (!key64) throw new Error('Encrypted cloud data needs your password. Sign out and sign in again on this phone.')
   const env = typeof payload === 'string' ? JSON.parse(payload) : payload, keyBytes = base64ToBytes(key64)
   if (env.v === ENVELOPE_VERSION) {
+    if (env.ctx != null && expectedContext && env.ctx !== expectedContext) {
+      const err = new Error('This cloud data was moved here from another application and has been ignored.')
+      err.misboundEnvelope = true
+      throw err
+    }
     const key = await AESEncryptionKey.import(keyBytes), sealed = AESSealedData.fromCombined(env.data)
-    const plain = await aesDecryptAsync(sealed, key, { output: 'bytes' })
+    const options = { output: 'bytes' }
+    if (env.ctx != null) options.additionalData = utf8ToBytes(String(env.ctx))
+    const plain = await aesDecryptAsync(sealed, key, options)
     return JSON.parse(new TextDecoder().decode(plain))
   }
   // v1 and v2 were keyed by material the server also held. The desktop has the
@@ -71,9 +87,16 @@ export async function decryptCloudPayload(payload) {
 
 // Separate envelopes let the phone update comments without overwriting the
 // desktop's title/company/documents envelope.
-export async function encryptCloudPayload(value) {
+// `context` binds the envelope to the row and column it is written to (see
+// rowContext). Optional only for callers that cannot name the row; the
+// desktop re-uploads unbound envelopes in the bound form.
+export async function encryptCloudPayload(value, context = null) {
   if (!key64) throw new Error('Sign in again to encrypt this change.')
   const key = await AESEncryptionKey.import(base64ToBytes(key64))
-  const sealed = await aesEncryptAsync(utf8ToBytes(JSON.stringify(value)), key)
-  return JSON.stringify({ v: ENVELOPE_VERSION, data: await sealed.combined('base64') })
+  const options = context ? { additionalData: utf8ToBytes(String(context)) } : undefined
+  const sealed = await aesEncryptAsync(utf8ToBytes(JSON.stringify(value)), key, options)
+  const envelope = { v: ENVELOPE_VERSION }
+  if (context) envelope.ctx = String(context)
+  envelope.data = await sealed.combined('base64')
+  return JSON.stringify(envelope)
 }

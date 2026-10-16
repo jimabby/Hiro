@@ -23,6 +23,8 @@ let deviceRows = []
 let missingColumns = new Set()
 let signOutCalls = []
 let deletedAll = false
+// Makes a read of the devices table fail, as a network error or RLS denial would.
+let failDeviceReads = false
 
 function table(name) {
   const state = { filters: {}, inList: null }
@@ -39,6 +41,7 @@ function table(name) {
       return Promise.resolve({ data: found || null, error: null })
     },
     then(resolve) {
+      if (failDeviceReads && name === 'devices') return Promise.resolve({ data: null, error: { code: '500', message: 'upstream timeout' } }).then(resolve)
       return Promise.resolve({ data: rowsFor().filter(matches), error: null, count: rowsFor().filter(matches).length }).then(resolve)
     },
     upsert(payload) {
@@ -309,6 +312,16 @@ async function main() {
   targets = await cloudSync.getPushTargets()
   check('only devices with a token, enabled and not revoked, are targets',
     targets.map(t => t.deviceId), ['p1'])
+
+  // A failed lookup is not an empty device list. Returning [] made push.js
+  // record the reminder as sent to nobody, and its dedupe key then suppressed
+  // it for good; a throw lets the caller release the key and retry.
+  failDeviceReads = true
+  let lookupError = null
+  try { await cloudSync.getPushTargets() } catch (err) { lookupError = err }
+  failDeviceReads = false
+  check('a failed push-target lookup throws rather than returning no devices', !!lookupError, true)
+  check('and is marked retryable', lookupError?.retryable, true)
 
   await cloudSync.clearPushToken('p1')
   check('a token can be cleared at the source',

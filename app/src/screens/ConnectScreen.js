@@ -71,10 +71,19 @@ export default function ConnectScreen({ onConnected }) {
         deviceName: Platform.OS === 'ios' ? 'iPhone' : 'Android phone',
         platform: Platform.OS,
       })
-      const client = new HiroClient({ host: conn.host, port: conn.port, token: res.token, secure: true })
+      // The token's expiry and the device's scopes come with the pairing reply,
+      // and are kept with the token (in the Keychain/Keystore) so the client
+      // can rotate the token before it lapses.
+      const expiresAt = res.device?.expiresAt || null
+      const scopes = Array.isArray(res.device?.scopes) ? res.device.scopes : undefined
+      const deviceId = res.device?.id || null
+      const client = new HiroClient({ host: conn.host, port: conn.port, token: res.token, secure: true, expiresAt, deviceId })
       const ping = await client.ping()
       if (!ping.ok) throw new Error('Unexpected response from server')
-      await onConnected({ mode: 'lan', host: conn.host, port: conn.port, token: res.token, secure: true })
+      await onConnected({
+        mode: 'lan', host: conn.host, port: conn.port, token: res.token, secure: true,
+        expiresAt, deviceId, scopes: ping.scopes || scopes,
+      })
     } catch (err) {
       setError(err.message)
     } finally {

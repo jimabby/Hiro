@@ -119,6 +119,40 @@ global.setTimeout = (fn) => originalSetTimeout(fn, 0)
     check('and is no longer exhausted', usage.retryBudgetStatus().exhausted, false)
   }
 
+  // ── Budgets are scoped per operation ─────────────────────────
+  // The budget was one module-level counter reset only by a scan. After a scan
+  // spent it, the inbox check, follow-ups and manual applies got no retries at
+  // all until the next scan. A scan now runs inside withRetryBudget, and what it
+  // spends is its own.
+  {
+    usage.resetRetryBudget(0) // outside any scope: per-call retries only
+    await usage.withRetryBudget(1, async () => {
+      try { await usage.withUsage('score', 'openai', async () => { throw rateLimit() }) } catch {}
+      check('inside a scan, its own budget is spent', usage.retryBudgetStatus().exhausted, true)
+    })
+    check('outside the scan, nothing was spent', usage.retryBudgetStatus().spent, 0)
+
+    let calls = 0
+    const value = await usage.withUsage('classifyReply', 'openai', async () => {
+      calls++
+      if (calls < 3) throw rateLimit()
+      return { value: 'ok', model: 'gpt-4o-mini', usage: null }
+    })
+    check('an inbox check after a failing scan still retries', value, 'ok')
+    check('as many times as it needs', calls, 3)
+
+    // Two operations at once each keep their own count.
+    const seen = []
+    await Promise.all([
+      usage.withRetryBudget(5, async () => {
+        try { await usage.withUsage('a', 'openai', async () => { throw rateLimit() }) } catch {}
+        seen.push(usage.retryBudgetStatus().spent)
+      }),
+      usage.withRetryBudget(5, async () => { seen.push(usage.retryBudgetStatus().spent) }),
+    ])
+    check('concurrent operations do not share a budget', seen.sort(), [0, 3])
+  }
+
   // ── Comparing two saved outputs ──────────────────────────────
   // The base-vs-tailored diff answers "what did the model change about me".
   // This answers "is the new model better", which needs two outputs, not one

@@ -120,6 +120,32 @@ const plain = fs.readFileSync(copy, 'utf8')
 check('the plain copy carries the whole history', plain.includes('Data Engineer at Acme'), true)
 check('including lines written after encryption', plain.includes('Platform Engineer at Globex'), true)
 
+// "Open log" used to drop that copy straight into the shared temp directory with
+// the default mode and never delete it. Now it gets a private folder of its own
+// and is removed after a delay and on quit.
+const fakeTmp = fs.mkdtempSync(path.join(DIR, 'tmp-'))
+const opened = logger.writePrivatePlainCopy({ tmpDir: fakeTmp, ttlMs: 0 })
+check('the copy is in a folder of its own, not loose in the temp dir', path.dirname(path.dirname(opened)), fakeTmp)
+check('and carries the history', fs.readFileSync(opened, 'utf8').includes('Platform Engineer at Globex'), true)
+if (process.platform !== 'win32') {
+  check('the copy is readable by its owner only', fs.statSync(opened).mode & 0o777, 0o600)
+  check('and so is its folder', fs.statSync(path.dirname(opened)).mode & 0o777, 0o700)
+}
+const second = logger.writePrivatePlainCopy({ tmpDir: fakeTmp, ttlMs: 0 })
+check('each copy gets a fresh folder', path.dirname(second) !== path.dirname(opened), true)
+// A copy a crashed run left behind is swept too, alongside this run's own.
+const leftover = path.join(fakeTmp, 'hiro-log-crashed')
+fs.mkdirSync(leftover)
+fs.writeFileSync(path.join(leftover, 'hiro-activity-log.txt'), 'old')
+const unrelated = path.join(fakeTmp, 'hiro-log-not-ours')
+fs.mkdirSync(unrelated)
+logger.removePlainCopies({ tmpDir: fakeTmp })
+check('quitting removes every decrypted copy', [fs.existsSync(opened), fs.existsSync(second), fs.existsSync(leftover)], [false, false, false])
+check('but nothing that is not one of ours', fs.existsSync(unrelated), true)
+
+// The delayed clean-up.
+const timed = logger.writePrivatePlainCopy({ tmpDir: fakeTmp, ttlMs: 30 })
+
 // ── A tampered line ──────────────────────────────────────────────
 // GCM's tag means a modified line is refused rather than shown as garbage, and
 // one damaged line must not take the rest of the log with it.
@@ -152,4 +178,8 @@ check('and logging carries on regardless',
   logger.tail(3).some(l => l.includes('still logging')), true)
 
 try { fs.rmSync(DIR, { recursive: true, force: true }) } catch { /* best-effort */ }
-done()
+// Checked last, once the copy's own timer has had time to fire.
+setTimeout(() => {
+  check('a copy is deleted on its own after a delay', fs.existsSync(timed), false)
+  done()
+}, 150)

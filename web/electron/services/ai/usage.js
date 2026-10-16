@@ -12,8 +12,9 @@
 const database = require('../database')
 
 // Published per-million-token prices, USD. Used for the cost estimate shown in
-// the UI — treat it as an indication, not an invoice. Unknown models fall back
-// to zero rather than inventing a number.
+// the UI — treat it as an indication, not an invoice. An unknown model is
+// priced at its provider's most expensive known tier (see fallbackPriceFor): a
+// guess, but one that errs towards the monthly cap firing rather than never.
 const PRICING = {
   // Anthropic. Haiku 5.5's rate is for prompts up to 100K tokens, which is
   // every prompt Hiro sends.
@@ -50,10 +51,56 @@ function priceFor(model) {
   return prefix ? PRICING[prefix] : null
 }
 
-function estimateCost(model, inputTokens, outputTokens) {
-  const price = priceFor(model)
+// Which PRICING keys belong to which provider, for the unknown-model fallback.
+const PROVIDER_PREFIXES = {
+  claude: ['claude-'],
+  chatgpt: ['gpt-', 'o1', 'o3', 'o4'],
+  deepseek: ['deepseek-'],
+  gemini: ['gemini-'],
+}
+
+// An unknown model used to cost $0 — so a model id newer than this table (or a
+// typo that the provider happened to accept) made every call free, and the
+// monthly cap the user set could never fire. It is now priced at the most
+// expensive tier this table knows for that provider, and for a provider it
+// cannot place, the most expensive tier of all. A local model runs on the
+// user's own machine and genuinely costs nothing.
+function fallbackPriceFor(provider) {
+  if (provider === 'local') return null
+  const prefixes = PROVIDER_PREFIXES[provider]
+  const keys = Object.keys(PRICING).filter(k => !prefixes || prefixes.some(p => k.startsWith(p)))
+  const pool = keys.length ? keys : Object.keys(PRICING)
+  return pool.map(k => PRICING[k]).reduce((max, p) => (p.output > max.output ? p : max))
+}
+
+// Logged once per model per process: a scan makes hundreds of calls.
+const warnedUnknown = new Set()
+function warnUnknownModel(provider, model, price) {
+  const key = `${provider}:${model}`
+  if (warnedUnknown.has(key)) return
+  warnedUnknown.add(key)
+  try {
+    require('../logger').append(`AI usage: no published price for "${model || '(unnamed model)'}" — `
+      + `estimating cost at $${price.input}/$${price.output} per million tokens so the monthly budget still applies.`)
+  } catch { /* logging is best-effort */ }
+}
+
+// Anthropic reports cache reads and writes apart from `input_tokens`. Reads bill
+// at a tenth of the input price, five-minute writes at 1.25×.
+const CACHE_READ_MULTIPLIER = 0.1
+const CACHE_WRITE_MULTIPLIER = 1.25
+
+function estimateCost(model, inputTokens, outputTokens, { provider = '', cacheReadTokens = 0, cacheWriteTokens = 0 } = {}) {
+  let price = priceFor(model)
+  if (!price && provider) {
+    price = fallbackPriceFor(provider)
+    if (price) warnUnknownModel(provider, model, price)
+  }
   if (!price) return 0
-  return (inputTokens / 1e6) * price.input + (outputTokens / 1e6) * price.output
+  return (inputTokens / 1e6) * price.input
+    + (outputTokens / 1e6) * price.output
+    + (cacheReadTokens / 1e6) * price.input * CACHE_READ_MULTIPLIER
+    + (cacheWriteTokens / 1e6) * price.input * CACHE_WRITE_MULTIPLIER
 }
 
 // Raised when the monthly cap is already spent. Distinguished from a transient
@@ -109,10 +156,15 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 
 // Token counts come back in a different shape from each provider.
 function readUsage(raw) {
-  if (!raw) return { inputTokens: 0, outputTokens: 0 }
-  // Anthropic
+  if (!raw) return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+  // Anthropic. Cached prefix tokens are reported separately from input_tokens.
   if (raw.input_tokens != null || raw.output_tokens != null) {
-    return { inputTokens: raw.input_tokens || 0, outputTokens: raw.output_tokens || 0 }
+    return {
+      inputTokens: raw.input_tokens || 0,
+      outputTokens: raw.output_tokens || 0,
+      cacheReadTokens: raw.cache_read_input_tokens || 0,
+      cacheWriteTokens: raw.cache_creation_input_tokens || 0,
+    }
   }
   // OpenAI / DeepSeek
   if (raw.prompt_tokens != null || raw.completion_tokens != null) {
@@ -143,27 +195,47 @@ function _setConfigReader(fn) { getConfig = fn }
 // budget, calls still happen — a request that succeeds first time is fine — but
 // nothing is retried, so a broken provider fails fast instead of slowly.
 //
-// Reset per scan rather than per process: a long-running desktop app would
-// otherwise exhaust the budget on day one and never retry again.
+// Scoped per operation, not per process. The budget used to be one module-level
+// counter reset only at the start of a scan — so once a scan had spent it, the
+// inbox check, follow-ups and every manual apply that ran afterwards got no
+// retries at all until the next scan happened to reset it. Now a top-level
+// operation runs inside `withRetryBudget(limit, fn)`, which gives it a budget
+// of its own that follows its async calls (AsyncLocalStorage) and nobody
+// else's. A call outside any scope uses the shared fallback budget below, which
+// is uncapped unless something explicitly sets it — per-call retries only.
+const { AsyncLocalStorage } = require('async_hooks')
+const budgetScope = new AsyncLocalStorage()
 let retryBudget = { spent: 0, limit: 0 }
 
+function currentBudget() {
+  return budgetScope.getStore() || retryBudget
+}
+
+// The fallback budget, for calls made outside any withRetryBudget scope.
 function resetRetryBudget(limit) {
   retryBudget = { spent: 0, limit: Math.max(0, Number(limit) || 0) }
 }
 
+// Run `fn` with a retry budget of its own. Nested scopes get their own too.
+function withRetryBudget(limit, fn) {
+  return budgetScope.run({ spent: 0, limit: Math.max(0, Number(limit) || 0) }, fn)
+}
+
 function retryBudgetStatus() {
-  return { ...retryBudget, exhausted: retryBudget.limit > 0 && retryBudget.spent >= retryBudget.limit }
+  const b = currentBudget()
+  return { spent: b.spent, limit: b.limit, exhausted: b.limit > 0 && b.spent >= b.limit }
 }
 
 // A limit of 0 means "no run-level cap", which keeps the previous behaviour for
 // anyone who wants it.
 function canRetry() {
-  if (retryBudget.limit <= 0) return true
-  return retryBudget.spent < retryBudget.limit
+  const b = currentBudget()
+  if (b.limit <= 0) return true
+  return b.spent < b.limit
 }
 
 function chargeRetry() {
-  retryBudget.spent += 1
+  currentBudget().spent += 1
 }
 
 // Wrap one model call: enforce the budget, retry transient failures with
@@ -187,7 +259,7 @@ async function withUsage(operation, provider, fn) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const { value, model, usage } = await fn()
-      const { inputTokens, outputTokens } = readUsage(usage)
+      const { inputTokens, outputTokens, cacheReadTokens = 0, cacheWriteTokens = 0 } = readUsage(usage)
       try {
         database.recordAiUsage({
           provider,
@@ -195,7 +267,9 @@ async function withUsage(operation, provider, fn) {
           operation,
           inputTokens,
           outputTokens,
-          costUsd: estimateCost(model, inputTokens, outputTokens),
+          cacheReadTokens,
+          cacheWriteTokens,
+          costUsd: estimateCost(model, inputTokens, outputTokens, { provider, cacheReadTokens, cacheWriteTokens }),
         })
       } catch { /* accounting must never fail the call it is measuring */ }
       return value
@@ -230,6 +304,6 @@ async function withUsage(operation, provider, fn) {
 }
 
 module.exports = {
-  withUsage, resetRetryBudget, retryBudgetStatus, estimateCost, priceFor, isRetryable, isPermanent, readUsage,
+  withUsage, resetRetryBudget, withRetryBudget, retryBudgetStatus, estimateCost, priceFor, fallbackPriceFor, isRetryable, isPermanent, readUsage,
   BudgetExceededError, PRICING, _setConfigReader,
 }

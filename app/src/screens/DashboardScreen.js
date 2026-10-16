@@ -2,11 +2,22 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { View, Text, ScrollView, RefreshControl, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, Linking, Platform, AppState, Keyboard } from 'react-native'
 import { radius, statusLabel, useTheme, useStatusColors } from '../theme'
 import { describeDue, isOverdue } from '../components/NextAction'
+import * as Clipboard from 'expo-clipboard'
 import { enqueue, flush, getPending } from '../scanQueue'
-import ScanQueue from '../components/ScanQueue'
+import ScanQueue, { describeFlush } from '../components/ScanQueue'
 import { parseLocal, relativeDay, calendarDaysFrom, formatWhen, clockTime, formatDay } from '../dates'
+import { classifyError, messageFor } from '../requestErrors'
+import { randomKey } from '../secureProtocol'
+import { saveCache, loadCache, shouldUseCache } from '../offlineCache'
+import { slimDashboard, cachedLabel } from '../cacheModel'
+import { addInterviewToCalendar } from '../addToCalendar'
+import { importJobLink } from '../importJob'
+import { extractJobUrl } from '../importLink'
 
-export default function DashboardScreen({ client, active = true, onOpenApplication }) {
+// While showing cached figures, how often to try the source again.
+const CACHE_RETRY_MS = 30000
+
+export default function DashboardScreen({ client, active = true, onOpenApplication, onNeedsPairing, queueSignal = 0 }) {
   // Palette and stylesheet follow the phone's appearance setting. Named
   // `colors` so every inline reference below reads unchanged.
   const colors = useTheme()
@@ -31,42 +42,82 @@ export default function DashboardScreen({ client, active = true, onOpenApplicati
   // Set when the poll below has given up on an unreachable desktop, so the UI
   // can say the connection was lost instead of showing a scan running forever.
   const [scanPollLost, setScanPollLost] = useState(false)
+  // The cache entry on screen when the source could not be reached, else null.
+  const [cached, setCached] = useState(null)
+  const [importBusy, setImportBusy] = useState(false)
+  const [importMsg, setImportMsg] = useState('')
+  // Interview id -> 'added' or the reason it was not, for this session.
+  const [calendarDone, setCalendarDone] = useState({})
 
   const load = useCallback(async () => {
+    let s, pd
     try {
-      const [s, pd] = await Promise.all([client.getStats(), client.getPerDay(7)])
-      setStats(s)
-      setPerDay(pd)
-      setError('')
-      // Interviews are available over both transports now. A desktop or schema
-      // that can't serve them returns an empty list, so this never throws.
-      try { setInterviews(await client.getUpcomingInterviews(10)) } catch { setInterviews([]) }
-      // Attention jobs are mirrored to the cloud too, so this no longer needs
-      // a live desktop — but the scan-status and queue polling below does.
-      try { setAttention(await client.getAttention()) } catch { setAttention([]) }
-      // Follow-ups that have come due. Both clients resolve an unsupported
-      // desktop or schema to an empty list, so this never breaks the dashboard.
-      try { setDueActions(await client.getDueActions?.() || []) } catch { setDueActions([]) }
-      if (client.canScan) {
-        // Desktop is reachable — deliver any scans queued while it was offline.
-        await flush(client)
-        // Clear on failure rather than keep displaying stale running/queued info.
-        try { setScanStatus(await client.getScanStatus()) } catch { setScanStatus(null) }
-        setPendingCount((await getPending()).length)
-      }
+      [s, pd] = await Promise.all([client.getStats(), client.getPerDay(7)])
     } catch (err) {
-      setError(err.message)
+      // Unreachable: show the last figures this phone saw, marked as such,
+      // rather than an empty screen with an error on it.
+      if (shouldUseCache(err)) {
+        const entry = await loadCache(client, 'dashboard')
+        if (entry) {
+          setStats(entry.data.stats)
+          setPerDay(entry.data.perDay)
+          setInterviews(entry.data.interviews)
+          setDueActions(entry.data.dueActions)
+          setAttention([])
+          setScanStatus(null)
+          setCached(entry)
+          setError('')
+          return
+        }
+      }
+      setCached(null)
+      setError(messageFor(err))
+      if (classifyError(err) === 'auth') onNeedsPairing?.()
+      return
     }
-  }, [client])
+    setStats(s)
+    setPerDay(pd)
+    setError('')
+    setCached(null)
+    // Interviews are available over both transports now. A desktop or schema
+    // that can't serve them returns an empty list; any other failure leaves the
+    // panel empty rather than breaking the dashboard.
+    let iv = [], due = []
+    try { iv = await client.getUpcomingInterviews(10) } catch { iv = [] }
+    setInterviews(iv)
+    // Attention jobs are mirrored to the cloud too, so this no longer needs
+    // a live desktop — but the scan-status and queue polling below does.
+    try { setAttention(await client.getAttention()) } catch { setAttention([]) }
+    // Follow-ups that have come due.
+    try { due = (await client.getDueActions?.()) || [] } catch { due = [] }
+    setDueActions(due)
+    saveCache(client, 'dashboard', slimDashboard({ stats: s, perDay: pd, interviews: iv, dueActions: due }))
+    if (client.canScan) {
+      // Reachable — deliver anything queued while it was not. A queue that
+      // cannot be read is reported by the <ScanQueue> card itself.
+      try {
+        const result = await flush(client)
+        const note = describeFlush(result)
+        if (note) setScanMsg(note)
+        if (result.needsPairing) onNeedsPairing?.()
+      } catch { /* shown by <ScanQueue> */ }
+      // Clear on failure rather than keep displaying stale running/queued info.
+      try { setScanStatus(await client.getScanStatus()) } catch { setScanStatus(null) }
+      try { setPendingCount((await getPending()).length) } catch { /* shown by <ScanQueue> */ }
+    }
+  }, [client, onNeedsPairing])
 
   async function onRunScan() {
     if (scanBusy) return
     Keyboard.dismiss()
     setScanBusy(true)
     setScanMsg('')
-    const req = { keywords: keywords.trim(), location: '', createdAt: new Date().toISOString() }
+    // Minted before the first attempt and kept with the request if it has to
+    // wait, so a retry after a timeout that DID reach the desktop is recognised
+    // there as the same scan.
+    const req = { keywords: keywords.trim(), location: '', createdAt: new Date().toISOString(), idempotencyKey: randomKey() }
     try {
-      const info = await client.requestScan({ keywords: req.keywords })
+      const info = await client.requestScan({ keywords: req.keywords }, { idempotencyKey: req.idempotencyKey })
       if (info.cloud) {
         // Queued via Supabase — the desktop drains requests on its next sync.
         setScanMsg('Scan queued via the cloud — the desktop will pick it up within a couple of minutes.')
@@ -77,19 +128,66 @@ export default function DashboardScreen({ client, active = true, onOpenApplicati
         setScanMsg(info.running ? 'A scan is already running on the desktop — queued next.' : 'Scan queued — running on the desktop now.')
       }
     } catch (err) {
-      try {
-        await enqueue(req, client)
-        setPendingCount((await getPending()).length)
-        setScanMsg(`Request saved for this connection. ${err.message || 'Destination unavailable.'}`)
-      } catch (queueError) {
-        setScanMsg(`Request was not saved: ${queueError.message}`)
+      // Only an unreachable destination is worth queueing for. Every failure
+      // used to be queued as "Desktop offline" — including requests that would
+      // be refused however often they were retried.
+      const kind = classifyError(err)
+      if (kind === 'offline') {
+        try {
+          await enqueue(req, client)
+          setPendingCount((await getPending()).length)
+          setScanMsg(`Can’t reach it right now, so the scan was saved and will be sent when it is back. (${err.message || 'Destination unavailable.'})`)
+        } catch (queueError) {
+          setScanMsg(`Request was not saved: ${queueError.message}`)
+        }
+      } else if (kind === 'auth') {
+        setScanMsg(`Scan not sent: ${err.message}`)
+        onNeedsPairing?.()
+      } else if (kind === 'busy') {
+        setScanMsg(`Scan not sent — the desktop is busy or has locked this phone out for now: ${err.message}. Try again in a few minutes.`)
+      } else {
+        setScanMsg(err.scope ? messageFor(err) : `Scan not sent: ${err.message}`)
       }
     } finally {
       setScanBusy(false)
     }
   }
 
+  // "Import job from clipboard": the fallback for an app that cannot share
+  // into Hiro, and for iOS, where the share-sheet entry is not built.
+  async function onImportFromClipboard() {
+    if (importBusy) return
+    setImportBusy(true)
+    setImportMsg('')
+    try {
+      const url = extractJobUrl(await Clipboard.getStringAsync())
+      if (!url) {
+        setImportMsg('The clipboard has no job link in it. Copy the posting’s URL first.')
+        return
+      }
+      const res = await importJobLink(client, { url })
+      setImportMsg(res.message)
+      if (res.status === 'queued') setPendingCount((await getPending().catch(() => [])).length)
+      if (res.status === 'auth') onNeedsPairing?.()
+    } catch (err) {
+      setImportMsg(err.message)
+    } finally {
+      setImportBusy(false)
+    }
+  }
+
+  async function onAddToCalendar(iv) {
+    const res = await addInterviewToCalendar(iv)
+    setCalendarDone(d => ({ ...d, [iv.id]: res.added ? 'added' : (res.reason || 'Not added') }))
+  }
+
   useEffect(() => { load() }, [load])
+
+  // Something outside this screen queued a request (a shared job link).
+  useEffect(() => {
+    if (!queueSignal) return
+    getPending().then(r => setPendingCount(r.length)).catch(() => {})
+  }, [queueSignal])
 
   // Tabs stay mounted, so returning to this one is not a remount. Reload on the
   // way back in, or the tiles show whatever was true when it was last on screen.
@@ -162,6 +260,17 @@ export default function DashboardScreen({ client, active = true, onOpenApplicati
     return () => { cancelled = true; clearInterval(id) }
   }, [scanActive, foreground, active, scanPollLost, client, load])
 
+  // Showing cached figures: keep trying quietly, and swap in the live ones the
+  // moment the source answers — straight away on returning to the foreground,
+  // the likeliest moment the network is back. Only while someone is looking.
+  const showingCache = !!cached
+  useEffect(() => {
+    if (!showingCache || !foreground || !active) return
+    load()
+    const id = setInterval(load, CACHE_RETRY_MS)
+    return () => clearInterval(id)
+  }, [showingCache, foreground, active, load])
+
   async function onCancelScan() {
     setCancelBusy(true)
     try {
@@ -193,8 +302,21 @@ export default function DashboardScreen({ client, active = true, onOpenApplicati
       keyboardDismissMode="on-drag"
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
     >
-      <Text style={styles.title}>Dashboard</Text>
-      <ScanQueue client={client} refreshKey={pendingCount} onChanged={setPendingCount} />
+      <View style={styles.titleRow}>
+        <Text style={styles.title}>Dashboard</Text>
+        {!!cached && (
+          <Text style={styles.cachedBadge} accessibilityLabel={`Showing ${cachedLabel(cached)}`}>
+            {cachedLabel(cached)}
+          </Text>
+        )}
+      </View>
+      {!!cached && (
+        <Text style={styles.cachedNote} accessibilityLiveRegion="polite">
+          Can’t reach {client.queueDestination?.key?.startsWith('lan:') ? 'the desktop' : 'your Hiro cloud'} right now — these are the last
+          figures this phone saw. They refresh on their own when the connection is back.
+        </Text>
+      )}
+      <ScanQueue client={client} refreshKey={pendingCount} onChanged={setPendingCount} onNeedsPairing={onNeedsPairing} />
       {!!error && <Text style={styles.error}>{error}</Text>}
       {!stats && !error && <ActivityIndicator style={{ marginVertical: 24 }} color={colors.accent} />}
 
@@ -267,6 +389,25 @@ export default function DashboardScreen({ client, active = true, onOpenApplicati
           </View>
         )}
       </View>
+      )}
+
+      {/* A job link copied from a browser or a job-board app. LAN only: the
+          import lands in the desktop's Needs Attention list. */}
+      {client.canImport && (
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Import a job</Text>
+          <Text style={styles.muted}>
+            Copy a posting’s link, then add it to Needs Attention on the desktop. You can also share a
+            link into Hiro from another app.
+          </Text>
+          <TouchableOpacity style={[styles.ghostBtn, importBusy && { opacity: 0.6 }]} onPress={onImportFromClipboard} disabled={importBusy}
+            accessibilityRole="button" accessibilityLabel="Import job from clipboard"
+            accessibilityHint="Sends the link on your clipboard to the desktop"
+            accessibilityState={{ disabled: importBusy, busy: importBusy }}>
+            <Text style={styles.ghostBtnText}>{importBusy ? 'Importing…' : 'Import job from clipboard'}</Text>
+          </TouchableOpacity>
+          {!!importMsg && <Text style={styles.scanMsg} accessibilityLiveRegion="polite">{importMsg}</Text>}
+        </View>
       )}
 
       {/* First run: nothing has been sent yet, and a wall of zeros explains
@@ -351,23 +492,39 @@ export default function DashboardScreen({ client, active = true, onOpenApplicati
                 const rel = relativeDay(when)
                 const hasTime = iv.has_time === true || iv.has_time === 1
                 const appId = iv.application_id
+                const calendarState = calendarDone[iv.id]
                 return (
-                  <TouchableOpacity key={iv.id} style={styles.attentionRow}
-                    disabled={appId == null || !onOpenApplication}
-                    onPress={() => onOpenApplication?.(appId)}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Interview: ${iv.job_title} at ${iv.company}, ${rel}${hasTime ? ` at ${clockTime(when)}` : ''}`}
-                    accessibilityHint={appId != null ? 'Opens the application' : undefined}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.attentionTitle} numberOfLines={1}>{iv.job_title}</Text>
-                      <Text style={styles.muted} numberOfLines={1}>
-                        {iv.company} · {formatDay(iv.scheduled_at)}
-                        {hasTime ? ` at ${clockTime(when)}` : ' (time not detected)'}
+                  <View key={iv.id}>
+                    <TouchableOpacity style={styles.attentionRow}
+                      disabled={appId == null || !onOpenApplication}
+                      onPress={() => onOpenApplication?.(appId)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Interview: ${iv.job_title} at ${iv.company}, ${rel}${hasTime ? ` at ${clockTime(when)}` : ''}`}
+                      accessibilityHint={appId != null ? 'Opens the application' : undefined}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.attentionTitle} numberOfLines={1}>{iv.job_title}</Text>
+                        <Text style={styles.muted} numberOfLines={1}>
+                          {iv.company} · {formatDay(iv.scheduled_at)}
+                          {hasTime ? ` at ${clockTime(when)}` : ' (time not detected)'}
+                        </Text>
+                      </View>
+                      <Text style={[styles.attentionScore, { color: days <= 1 ? colors.green : colors.textMuted }]}>{rel}</Text>
+                      {appId != null && <Text style={styles.chevron} importantForAccessibility="no">›</Text>}
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.calendarBtn}
+                      disabled={calendarState === 'added'}
+                      onPress={() => onAddToCalendar(iv)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Add the ${iv.company} interview to your calendar`}
+                      accessibilityState={{ disabled: calendarState === 'added' }}>
+                      <Text style={styles.calendarBtnText}>
+                        {calendarState === 'added' ? '✓ Added to calendar' : 'Add to calendar'}
                       </Text>
-                    </View>
-                    <Text style={[styles.attentionScore, { color: days <= 1 ? colors.green : colors.textMuted }]}>{rel}</Text>
-                    {appId != null && <Text style={styles.chevron} importantForAccessibility="no">›</Text>}
-                  </TouchableOpacity>
+                    </TouchableOpacity>
+                    {!!calendarState && calendarState !== 'added' && (
+                      <Text style={styles.scanError} accessibilityLiveRegion="polite">{calendarState}</Text>
+                    )}
+                  </View>
                 )
               })}
             </View>
@@ -471,7 +628,20 @@ function StatCard({ label, value, accent }) {
 // Rebuilt per palette — see useTheme() in ../theme.
 const makeStyles = (c) => StyleSheet.create({
   root: { flex: 1, backgroundColor: c.bg },
-  title: { fontSize: 22, fontWeight: '700', color: c.text, marginBottom: 16 },
+  title: { fontSize: 22, fontWeight: '700', color: c.text },
+  titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 16 },
+  cachedBadge: {
+    color: c.yellow, fontSize: 11, fontWeight: '600', borderWidth: 1, borderColor: c.yellow,
+    borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2, overflow: 'hidden',
+  },
+  cachedNote: { color: c.textMuted, fontSize: 12, marginTop: -8, marginBottom: 12, lineHeight: 17 },
+  ghostBtn: {
+    borderWidth: 1, borderColor: c.border, borderRadius: radius, paddingVertical: 10, minHeight: 44,
+    alignItems: 'center', justifyContent: 'center', marginTop: 10,
+  },
+  ghostBtnText: { color: c.accent, fontSize: 13, fontWeight: '600' },
+  calendarBtn: { alignSelf: 'flex-start', paddingVertical: 8, minHeight: 36, justifyContent: 'center' },
+  calendarBtnText: { color: c.accent, fontSize: 12, fontWeight: '600' },
   error: { color: c.red, fontSize: 13, marginBottom: 12 },
   statRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
   statCard: {

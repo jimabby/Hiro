@@ -11,6 +11,9 @@ import SwipeRow from '../components/SwipeRow'
 import { formatWhen, localDateIn } from '../dates'
 import { SORTS, sortApplications } from '../listing'
 import { selection, success, failure } from '../haptics'
+import { saveCache, loadCache, shouldUseCache } from '../offlineCache'
+import { messageFor } from '../requestErrors'
+import { slimApplications, filterApplications, cachedLabel } from '../cacheModel'
 
 // Per-phone conveniences, not account state: the chosen order, and whether the
 // swipe hint has been dismissed. AsyncStorage is right for both — losing either
@@ -51,6 +54,8 @@ export default function ApplicationsScreen({ client, active = true, openApplicat
   const [statusFilter, setStatusFilter] = useState('all')
   const [sort, setSort] = useState('newest')
   const [error, setError] = useState('')
+  // The offline cache entry being shown, or null when the list is live.
+  const [cached, setCached] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
   const [selectedId, setSelectedId] = useState(null)
   // The one row whose quick actions are showing. Owned here so opening a row
@@ -83,12 +88,36 @@ export default function ApplicationsScreen({ client, active = true, openApplicat
       const filters = {}
       if (statusFilter !== 'all') filters.status = statusFilter
       if (search) filters.search = search
-      setApps(await client.getApplications(filters))
+      const list = await client.getApplications(filters)
+      setApps(list)
       setError('')
+      setCached(null)
+      // Only the unfiltered list is cached; a filter chosen while offline is
+      // applied to it locally (filterApplications).
+      if (statusFilter === 'all' && !search) saveCache(client, 'applications', slimApplications(list))
     } catch (err) {
-      setError(err.message)
+      if (shouldUseCache(err)) {
+        const entry = await loadCache(client, 'applications')
+        if (entry) {
+          setApps(filterApplications(entry.data, { status: statusFilter, search }))
+          setCached(entry)
+          setError('')
+          return
+        }
+      }
+      setCached(null)
+      setError(messageFor(err))
     }
   }, [client, statusFilter, search])
+
+  // While the list is the cached one, retry quietly so it turns live again on
+  // its own when the connection is back.
+  const showingCache = !!cached
+  useEffect(() => {
+    if (!showingCache || !active) return
+    const id = setInterval(load, 30000)
+    return () => clearInterval(id)
+  }, [showingCache, active, load])
 
   useEffect(() => {
     const t = setTimeout(load, search ? 300 : 0) // debounce while typing
@@ -216,7 +245,7 @@ export default function ApplicationsScreen({ client, active = true, openApplicat
     } catch (err) {
       patchRow(item.id, before)
       failure()
-      setError(err.message)
+      setError(messageFor(err))
     }
   }, [client, patchRow, onChanged, statusFilter, load])
 
@@ -235,7 +264,7 @@ export default function ApplicationsScreen({ client, active = true, openApplicat
     } catch (err) {
       patchRow(item.id, before)
       failure()
-      setError(err.message)
+      setError(messageFor(err))
     }
   }, [client, patchRow, onChanged])
 
@@ -370,6 +399,11 @@ export default function ApplicationsScreen({ client, active = true, openApplicat
       </ScrollView>
 
       {!!error && <Text style={styles.error}>{error}</Text>}
+      {!!cached && (
+        <Text style={styles.cachedBadge} accessibilityLiveRegion="polite">
+          {cachedLabel(cached)} — can’t reach it right now, so changes can’t be saved until it is back.
+        </Text>
+      )}
 
       <View style={styles.listHead}>
         <Text style={styles.count} accessibilityLiveRegion="polite">
@@ -550,6 +584,7 @@ const makeStyles = (c) => StyleSheet.create({
   hintText: { flex: 1, color: c.textMuted, fontSize: 12, lineHeight: 17 },
   hintClose: { color: c.textFaint, fontSize: 13 },
   error: { color: c.red, fontSize: 13, marginBottom: 6 },
+  cachedBadge: { color: c.yellow, fontSize: 12, marginBottom: 6 },
   empty: { color: c.textMuted, fontSize: 13, textAlign: 'center', marginTop: 32, lineHeight: 19, paddingHorizontal: 16 },
   // The corner and gap live on the swipe wrapper so the revealed actions are
   // clipped to the same rounded card as the row sliding over them.

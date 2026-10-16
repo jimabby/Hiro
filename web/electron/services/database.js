@@ -443,195 +443,307 @@ function createTables() {
   persist()
 }
 
-function migrate() {
-  // Add columns if they don't exist (for existing databases)
+// ─── Schema versioning ───────────────────────────────────────────
+//
+// The schema used to be upgraded by roughly eighty `try { ALTER … } catch {}`
+// statements that ran on every launch. That had two costs. Every launch paid for
+// eighty failing statements. Worse, the catch could not tell "this column is
+// already there", which is the expected case, from a real failure: a disk that
+// refused the write, a typo in a column type, or a backfill that threw halfway.
+// All of those were swallowed. The app then started on a schema that was
+// missing a column, and the first query that needed it failed somewhere far
+// from the cause.
+//
+// So upgrades are now ordered steps keyed on SQLite's own `PRAGMA user_version`:
+//
+//   - Each step runs once, inside a transaction, and stamps the version only if
+//     it completes. A step that throws rolls back and the error reaches init(),
+//     so main.js reports it instead of opening a half-upgraded database.
+//   - Step 1 is the baseline: every column and index the old ALTER list created.
+//     A database written by an older build is at version 0. It runs the baseline
+//     once, and ensureColumn() reads PRAGMA table_info to see which columns are
+//     already there, so nothing is added twice and nothing has to fail to prove
+//     it exists. After that the version is set and the baseline never runs again.
+//   - A database stamped with a version NEWER than this build knows about (the
+//     user ran a newer Hiro, then went back) is left alone. Its extra columns are
+//     additive and harmless to older code; a "downgrade" would only destroy data.
+//
+// New schema changes belong in a new step at the end of SCHEMA_MIGRATIONS, not
+// in the try/catch block at the bottom of migrate(). That block is kept so that
+// ALTERs written in the old style still work, but anything it hides stays hidden.
+
+function columnsOf(table) {
+  const res = db.exec(`PRAGMA table_info("${table}")`)
+  // Lower-cased: SQLite column names are case-insensitive, so "Comment" already
+  // IS "comment" and adding it again would fail as a duplicate.
+  return new Set((res[0]?.values || []).map(row => String(row[1]).toLowerCase()))
+}
+
+// Add a column if it is missing. Returns true when it was added, so a step can
+// run a backfill only on the launch that created the column. Any error other
+// than "already there" propagates, which is the point of this function.
+function ensureColumn(table, column, decl) {
+  if (columnsOf(table).has(column.toLowerCase())) return false
+  db.run(`ALTER TABLE "${table}" ADD COLUMN "${column}" ${decl}`)
+  return true
+}
+
+function getSchemaVersion() {
+  return Number(db.exec('PRAGMA user_version')[0]?.values?.[0]?.[0]) || 0
+}
+
+// Everything the old ALTER list did, as one step. The order and the comments
+// are kept, because they are the only record of why each column exists.
+function migrateBaseline() {
   // What the user wants out of the negotiation, and the draft that opens it.
   // Stored rather than regenerated so a draft survives closing the panel — the
   // whole point is that it gets edited before it is sent.
-  try { db.run('ALTER TABLE offers ADD COLUMN target_base INTEGER') } catch {}
-  try { db.run('ALTER TABLE offers ADD COLUMN target_bonus INTEGER') } catch {}
-  try { db.run('ALTER TABLE offers ADD COLUMN priorities TEXT DEFAULT ""') } catch {}
-  try { db.run('ALTER TABLE offers ADD COLUMN counter_draft TEXT DEFAULT ""') } catch {}
-  try { db.run('ALTER TABLE offers ADD COLUMN counter_drafted_at TEXT') } catch {}
+  ensureColumn('offers', 'target_base', 'INTEGER')
+  ensureColumn('offers', 'target_bonus', 'INTEGER')
+  ensureColumn('offers', 'priorities', "TEXT DEFAULT ''")
+  ensureColumn('offers', 'counter_draft', "TEXT DEFAULT ''")
+  ensureColumn('offers', 'counter_drafted_at', 'TEXT')
 
-  try { db.run('ALTER TABLE applications ADD COLUMN cover_letter TEXT DEFAULT ""') } catch {}
-  try { db.run('ALTER TABLE applications ADD COLUMN comment TEXT DEFAULT ""') } catch {}
-  try { db.run('ALTER TABLE applications ADD COLUMN match_explanation TEXT DEFAULT ""') } catch {}
-  try { db.run('ALTER TABLE applications ADD COLUMN follow_up_sent INTEGER DEFAULT 0') } catch {}
-  try { db.run('ALTER TABLE applications ADD COLUMN recruiter_email TEXT DEFAULT ""') } catch {}
+  ensureColumn('applications', 'cover_letter', "TEXT DEFAULT ''")
+  ensureColumn('applications', 'comment', "TEXT DEFAULT ''")
+  ensureColumn('applications', 'match_explanation', "TEXT DEFAULT ''")
+  ensureColumn('applications', 'follow_up_sent', 'INTEGER DEFAULT 0')
+  ensureColumn('applications', 'recruiter_email', "TEXT DEFAULT ''")
   // How many follow-ups have gone out, and when the last one did.
   //
   // follow_up_sent was a boolean, so every application got exactly one nudge
-  // ever — which is not how anybody actually chases an application. These two
-  // replace it: the count decides which letter to write (see ai/prompts.js) and
+  // ever. The count decides which letter to write (see ai/prompts.js) and
   // whether there are any left, the timestamp spaces them out. The old column
-  // stays as the seed, so an application already followed up once is at one and
-  // does not get a duplicate first nudge on upgrade.
-  try {
-    db.run('ALTER TABLE applications ADD COLUMN follow_up_count INTEGER DEFAULT 0')
+  // is the seed, so an application already followed up once is at one and does
+  // not get a duplicate first nudge on upgrade.
+  if (ensureColumn('applications', 'follow_up_count', 'INTEGER DEFAULT 0')) {
     db.run('UPDATE applications SET follow_up_count = COALESCE(follow_up_sent, 0)')
-  } catch {}
-  try { db.run('ALTER TABLE applications ADD COLUMN last_follow_up_at TEXT') } catch {}
+  }
+  ensureColumn('applications', 'last_follow_up_at', 'TEXT')
   // Set when the user rejects a drafted follow-up. That is a decision about the
-  // whole sequence, not just this letter — redrafting the next stage at someone
-  // who has just declined to chase this employer is exactly the nagging the
-  // stages are supposed to make deliberate.
-  try { db.run('ALTER TABLE applications ADD COLUMN follow_up_stopped INTEGER DEFAULT 0') } catch {}
+  // whole sequence, not just this letter.
+  ensureColumn('applications', 'follow_up_stopped', 'INTEGER DEFAULT 0')
   // A fingerprint of the advert's text, so the same listing reposted under a new
   // URL and a tweaked title is recognised BEFORE it is scored and tailored
   // again. See jobFingerprint.js for why it is exact rather than fuzzy.
-  //
-  // Backfilled below rather than left null, because the whole value is in
-  // recognising ads already in the history — a hash that only starts from today
-  // catches nothing until the second repost.
-  let addedApplicationHash = false
-  let addedAttentionHash = false
-  try {
-    db.run('ALTER TABLE applications ADD COLUMN description_hash TEXT')
-    addedApplicationHash = true
-  } catch {}
-  try {
-    db.run('ALTER TABLE attention_jobs ADD COLUMN description_hash TEXT')
-    addedAttentionHash = true
-  } catch {}
-  if (addedApplicationHash) backfillFingerprints('applications')
-  if (addedAttentionHash) backfillFingerprints('attention_jobs')
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_applications_desc_hash ON applications(description_hash)') } catch {}
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_attention_desc_hash ON attention_jobs(description_hash)') } catch {}
+  // Backfilled on the launch that adds it, because the whole value is in
+  // recognising ads already in the history.
+  if (ensureColumn('applications', 'description_hash', 'TEXT')) backfillFingerprints('applications')
+  if (ensureColumn('attention_jobs', 'description_hash', 'TEXT')) backfillFingerprints('attention_jobs')
+  db.run('CREATE INDEX IF NOT EXISTS idx_applications_desc_hash ON applications(description_hash)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_attention_desc_hash ON attention_jobs(description_hash)')
   // Set when a suppression was made from a listing that had a description, so
   // "this role keeps being reposted" also catches the repost that renames it.
-  try { db.run('ALTER TABLE suppressed_roles ADD COLUMN description_hash TEXT') } catch {}
+  ensureColumn('suppressed_roles', 'description_hash', 'TEXT')
   // Cloud sync tracking: cloud_dirty marks rows with local changes not yet
   // pushed (defaults 1 so existing rows push once); cloud_updated_at remembers
   // the remote updated_at we last saw, so pulls detect phone edits by equality
   // instead of comparing two devices' clocks.
-  try { db.run('ALTER TABLE applications ADD COLUMN cloud_dirty INTEGER DEFAULT 1') } catch {}
-  try { db.run('ALTER TABLE applications ADD COLUMN cloud_updated_at TEXT') } catch {}
-  // Application deadline parsed out of the job ad, so Needs Attention can sort
-  // by what actually expires soonest instead of by when it was found.
-  try { db.run('ALTER TABLE applications ADD COLUMN closing_date TEXT') } catch {}
-  try { db.run('ALTER TABLE attention_jobs ADD COLUMN closing_date TEXT') } catch {}
-  // IMAP uid of the last recruiter reply we classified for this application.
-  // The inbox check now revisits non-terminal statuses (not just 'applied'), so
-  // without this it would re-download and re-classify the same email on every
-  // pass — burning an AI call each time for no new information.
-  try { db.run('ALTER TABLE applications ADD COLUMN last_reply_uid INTEGER') } catch {}
-  // Salary parsed out of the ad's free-text salary string, so it can be
-  // filtered, sorted, and averaged. NULL means "couldn't parse" (or not listed).
-  try { db.run('ALTER TABLE applications ADD COLUMN salary_min INTEGER') } catch {}
-  try { db.run('ALTER TABLE applications ADD COLUMN salary_max INTEGER') } catch {}
-  try { db.run('ALTER TABLE attention_jobs ADD COLUMN salary_min INTEGER') } catch {}
-  try { db.run('ALTER TABLE attention_jobs ADD COLUMN salary_max INTEGER') } catch {}
+  ensureColumn('applications', 'cloud_dirty', 'INTEGER DEFAULT 1')
+  ensureColumn('applications', 'cloud_updated_at', 'TEXT')
+  // Application deadline parsed out of the job ad.
+  ensureColumn('applications', 'closing_date', 'TEXT')
+  ensureColumn('attention_jobs', 'closing_date', 'TEXT')
+  // IMAP uid of the last recruiter reply we classified for this application, so
+  // the inbox check does not re-classify the same email on every pass.
+  ensureColumn('applications', 'last_reply_uid', 'INTEGER')
+  // Salary parsed out of the ad's free-text salary string. NULL means "couldn't
+  // parse" (or not listed).
+  ensureColumn('applications', 'salary_min', 'INTEGER')
+  ensureColumn('applications', 'salary_max', 'INTEGER')
+  ensureColumn('attention_jobs', 'salary_min', 'INTEGER')
+  ensureColumn('attention_jobs', 'salary_max', 'INTEGER')
 
-  // Which resume was actually sent. Routing rules mean different jobs go out
-  // with different resumes, and without recording the choice there's no way to
-  // tell afterwards which one converts — the routing rules were untestable.
-  try { db.run('ALTER TABLE applications ADD COLUMN resume_id TEXT') } catch {}
-  try { db.run('ALTER TABLE applications ADD COLUMN resume_name TEXT') } catch {}
-  try { db.run('ALTER TABLE applications ADD COLUMN campaign_id TEXT') } catch {}
-  try { db.run('ALTER TABLE applications ADD COLUMN campaign_name TEXT') } catch {}
-  try { db.run('ALTER TABLE attention_jobs ADD COLUMN campaign_id TEXT') } catch {}
-  try { db.run('ALTER TABLE attention_jobs ADD COLUMN campaign_name TEXT') } catch {}
-  // The documents that were already written for this job.
-  //
-  // The applicator sets job.tailored_resume and job.cover_letter at three
-  // separate places before routing a job here — a career board that cannot be
-  // automated, a failed submit, a draft the fabrication guard stopped — and the
-  // table had nowhere to put them, so insertAttentionJob dropped both. The
-  // README promises "matches land in Needs Attention with the tailored resume
-  // and cover letter already written", and ats.js tells the user in as many
-  // words that "your tailored resume and cover letter are ready below". Neither
-  // was true: the model calls were paid for and the output thrown away, and the
-  // one thing the user needs in order to complete the application by hand was
-  // the thing that got discarded.
-  try { db.run('ALTER TABLE attention_jobs ADD COLUMN tailored_resume TEXT') } catch {}
-  try { db.run('ALTER TABLE attention_jobs ADD COLUMN cover_letter TEXT') } catch {}
-  // Review mode ('held' status) parks a job instead of submitting it. These
-  // carry the drafted documents forward so approving it doesn't re-run the AI.
-  try { db.run('ALTER TABLE applications ADD COLUMN held_at TEXT') } catch {}
-  // Single quotes: double quotes are SQLite's IDENTIFIER syntax, and this only
-  // stored "[]" as a string because of the legacy double-quoted-string fallback
-  // that resolves an unknown identifier to a literal.
-  try { db.run("ALTER TABLE applications ADD COLUMN fabrication_flags TEXT DEFAULT '[]'") } catch {}
+  // Which resume was actually sent, so the routing rules can be judged.
+  ensureColumn('applications', 'resume_id', 'TEXT')
+  ensureColumn('applications', 'resume_name', 'TEXT')
+  ensureColumn('applications', 'campaign_id', 'TEXT')
+  ensureColumn('applications', 'campaign_name', 'TEXT')
+  ensureColumn('attention_jobs', 'campaign_id', 'TEXT')
+  ensureColumn('attention_jobs', 'campaign_name', 'TEXT')
+  // The documents that were already written for a job routed to Needs
+  // Attention, so the user can finish the application by hand without the
+  // paid-for drafts being thrown away.
+  ensureColumn('attention_jobs', 'tailored_resume', 'TEXT')
+  ensureColumn('attention_jobs', 'cover_letter', 'TEXT')
+  // Review mode ('held' status) parks a job instead of submitting it.
+  ensureColumn('applications', 'held_at', 'TEXT')
+  ensureColumn('applications', 'fabrication_flags', "TEXT DEFAULT '[]'")
 
-  // Who wrote a cached screening answer.
-  //
-  // The cache is keyed on the QUESTION alone, so an answer written for one
-  // employer is replayed verbatim to every employer that asks something similar
-  // afterwards. That is the point of it — and it is also why a bad answer in
-  // here does not stay contained. An answer the model produced from an untrusted
-  // job ad has to stay re-checkable; one the user typed themselves is a
-  // statement of fact by the only person entitled to make it, and must never be
-  // second-guessed by a regex.
-  //
-  // Existing rows default to 'ai' — the cautious reading, since answers cached
-  // before this column existed cannot be attributed and the AI path was the
-  // common one. The cost of being wrong is that a user's own old answer is
-  // re-verified once and, if it trips the guard, asked about again.
-  try { db.run("ALTER TABLE screening_cache ADD COLUMN source TEXT DEFAULT 'ai'") } catch {}
+  // Who wrote a cached screening answer. 'ai' answers stay re-checkable by the
+  // fabrication guard; 'user' answers are statements by the only person
+  // entitled to make them. Existing rows default to 'ai', the cautious reading.
+  ensureColumn('screening_cache', 'source', "TEXT DEFAULT 'ai'")
 
   // The timezone the employer actually wrote, and the wall-clock time they
-  // wrote in it.
-  //
-  // `scheduled_at` is, and stays, this machine's local time — everything that
-  // reads it (the dashboard, the reminders, calendar sync, the .ics export)
-  // depends on that. But a recruiter writing "2:00 PM AEDT" to someone in London
-  // has said something the stored value cannot express, and until now the zone
-  // was simply dropped: the time was recorded as 2pm London and the interview
-  // was missed by nine hours.
-  //
-  // Keeping the original alongside the converted value means the UI can show
-  // both — "2:00 PM AEDT · 3:00 AM your time" — which is the only presentation
-  // that lets a user check the conversion rather than trust it. NULL means the
-  // email named no zone, which is the common case and correctly implies "their
-  // clock and yours are assumed to be the same".
-  try { db.run('ALTER TABLE interview_events ADD COLUMN source_zone TEXT') } catch {}
-  try { db.run('ALTER TABLE interview_events ADD COLUMN source_local TEXT') } catch {}
+  // wrote in it, kept beside scheduled_at (this machine's local time) so the
+  // UI can show both and the conversion can be checked rather than trusted.
+  ensureColumn('interview_events', 'source_zone', 'TEXT')
+  ensureColumn('interview_events', 'source_local', 'TEXT')
 
   // Indexes for frequent queries
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_applied_at ON applications(applied_at DESC)') } catch {}
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_job_url ON applications(job_url)') } catch {}
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_attention_url ON attention_jobs(job_url)') } catch {}
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_ai_usage_at ON ai_usage(called_at DESC)') } catch {}
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_status ON applications(status)') } catch {}
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_platform ON applications(platform)') } catch {}
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_company ON applications(company)') } catch {}
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_campaign ON applications(campaign_id)') } catch {}
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_attention_campaign ON attention_jobs(campaign_id)') } catch {}
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_campaign_runs_id ON campaign_runs(campaign_id, started_at DESC)') } catch {}
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_attention_dismissed ON attention_jobs(dismissed)') } catch {}
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_history_app ON status_history(application_id)') } catch {}
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_snapshots_app ON application_snapshots(application_id, taken_at)') } catch {}
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_conflicts_at ON sync_conflicts(detected_at DESC)') } catch {}
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_automation_platform ON automation_events(platform, at DESC)') } catch {}
-  try { db.run('ALTER TABLE application_snapshots ADD COLUMN provider TEXT') } catch {}
-  try { db.run('ALTER TABLE application_snapshots ADD COLUMN model TEXT') } catch {}
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_interview_app ON interview_events(application_id)') } catch {}
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_interview_at ON interview_events(scheduled_at)') } catch {}
+  db.run('CREATE INDEX IF NOT EXISTS idx_apps_applied_at ON applications(applied_at DESC)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_apps_job_url ON applications(job_url)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_attention_url ON attention_jobs(job_url)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_ai_usage_at ON ai_usage(called_at DESC)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_apps_status ON applications(status)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_apps_platform ON applications(platform)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_apps_company ON applications(company)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_apps_campaign ON applications(campaign_id)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_attention_campaign ON attention_jobs(campaign_id)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_campaign_runs_id ON campaign_runs(campaign_id, started_at DESC)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_attention_dismissed ON attention_jobs(dismissed)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_history_app ON status_history(application_id)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_snapshots_app ON application_snapshots(application_id, taken_at)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_conflicts_at ON sync_conflicts(detected_at DESC)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_automation_platform ON automation_events(platform, at DESC)')
+  ensureColumn('application_snapshots', 'provider', 'TEXT')
+  ensureColumn('application_snapshots', 'model', 'TEXT')
+  db.run('CREATE INDEX IF NOT EXISTS idx_interview_app ON interview_events(application_id)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_interview_at ON interview_events(scheduled_at)')
 
   // ─── Pipeline ────────────────────────────────────────────────
-  // The next thing the user has to DO about an application, and when. Status
-  // says where the application got to; this says what is owed and by when, which
-  // is the difference between a list of past events and a working pipeline.
-  // Stored as local "YYYY-MM-DD" (a follow-up is a day, not an instant).
+  // The next thing the user has to DO about an application, and when. Stored
+  // as local "YYYY-MM-DD" (a follow-up is a day, not an instant).
   // Cloud UUIDs are independent of the numeric IDs used by this installation.
-  try { db.run('ALTER TABLE applications ADD COLUMN cloud_id TEXT') } catch {}
-  try { db.run('ALTER TABLE applications ADD COLUMN checklist TEXT DEFAULT "[]"') } catch {}
-  try { db.run('ALTER TABLE deleted_applications ADD COLUMN cloud_id TEXT') } catch {}
+  ensureColumn('applications', 'cloud_id', 'TEXT')
+  ensureColumn('applications', 'checklist', "TEXT DEFAULT '[]'")
+  ensureColumn('deleted_applications', 'cloud_id', 'TEXT')
   db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_app_cloud_id ON applications(cloud_id)')
-  try { db.run('ALTER TABLE applications ADD COLUMN next_action_at TEXT') } catch {}
-  try { db.run('ALTER TABLE applications ADD COLUMN next_action_note TEXT DEFAULT ""') } catch {}
+  ensureColumn('applications', 'next_action_at', 'TEXT')
+  ensureColumn('applications', 'next_action_note', "TEXT DEFAULT ''")
   // Set when a next action is completed, so a cleared reminder is not silently
   // indistinguishable from one that was never set.
-  try { db.run('ALTER TABLE applications ADD COLUMN next_action_done_at TEXT') } catch {}
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_apps_next_action ON applications(next_action_at)') } catch {}
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_push_log_at ON push_log(sent_at DESC)') } catch {}
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_calendar_interview ON calendar_links(interview_id)') } catch {}
-  try { db.run('CREATE INDEX IF NOT EXISTS idx_replies_app ON recruiter_replies(application_id, received_at DESC)') } catch {}
+  ensureColumn('applications', 'next_action_done_at', 'TEXT')
+  db.run('CREATE INDEX IF NOT EXISTS idx_apps_next_action ON applications(next_action_at)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_push_log_at ON push_log(sent_at DESC)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_calendar_interview ON calendar_links(interview_id)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_replies_app ON recruiter_replies(application_id, received_at DESC)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_history_app_at ON status_history(application_id, changed_at)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_offers_decision ON offers(decision)')
+}
+
+// Résumé A/B arms, cloud mirror change tracking, and one timestamp format.
+function migrateExperimentAndSyncState() {
+  // Which arm of a résumé A/B test assigned this application's résumé, or NULL
+  // when a routing rule or the default picked it. The experiment report used to
+  // count every application sent with either résumé, including the ones a rule
+  // had deliberately routed there, which is exactly the confound the experiment
+  // exists to remove.
+  ensureColumn('applications', 'experiment_arm', 'TEXT')
+
+  // What each desktop-owned cloud mirror (interviews, Needs Attention, offers)
+  // last uploaded, as a hash of the plaintext. Those mirrors stamped
+  // updated_at = now on every row and re-uploaded the whole set every two
+  // minutes; with this, a sync uploads only the rows whose content changed.
+  db.run(`CREATE TABLE IF NOT EXISTS cloud_mirror_state (
+    tbl TEXT NOT NULL,
+    local_id INTEGER NOT NULL,
+    hash TEXT NOT NULL,
+    PRIMARY KEY (tbl, local_id)
+  )`)
+  // Small per-database sync bookkeeping, above all the incremental pull cursor.
+  // See getSyncState for why it lives here rather than in config.json.
+  db.run('CREATE TABLE IF NOT EXISTS sync_state (key TEXT PRIMARY KEY, value TEXT)')
+
+  // restoreApplicationFromCloud used to store the cloud's ISO timestamps
+  // ("2026-10-16T05:00:00+00:00") verbatim, while every other writer uses
+  // SQLite's "YYYY-MM-DD HH:MM:SS" in UTC. The two are compared as strings, so
+  // a restored row sorted and filtered wrongly against every other row. Rewrite
+  // the rows already affected; the restore path normalises from now on.
+  const rows = query(`SELECT id, applied_at, updated_at, held_at FROM applications
+                      WHERE applied_at LIKE '%T%' OR updated_at LIKE '%T%' OR held_at LIKE '%T%'`)
+  for (const r of rows) {
+    db.run('UPDATE applications SET applied_at = ?, updated_at = ?, held_at = ? WHERE id = ?', [
+      toSqliteTime(r.applied_at) ?? r.applied_at,
+      toSqliteTime(r.updated_at) ?? r.updated_at,
+      r.held_at == null ? null : (toSqliteTime(r.held_at) ?? r.held_at),
+      r.id,
+    ])
+  }
+}
+
+// Ordered. Append new steps; never edit or reorder a step that has shipped,
+// because databases in the field have already recorded it as done.
+const SCHEMA_MIGRATIONS = [
+  { version: 1, name: 'baseline columns and indexes', up: migrateBaseline },
+  { version: 2, name: 'experiment arms, mirror state, timestamp format', up: migrateExperimentAndSyncState },
+]
+const SCHEMA_VERSION = SCHEMA_MIGRATIONS[SCHEMA_MIGRATIONS.length - 1].version
+
+function runSchemaMigrations() {
+  const current = getSchemaVersion()
+  for (const step of SCHEMA_MIGRATIONS) {
+    if (step.version <= current) continue
+    // persist() must not run inside the transaction: sql.js's export() closes
+    // and reopens the connection, which would commit half a step. The whole
+    // upgrade is written once by init() after it finishes.
+    persistDepth++
+    db.run('BEGIN')
+    try {
+      step.up()
+      // user_version lives in the database header, which is part of the
+      // transaction: a step that fails leaves the old number behind, and the
+      // next launch retries it.
+      db.run(`PRAGMA user_version = ${Number(step.version)}`)
+      db.run('COMMIT')
+    } catch (err) {
+      try { db.run('ROLLBACK') } catch { /* already rolled back */ }
+      const wrapped = new Error(`Database upgrade ${step.version} (${step.name}) failed: ${err.message}`)
+      wrapped.cause = err
+      throw wrapped
+    } finally {
+      persistDepth--
+    }
+  }
+}
+
+function migrate() {
+  runSchemaMigrations()
+
+  // Legacy-style additions. Statements appended here in the old
+  // `try { db.run('ALTER …') } catch {}` form still run on every launch after
+  // the versioned steps above, so they keep working, but their failures stay
+  // invisible. Prefer a new SCHEMA_MIGRATIONS step.
   // Rejection analysis walks the whole history looking for the stage each
   // application died at, so it reads status_history ordered by time per row.
   try { db.run('CREATE INDEX IF NOT EXISTS idx_history_app_at ON status_history(application_id, changed_at)') } catch {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_offers_decision ON offers(decision)') } catch {}
+
+  // ─── Automation core ─────────────────────────────────────────
+  // Self-contained and additive, so it merges cleanly with any migration
+  // scheme. Prompt-cache token counts (ai/usage.js); the proof-of-submission
+  // screenshot path (submissionProof.js); and the Message-ID of every follow-up
+  // Hiro sends, so a reply can be matched to its thread (inbox.js).
+  try { db.run('ALTER TABLE ai_usage ADD COLUMN cache_read_tokens INTEGER DEFAULT 0') } catch {}
+  try { db.run('ALTER TABLE ai_usage ADD COLUMN cache_write_tokens INTEGER DEFAULT 0') } catch {}
+  try { db.run('ALTER TABLE applications ADD COLUMN submission_screenshot TEXT') } catch {}
+  try {
+    db.run(`CREATE TABLE IF NOT EXISTS sent_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      application_id INTEGER NOT NULL,
+      message_id TEXT NOT NULL,
+      to_address TEXT DEFAULT '',
+      subject TEXT DEFAULT '',
+      sent_at TEXT DEFAULT (datetime('now'))
+    )`)
+  } catch {}
+  try { db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_sent_messages_mid ON sent_messages(message_id)') } catch {}
+}
+
+// SQLite's own "YYYY-MM-DD HH:MM:SS" in UTC, from whatever a cloud row or an
+// ISO string carries. Every timestamp column here is compared as a string, so
+// one row written as "2026-10-16T05:00:00+00:00" sorts after every row from the
+// same day and falls outside a date filter it belongs in. Returns null for an
+// empty or unparseable value, and leaves a plain date ("YYYY-MM-DD") alone.
+function toSqliteTime(value) {
+  if (value == null || value === '') return null
+  const text = String(value).trim()
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text)) return text
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text
+  const ms = Date.parse(/[zZ]|[+-]\d{2}:?\d{2}$/.test(text) || !text.includes('T') ? text : text + 'Z')
+  if (!Number.isFinite(ms)) return null
+  return new Date(ms).toISOString().slice(0, 19).replace('T', ' ')
 }
 
 // Convert sql.js result to array of objects
@@ -704,6 +816,21 @@ function runApplicationQuery(columns, filters = {}) {
   if (filters.salaryTo != null && filters.salaryTo !== '') {
     conditions.push('COALESCE(salary_min, salary_max) <= ?'); params.push(Number(filters.salaryTo))
   }
+  // The Dashboard's search box, so "Export CSV" writes the rows on screen
+  // rather than the whole history. Same semantics as the client-side filter in
+  // Dashboard.jsx: a case-insensitive substring of the title or the company.
+  // LIKE's wildcards are escaped, so a search for "100%" means the literal text.
+  const search = String(filters.search ?? '')
+  if (search) {
+    const pattern = `%${search.replace(/[\\%_]/g, c => '\\' + c)}%`
+    conditions.push("(job_title LIKE ? ESCAPE '\\' OR company LIKE ? ESCAPE '\\')")
+    params.push(pattern, pattern)
+  }
+  // The Dashboard's other two client-side filters, for the same reason.
+  if (filters.minMatch != null && filters.minMatch !== '') {
+    conditions.push('match_score IS NOT NULL AND match_score >= ?'); params.push(Number(filters.minMatch))
+  }
+  if (filters.dueOnly) conditions.push("next_action_at IS NOT NULL AND next_action_at <> ''")
 
   if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ')
 
@@ -822,8 +949,8 @@ function insertApplication(data) {
   const status = data.status || 'applied'
   db.run(`
     INSERT INTO applications
-      (job_title, company, platform, salary, job_url, job_description, match_score, match_explanation, tailored_resume, cover_letter, screening_qa, status, closing_date, salary_min, salary_max, resume_id, resume_name, recruiter_email, held_at, fabrication_flags, campaign_id, campaign_name, description_hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (job_title, company, platform, salary, job_url, job_description, match_score, match_explanation, tailored_resume, cover_letter, screening_qa, status, closing_date, salary_min, salary_max, resume_id, resume_name, recruiter_email, held_at, fabrication_flags, campaign_id, campaign_name, description_hash, experiment_arm)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     data.job_title, data.company, data.platform, data.salary || '',
     // `?? null` because sql.js refuses to bind undefined, and a caller that
@@ -843,6 +970,9 @@ function insertApplication(data) {
     // Recorded on the way in, so the next repost of this advert is recognised
     // before it costs anything. Null when the ad is too short to fingerprint.
     jobFingerprint.fingerprint(data.company, data.job_description),
+    // Set only when the résumé A/B test chose the résumé; see
+    // getResumeExperimentArms for why a rule-routed row must not count.
+    data.experiment_arm || null,
   ])
   // Read the new row id BEFORE persist(): db.export() resets last_insert_rowid.
   const newId = queryOne('SELECT last_insert_rowid() as id')?.id
@@ -906,12 +1036,36 @@ function markHeldApplied(id, screeningQa) {
 
 // The user declined a held draft. It stays in history as 'skipped' so the same
 // listing isn't re-scored and re-drafted on the next scan.
+//
+// `previous` is what restoreRejectedApplication needs to undo it. The drafted
+// documents are untouched by a reject, so the status and hold time are all that
+// change.
 function rejectHeldApplication(id) {
-  const current = queryOne('SELECT status FROM applications WHERE id = ?', [id])
+  const current = queryOne('SELECT status, held_at FROM applications WHERE id = ?', [id])
   run(`UPDATE applications SET status = 'skipped', held_at = NULL,
        updated_at = datetime('now'), cloud_dirty = 1 WHERE id = ?`, [id])
   if (current && current.status !== 'skipped') recordStatusChange(id, 'skipped')
-  return { success: true }
+  return {
+    success: true,
+    previous: current ? { status: current.status, held_at: current.held_at } : null,
+  }
+}
+
+// Undo for a reject. Only a row that is still 'skipped' is put back — if
+// something has moved it on since (a manual status change, a re-scan), undoing
+// would overwrite a newer decision.
+function restoreRejectedApplication(id, previous) {
+  if (!previous?.status) return { success: false, error: 'There is nothing to restore.' }
+  return batch(() => {
+    const current = queryOne('SELECT status FROM applications WHERE id = ?', [id])
+    if (!current) return { success: false, error: 'That draft no longer exists.' }
+    if (current.status !== 'skipped') return { success: false, error: 'That draft has changed since it was rejected.' }
+    run(`UPDATE applications SET status = ?, held_at = ?,
+         updated_at = datetime('now'), cloud_dirty = 1 WHERE id = ?`,
+    [previous.status, previous.held_at ?? null, id])
+    if (previous.status !== 'skipped') recordStatusChange(id, previous.status)
+    return { success: true }
+  })
 }
 
 // ─── Automation health events ────────────────────────────────────
@@ -1181,8 +1335,16 @@ function updateApplicationStatus(id, status) {
 
 function updateApplicationAfterApply(id, tailoredResume, coverLetter, screeningQa) {
   const current = queryOne('SELECT status FROM applications WHERE id = ?', [id])
+  // applied_at is when it was SENT. A row that was skipped weeks ago and is
+  // only being submitted now kept its old date, so the stale sweep marked it
+  // no_response overnight, the follow-up letter went out the next morning, and
+  // it never counted toward today's daily limit. markHeldApplied already
+  // re-stamps for the same reason; a row that was already applied keeps its
+  // original date, because re-saving its documents is not a second submission.
+  const restamp = current && current.status !== 'applied'
   run(
-    "UPDATE applications SET status = 'applied', tailored_resume = ?, cover_letter = ?, screening_qa = ?, updated_at = datetime('now'), cloud_dirty = 1 WHERE id = ?",
+    `UPDATE applications SET status = 'applied', tailored_resume = ?, cover_letter = ?, screening_qa = ?,
+       ${restamp ? "applied_at = datetime('now'), " : ''}updated_at = datetime('now'), cloud_dirty = 1 WHERE id = ?`,
     [tailoredResume, coverLetter, JSON.stringify(screeningQa || []), id]
   )
   if (current && current.status !== 'applied') recordStatusChange(id, 'applied')
@@ -1291,6 +1453,10 @@ function deleteApplication(id) {
   // so the buffer lives in one place (main.js) instead of this module growing
   // a second, quietly-stale copy of the database.
   const undo = captureApplications([id])
+  // The proof-of-submission screenshot is a file, not a row. Removed with the
+  // application; an undo restores the row without it (the viewer then says
+  // there is no screenshot), which beats an orphaned image of a deleted job.
+  try { require('./submissionProof').remove(getSubmissionScreenshot(id)) } catch { /* best-effort */ }
   batch(() => {
     // Tombstone first: if the process dies mid-delete, an extra tombstone for a
     // row that still exists is harmless (sync skips tombstones whose row is
@@ -1302,11 +1468,21 @@ function deleteApplication(id) {
     run('DELETE FROM interview_events WHERE application_id = ?', [id])
     run('DELETE FROM recruiter_replies WHERE application_id = ?', [id])
     run('DELETE FROM offers WHERE application_id = ?', [id])
+    run('DELETE FROM sent_messages WHERE application_id = ?', [id])
+    // The frozen copies of what was sent. They used to be left behind, so a
+    // deleted application kept every résumé and cover letter it ever had: the
+    // largest rows in the database, unreachable from the UI. The undo capture
+    // above includes them, so restoring the application brings them back.
+    run('DELETE FROM application_snapshots WHERE application_id = ?', [id])
   })
   return { success: true, undo }
 }
 
-function clearAllApplications() {
+// `keepAnswerBank` is for cloud sync's "use the cloud copy". That replaces the
+// applications with the account's, and the account has never held the
+// interview answer bank: it is not synced. Clearing it there destroyed answers
+// the user had written by hand, with nothing to bring them back.
+function clearAllApplications({ keepAnswerBank = false } = {}) {
   // Clear-all removes two things that are not application-scoped, so they are
   // captured wholesale rather than by id: the cached screening answers, and the
   // record of what sync had to discard. Restoring the applications without them
@@ -1315,7 +1491,7 @@ function clearAllApplications() {
     ...(captureApplications(query('SELECT id FROM applications').map(r => r.id))
       || { applications: [], children: {} }),
     global: {
-      interview_answers: query('SELECT * FROM interview_answers'),
+      interview_answers: keepAnswerBank ? [] : query('SELECT * FROM interview_answers'),
       sync_conflicts: query('SELECT * FROM sync_conflicts'),
     },
   }
@@ -1324,7 +1500,7 @@ function clearAllApplications() {
     run('DELETE FROM applications')
     run('DELETE FROM status_history')
     run('DELETE FROM interview_prep')
-    run('DELETE FROM interview_answers')
+    if (!keepAnswerBank) run('DELETE FROM interview_answers')
     run('DELETE FROM interview_events')
     run('DELETE FROM application_snapshots')
     run('DELETE FROM sync_conflicts')
@@ -1347,6 +1523,9 @@ function pruneOrphanedRows() {
       // else's words about the user. An orphan is not just clutter here.
       run('DELETE FROM recruiter_replies WHERE application_id NOT IN (SELECT id FROM applications)')
       run('DELETE FROM offers WHERE application_id NOT IN (SELECT id FROM applications)')
+      // Snapshots hold whole documents, so an orphan here is both the biggest
+      // waste of space and a résumé the user believes they deleted.
+      run('DELETE FROM application_snapshots WHERE application_id NOT IN (SELECT id FROM applications)')
       const after = queryOne('SELECT COUNT(*) as c FROM interview_prep')?.c || 0
       return { removedInterviewPreps: before - after }
     })
@@ -1680,6 +1859,67 @@ function resetCloudIdentity() {
   batch(() => {
     run('UPDATE applications SET cloud_id = NULL, cloud_dirty = 1, cloud_updated_at = NULL')
     run('DELETE FROM deleted_applications')
+    // A different account: its pull cursor and what its mirrors hold say
+    // nothing about this one.
+    run('DELETE FROM sync_state')
+    run('DELETE FROM cloud_mirror_state')
+  })
+}
+
+// ─── Incremental pull bookkeeping ────────────────────────────────
+//
+// Kept in the database rather than in config.json on purpose. The pull cursor
+// says "every cloud change up to here is already in this database", and that
+// is only true of THIS database. Restoring yesterday's backup with today's
+// cursor in config would skip every phone edit made in between, for good.
+
+function getSyncState(key) {
+  return queryOne('SELECT value FROM sync_state WHERE key = ?', [key])?.value ?? null
+}
+
+function setSyncState(key, value) {
+  if (value == null) run('DELETE FROM sync_state WHERE key = ?', [key])
+  else run('INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)', [key, String(value)])
+}
+
+// cloud_id -> what this device knows about that cloud row, for every row it
+// has ever matched. One query, so a pull never has to look rows up one by one.
+function getCloudVersions() {
+  return new Map(query(
+    'SELECT id, cloud_id, cloud_updated_at, cloud_dirty FROM applications WHERE cloud_id IS NOT NULL'
+  ).map(r => [r.cloud_id, r]))
+}
+
+// Queue a row for upload without changing it, e.g. to re-encrypt an envelope
+// the cloud still holds in an older format.
+function markCloudDirty(id) {
+  run('UPDATE applications SET cloud_dirty = 1 WHERE id = ?', [id])
+}
+
+// What each desktop-owned mirror last uploaded, as plaintext hashes. See
+// cloudSync.mirrorTable.
+function getMirrorHashes(table) {
+  return new Map(query('SELECT local_id, hash FROM cloud_mirror_state WHERE tbl = ?', [table])
+    .map(r => [r.local_id, r.hash]))
+}
+
+function setMirrorHashes(table, entries) {
+  batch(() => {
+    for (const [localId, hash] of entries) {
+      run('INSERT OR REPLACE INTO cloud_mirror_state (tbl, local_id, hash) VALUES (?, ?, ?)', [table, localId, hash])
+    }
+  })
+}
+
+// Forget rows that no longer exist locally, or (keep = null) the whole table,
+// which forces the next sync to upload every row again.
+function pruneMirrorHashes(table, keep = null) {
+  if (keep == null) return run('DELETE FROM cloud_mirror_state WHERE tbl = ?', [table])
+  const alive = new Set(keep.map(Number))
+  const stale = [...getMirrorHashes(table).keys()].filter(id => !alive.has(Number(id)))
+  if (stale.length === 0) return
+  batch(() => {
+    for (const id of stale) run('DELETE FROM cloud_mirror_state WHERE tbl = ? AND local_id = ?', [table, id])
   })
 }
 
@@ -1720,7 +1960,9 @@ function updateChecklist(id, input = {}) {
     if (existing) items[items.indexOf(existing)] = item
     else items.push(item)
   }
-  run("UPDATE applications SET checklist = ?, cloud_dirty = 1, updated_at = ? WHERE id = ?", [JSON.stringify(items), new Date().toISOString(), id])
+  // datetime('now'), not an ISO string: every other writer uses SQLite's format
+  // and the column is compared as text.
+  run("UPDATE applications SET checklist = ?, cloud_dirty = 1, updated_at = datetime('now') WHERE id = ?", [JSON.stringify(items), id])
   return items
 }
 
@@ -1785,8 +2027,13 @@ function restoreApplicationFromCloud(r) {
       r.cover_letter || '', r.screening_qa || '', r.comment || '', r.recruiter_email || '',
       r.status || 'applied', r.resume_id || null, r.resume_name || null,
       r.campaign_id || null, r.campaign_name || null,
-      r.held_at || null, r.applied_at || null, r.updated_at || null, r.updated_at || null,
-      r.id || null, r.next_action_at || null, r.next_action_note || '', r.next_action_done_at || null, r.checklist || '[]',
+      // Normalised to SQLite's 'YYYY-MM-DD HH:MM:SS' UTC. The cloud hands back
+      // ISO strings ('2026-10-16T05:00:00+00:00'), and stored verbatim they
+      // compared wrongly against every locally written row. cloud_updated_at
+      // keeps the cloud's own value: it is matched by equality against what
+      // the cloud says next time, never compared with a local timestamp.
+      toSqliteTime(r.held_at), toSqliteTime(r.applied_at), toSqliteTime(r.updated_at), r.updated_at || null,
+      r.id || null, r.next_action_at || null, r.next_action_note || '', toSqliteTime(r.next_action_done_at), r.checklist || '[]',
     ]
   )
 }
@@ -1812,7 +2059,10 @@ function applyCloudEdit(id, changes, cloudUpdatedAt) {
   if (status != null) { sets.push('status = ?'); params.push(status) }
   if (comment != null) { sets.push('comment = ?'); params.push(comment) }
   for (const field of ['next_action_at', 'next_action_note', 'next_action_done_at', 'checklist']) {
-    if (Object.hasOwn(changes, field)) { sets.push(`${field} = ?`); params.push(changes[field]) }
+    if (!Object.hasOwn(changes, field)) continue
+    sets.push(`${field} = ?`)
+    // The phone stamps completion with an ISO string; locally it is SQLite time.
+    params.push(field === 'next_action_done_at' ? toSqliteTime(changes[field]) : changes[field])
   }
   params.push(id)
   run(`UPDATE applications SET ${sets.join(', ')} WHERE id = ?`, params)
@@ -2623,6 +2873,14 @@ function claimPushKey(dedupeKey, kind, title, body) {
   }
 }
 
+// Give a claimed key back, for a notification that never reached anyone because
+// the desktop could not get it out — no route to Expo, or no way to read the
+// device list. Without this the event was recorded as sent and never retried.
+function releasePushKey(dedupeKey) {
+  run('DELETE FROM push_log WHERE dedupe_key = ?', [dedupeKey])
+  return { success: true }
+}
+
 function getPushLog(limit = 50) {
   return query('SELECT * FROM push_log ORDER BY sent_at DESC LIMIT ?', [limit])
 }
@@ -3332,7 +3590,7 @@ function chunked(items, size) {
 function getScoreBandConversion() {
   const rows = query(`
     SELECT match_score, status FROM applications
-    WHERE ${SENT_ONLY} AND match_score IS NOT NULL
+    WHERE ${RATE_ELIGIBLE} AND match_score IS NOT NULL
   `)
   const bands = Array.from({ length: 10 }, (_, i) => ({
     lo: i * 10, hi: i === 9 ? 100 : i * 10 + 9,
@@ -3505,7 +3763,7 @@ function getThresholdRecommendation(currentThreshold, {
 function getResumeConversion() {
   const rows = query(`
     SELECT resume_id, resume_name, status, match_score FROM applications
-    WHERE ${SENT_ONLY}
+    WHERE ${RATE_ELIGIBLE}
   `)
   const byResume = new Map()
   for (const r of rows) {
@@ -3546,15 +3804,29 @@ function getResumeConversion() {
 // includes rule-routed and pre-experiment applications. An experiment can only
 // be read from applications that were actually randomised, so this counts rows
 // sent since the experiment started and nothing earlier.
+//
+// "Actually randomised" means experiment_arm is set: the applicator stamps it
+// only when the A/B assignment picked the résumé. A job a routing rule sent to
+// résumé A also has resume_id = A, and counting it put the targeting the
+// experiment exists to cancel out straight back into the result.
+//
+// RATE_ELIGIBLE rather than SENT_ONLY: a withdrawn application is one where the
+// user stopped waiting for the answer, so counting it as a non-conversion
+// penalised whichever arm happened to get the job the user took elsewhere.
+//
+// startedAt is stamped by main.js as an ISO string, and applied_at is SQLite's
+// "YYYY-MM-DD HH:MM:SS". Compared as strings, "…T…" sorts after "… …", so the
+// whole first day of the experiment fell outside its own window.
 function getResumeExperimentArms(resumeAId, resumeBId, startedAt) {
+  const since = toSqliteTime(startedAt)
   const arm = (resumeId) => {
     const row = queryOne(
       `SELECT COUNT(*) as sent,
               SUM(CASE WHEN status IN ('interview', 'offer') THEN 1 ELSE 0 END) as converted,
               SUM(CASE WHEN status IN ('interview', 'offer', 'rejected', 'pending') THEN 1 ELSE 0 END) as replied
        FROM applications
-       WHERE resume_id = ? AND ${SENT_ONLY}${startedAt ? ' AND applied_at >= ?' : ''}`,
-      startedAt ? [resumeId, startedAt] : [resumeId]
+       WHERE resume_id = ? AND experiment_arm = ? AND ${RATE_ELIGIBLE}${since ? ' AND applied_at >= ?' : ''}`,
+      since ? [resumeId, resumeId, since] : [resumeId, resumeId]
     )
     return {
       resumeId,
@@ -3568,11 +3840,48 @@ function getResumeExperimentArms(resumeAId, resumeBId, startedAt) {
 
 // ─── AI usage & cost ─────────────────────────────────────────────
 
-function recordAiUsage({ provider, model, operation, inputTokens = 0, outputTokens = 0, costUsd = 0 }) {
+function recordAiUsage({ provider, model, operation, inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheWriteTokens = 0, costUsd = 0 }) {
   run(
-    'INSERT INTO ai_usage (provider, model, operation, input_tokens, output_tokens, cost_usd) VALUES (?, ?, ?, ?, ?, ?)',
-    [provider || '', model || '', operation || '', inputTokens, outputTokens, costUsd]
+    'INSERT INTO ai_usage (provider, model, operation, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [provider || '', model || '', operation || '', inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd]
   )
+}
+
+// ─── Sent follow-ups (thread matching) ───────────────────────────
+// The Message-ID of each follow-up Hiro sends, so the inbox check can tie a
+// reply to the application it answers by its In-Reply-To / References headers
+// rather than by guessing from the sender's domain.
+function recordSentMessage({ applicationId, messageId, to = '', subject = '' }) {
+  const mid = normaliseMessageId(messageId)
+  if (!applicationId || !mid) return { success: false }
+  run('INSERT OR IGNORE INTO sent_messages (application_id, message_id, to_address, subject) VALUES (?, ?, ?, ?)',
+    [applicationId, mid, String(to || '').slice(0, 320), String(subject || '').slice(0, 500)])
+  return { success: true }
+}
+
+function normaliseMessageId(id) {
+  const s = String(id || '').trim().replace(/^<|>$/g, '').toLowerCase()
+  return s || ''
+}
+
+// The application whose sent follow-up any of these Message-IDs refers to, or
+// null. Newest send wins if two applications somehow share one.
+function findApplicationByMessageIds(ids = []) {
+  const list = [...new Set((ids || []).map(normaliseMessageId).filter(Boolean))]
+  if (list.length === 0) return null
+  const row = queryOne(
+    `SELECT application_id FROM sent_messages WHERE message_id IN (${list.map(() => '?').join(', ')})
+     ORDER BY sent_at DESC, id DESC LIMIT 1`, list)
+  return row ? row.application_id : null
+}
+
+// ─── Proof of submission ─────────────────────────────────────────
+function setSubmissionScreenshot(id, filePath) {
+  run('UPDATE applications SET submission_screenshot = ? WHERE id = ?', [filePath || null, id])
+}
+
+function getSubmissionScreenshot(id) {
+  return queryOne('SELECT submission_screenshot FROM applications WHERE id = ?', [id])?.submission_screenshot || null
 }
 
 // Spend for the current calendar month (local time), used for the budget cap,
@@ -4080,15 +4389,37 @@ function exportAll() {
   return dataExport.build({ query })
 }
 
-function importAll(data) {
-  return dataExport.merge({ query, queryOne, run, batch }, data)
+function importAll(data, { dryRun = false } = {}) {
+  return dataExport.merge({ query, queryOne, run, transaction }, data, { dryRun })
+}
+
+// All of fn, or none of it. batch() only defers the write to disk, so a throw
+// half-way through a batch still left the first half in the database (and on
+// disk at the next persist). `rollback: true` runs fn and then discards
+// everything it did, which is how an import previews itself without a second
+// copy of the merge logic that could drift from the real one.
+function transaction(fn, { rollback = false } = {}) {
+  persistDepth++
+  db.run('BEGIN')
+  let result
+  try {
+    result = fn()
+  } catch (err) {
+    try { db.run('ROLLBACK') } catch { /* already rolled back */ }
+    persistDepth--
+    throw err
+  }
+  db.run(rollback ? 'ROLLBACK' : 'COMMIT')
+  persistDepth--
+  if (!rollback) persist()
+  return result
 }
 
 module.exports = {
   init, batch, pruneOrphanedRows, backfillSalaryColumns,
   getApplications, getApplicationsList, getApplication, hasJobUrl, hasAttentionJobUrl, hasSeenJobUrl,
   findRecentApplicationToCompany, insertApplication, updateApplicationStatus,
-  getHeldApplications, markHeldApplied, rejectHeldApplication, holdApplicationDraft,
+  getHeldApplications, markHeldApplied, rejectHeldApplication, restoreRejectedApplication, holdApplicationDraft,
   recordSnapshot, getSnapshots, getSnapshot, getSnapshotDiff, compareSnapshots, restoreSnapshot,
   getHoldExplanation,
   captureApplications, restoreApplications, captureAttentionJobs, restoreAttentionJobs,
@@ -4096,10 +4427,12 @@ module.exports = {
   recordSyncConflict, getSyncConflicts, countSyncConflicts, clearSyncConflicts, applyConflictResolution,
   getResumeConversion, getResumeExperimentArms, getGhostJobs,
   suppressRole, unsuppressRole, listSuppressedRoles, isRoleSuppressed,
-  findJobByContent, isContentSuppressed, getSalaryBenchmark, percentileFor, recordAiUsage, getAiUsageSummary, getMonthlyAiSpend, pruneAiUsage, clearAiUsage,
+  findJobByContent, isContentSuppressed, getSalaryBenchmark, percentileFor, recordAiUsage, recordSentMessage, findApplicationByMessageIds, setSubmissionScreenshot, getSubmissionScreenshot, getAiUsageSummary, getMonthlyAiSpend, pruneAiUsage, clearAiUsage,
   UNSENT_STATUSES,
   updateApplicationAfterApply, updateApplicationComment, updateRecruiterEmail, deleteApplication, clearAllApplications,
-  resetCloudIdentity, getApplicationByCloudId, setApplicationCloudId, ensureCloudIds, getCloudTombstones, getChecklist, updateChecklist,
+  resetCloudIdentity, getSyncState, setSyncState, getCloudVersions, markCloudDirty,
+  getMirrorHashes, setMirrorHashes, pruneMirrorHashes, toSqliteTime, getSchemaVersion, SCHEMA_VERSION,
+  getApplicationByCloudId, setApplicationCloudId, ensureCloudIds, getCloudTombstones, getChecklist, updateChecklist,
   getDirtyApplications, getAllApplicationIds, markCloudSynced, markCloudSeen, applyCloudEdit,
   countApplications, markAllDirty, getTombstones, clearTombstones, restoreApplicationFromCloud,
   getAttentionJobs, getAttentionJob, insertAttentionJob, dismissAttentionJob, deleteAttentionJob, clearAllAttentionJobs,
@@ -4120,7 +4453,7 @@ module.exports = {
   updateInterviewEventTime,
   updateClosingDate, getScoreBandConversion, getThresholdRecommendation,
   setNextAction, completeNextAction, getDueNextActions, getPipeline, getClosingSoon, PIPELINE_STAGES,
-  claimPushKey, getPushLog, prunePushLog,
+  claimPushKey, releasePushKey, getPushLog, prunePushLog,
   getCalendarLink, getCalendarLinks, saveCalendarLink, deleteCalendarLink, getOrphanedCalendarLinks,
   getWeeklyReportData, getStorageInfo,
   getContacts, getDueContacts, saveContact, deleteContact, completeContactReminder, snoozeContactReminder,
@@ -4130,7 +4463,7 @@ module.exports = {
   getVersionOutcomes, getApplicationVersionOutcome,
   saveOffer, deleteOffer, getOffers, OFFER_DECISIONS,
   getStatusHistory,
-  exportAll, importAll,
+  exportAll, importAll, transaction,
   backupNow, maybeBackup, listBackups, restoreBackup, drillBackups, getBackupDrillStatus,
   setEncryption, getEncryptionStatus,
   exportRecoveryKey: () => dbCrypto.exportRecoveryKey(),

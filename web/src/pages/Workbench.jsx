@@ -42,10 +42,23 @@ export default function Workbench({ active, showToast }) {
       {...props}
     />
   )
+  // Returns whether the work succeeded, so a caller only clears its form once
+  // the save has actually landed. A rejection is reported rather than left as
+  // an unhandled promise behind a button that appeared to do nothing.
   const reloadAction = async (work, success) => {
-    const result = await work()
-    if (result?.success === false) return showToast?.(result.reason || result.error, 'error')
-    await load(); if (success) showToast?.(success, 'success')
+    try {
+      const result = await work()
+      if (result?.success === false) {
+        showToast?.(result.reason || result.error || 'That did not work', 'error')
+        return false
+      }
+      if (success) showToast?.(success, 'success')
+      await load()
+      return true
+    } catch (err) {
+      showToast?.(err?.message || 'That did not work', 'error')
+      return false
+    }
   }
 
   return <div className="page">
@@ -77,17 +90,17 @@ export default function Workbench({ active, showToast }) {
         <label><input type="checkbox" checked={campaign.enabled !== false} onChange={e => setCampaign({ ...campaign, enabled: e.target.checked })} /> Enabled</label>
         <label><input type="checkbox" checked={campaign.reviewBeforeSubmit !== false} onChange={e => setCampaign({ ...campaign, reviewBeforeSubmit: e.target.checked })} /> Review before submit</label>
       </div>
-      <button className="btn btn-primary" style={{ marginTop: 10 }} onClick={() => reloadAction(async () => { const r = await window.api.saveCampaign(campaign); setCampaign(blankCampaign); return r }, 'Campaign saved')}>Save campaign</button>
-      <div style={{ marginTop: 12 }}>{campaigns.map(c => <div key={c.id} className="list-row" style={{ display: 'flex', gap: 10, alignItems: 'center' }}><strong style={{ flex: 1 }}>{c.name}</strong><span className="text-muted">{c.enabled ? 'Enabled' : 'Paused'} · {c.keywords} · {c.location || 'anywhere'} · {c.scheduleTime}</span><button className="btn btn-ghost" onClick={() => reloadAction(() => window.api.runCampaign(c.id), 'Campaign scan queued')}>Run</button><button className="btn btn-ghost" onClick={() => setCampaign(c)}>Edit</button><button className="btn btn-ghost" onClick={() => reloadAction(() => window.api.deleteCampaign(c.id))}>Delete</button></div>)}</div>
+      <button className="btn btn-primary" style={{ marginTop: 10 }} onClick={async () => { if (await reloadAction(() => window.api.saveCampaign(campaign), 'Campaign saved')) setCampaign(blankCampaign) }}>Save campaign</button>
+      <div style={{ marginTop: 12 }}>{campaigns.map(c => <div key={c.id} className="list-row" style={{ display: 'flex', gap: 10, alignItems: 'center' }}><strong style={{ flex: 1 }}>{c.name}</strong><span className="text-muted">{c.enabled ? 'Enabled' : 'Paused'} · {c.keywords} · {c.location || 'anywhere'} · {c.scheduleTime}</span><button className="btn btn-ghost" onClick={() => reloadAction(() => window.api.runCampaign(c.id), 'Campaign scan queued')}>Run</button><button className="btn btn-ghost" onClick={() => setCampaign(c)}>Edit</button><button className="btn btn-ghost" onClick={() => { if (window.confirm(`Delete the campaign "${c.name || 'Untitled'}"?`)) reloadAction(() => window.api.deleteCampaign(c.id), 'Campaign deleted') }}>Delete</button></div>)}</div>
     </div>
 
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
       <div className="card"><h2>Import any job</h2><p className="text-muted">Add a listing here or use the browser extension in <code>extension/</code>.</p>
-        {field(job, setJob, 'url', { placeholder: 'https://company.example/jobs/…' })}<div style={{ display: 'flex', gap: 8, marginTop: 8 }}>{field(job, setJob, 'title', { placeholder: 'Role' })}{field(job, setJob, 'company', { placeholder: 'Company' })}</div><textarea className="input" aria-label="Job description" style={{ marginTop: 8, minHeight: 90 }} value={job.description} onChange={e => setJob({ ...job, description: e.target.value })} placeholder="Optional description" /><button className="btn btn-primary" style={{ marginTop: 8 }} onClick={() => reloadAction(async () => { const r = await window.api.importJob(job); if (r?.success !== false) setJob(blankJob); return r }, 'Job added to Needs Attention')}>Import</button>
+        {field(job, setJob, 'url', { placeholder: 'https://company.example/jobs/…' })}<div style={{ display: 'flex', gap: 8, marginTop: 8 }}>{field(job, setJob, 'title', { placeholder: 'Role' })}{field(job, setJob, 'company', { placeholder: 'Company' })}</div><textarea className="input" aria-label="Job description" style={{ marginTop: 8, minHeight: 90 }} value={job.description} onChange={e => setJob({ ...job, description: e.target.value })} placeholder="Optional description" /><button className="btn btn-primary" style={{ marginTop: 8 }} onClick={async () => { if (await reloadAction(() => window.api.importJob(job), 'Job added to Needs Attention')) setJob(blankJob) }}>Import</button>
       </div>
       <div className="card"><h2>Contacts & referrals</h2>
-        <div style={{ display: 'flex', gap: 8 }}>{field(contact, setContact, 'name', { placeholder: 'Name' })}{field(contact, setContact, 'email', { type: 'email', placeholder: 'Email' })}</div><div style={{ display: 'flex', gap: 8, marginTop: 8 }}>{field(contact, setContact, 'company', { placeholder: 'Company' })}{field(contact, setContact, 'role', { placeholder: 'Role / context' })}</div><div style={{ display: 'flex', gap: 8, marginTop: 8 }}><select className="input" aria-label="Relationship" value={contact.relationship} onChange={e => setContact({ ...contact, relationship: e.target.value })}><option value="recruiter">Recruiter</option><option value="referral">Referral</option><option value="hiring-manager">Hiring manager</option><option value="network">Network</option></select>{field(contact, setContact, 'next_action_at', { type: 'date', title: 'Next action date' })}</div><textarea className="input" aria-label="Contact notes" style={{ marginTop: 8, minHeight: 70 }} value={contact.notes} onChange={e => setContact({ ...contact, notes: e.target.value })} placeholder="Conversation notes or referral plan" /><button className="btn btn-primary" style={{ marginTop: 8 }} onClick={() => reloadAction(async () => { const r = await window.api.saveContact(contact); if (r.success) setContact(blankContact); return r }, 'Contact saved')}>Save contact</button>
-        <div style={{ marginTop: 12 }}>{contacts.map(p => <div className="list-row" key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}><div style={{ flex: 1 }}><strong>{p.name || p.email}</strong><div className="text-muted">{p.relationship} · {p.company} {p.role && `· ${p.role}`} {p.next_action_at && `· next ${p.next_action_at}`}</div></div><button className="btn btn-ghost" onClick={() => setContact(p)}>Edit</button><button className="btn btn-ghost" onClick={() => reloadAction(() => window.api.deleteContact(p.id))}>Delete</button></div>)}</div>
+        <div style={{ display: 'flex', gap: 8 }}>{field(contact, setContact, 'name', { placeholder: 'Name' })}{field(contact, setContact, 'email', { type: 'email', placeholder: 'Email' })}</div><div style={{ display: 'flex', gap: 8, marginTop: 8 }}>{field(contact, setContact, 'company', { placeholder: 'Company' })}{field(contact, setContact, 'role', { placeholder: 'Role / context' })}</div><div style={{ display: 'flex', gap: 8, marginTop: 8 }}><select className="input" aria-label="Relationship" value={contact.relationship} onChange={e => setContact({ ...contact, relationship: e.target.value })}><option value="recruiter">Recruiter</option><option value="referral">Referral</option><option value="hiring-manager">Hiring manager</option><option value="network">Network</option></select>{field(contact, setContact, 'next_action_at', { type: 'date', title: 'Next action date' })}</div><textarea className="input" aria-label="Contact notes" style={{ marginTop: 8, minHeight: 70 }} value={contact.notes} onChange={e => setContact({ ...contact, notes: e.target.value })} placeholder="Conversation notes or referral plan" /><button className="btn btn-primary" style={{ marginTop: 8 }} onClick={async () => { if (await reloadAction(() => window.api.saveContact(contact), 'Contact saved')) setContact(blankContact) }}>Save contact</button>
+        <div style={{ marginTop: 12 }}>{contacts.map(p => <div className="list-row" key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}><div style={{ flex: 1 }}><strong>{p.name || p.email}</strong><div className="text-muted">{p.relationship} · {p.company} {p.role && `· ${p.role}`} {p.next_action_at && `· next ${p.next_action_at}`}</div></div><button className="btn btn-ghost" onClick={() => setContact(p)}>Edit</button><button className="btn btn-ghost" onClick={() => { if (window.confirm(`Delete the contact ${p.name || p.email || 'with no name'}?`)) reloadAction(() => window.api.deleteContact(p.id), 'Contact deleted') }}>Delete</button></div>)}</div>
       </div>
     </div>
   </div>

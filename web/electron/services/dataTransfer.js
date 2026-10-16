@@ -116,15 +116,28 @@ function readBundle(text, passphrase = '') {
   }
 }
 
-function importBundle(text, passphrase = '') {
+// `dryRun` performs the whole merge inside a transaction and rolls it back, so
+// the preview reports exactly what the import would do: "would add X, skip Y,
+// these columns are not known here". Nothing is written either way until the
+// user confirms.
+function importBundle(text, passphrase = '', { dryRun = false } = {}) {
   const read = readBundle(text, passphrase)
   if (!read.ok) return { success: false, ...read }
   const data = read.bundle?.data
-  if (!data || typeof data !== 'object') {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
     return { success: false, reason: 'That export contains no data.' }
   }
-  const result = database.importAll(data)
-  return { success: true, exportedAt: read.bundle.exportedAt, ...result }
+  try {
+    const result = database.importAll(data, { dryRun })
+    return { success: true, exportedAt: read.bundle.exportedAt, ...result }
+  } catch (err) {
+    // The merge is one transaction, so a failure here has changed nothing.
+    return { success: false, reason: `The import was not applied, and nothing was changed: ${err.message}` }
+  }
+}
+
+function previewImport(text, passphrase = '') {
+  return importBundle(text, passphrase, { dryRun: true })
 }
 
 // What an export would hold, without writing one, so the button can say what it
@@ -133,4 +146,163 @@ function preview() {
   return { counts: buildBundle().counts }
 }
 
-module.exports = { exportBundle, importBundle, readBundle, preview, MAGIC, FORMAT_VERSION }
+// ─── Scheduled export ────────────────────────────────────────────
+//
+// The manual export is the copy that survives a lost keychain, but only if
+// somebody remembers to make one, and the moment it is needed is the moment
+// after it was last forgotten. This writes the same encrypted file on a
+// schedule into a folder the user picked, typically one already covered by a
+// backup tool or a synced drive, and keeps the newest N.
+//
+// Always encrypted. A file written unattended into a synced folder, holding
+// every résumé, cover letter and recruiter address, is not something to write
+// in the clear by default, and a scheduled job has nobody to tick the box. The
+// passphrase is a config secret (OS keychain), entered once.
+//
+// Only files this feature named are ever rotated away: the prefix below. A
+// folder the user also keeps other things in is safe.
+const SCHEDULED_PREFIX = 'hiro-scheduled-'
+const SCHEDULED_EXT = '.hirodata'
+const FREQUENCIES = { daily: 24 * 60 * 60 * 1000, weekly: 7 * 24 * 60 * 60 * 1000 }
+const MAX_KEEP = 100
+
+function scheduleSettings(cfg) {
+  const s = cfg.scheduledExport || {}
+  return {
+    enabled: !!s.enabled,
+    folder: String(s.folder || ''),
+    frequency: FREQUENCIES[s.frequency] ? s.frequency : 'weekly',
+    keep: Math.max(1, Math.min(MAX_KEEP, Math.round(Number(s.keep) || 5))),
+  }
+}
+
+function nextDueAt(cfg) {
+  const settings = scheduleSettings(cfg)
+  if (!settings.enabled) return null
+  const last = Date.parse(cfg.scheduledExportLastRunAt || '')
+  return Number.isFinite(last) ? new Date(last + FREQUENCIES[settings.frequency]).toISOString() : new Date(0).toISOString()
+}
+
+function getScheduledExportStatus() {
+  const configService = require('./config')
+  const cfg = configService.load()
+  return {
+    ...scheduleSettings(cfg),
+    // Never the passphrase itself: the renderer only needs to know it is set.
+    hasPassphrase: !!cfg.scheduledExportPassphrase,
+    lastRunAt: cfg.scheduledExportLastRunAt || null,
+    lastResult: cfg.scheduledExportLastResult || null,
+    nextDueAt: nextDueAt(cfg),
+    files: listScheduledExports(scheduleSettings(cfg).folder),
+  }
+}
+
+function listScheduledExports(folder) {
+  const fs = require('fs')
+  const path = require('path')
+  if (!folder) return []
+  try {
+    return fs.readdirSync(folder)
+      .filter(name => name.startsWith(SCHEDULED_PREFIX) && name.endsWith(SCHEDULED_EXT))
+      // The name carries a sortable UTC timestamp, so name order is age order
+      // without trusting mtimes a sync client may have rewritten.
+      .sort().reverse()
+      .map(name => {
+        const st = fs.statSync(path.join(folder, name))
+        return { name, size: st.size, mtime: st.mtime.toISOString() }
+      })
+  } catch {
+    return []
+  }
+}
+
+// Validate and store. `passphrase` blank keeps the stored one, so changing the
+// schedule does not mean retyping it.
+function configureScheduledExport(input = {}) {
+  const fs = require('fs')
+  const path = require('path')
+  const configService = require('./config')
+  const cfg = configService.load()
+  const current = scheduleSettings(cfg)
+  const next = scheduleSettings({ scheduledExport: { ...current, ...input } })
+  const passphrase = typeof input.passphrase === 'string' ? input.passphrase : ''
+
+  if (passphrase && passphrase.length < 8) return { success: false, reason: 'The passphrase must be at least 8 characters.' }
+  if (next.enabled) {
+    if (!next.folder || !path.isAbsolute(next.folder)) return { success: false, reason: 'Choose a folder for the exports.' }
+    try {
+      if (!fs.statSync(next.folder).isDirectory()) return { success: false, reason: 'That path is not a folder.' }
+    } catch {
+      return { success: false, reason: 'That folder does not exist.' }
+    }
+    if (!passphrase && !cfg.scheduledExportPassphrase) {
+      return { success: false, reason: 'Set a passphrase. Scheduled exports are always encrypted.' }
+    }
+  }
+  configService.update(c => ({
+    ...c,
+    scheduledExport: next,
+    ...(passphrase ? { scheduledExportPassphrase: passphrase } : {}),
+  }))
+  return { success: true, ...getScheduledExportStatus() }
+}
+
+function stamp(now) {
+  return now.toISOString().replace(/[:.]/g, '-').replace(/-\d{3}Z$/, 'Z')
+}
+
+// Write one export now and rotate. Records the outcome either way, so a
+// schedule that has been failing silently for a month shows up in Settings.
+function runScheduledExport({ now = new Date() } = {}) {
+  const fs = require('fs')
+  const path = require('path')
+  const configService = require('./config')
+  const cfg = configService.load()
+  const settings = scheduleSettings(cfg)
+  // Only a success moves the schedule on. A failure (a folder on a drive that
+  // is not mounted yet) is retried at the next hourly check, not a week later.
+  const record = (result) => {
+    configService.update(result.success
+      ? { scheduledExportLastRunAt: now.toISOString(), scheduledExportLastResult: result }
+      : { scheduledExportLastResult: result })
+    return result
+  }
+  if (!settings.folder) return record({ success: false, reason: 'No export folder is set.', at: now.toISOString() })
+  if (!cfg.scheduledExportPassphrase) {
+    return record({ success: false, reason: 'No passphrase is set (or the keychain could not unlock it).', at: now.toISOString() })
+  }
+  try {
+    const bundle = exportBundle(cfg.scheduledExportPassphrase)
+    const file = path.join(settings.folder, `${SCHEDULED_PREFIX}${stamp(now)}${SCHEDULED_EXT}`)
+    // Temp file and rename, so a sync client watching the folder never uploads
+    // half a file and the rotation below never counts one.
+    const tmp = file + '.tmp'
+    fs.writeFileSync(tmp, bundle.text, { encoding: 'utf8', mode: 0o600 })
+    fs.renameSync(tmp, file)
+    const removed = []
+    for (const old of listScheduledExports(settings.folder).slice(settings.keep)) {
+      try { fs.unlinkSync(path.join(settings.folder, old.name)); removed.push(old.name) } catch { /* next run retries */ }
+    }
+    return record({ success: true, file, removed, counts: bundle.counts, at: now.toISOString() })
+  } catch (err) {
+    return record({ success: false, reason: err.message, at: now.toISOString() })
+  }
+}
+
+// The scheduler hook: cheap to call often (main.js calls it hourly and at
+// launch), and does nothing unless an export is enabled and due. A machine that
+// was asleep at the due time exports on the next call after waking, rather than
+// waiting a whole period.
+function maybeRunScheduledExport({ now = new Date() } = {}) {
+  const configService = require('./config')
+  const cfg = configService.load()
+  const due = nextDueAt(cfg)
+  if (!due || Date.parse(due) > now.getTime()) return { ran: false }
+  return { ran: true, ...runScheduledExport({ now }) }
+}
+
+module.exports = {
+  exportBundle, importBundle, previewImport, readBundle, preview, MAGIC, FORMAT_VERSION,
+  getScheduledExportStatus, configureScheduledExport, runScheduledExport, maybeRunScheduledExport,
+  SCHEDULED_PREFIX,
+}

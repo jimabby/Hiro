@@ -173,12 +173,62 @@ function exportRecoveryKey() {
   }
 }
 
-function importRecoveryKey(text) {
+// The encrypted files a candidate key can be proven against: the live database
+// first, then the backups, newest first.
+function defaultVerificationFiles() {
+  const files = [path.join(configService.CONFIG_DIR, 'autoapply.db')]
+  const backupDir = path.join(configService.CONFIG_DIR, 'backups')
+  try {
+    files.push(...fs.readdirSync(backupDir)
+      .filter(f => /^autoapply-.*\.db$/.test(f))
+      .sort().reverse()
+      .map(f => path.join(backupDir, f)))
+  } catch { /* no backups yet */ }
+  return files
+}
+
+// Does this key open anything this profile actually holds?
+//
+// { ok: true } when it decrypts the database or a backup; { ok: true,
+// unverified: true } when there is nothing encrypted to test it against (so it
+// cannot be protecting anything yet); otherwise { ok: false }.
+function verifyKey(key, files = defaultVerificationFiles()) {
+  let sawEncrypted = false
+  for (const file of files) {
+    let buf
+    try { buf = fs.readFileSync(file) } catch { continue }
+    if (!isEncrypted(buf)) continue
+    sawEncrypted = true
+    try {
+      decryptBuffer(buf, key)
+      return { ok: true, file: path.basename(file) }
+    } catch { /* wrong key for this file — try the next */ }
+  }
+  return sawEncrypted ? { ok: false } : { ok: true, unverified: true }
+}
+
+// Replace db.key with the recovery key — but only once it is proven to be the
+// right one.
+//
+// This used to overwrite db.key with whatever 32 bytes it was handed. A key
+// from a different profile, or a mistyped one that still decoded to 32 bytes,
+// replaced the wrapped key that DID work, and turned a recoverable mistake into
+// a database nothing could open. The old key file is now left exactly as it was
+// unless the new key decrypts the database or one of its backups.
+function importRecoveryKey(text, { files } = {}) {
   const raw = String(text || '').trim().replace(/^HIRO-RECOVERY-1:/, '').replace(/\s+/g, '')
   let key
   try { key = Buffer.from(raw, 'base64') } catch { key = Buffer.alloc(0) }
   if (key.length !== 32) {
     return { success: false, reason: 'That is not a Hiro recovery key — it should start with HIRO-RECOVERY-1:.' }
+  }
+  const verified = verifyKey(key, files)
+  if (!verified.ok) {
+    return {
+      success: false,
+      reason: 'That recovery key does not unlock this profile\'s database or any of its backups. '
+        + 'Nothing was changed — check you are using the key saved for this profile.',
+    }
   }
   try {
     storeKey(key, { overwrite: true })
@@ -313,7 +363,7 @@ function getStatus() {
 module.exports = {
   DbCryptoError,
   keychainAvailable, hasKey, createKey, loadKey,
-  exportRecoveryKey, importRecoveryKey,
+  exportRecoveryKey, importRecoveryKey, verifyKey,
   isEncrypted, isPlainSqlite, encryptBuffer, decryptBuffer,
   readFile, encodeForWrite, shouldEncrypt, convertAll, getStatus,
   KEY_FILE, HEADER_BYTES,

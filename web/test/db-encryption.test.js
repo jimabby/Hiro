@@ -192,6 +192,21 @@ async function main() {
   await db.init()
   check('the database opens again after recovery', db.getApplications({}).length, 2)
 
+  // A key that does not open this profile must not replace one that does. It
+  // used to overwrite db.key with any 32 bytes, turning a typo or a key from
+  // another profile into a database nothing could open.
+  const keyFileBefore = fs.readFileSync(dbCrypto.KEY_FILE, 'utf8')
+  const wrongKey = dbCrypto.importRecoveryKey(`HIRO-RECOVERY-1:${crypto.randomBytes(32).toString('base64')}`)
+  check('a recovery key from another profile is refused', wrongKey.success, false)
+  check('and the refusal says nothing was changed', /Nothing was changed/.test(wrongKey.reason || ''), true)
+  check('the working key file is untouched', fs.readFileSync(dbCrypto.KEY_FILE, 'utf8'), keyFileBefore)
+  dbCrypto._resetKeyCache()
+  await db.init()
+  check('and the database still opens', db.getApplications({}).length, 2)
+  check('the right key verifies against the database', dbCrypto.verifyKey(Buffer.from(recovery.key.replace('HIRO-RECOVERY-1:', ''), 'base64')).ok, true)
+  check('a key with nothing encrypted to check against is unverified, not refused',
+    dbCrypto.verifyKey(crypto.randomBytes(32), []), { ok: true, unverified: true })
+
   check('a malformed recovery key is rejected',
     dbCrypto.importRecoveryKey('not a key').success, false)
   check('with an explanation rather than a stack trace',

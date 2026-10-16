@@ -48,9 +48,22 @@ const { check, done } = createChecker()
   check('approval is recorded in the timeline', db.getStatusHistory(held[0].id).some(h => h.status === 'applied'), true)
 
   // Rejecting files it as skipped so the next scan doesn't re-draft it.
-  db.rejectHeldApplication(held[1].id)
+  const heldAt = db.getHeldApplications()[0].held_at
+  const rejected = db.rejectHeldApplication(held[1].id)
   check('rejected draft becomes skipped', db.getApplication(held[1].id).status, 'skipped')
   check('review queue is now empty', db.getHeldApplications().length, 0)
+
+  // Undo puts it back exactly as it was — same status, same place in the queue.
+  check('reject reports the previous state', rejected.previous, { status: 'held', held_at: heldAt })
+  check('undo restores the draft', db.restoreRejectedApplication(held[1].id, rejected.previous).success, true)
+  check('restored draft is held again', db.getApplication(held[1].id).status, 'held')
+  check('restored draft keeps its hold time', db.getApplication(held[1].id).held_at, heldAt)
+  check('restored draft is back in the queue', db.getHeldApplications().length, 1)
+  check('its documents were never touched', db.getApplication(held[1].id).tailored_resume, 'T2')
+  // An undo is refused once the row has moved on — it must not overwrite a newer decision.
+  check('undo of a row that is no longer skipped is refused',
+    db.restoreRejectedApplication(held[1].id, rejected.previous).success, false)
+  db.rejectHeldApplication(held[1].id)
 
   // ── Attention-job de-duplication ───────────────────────────────
   // A failed apply leaves a row in attention_jobs but NOT in applications, so

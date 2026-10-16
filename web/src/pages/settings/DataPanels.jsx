@@ -108,8 +108,12 @@ export function DataTransferCard({ showToast, onImported }) {
   const [busy, setBusy] = useState(false)
   const [staged, setStaged] = useState(null)
   const [preview, setPreview] = useState(null)
+  // What the staged import would do, from a dry run that rolls itself back.
+  // The Import button stays disabled until there is one, so nobody confirms a
+  // merge without having been told what it adds.
+  const [dryRun, setDryRun] = useState(null)
 
-  function reset() { setMode(null); setPassphrase(''); setStaged(null) }
+  function reset() { setMode(null); setPassphrase(''); setStaged(null); setDryRun(null) }
 
   async function openExport() {
     setMode('export')
@@ -137,9 +141,19 @@ export function DataTransferCard({ showToast, onImported }) {
     try {
       const res = await window.api.chooseDataImport()
       if (res.canceled) return
-      if (res.success) setStaged(res)
-      else showToast?.(res.error || 'Could not read that file', 'error')
+      if (res.success) {
+        setStaged(res)
+        setDryRun(null)
+        // A plain file needs nothing more from the user, so preview straight away.
+        if (!res.encrypted) await doPreview('')
+      } else showToast?.(res.error || 'Could not read that file', 'error')
     } finally { setBusy(false) }
+  }
+
+  async function doPreview(pass = passphrase) {
+    const res = await window.api.previewDataImport?.(pass)
+    if (res?.success) setDryRun(res)
+    else showToast?.(res?.reason || res?.error || 'Could not preview that file', 'error')
   }
 
   async function doImport() {
@@ -234,19 +248,169 @@ export function DataTransferCard({ showToast, onImported }) {
             <div className="form-group" style={{ marginBottom: 10 }}>
               <label htmlFor="set-f3" style={{ fontSize: 12 }}>Passphrase</label>
               <input id="set-f3" type="password" value={passphrase} autoFocus
-                onChange={e => setPassphrase(e.target.value)}
+                onChange={e => { setPassphrase(e.target.value); setDryRun(null) }}
                 placeholder="Passphrase used at export" />
             </div>
           )}
+          {dryRun && <ImportPreview result={dryRun} />}
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
             <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={reset} disabled={busy}>Cancel</button>
+            {!dryRun && (
+              <button className="btn btn-ghost" style={{ fontSize: 12 }}
+                onClick={async () => { setBusy(true); try { await doPreview() } finally { setBusy(false) } }}
+                disabled={busy || (staged.encrypted && !passphrase)}>
+                {busy ? 'Checking…' : 'Preview'}
+              </button>
+            )}
             <button className="btn btn-primary" style={{ fontSize: 12 }} onClick={doImport}
-              disabled={busy || (staged.encrypted && !passphrase)}>
+              disabled={busy || !dryRun || (staged.encrypted && !passphrase)}>
               {busy ? 'Importing…' : 'Import'}
             </button>
           </div>
         </div>
       )}
+
+      <ScheduledExport showToast={showToast} />
+    </div>
+  )
+}
+
+const tableLabel = (table) => table.replace(/_/g, ' ')
+
+// "Would add X, skip Y, unknown columns Z", from a dry run of the real merge.
+export function ImportPreview({ result }) {
+  const added = Object.entries(result.added || {}).filter(([, n]) => n > 0)
+  const skipped = Object.entries(result.skipped || {}).filter(([, n]) => n > 0)
+  const unknown = Object.entries(result.unknownColumns || {}).filter(([, cols]) => cols.length > 0)
+  return (
+    <div data-testid="import-preview" style={{ fontSize: 12, background: 'var(--surface2)', borderRadius: 8, padding: '8px 10px', marginBottom: 10 }}>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>
+        {result.total > 0 ? `Would add ${result.total} row${result.total === 1 ? '' : 's'}` : 'Nothing new to add'}
+      </div>
+      {added.length > 0 && <div>Add: {added.map(([t, n]) => `${n} ${tableLabel(t)}`).join(' · ')}</div>}
+      {skipped.length > 0 && (
+        <div style={{ color: 'var(--text-muted)' }}>
+          Skip (already here): {skipped.map(([t, n]) => `${n} ${tableLabel(t)}`).join(' · ')}
+        </div>
+      )}
+      {unknown.length > 0 && (
+        <div style={{ color: 'var(--yellow)', marginTop: 4 }}>
+          Ignored, not known to this version: {unknown.map(([t, cols]) => `${tableLabel(t)} (${cols.join(', ')})`).join('; ')}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// A rotating, encrypted copy of the same export, written on a schedule into a
+// folder the user picked. See dataTransfer.js for why it is always encrypted.
+export function ScheduledExport({ showToast }) {
+  const [status, setStatus] = useState(null)
+  const [draft, setDraft] = useState(null)
+  const [passphrase, setPassphrase] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  async function load() {
+    try {
+      const res = await window.api.getScheduledExport?.()
+      if (res?.success) {
+        setStatus(res)
+        setDraft({ enabled: res.enabled, folder: res.folder, frequency: res.frequency, keep: res.keep })
+      }
+    } catch { /* the section simply stays hidden */ }
+  }
+  useEffect(() => { load() }, [])
+
+  if (!status || !draft) return null
+
+  async function save(next = draft) {
+    setBusy(true)
+    try {
+      const res = await window.api.configureScheduledExport({ ...next, passphrase })
+      if (res.success) {
+        setPassphrase('')
+        setStatus(res)
+        setDraft({ enabled: res.enabled, folder: res.folder, frequency: res.frequency, keep: res.keep })
+        showToast?.(res.enabled ? 'Scheduled export saved' : 'Scheduled export turned off', 'success')
+      } else showToast?.(res.reason || res.error || 'Could not save', 'error')
+    } finally { setBusy(false) }
+  }
+
+  async function chooseFolder() {
+    const res = await window.api.chooseScheduledExportFolder()
+    if (res?.success) setDraft(d => ({ ...d, folder: res.folder }))
+  }
+
+  async function runNow() {
+    setBusy(true)
+    try {
+      const res = await window.api.runScheduledExportNow()
+      showToast?.(res.success ? 'Export written' : (res.reason || res.error || 'Export failed'), res.success ? 'success' : 'error')
+      await load()
+    } finally { setBusy(false) }
+  }
+
+  const last = status.lastResult
+  return (
+    <div style={{ borderTop: '1px solid var(--border)', marginTop: 14, paddingTop: 12 }}>
+      <h4 style={{ fontSize: 13, margin: '0 0 4px' }}>Scheduled export</h4>
+      <p style={{ color: 'var(--text-muted)', fontSize: 12, margin: '0 0 10px' }}>
+        Writes an encrypted export into a folder you choose (for example one your backup tool or
+        cloud drive already covers) and keeps the newest few. Only files named
+        hiro-scheduled-… are ever removed from that folder.
+      </p>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', marginBottom: 10 }}>
+        <input type="checkbox" style={{ width: 'auto' }} checked={draft.enabled}
+          onChange={e => setDraft(d => ({ ...d, enabled: e.target.checked }))} />
+        Export automatically
+      </label>
+      <div className="form-row">
+        <div className="form-group" style={{ flex: 3 }}>
+          <label htmlFor="sched-export-folder" style={{ fontSize: 12 }}>Folder</label>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input id="sched-export-folder" value={draft.folder} readOnly placeholder="No folder chosen" />
+            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={chooseFolder} disabled={busy}>Choose…</button>
+          </div>
+        </div>
+        <div className="form-group" style={{ flex: 1 }}>
+          <label htmlFor="sched-export-frequency" style={{ fontSize: 12 }}>How often</label>
+          <select id="sched-export-frequency" value={draft.frequency}
+            onChange={e => setDraft(d => ({ ...d, frequency: e.target.value }))}>
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+          </select>
+        </div>
+        <div className="form-group" style={{ flex: 1 }}>
+          <label htmlFor="sched-export-keep" style={{ fontSize: 12 }}>Keep</label>
+          <input id="sched-export-keep" type="number" min={1} max={100} value={draft.keep}
+            onChange={e => setDraft(d => ({ ...d, keep: e.target.value }))} />
+        </div>
+      </div>
+      <div className="form-group" style={{ marginBottom: 10 }}>
+        <label htmlFor="sched-export-pass" style={{ fontSize: 12 }}>Passphrase</label>
+        <input id="sched-export-pass" type="password" value={passphrase}
+          onChange={e => setPassphrase(e.target.value)}
+          placeholder={status.hasPassphrase ? 'Saved. Type a new one to replace it' : 'At least 8 characters'} />
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+          Kept in your system keychain. There is no recovery if you lose it, and you need it to import these files.
+        </div>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+        <div style={{ fontSize: 11, color: last && !last.success ? 'var(--red)' : 'var(--text-muted)' }}>
+          {last && !last.success
+            ? `Last attempt failed: ${last.reason}`
+            : status.lastRunAt ? `Last export ${new Date(status.lastRunAt).toLocaleString()}` : 'No scheduled export yet'}
+          {status.enabled && status.nextDueAt && status.lastRunAt ? ` · next due ${new Date(status.nextDueAt).toLocaleString()}` : ''}
+          {status.files?.length ? ` · ${status.files.length} file${status.files.length === 1 ? '' : 's'} in the folder` : ''}
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+          <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={runNow}
+            disabled={busy || !status.folder || !status.hasPassphrase}>Export now</button>
+          <button className="btn btn-primary" style={{ fontSize: 12 }} onClick={() => save()} disabled={busy}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

@@ -39,6 +39,8 @@ const RUNTIME_KEYS = new Set([
   // cannot reach, and the symptom — every scrape failing — looks nothing like
   // an imported setting.
   'proxyEnabled', 'proxyServer', 'proxyUsername', 'proxyPassword', 'proxyBypass',
+  // A folder on this machine, and its schedule's bookkeeping.
+  'scheduledExport', 'scheduledExportPassphrase', 'scheduledExportLastRunAt', 'scheduledExportLastResult',
 ])
 
 // Credentials. Excluded unless the user explicitly opts in, so the default
@@ -50,6 +52,7 @@ const SECRET_KEYS = new Set([
   // is in both: if the runtime exclusion is ever relaxed, this must not become
   // the thing that quietly starts exporting a credential.
   'proxyPassword',
+  'scheduledExportPassphrase',
 ])
 
 function deriveKey(passphrase, salt) {
@@ -69,6 +72,12 @@ function buildPayload(includeSecrets) {
     if (RUNTIME_KEYS.has(key)) continue
     if (!includeSecrets && SECRET_KEYS.has(key)) continue
     out[key] = value
+  }
+  // A Slack or Discord webhook URL is a credential (the token is in the path),
+  // so without the opt-in the hooks travel without their URLs: provider,
+  // events and on/off survive, the token does not.
+  if (!includeSecrets && Array.isArray(out.webhooks)) {
+    out.webhooks = out.webhooks.map(hook => (hook && typeof hook === 'object' ? { ...hook, url: '' } : hook))
   }
   return out
 }
@@ -164,7 +173,18 @@ function applyBundle(payload) {
     if (RUNTIME_KEYS.has(key)) continue
     patch[key] = value
   }
-  configService.update(cfg => ({ ...cfg, ...patch }))
+  configService.update(cfg => {
+    // A bundle exported without credentials carries webhooks with blank URLs.
+    // Importing one onto a machine that already has the URL keeps it, rather
+    // than silently disabling every notification.
+    if (Array.isArray(patch.webhooks) && Array.isArray(cfg.webhooks)) {
+      patch.webhooks = patch.webhooks.map((hook, i) => {
+        const here = cfg.webhooks[i]
+        return hook && !hook.url && here?.url && here.provider === hook.provider ? { ...hook, url: here.url } : hook
+      })
+    }
+    return { ...cfg, ...patch }
+  })
   return { success: true, applied: Object.keys(patch).length }
 }
 

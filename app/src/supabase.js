@@ -40,7 +40,7 @@ export async function deleteAccount() {
     throw new Error(error.message)
   }
   // The auth user is gone; drop the now-invalid local session too.
-  try { await supabase.auth.signOut() } catch { /* session already invalid */ }
+  try { await supabase.auth.signOut({ scope: 'local' }) } catch { /* session already invalid */ }
 }
 
 // The stats/chart derivations live in src/stats.js as pure functions. They used
@@ -50,7 +50,7 @@ export async function deleteAccount() {
 import { deriveStats, derivePerDay, isUnsent } from './stats'
 import { isDueOrOverdue, todayLocal, daysBetweenDates } from './dates'
 import { randomUUID } from 'expo-crypto'
-import { decryptCloudPayload, encryptCloudPayload } from './cloudCrypto'
+import { decryptCloudPayload, encryptCloudPayload, rowContext } from './cloudCrypto'
 
 const VALID_STATUSES = ['applied', 'interview', 'offer', 'rejected', 'pending', 'no_response', 'skipped', 'held', 'withdrawn']
 
@@ -117,11 +117,17 @@ export class CloudClient {
   // so this is a no-op. A row this device cannot decrypt keeps whatever the
   // columns hold rather than failing the whole list — one unreadable row must
   // never be able to blank the screen.
-  async _withMeta(row) {
+  //
+  // Envelopes are checked against the row they were found on (see rowContext),
+  // so one copied over from another application is refused instead of shown.
+  // The comment envelope is applied after meta: the phone rewrites only
+  // encrypted_comment, so the copy inside meta can be older.
+  async _withMeta(row, table = 'applications') {
     if (!row) return row
+    const where = (column) => (typeof row.id === 'string' ? rowContext(table, row.id, column) : null)
     try {
-      if (row.encrypted_meta) Object.assign(row, await decryptCloudPayload(row.encrypted_meta) || {})
-      if (row.encrypted_comment) Object.assign(row, await decryptCloudPayload(row.encrypted_comment) || {})
+      if (row.encrypted_meta) Object.assign(row, await decryptCloudPayload(row.encrypted_meta, where('encrypted_meta')) || {})
+      if (row.encrypted_comment) Object.assign(row, await decryptCloudPayload(row.encrypted_comment, where('encrypted_comment')) || {})
     } catch {
       row.meta_pending = true
     }
@@ -262,9 +268,12 @@ export class CloudClient {
 
   async updateComment(id, comment) {
     comment = String(comment || '').slice(0, 5000)
+    // Bound to this row when the row is addressed by its cloud id. A legacy
+    // numeric id cannot be bound here; the desktop rebinds it on its next push.
+    const context = typeof id === 'string' ? rowContext('applications', id, 'encrypted_comment') : null
     const { error } = await supabase
       .from('applications')
-      .update({ comment: '', encrypted_comment: await encryptCloudPayload({ comment }), updated_at: new Date().toISOString() })
+      .update({ comment: '', encrypted_comment: await encryptCloudPayload({ comment }, context), updated_at: new Date().toISOString() })
       .eq('user_id', this.userId)
       .eq(typeof id === 'number' ? 'local_id' : 'id', id)
     if (error) throw new Error(error.message)

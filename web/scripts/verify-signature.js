@@ -107,15 +107,34 @@ function checkMac() {
     })
   }
 
+  // Whether the app this build signed carries a Developer ID signature. The DMG
+  // takes its signing state from it when Gatekeeper's verdict on the DMG does
+  // not say.
+  const appSigned = results.length > 0 && results.every(r => r.state === 'signed')
+
   for (const dmg of findArtifacts(['.dmg'])) {
     // Gatekeeper's own verdict, which is what an end user's Mac will apply.
     // "Notarized Developer ID" is the only answer that opens without a warning.
+    //
+    // A signed DMG with no notarization ticket is NOT unsigned, and used to be
+    // reported as such — so a build with a certificate but no API key failed
+    // --require-signed, contradicting RELEASING.md, which documents that state
+    // as "signed but un-notarized. Gatekeeper warns on first open". It is now
+    // its own state: it passes the signing gate and is flagged as a warning.
     const assess = trySh('spctl', ['--assess', '--type', 'install', '--verbose=4', dmg])
     const notarized = /source=Notarized Developer ID/.test(assess.out)
+    let signed = /source=(Unnotarized )?Developer ID/.test(assess.out)
+    if (!notarized && !signed) {
+      const info = trySh('codesign', ['-dv', '--verbose=4', dmg])
+      signed = /Authority=Developer ID Application:/.test(info.out) || appSigned
+    }
     results.push({
       file: dmg,
-      state: notarized ? 'notarized' : 'unsigned',
-      detail: `spctl: ${assess.out.split('\n').map(l => l.trim()).filter(Boolean).join(' / ') || 'no output'}`,
+      state: notarized ? 'notarized' : signed ? 'signed-not-notarized' : 'unsigned',
+      detail: [
+        `spctl: ${assess.out.split('\n').map(l => l.trim()).filter(Boolean).join(' / ') || 'no output'}`,
+        notarized || !signed ? null : 'Developer ID signed, but no notarization ticket — Gatekeeper warns on first open. Add the App Store Connect API key (RELEASING.md).',
+      ].filter(Boolean).join('\n    '),
     })
   }
 
@@ -138,15 +157,21 @@ if (results.length === 0) {
   process.exit(1)
 }
 
-const ICON = { signed: '✓', notarized: '✓', 'n/a': '–', unsigned: '✗', unknown: '?' }
+const ICON = { signed: '✓', notarized: '✓', 'signed-not-notarized': '!', 'n/a': '–', unsigned: '✗', unknown: '?' }
 for (const r of results) {
   console.log(`${ICON[r.state] || '?'} ${r.state.toUpperCase()}  ${path.basename(r.file)}`)
   console.log(`    ${r.detail}`)
 }
 
 const bad = results.filter(r => r.state === 'unsigned' || r.state === 'unknown')
+const unnotarized = results.filter(r => r.state === 'signed-not-notarized')
 if (bad.length === 0) {
   console.log('\nAll artifacts are signed.')
+  if (unnotarized.length) {
+    // Signed is what --require-signed asks for; notarization is a separate,
+    // documented step (RELEASING.md), so this warns rather than fails.
+    console.log(`Warning: ${unnotarized.length} macOS artifact(s) are signed but not notarized — Gatekeeper will warn on first open.`)
+  }
   process.exit(0)
 }
 

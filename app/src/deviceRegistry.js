@@ -110,8 +110,28 @@ export async function checkRevoked(userId) {
       .eq('user_id', userId).eq('device_id', deviceId)
   } catch { /* the sign-out below is the part that matters */ }
 
-  try { await supabase.auth.signOut() } catch { /* session may already be void */ }
+  try { await supabase.auth.signOut({ scope: 'local' }) } catch { /* session may already be void */ }
   return true
+}
+
+// The push token on this phone's row: a string, null when none is registered,
+// or undefined when the row could not be read (offline, older schema) — which
+// the caller must not mistake for "notifications are off".
+export async function getRegisteredPushToken(userId) {
+  if (!supabase || !userId) return undefined
+  try {
+    const deviceId = await getDeviceId()
+    const { data, error } = await supabase
+      .from('devices')
+      .select('push_token')
+      .eq('user_id', userId)
+      .eq('device_id', deviceId)
+      .maybeSingle()
+    if (error) return undefined
+    return data?.push_token || null
+  } catch {
+    return undefined
+  }
 }
 
 // Called when the user signs out on purpose. The row stays — the desktop's list

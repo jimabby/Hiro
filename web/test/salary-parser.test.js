@@ -64,4 +64,18 @@ check('formats nothing when unknown', formatSalaryRange(null, null), '')
 // The range is ordered regardless of the order the figures appeared in.
 check('reversed figures still yield min<max', parseSalary('$140,000 down from $120,000'), { min: 120000, max: 140000 })
 
+// ── The period belongs to the number it follows ─────────────────────
+// It used to be searched for anywhere in the string, so a clause about
+// something else entirely set the pay period for the salary.
+check('"a week" later in the text does not make a salary weekly',
+  parseSalary('$120,000 + super, 2 days a week in office'), { min: 120000, max: 120000 })
+check('"pm" in working hours does not make a salary monthly',
+  parseSalary('$95k, 9 am – 5 pm'), { min: 95000, max: 95000 })
+check('p.w. directly after the figure is weekly', parseSalary('$1,800 p.w.'), { min: 93600, max: 93600 })
+check('/wk directly after the figure is weekly', parseSalary('$1,800/wk'), { min: 93600, max: 93600 })
+check('per month directly after the figure is monthly', parseSalary('$8,000 per month'), { min: 96000, max: 96000 })
+check('p.m. directly after the figure is monthly', parseSalary('$8,000 p.m.'), { min: 96000, max: 96000 })
+check('a rate named before the figure still counts', parseSalary('Hourly rate of $65'), { min: 65 * HOURS_PER_YEAR, max: 65 * HOURS_PER_YEAR })
+check('an annual-looking amount is never multiplied', parseSalary('$120,000 a week'), { min: 120000, max: 120000 })
+
 done()

@@ -232,6 +232,85 @@ const post = async (path, body) => {
   check('and accepted again when switched back on', await call(cfg.mobileApiToken), 200)
   mobileApi._resetThrottle()
 
+  // ── A malformed request target ──────────────────────────────────
+  // `new URL("http://[")` throws. handle() is async and was called without a
+  // catch, so this hung the socket and raised an unhandled rejection.
+  mobileApi._resetThrottle()
+  const rawReply = await new Promise((resolve) => {
+    const socket = require('net').connect(PORT, '127.0.0.1', () => {
+      socket.write('GET http://[ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n')
+    })
+    let data = ''
+    socket.on('data', (c) => { data += c })
+    socket.on('end', () => resolve(data))
+    socket.on('error', () => resolve(data))
+    setTimeout(() => { socket.destroy(); resolve(data || 'TIMEOUT') }, 3000).unref()
+  })
+  check('a malformed URL is answered with a 400', /^HTTP\/1\.1 400/.test(rawReply), true)
+  check('and the server still serves afterwards', await call(cfg.mobileApiToken), 200)
+
+  // Anything that escapes the routes is a 500, never a hang.
+  let captured = null
+  const fakeRes = {
+    headersSent: false,
+    writeHead(status) { captured = status; this.headersSent = true },
+    end() {}, setHeader() {}, destroy() {},
+  }
+  await mobileApi.handle({ method: 'GET', url: '/api/ping', headers: {}, get socket() { throw new Error('boom') } }, fakeRes)
+  check('an unexpected throw becomes a 500', captured, 500)
+
+  // ── IPv6 lockouts are per /64 ───────────────────────────────────
+  // A host can mint a fresh address in its /64 for every request, so locking
+  // out the exact address locked out nothing.
+  const key = mobileApi.lockoutKey
+  check('two addresses in one /64 share a lockout', key('fd00:1:2:3::a'), key('fd00:1:2:3:ffff:1:2:3'))
+  check('the key is the /64 prefix', key('fd00:0001:0002:0003::a'), 'fd00:1:2:3::/64')
+  check('a different /64 is a different peer', key('fd00:1:2:4::a') === key('fd00:1:2:3::a'), false)
+  check('a zone id is ignored', key('fe80::1%en0'), key('fe80::2'))
+  check('an IPv4-mapped address is keyed as IPv4', key('::ffff:192.168.1.5'), '192.168.1.5')
+  check('IPv4 is keyed by address', key('192.168.1.5') === key('192.168.1.6'), false)
+  mobileApi._resetThrottle()
+  for (let i = 0; i < 10; i++) mobileApi.recordFailure(`fd00:1:2:3::${(i + 1).toString(16)}`)
+  check('failures from rotating addresses add up to a lockout', mobileApi.lockoutFor('fd00:1:2:3::beef').locked, true)
+  check('a neighbouring /64 is not locked out', mobileApi.lockoutFor('fd00:1:2:4::1').locked, false)
+  mobileApi._resetThrottle()
+
+  // ── Which scope each endpoint needs ─────────────────────────────
+  const need = mobileApi.requiredScope
+  check('reads need read', need('GET', '/api/applications'), 'read')
+  check('status changes need write', need('POST', '/api/applications/1/status'), 'write')
+  check('approving drafts needs write', need('POST', '/api/held/approve'), 'write')
+  check('imports need write', need('POST', '/api/import-job'), 'write')
+  check('starting a scan needs scan', need('POST', '/api/scan'), 'scan')
+  check('cancelling a scan needs scan', need('POST', '/api/scan/cancel'), 'scan')
+  check('scan status is a read', need('GET', '/api/scan/status'), 'read')
+  check('an endpoint added later is covered by default', need('POST', '/api/something-new'), 'write')
+  check('ping needs only authentication', need('GET', '/api/ping'), null)
+  check('rotation needs only authentication', need('POST', '/api/rotate'), null)
+  check('self-revocation needs only authentication', need('POST', '/api/devices/self/revoke'), null)
+
+  // ── No shared token unless there already was one ───────────────
+  const savedToken = cfg.mobileApiToken
+  const savedFlag = cfg.mobileApiAllowLegacyToken
+  cfg.mobileApiToken = ''
+  delete cfg.mobileApiAllowLegacyToken
+  await mobileApi.stop()
+  await mobileApi.start()
+  // The restart dropped fetch's pooled keep-alive socket; let it notice.
+  try { await call('') } catch { /* ECONNRESET on the stale socket */ }
+  mobileApi._resetThrottle()
+  check('starting the server no longer mints a shared token', cfg.mobileApiToken, '')
+  check('and with none, the shared-token path is off', mobileApi.getInfo().allowLegacyToken, false)
+  check('an empty bearer token is refused', await call(''), 401)
+  mobileApi._resetThrottle()
+  cfg.mobileApiToken = savedToken
+  mobileApi.refreshPolicy()
+  check('an existing install that has a shared token keeps it working', await call(savedToken), 200)
+  cfg.mobileApiToken = savedToken
+  if (savedFlag !== undefined) cfg.mobileApiAllowLegacyToken = savedFlag
+  mobileApi.refreshPolicy()
+  mobileApi._resetThrottle()
+
   // ── Stopping actually stops ─────────────────────────────────────
   // close() alone leaves keep-alive sockets serving requests, so turning the
   // mobile API off in Settings did not cut off a connected phone.

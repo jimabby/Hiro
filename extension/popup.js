@@ -1,11 +1,39 @@
 const $ = id => document.getElementById(id)
 let connection = null
 
+// Where the pairing lives. Session storage by default — closing the browser
+// forgets it — and local storage only when the user ticked "Remember pairing on
+// this device", because each re-pair mints a new device token and a browser that
+// restarts daily otherwise piles up a token a day on the desktop.
+const STORAGE_KEY = 'hiroConnection'
+const storageFor = remember => remember ? chrome.storage.local : chrome.storage.session
+
+async function loadConnection() {
+  const { [STORAGE_KEY]: session } = await chrome.storage.session.get(STORAGE_KEY)
+  if (session) return session
+  const { [STORAGE_KEY]: remembered } = await chrome.storage.local.get(STORAGE_KEY)
+  return remembered || null
+}
+
+async function saveConnection(conn) {
+  // Never in both: unticking the box must not leave a copy on disk.
+  await storageFor(!conn.remember).remove(STORAGE_KEY)
+  await storageFor(conn.remember).set({ [STORAGE_KEY]: conn })
+}
+
+async function clearConnection() {
+  await chrome.storage.session.remove(STORAGE_KEY)
+  await chrome.storage.local.remove(STORAGE_KEY)
+}
+
 function message(text, kind = '') { $('message').textContent = text; $('message').className = kind }
+
+function baseUrl(conn) { return `http://${conn.host}:${conn.port}` }
+
 async function securePost(path, body) {
   const raw = JSON.stringify(await HiroProtocol.encrypt(connection.token, body))
   const signed = await HiroProtocol.signedHeaders(connection.token, 'POST', path, raw)
-  const res = await fetch(`http://${connection.host}:${connection.port}${path}`, {
+  const res = await HiroProtocol.fetchWithTimeout(`${baseUrl(connection)}${path}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...signed }, body: raw,
   })
   const envelope = await res.json()
@@ -43,12 +71,14 @@ async function fillCurrentJob() {
   for (const key of ['title', 'company', 'description', 'url']) $(key).value = result[key] || ''
 }
 
-async function requestDesktopPermission(host) {
-  const hostname = String(host).trim().replace(/^https?:\/\//, '').split(/[/:]/)[0]
-  if (!hostname) throw new Error('Enter the desktop address.')
-  const granted = await chrome.permissions.request({ origins: [`http://${hostname}/*`] })
+// Ask for access to exactly the desktop's address. Parsed with URL, so an IPv6
+// address ("fd00::5", "[fd00::5]:4823") is requested as itself rather than cut
+// off at its first colon.
+async function requestDesktopPermission(input) {
+  const address = HiroProtocol.parseDesktopAddress(input)
+  const granted = await chrome.permissions.request({ origins: [address.origin] })
   if (!granted) throw new Error('Hiro needs permission to reach that desktop address.')
-  return hostname
+  return address
 }
 
 // Show the import form and, separately, try to fill it from the current tab.
@@ -85,11 +115,13 @@ async function tryFillCurrentJob() {
 $('pair').addEventListener('click', async () => {
   $('pair').disabled = true; message('Pairing…')
   try {
-    const host = await requestDesktopPermission($('host').value), port = Number($('port').value) || 4823
+    const address = await requestDesktopPermission($('host').value)
+    const host = address.host, port = Number($('port').value) || address.port || 4823
     const code = $('code').value.trim()
+    const remember = !!$('remember').checked
     const base = `http://${host}:${port}`
 
-    const helloRes = await fetch(`${base}/api/pair/hello`)
+    const helloRes = await HiroProtocol.fetchWithTimeout(`${base}/api/pair/hello`)
     const hello = await helloRes.json()
     if (!helloRes.ok) throw new Error(hello.error || `Pairing failed (${helloRes.status})`)
 
@@ -100,22 +132,20 @@ $('pair').addEventListener('click', async () => {
       code, deviceName: 'Browser extension', platform: 'extension',
     })
 
-    const res = await fetch(`${base}/api/pair`, {
+    const res = await HiroProtocol.fetchWithTimeout(`${base}/api/pair`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sealed),
     })
     const body = await res.json(); if (!res.ok) throw new Error(body.error || `Pairing failed (${res.status})`)
     const paired = await HiroPairChannel.openResponse(channel, body)
-    const conn = { host, port, token: paired.token }
-    await chrome.storage.session.set({ hiroConnection: conn })
+    const conn = { host, port, token: paired.token, remember, expiresAt: paired.device?.expiresAt || null }
+    await saveConnection(conn)
     await showImporter(conn)
     // Pairing succeeded whatever the current tab happens to be. If the fill
     // could not run, say what to do next rather than reporting the pairing as
     // failed — the two outcomes used to be indistinguishable.
+    const done = remember ? 'Paired. This browser will stay paired until you forget it.' : 'Paired for this browser session.'
     const fillProblem = await tryFillCurrentJob()
-    message(
-      fillProblem ? `Paired for this browser session. ${fillProblem}` : 'Paired for this browser session.',
-      fillProblem ? '' : 'success',
-    )
+    message(fillProblem ? `${done} ${fillProblem}` : done, fillProblem ? '' : 'success')
   } catch (err) { message(err.message, 'error') } finally { $('pair').disabled = false }
 })
 
@@ -127,16 +157,33 @@ $('import').addEventListener('click', async () => {
   } catch (err) { message(err.message, 'error') } finally { $('import').disabled = false }
 })
 
+// Forgetting revokes the token on the desktop first. It used to delete only the
+// local copy, which left a valid 90-day token behind for every pairing ever
+// forgotten. If the desktop cannot be reached the local copy is still dropped —
+// the user asked for that — and they are told the desktop still lists it.
 $('forget').addEventListener('click', async () => {
-  await chrome.storage.session.remove('hiroConnection'); connection = null
-  $('importer').hidden = true; $('pairing').hidden = false; message('Pairing forgotten.')
+  $('forget').disabled = true; message('Forgetting…')
+  let revoked = false
+  let problem = ''
+  try {
+    if (connection) {
+      const result = await securePost('/api/devices/self/revoke', {})
+      revoked = !!result?.success
+    }
+  } catch (err) { problem = err.message }
+  await clearConnection(); connection = null
+  $('importer').hidden = true; $('pairing').hidden = false; $('forget').disabled = false
+  message(revoked
+    ? 'Pairing forgotten and revoked on the desktop.'
+    : `Pairing forgotten here, but the desktop could not be told${problem ? ` (${problem})` : ''}. Revoke "Browser extension" in Hiro → Settings → Mobile App.`,
+  revoked ? 'success' : '')
 })
 
 ;(async () => {
   try {
-    const { hiroConnection } = await chrome.storage.session.get('hiroConnection')
-    if (!hiroConnection) return
-    await showImporter(hiroConnection)
+    const saved = await loadConnection()
+    if (!saved) return
+    await showImporter(saved)
     const fillProblem = await tryFillCurrentJob()
     if (fillProblem) message(fillProblem)
   } catch (err) { message(err.message, 'error') }

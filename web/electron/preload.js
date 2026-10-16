@@ -118,6 +118,8 @@ contextBridge.exposeInMainWorld('api', {
   onAttentionLog: (cb) => subscribe('attention:log', cb),
   applySkippedJob: (id) => ipcRenderer.invoke('application:applySkipped', id),
   onSkippedApplyLog: (cb) => subscribe('skipped:apply-log', cb),
+  // Proof of submission: { success, dataUrl } — dataUrl is null when none was kept.
+  getSubmissionScreenshot: (id) => ipcRenderer.invoke('application:screenshot', id),
 
   // Stats
   getStats: () => ipcRenderer.invoke('db:getStats'),
@@ -151,7 +153,10 @@ contextBridge.exposeInMainWorld('api', {
   // answer must echo the id back so it reaches the apply flow that asked.
   onQuestionAsk: (cb) => subscribe('question:ask', cb),
   sendQuestionAnswer: (payload) => ipcRenderer.send('question:answer', payload),
+  // Sent with { id } when main gives up waiting, so the stale modal closes.
+  onQuestionCancel: (cb) => subscribe('question:cancel', cb),
   onSubmitReview: (cb) => subscribe('submit:review', cb),
+  onSubmitCancel: (cb) => subscribe('submit:cancel', cb),
   sendSubmitConfirm: (payload) => ipcRenderer.send('submit:confirm', payload),
 
   // Export CSV
@@ -179,7 +184,11 @@ contextBridge.exposeInMainWorld('api', {
   getWeeklyData: () => ipcRenderer.invoke('analytics:getWeeklyData'),
 
   // Webhooks
-  testWebhook: (provider, url) => ipcRenderer.invoke('webhook:test', provider, url),
+  // `id` lets a saved webhook be tested while the form only holds its URL as a
+  // placeholder. Secrets are minted and revealed by the main process only.
+  testWebhook: (provider, url, id) => ipcRenderer.invoke('webhook:test', provider, url, id),
+  createWebhookIdentity: () => ipcRenderer.invoke('webhook:create'),
+  getWebhookSecret: (id) => ipcRenderer.invoke('webhook:getSecret', id),
 
   // Smart scheduling
   getBatchSchedule: () => ipcRenderer.invoke('scheduler:getBatchSchedule'),
@@ -244,6 +253,11 @@ contextBridge.exposeInMainWorld('api', {
   exportData: (passphrase) => ipcRenderer.invoke('data:export', passphrase),
   chooseDataImport: () => ipcRenderer.invoke('data:chooseImport'),
   importData: (passphrase) => ipcRenderer.invoke('data:import', passphrase),
+  previewDataImport: (passphrase) => ipcRenderer.invoke('data:previewImport', passphrase),
+  getScheduledExport: () => ipcRenderer.invoke('data:scheduledExport:get'),
+  configureScheduledExport: (settings) => ipcRenderer.invoke('data:scheduledExport:configure', settings),
+  chooseScheduledExportFolder: () => ipcRenderer.invoke('data:scheduledExport:chooseFolder'),
+  runScheduledExportNow: () => ipcRenderer.invoke('data:scheduledExport:runNow'),
   inspectConfigImport: (passphrase) => ipcRenderer.invoke('config:inspectImport', passphrase),
   applyConfigImport: () => ipcRenderer.invoke('config:applyImport'),
 
@@ -272,11 +286,15 @@ contextBridge.exposeInMainWorld('api', {
   getMobileInfo: () => ipcRenderer.invoke('mobile:getInfo'),
   setMobileEnabled: (enabled) => ipcRenderer.invoke('mobile:setEnabled', enabled),
   regenerateMobileToken: () => ipcRenderer.invoke('mobile:regenerateToken'),
-  startPairing: () => ipcRenderer.invoke('mobile:startPairing'),
+  // options: { scopes: ['read', 'write', 'scan'] } — what the paired device may do.
+  startPairing: (options) => ipcRenderer.invoke('mobile:startPairing', options),
   cancelPairing: () => ipcRenderer.invoke('mobile:cancelPairing'),
   listPairedDevices: () => ipcRenderer.invoke('mobile:listDevices'),
   revokePairedDevice: (id) => ipcRenderer.invoke('mobile:revokeDevice', id),
   revokeAllPairedDevices: () => ipcRenderer.invoke('mobile:revokeAllDevices'),
+  setPairedDeviceScopes: (id, scopes) => ipcRenderer.invoke('mobile:setDeviceScopes', id, scopes),
+  getPairedDeviceActivity: (id) => ipcRenderer.invoke('mobile:deviceActivity', id),
+  clearLegacyMobileToken: () => ipcRenderer.invoke('mobile:clearLegacyToken'),
 
   getSavedViews: () => ipcRenderer.invoke('features:views'),
   saveView: (view) => ipcRenderer.invoke('features:saveView', view),
@@ -309,6 +327,7 @@ contextBridge.exposeInMainWorld('api', {
   // Stops a bulk approve / bulk retry after the job in hand.
   cancelBulkApply: () => ipcRenderer.invoke('apply:cancelBulk'),
   rejectHeldApplication: (id) => ipcRenderer.invoke('review:reject', id),
+  undoRejectHeldApplication: (token) => ipcRenderer.invoke('review:undoReject', token),
   // Save edits to a held draft's resume / cover letter; returns remaining flags.
   editHeldDraft: (id, edits) => ipcRenderer.invoke('review:editDraft', id, edits),
   getFollowUpDrafts: () => ipcRenderer.invoke('review:followUps'),

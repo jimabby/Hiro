@@ -10,19 +10,26 @@ on:
         type: boolean
         default: true
 
-permissions:
-  contents: write # electron-builder uploads the installers to the GitHub release
+# Least privilege: nothing by default, and each job asks for what it needs.
+# Only the build job can write, because electron-builder uploads the installers
+# to the GitHub release — and even there the token is handed only to the step
+# that publishes (see "Build" below).
+permissions: {}
 
 jobs:
   verify:
     name: Verify tag
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       HIRO_SKIP_BROWSER_INSTALL: '1'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '22'
           cache: npm
@@ -56,29 +63,57 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest, ubuntu-latest]
+    permissions:
+      contents: write # the publish step uploads installers to the GitHub release
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # True for a real tagged release; a dry run neither publishes nor insists
       # on signing, so signing can be developed without cutting a tag.
       PUBLISHING: ${{ startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true }}
+      # build:publish and build:dry have no prebuild hook, so the Chromium
+      # download in `npm ci` is the only one — make its failure fail the job
+      # instead of shipping an installer that cannot scrape.
+      HIRO_REQUIRE_BROWSER: '1'
+      # No GH_TOKEN here. At job level it reached every step — including
+      # `npm ci`, where every dependency's install script could read a token
+      # that can write to this repository's releases.
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # Otherwise the token is left in .git/config for every later step,
+          # install scripts included, to read.
+          persist-credentials: false
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      # Signing material is injected here rather than in the job-level `env:` so
-      # the secrets never reach the shell as interpolated text, and so the mac
-      # job can distinguish "no certificate configured" (build unsigned, don't
-      # fail) from "certificate configured" (sign and notarize).
+      # Installed FIRST, while this job holds no secrets at all: nothing has
+      # been written to GITHUB_ENV and no signing material exists on disk. Install
+      # scripts (Electron's binary download, Chromium for the scraper) run with
+      # nothing to steal.
       #
-      # See RELEASING.md for how to produce each of these values.
-      - name: Configure code signing
+      # Chromium is NOT skipped here — each runner downloads its own platform
+      # build so electron-builder can bundle it into that platform's installer.
+      - run: npm ci --prefix web
+
+      # Signing material exists only inside this step: passed as step-level env
+      # and exported in this shell, never written to GITHUB_ENV (which hands it to
+      # every LATER step too), and the notarization key file is deleted when the
+      # step ends. GITHUB_ENV is also where the old version put it BEFORE
+      # `npm ci`, so every dependency's install script could read the signing
+      # certificate.
+      #
+      # The mac job distinguishes "no certificate configured" (build unsigned,
+      # don't fail here — the verify step below decides) from "certificate
+      # configured" (sign and notarize). See RELEASING.md for each value.
+      #
+      # GH_TOKEN is given only when publishing; a dry run has no use for it.
+      - name: Build (sign, and publish on a tagged release)
         shell: bash
         env:
+          GH_TOKEN: ${{ (startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true) && secrets.GITHUB_TOKEN || '' }}
           WIN_CERT_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
           WIN_CERT_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           MAC_CERT_BASE64: ${{ secrets.MAC_CERTIFICATE_BASE64 }}
@@ -88,13 +123,15 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
         run: |
+          set -euo pipefail
+          key_dir="$RUNNER_TEMP/private_keys"
+          trap 'rm -rf "$key_dir"' EXIT
+
           case "$RUNNER_OS" in
             Windows)
               if [ -n "$WIN_CERT_BASE64" ]; then
                 # electron-builder reads a base64 PFX straight out of CSC_LINK.
-                echo "::add-mask::$WIN_CERT_BASE64"
-                echo "CSC_LINK=$WIN_CERT_BASE64" >> "$GITHUB_ENV"
-                echo "CSC_KEY_PASSWORD=$WIN_CERT_PASSWORD" >> "$GITHUB_ENV"
+                export CSC_LINK="$WIN_CERT_BASE64" CSC_KEY_PASSWORD="$WIN_CERT_PASSWORD"
                 echo "Windows Authenticode signing: enabled"
               else
                 echo "Windows Authenticode signing: NO CERTIFICATE CONFIGURED — build will be unsigned"
@@ -102,11 +139,8 @@ jobs:
               ;;
             macOS)
               if [ -n "$MAC_CERT_BASE64" ]; then
-                echo "::add-mask::$MAC_CERT_BASE64"
-                echo "CSC_LINK=$MAC_CERT_BASE64" >> "$GITHUB_ENV"
-                echo "CSC_KEY_PASSWORD=$MAC_CERT_PASSWORD" >> "$GITHUB_ENV"
-                echo "CSC_IDENTITY_AUTO_DISCOVERY=true" >> "$GITHUB_ENV"
-                echo "APPLE_TEAM_ID=$APPLE_TEAM_ID" >> "$GITHUB_ENV"
+                export CSC_LINK="$MAC_CERT_BASE64" CSC_KEY_PASSWORD="$MAC_CERT_PASSWORD"
+                export CSC_IDENTITY_AUTO_DISCOVERY=true APPLE_TEAM_ID
                 echo "Developer ID signing: enabled"
 
                 # Notarization. electron-builder runs @electron/notarize
@@ -114,12 +148,10 @@ jobs:
                 # key is preferred over APPLE_ID because it is scoped and
                 # revocable. The .p8 must be a real file on disk.
                 if [ -n "$APPLE_API_KEY_P8" ]; then
-                  mkdir -p "$RUNNER_TEMP/private_keys"
-                  key_path="$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY_ID}.p8"
+                  mkdir -p "$key_dir"
+                  key_path="$key_dir/AuthKey_${APPLE_API_KEY_ID}.p8"
                   printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$key_path"
-                  echo "APPLE_API_KEY=$key_path" >> "$GITHUB_ENV"
-                  echo "APPLE_API_KEY_ID=$APPLE_API_KEY_ID" >> "$GITHUB_ENV"
-                  echo "APPLE_API_ISSUER=$APPLE_API_ISSUER" >> "$GITHUB_ENV"
+                  export APPLE_API_KEY="$key_path" APPLE_API_KEY_ID APPLE_API_ISSUER
                   echo "Notarization: enabled"
                 else
                   # Signed but un-notarized still trips Gatekeeper on first open,
@@ -129,7 +161,7 @@ jobs:
               else
                 # Without this electron-builder searches the (empty) keychain and
                 # fails the job instead of producing an unsigned DMG.
-                echo "CSC_IDENTITY_AUTO_DISCOVERY=false" >> "$GITHUB_ENV"
+                export CSC_IDENTITY_AUTO_DISCOVERY=false
                 echo "Developer ID signing: NO CERTIFICATE CONFIGURED — build will be unsigned"
               fi
               ;;
@@ -138,17 +170,11 @@ jobs:
               ;;
           esac
 
-      # Chromium is NOT skipped here — each runner downloads its own platform
-      # build so electron-builder can bundle it into that platform's installer.
-      - run: npm ci --prefix web
-
-      - name: Build and publish
-        if: env.PUBLISHING == 'true'
-        run: npm run build:publish --prefix web
-
-      - name: Build only
-        if: env.PUBLISHING != 'true'
-        run: npm run build:dry --prefix web
+          if [ "$PUBLISHING" = "true" ]; then
+            npm run build:publish --prefix web
+          else
+            npm run build:dry --prefix web
+          fi
 
       # Runs after the build so it inspects the artifacts that would actually
       # ship. On a real tagged release an unsigned Windows or macOS installer
@@ -179,7 +205,7 @@ jobs:
       - name: Packaged smoke test
         run: npm run smoke --prefix web
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: installers-${{ matrix.os }}
           retention-days: 14

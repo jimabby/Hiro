@@ -20,6 +20,12 @@ concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Every job here only reads the repository. Without this block the token gets
+# the repository's default permissions, which may include write — handed to
+# every dependency's install script on every pull request.
+permissions:
+  contents: read
+
 jobs:
   desktop:
     name: Desktop tests
@@ -29,9 +35,9 @@ jobs:
       # download that postinstall would otherwise do on every run.
       HIRO_SKIP_BROWSER_INSTALL: '1'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '22'
           cache: npm
@@ -58,10 +64,14 @@ jobs:
     name: Packaged smoke test
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    env:
+      # The smoke test drives the bundled Chromium; a failed download should
+      # fail here, not as a confusing scrape error later.
+      HIRO_REQUIRE_BROWSER: '1'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '22'
           cache: npm
@@ -82,9 +92,9 @@ jobs:
     name: Mobile install
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '22'
           cache: npm
@@ -153,9 +163,9 @@ jobs:
     env:
       HIRO_SKIP_BROWSER_INSTALL: '1'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '22'
 
@@ -198,9 +208,9 @@ jobs:
     env:
       HIRO_SKIP_BROWSER_INSTALL: '1'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '22'
           cache: npm

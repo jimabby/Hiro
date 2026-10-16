@@ -63,6 +63,9 @@ function withResume(cfg, job, log) {
     activeResumeOriginalExt: resume?.originalExt,
     activeResumeId: resume?.id || cfg.defaultResumeId || null,
     activeResumeName: resume?.name || null,
+    // Recorded on the application so the A/B report counts only the jobs the
+    // experiment actually randomised, never the ones a routing rule claimed.
+    activeExperimentArm: experimentArm || null,
   }
 }
 
@@ -127,11 +130,24 @@ function cancelBulk() {
   return { success: true }
 }
 
+// Store the confirmation-page screenshot a scraper captured after a verified
+// submission (services/submissionProof.js). Takes the buffer off the result so
+// it is not carried around — or returned over IPC — any further.
+function keepProof(applicationId, result) {
+  const png = result?.screenshot
+  if (result) delete result.screenshot
+  if (!applicationId || !png) return
+  try { require('./submissionProof').attach(database, applicationId, png) } catch { /* proof is a bonus */ }
+}
+
 async function run(cfg, callbacks) {
   if (busy) throw new Error('Another scan or apply is already in progress')
   busy = true
   try {
-    return await doRun(cfg, callbacks)
+    // The scan gets a retry budget of its own — see ai/usage.js. A provider
+    // that fails all scan long stops being retried, without starving the inbox
+    // check, follow-ups or a manual apply that run after it.
+    return await require('./ai/usage').withRetryBudget(cfg.aiRetryBudgetPerScan ?? 20, () => doRun(cfg, callbacks))
   } finally {
     busy = false
   }
@@ -139,10 +155,6 @@ async function run(cfg, callbacks) {
 
 async function doRun(cfg, { log, notifyAttention }) {
   cancelled = false
-
-  // Per scan, not per process — a desktop app left running for weeks would
-  // otherwise spend the budget on day one and never retry again.
-  require('./ai/usage').resetRetryBudget(cfg.aiRetryBudgetPerScan ?? 20)
 
   // Baseline resume — per-job routing rules may override this later, once the
   // job description is available to match against.
@@ -550,7 +562,7 @@ async function doRun(cfg, { log, notifyAttention }) {
           screening_qa: [],
           status: 'skipped',
           closing_date: job.closing_date,
-          resume_id: jobCfg.activeResumeId,
+          resume_id: jobCfg.activeResumeId, experiment_arm: jobCfg.activeExperimentArm || null,
           resume_name: jobCfg.activeResumeName,
         })
 
@@ -638,7 +650,7 @@ async function doRun(cfg, { log, notifyAttention }) {
           base_resume: jobCfg.masterResume || '', provider: jobCfg.aiProvider || '',
           model: writingModel(jobCfg), tailored_resume: tailoredResume,
           cover_letter: coverLetter, screening_qa: [], status: 'held',
-          closing_date: job.closing_date, resume_id: jobCfg.activeResumeId,
+          closing_date: job.closing_date, resume_id: jobCfg.activeResumeId, experiment_arm: jobCfg.activeExperimentArm || null,
           resume_name: jobCfg.activeResumeName, recruiter_email: recruiterEmail,
           // Every flag from every check, so the Review page can show what was
           // objected to rather than only that something was.
@@ -700,7 +712,7 @@ async function doRun(cfg, { log, notifyAttention }) {
           screening_qa: [],
           status: 'held',
           closing_date: job.closing_date,
-          resume_id: jobCfg.activeResumeId,
+          resume_id: jobCfg.activeResumeId, experiment_arm: jobCfg.activeExperimentArm || null,
           resume_name: jobCfg.activeResumeName,
           recruiter_email: recruiterEmail,
         })
@@ -738,7 +750,7 @@ async function doRun(cfg, { log, notifyAttention }) {
       }
 
       if (result.success) {
-        database.insertApplication({
+        const saved = database.insertApplication({
           campaign_id: cfg.campaignId, campaign_name: cfg.campaignName,
           job_title: job.job_title,
           company: job.company,
@@ -761,10 +773,11 @@ async function doRun(cfg, { log, notifyAttention }) {
           screening_qa: result.screeningQa || [],
           status: 'applied',
           closing_date: job.closing_date,
-          resume_id: jobCfg.activeResumeId,
+          resume_id: jobCfg.activeResumeId, experiment_arm: jobCfg.activeExperimentArm || null,
           resume_name: jobCfg.activeResumeName,
           recruiter_email: recruiterEmail,
         })
+        keepProof(saved?.id, result)
         log(`  Saved to history`)
         batchCount++
       } else {
@@ -944,7 +957,7 @@ async function doApplyAttentionJob(jobId, cfg, log) {
     database.insertApplication({
       ...job, base_resume: cfg.masterResume || '', tailored_resume: result.tailoredResume,
       cover_letter: result.coverLetter, screening_qa: [], status: 'held',
-      resume_id: cfg.activeResumeId, resume_name: cfg.activeResumeName,
+      resume_id: cfg.activeResumeId, resume_name: cfg.activeResumeName, experiment_arm: cfg.activeExperimentArm || null,
       provider: cfg.aiProvider || '', model: writingModel(cfg),
       fabrication_flags: result.fabricationFlags,
       match_explanation: `${job.match_explanation || ''}${job.match_explanation ? '\n\n' : ''}Fabrication guard: ${describeFlags(result.fabricationFlags)}`,
@@ -955,7 +968,7 @@ async function doApplyAttentionJob(jobId, cfg, log) {
   }
 
   if (result.success) {
-    database.insertApplication({
+    const saved = database.insertApplication({
       job_title: job.job_title,
       company: job.company,
       platform: job.platform,
@@ -970,12 +983,13 @@ async function doApplyAttentionJob(jobId, cfg, log) {
       status: 'applied',
       closing_date: job.closing_date || null,
       base_resume: cfg.masterResume || '',
-      resume_id: cfg.activeResumeId,
+      resume_id: cfg.activeResumeId, experiment_arm: cfg.activeExperimentArm || null,
       resume_name: cfg.activeResumeName,
       provider: cfg.aiProvider || '',
       model: writingModel(cfg),
       campaign_id: job.campaign_id, campaign_name: job.campaign_name,
     })
+    keepProof(saved?.id, result)
     database.dismissAttentionJob(jobId)
     log('Saved to history and removed from Needs Attention')
   }
@@ -1020,6 +1034,7 @@ async function doApplySkippedJob(jobId, cfg, log) {
 
   if (result.success) {
     database.updateApplicationAfterApply(jobId, result.tailoredResume, result.coverLetter, result.screeningQa)
+    keepProof(jobId, result)
     log('Status updated to Applied')
   }
 
@@ -1067,6 +1082,7 @@ async function doApproveHeld(id, cfg, log) {
 
   if (result.success) {
     database.markHeldApplied(id, result.screeningQa)
+    keepProof(id, result)
     log('Submitted and moved to Applied.')
   } else if (result.cancelledByUser) {
     // Declining at the submission check is not a failure. The draft stays

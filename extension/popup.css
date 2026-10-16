@@ -65,3 +65,7 @@ button:disabled { opacity: .4; cursor: wait; }
   *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
   button:active:not(:disabled) { transform: none; }
 }
+
+/* "Remember pairing" — a checkbox, not a full-width field. */
+label.check { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+label.check input { width: auto; margin: 0; }

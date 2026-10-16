@@ -9,6 +9,11 @@
 //
 // Runs on postinstall (so a dev clone is ready) and on prebuild (so a release
 // can never be cut without it). Idempotent and quiet when already present.
+//
+// Required mode — on prebuild, with --require, or with HIRO_REQUIRE_BROWSER=1
+// (set by the release workflow, whose build:publish/build:dry scripts have no
+// prebuild hook) — a failed download exits non-zero. It used to warn and exit
+// 0 everywhere, so a release could ship an installer with no browser in it.
 
 const { execFileSync } = require('child_process')
 const fs = require('fs')
@@ -16,10 +21,31 @@ const path = require('path')
 
 const BROWSERS_DIR = path.join(__dirname, '..', 'browsers')
 
+const REQUIRED = process.env.npm_lifecycle_event === 'prebuild'
+  || process.argv.includes('--require')
+  || process.env.HIRO_REQUIRE_BROWSER === '1'
+
+// The Chromium builds this Playwright version expects: e.g. chromium-1208 and
+// chromium_headless_shell-1208. Read from playwright-core's own manifest, which
+// is what Playwright itself resolves the executable from.
+function expectedDirectories() {
+  const playwrightDir = path.dirname(require.resolve('playwright/package.json'))
+  const corePkg = require.resolve('playwright-core/package.json', { paths: [playwrightDir] })
+  const manifest = JSON.parse(fs.readFileSync(path.join(path.dirname(corePkg), 'browsers.json'), 'utf8'))
+  return manifest.browsers
+    .filter(b => (b.name === 'chromium' || b.name === 'chromium-headless-shell') && b.installByDefault !== false)
+    .map(b => `${b.name.replace(/-/g, '_')}-${b.revision}`)
+}
+
+// Present means the revision Playwright will look for, fully unpacked — not
+// any chromium* directory. A Chromium left over from an older Playwright
+// passed the old check, skipped the download, and then failed every scrape
+// with "Executable doesn't exist" after an upgrade.
 function alreadyInstalled() {
   try {
-    if (!fs.existsSync(BROWSERS_DIR)) return false
-    return fs.readdirSync(BROWSERS_DIR).some(d => d.startsWith('chromium'))
+    const dirs = expectedDirectories()
+    if (!dirs.length) return false
+    return dirs.every(d => fs.existsSync(path.join(BROWSERS_DIR, d, 'INSTALLATION_COMPLETE')))
   } catch {
     return false
   }
@@ -53,6 +79,11 @@ function main() {
   // Opt-out for CI jobs that only run unit tests and don't need a 150 MB
   // download on every install.
   if (process.env.HIRO_SKIP_BROWSER_INSTALL === '1') {
+    if (REQUIRED && !alreadyInstalled()) {
+      console.error('[hiro] HIRO_SKIP_BROWSER_INSTALL=1, but this build must bundle Chromium and none is installed.')
+      process.exitCode = 1
+      return
+    }
     console.log('[hiro] Skipping Chromium install (HIRO_SKIP_BROWSER_INSTALL=1).')
     return
   }
@@ -67,10 +98,18 @@ function main() {
       stdio: 'inherit',
       env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: BROWSERS_DIR },
     })
+    if (!alreadyInstalled()) throw new Error(`the expected build (${expectedDirectories().join(', ')}) is not in web/browsers after the download`)
     console.log('[hiro] Chromium ready.')
   } catch (err) {
-    // A failed download must not break `npm install` — the app still runs, it
-    // just can't scrape until this succeeds. Say so plainly.
+    if (REQUIRED) {
+      // A release or build must not go out without the browser it bundles.
+      console.error(`[hiro] Could not download Chromium: ${err.message}`)
+      console.error('[hiro] This build bundles Chromium, so it stops here.')
+      process.exitCode = 1
+      return
+    }
+    // A failed download must not break a developer's `npm install` — the app
+    // still runs, it just can't scrape until this succeeds. Say so plainly.
     console.warn(`[hiro] Could not download Chromium: ${err.message}`)
     console.warn('[hiro] Scraping will not work until this succeeds. Retry with:')
     console.warn('[hiro]   npm run --prefix web postinstall')

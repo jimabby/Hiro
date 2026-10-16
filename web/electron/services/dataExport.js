@@ -77,14 +77,78 @@ function build({ query }) {
   return out
 }
 
-// Insert a row by name, letting SQLite fill in whatever the export did not
-// carry. `skip` drops columns that must not cross machines — the primary key
-// above all, which is reassigned here.
-function insertRow(run, table, row, skip = new Set()) {
-  const columns = Object.keys(row).filter(c => !skip.has(c) && !c.startsWith('_') && row[c] !== undefined)
+// ─── The file is not trusted ─────────────────────────────────────
+//
+// An export is a JSON file the user picked from disk. It may have been written
+// by a newer Hiro, edited by hand, or handed to them by someone else, and
+// everything in it used to go into the database on trust:
+//
+//   Column names. The JSON keys were pasted into the INSERT unquoted. A key
+//   like `job_title) VALUES ('x'); DROP TABLE applications; --` was SQL.
+//   Columns are now checked against the table's real columns (PRAGMA
+//   table_info), and anything else is dropped and reported, never interpolated.
+//
+//   Privileged values. screening_cache.source = 'user' tells the fabrication
+//   guard that a human typed the answer, and the guard deliberately never
+//   second-guesses a human. An imported answer did not come from this user at
+//   this keyboard, so it arrives as 'ai' and is re-checked like model output.
+//
+//   Atomicity. batch() only defers the write to disk; it is not a transaction.
+//   A row that threw half-way through (a duplicate id, a NOT NULL column the
+//   file left out) left everything before it in the database and everything
+//   after it missing. The whole merge now runs in one transaction and either
+//   all of it lands or none of it does.
+//
+// The same code also answers "what would this do?" without doing it: a dry run
+// performs the whole merge inside the transaction and rolls it back, so the
+// preview cannot disagree with the import.
+
+// Values a row from the file is forced to take, whatever it says.
+const FORCED = {
+  screening_cache: { source: 'ai' },
+}
+
+// sql.js binds numbers, strings, null and byte arrays. Anything else in a JSON
+// file (an object, an array, a boolean) is turned into something it can bind
+// rather than allowed to throw half-way through the import.
+function bindable(value) {
+  if (value === undefined || value === null) return null
+  if (typeof value === 'boolean') return value ? 1 : 0
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  if (typeof value === 'string') return value
+  return JSON.stringify(value)
+}
+
+function columnsOf(query, table, cache) {
+  if (!cache.has(table)) {
+    cache.set(table, new Set(query(`PRAGMA table_info("${table}")`).map(c => c.name)))
+  }
+  return cache.get(table)
+}
+
+// The row as it will be inserted: only real columns, never the skipped ones,
+// forced values applied. Unknown keys are reported through `unknown`.
+function cleanRow(query, cache, table, row, skip, unknown) {
+  const known = columnsOf(query, table, cache)
+  const out = {}
+  for (const [column, value] of Object.entries(row || {})) {
+    if (column.startsWith('_') || skip.has(column) || value === undefined) continue
+    if (!known.has(column)) {
+      if (!unknown[table]) unknown[table] = new Set()
+      unknown[table].add(column)
+      continue
+    }
+    out[column] = bindable(value)
+  }
+  return { ...out, ...(FORCED[table] || {}) }
+}
+
+// Column names here have already been checked against PRAGMA table_info, and
+// are quoted anyway.
+function insertRow(run, table, row) {
+  const columns = Object.keys(row)
   if (columns.length === 0) return
-  const placeholders = columns.map(() => '?').join(', ')
-  run(`INSERT INTO ${table} (${columns.join(', ')}) VALUES (${placeholders})`,
+  run(`INSERT INTO "${table}" (${columns.map(c => `"${c}"`).join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`,
     columns.map(c => row[c]))
 }
 
@@ -93,12 +157,19 @@ function insertRow(run, table, row, skip = new Set()) {
 // what makes the next sync push it rather than believing it is already up there.
 const CLOUD_COLUMNS = new Set(['cloud_dirty', 'cloud_updated_at', 'cloud_id'])
 
-function merge({ query, queryOne, run, batch }, data) {
+// Two rows are the same child when every column the file carries matches. The
+// row's own id is not compared (it is reassigned on every machine); the parent
+// id has already been re-pointed, so it is.
+const sameValue = (a, b) => (a == null && b == null) || (a != null && b != null && String(a) === String(b))
+
+function merge({ query, queryOne, run, transaction }, data, { dryRun = false } = {}) {
   const added = {}
   const skipped = {}
+  const unknown = {}
+  const cache = new Map()
   const bump = (bag, table, n = 1) => { bag[table] = (bag[table] || 0) + n }
 
-  batch(() => {
+  const body = () => {
     // ── Applications, keyed by URL ────────────────────────────────
     // Existing rows are left exactly as they are. An import is new information
     // arriving, not a correction to what is already here — and silently
@@ -110,7 +181,7 @@ function merge({ query, queryOne, run, batch }, data) {
     for (const app of data.applications || []) {
       if (!app?.job_url) { bump(skipped, 'applications'); continue }
       if (urlToId.has(app.job_url)) { bump(skipped, 'applications'); continue }
-      insertRow(run, 'applications', app, new Set(['id', ...CLOUD_COLUMNS]))
+      insertRow(run, 'applications', cleanRow(query, cache, 'applications', app, new Set(['id', ...CLOUD_COLUMNS]), unknown))
       const created = queryOne('SELECT last_insert_rowid() as id')?.id
       if (created) urlToId.set(app.job_url, created)
       bump(added, 'applications')
@@ -120,24 +191,41 @@ function merge({ query, queryOne, run, batch }, data) {
       query('SELECT job_url FROM attention_jobs WHERE job_url IS NOT NULL').map(r => r.job_url))
     for (const job of data.attention_jobs || []) {
       if (!job?.job_url || attentionUrls.has(job.job_url)) { bump(skipped, 'attention_jobs'); continue }
-      insertRow(run, 'attention_jobs', job, new Set(['id']))
+      insertRow(run, 'attention_jobs', cleanRow(query, cache, 'attention_jobs', job, new Set(['id']), unknown))
       attentionUrls.add(job.job_url)
       bump(added, 'attention_jobs')
     }
 
     // ── Child rows, re-pointed at the ids they ended up with ──────
+    //
+    // A child is skipped when an IDENTICAL row is already attached to its
+    // parent. The check used to be "does this parent have any row in this
+    // table", asked again for every row — so the first status change was
+    // imported and every later one was taken for a duplicate of it, and an
+    // application arrived with one interview, one reply and one history entry
+    // however many it had.
     for (const { table } of CHILDREN) {
-      for (const row of data[table] || []) {
-        const parentId = urlToId.get(row._job_url)
-        // The parent was skipped as a duplicate, so its children are already
-        // here under the existing row — importing them again would double every
-        // status change and every stored reply.
-        if (!parentId) { bump(skipped, table); continue }
-        if (queryOne(`SELECT 1 FROM ${table} WHERE application_id = ? LIMIT 1`, [parentId])) {
-          bump(skipped, table)
-          continue
+      const existingByParent = new Map()
+      const existingFor = (parentId) => {
+        if (!existingByParent.has(parentId)) {
+          existingByParent.set(parentId, query(`SELECT * FROM "${table}" WHERE application_id = ?`, [parentId]))
         }
-        insertRow(run, table, { ...row, application_id: parentId }, new Set(['id']))
+        return existingByParent.get(parentId)
+      }
+      for (const row of data[table] || []) {
+        const parentId = urlToId.get(row?._job_url)
+        if (!parentId) { bump(skipped, table); continue }
+        const clean = cleanRow(query, cache, table, { ...row, application_id: parentId }, new Set(['id']), unknown)
+        const columns = Object.keys(clean)
+        const siblings = existingFor(parentId)
+        // offers is keyed by application_id, so a parent has at most one.
+        const duplicate = table === 'offers'
+          ? siblings.length > 0
+          : siblings.some(existing => columns.every(c => sameValue(existing[c], clean[c])))
+        if (duplicate) { bump(skipped, table); continue }
+        insertRow(run, table, clean)
+        // Seen from now on, so the same row twice in one file is one row.
+        siblings.push(clean)
         bump(added, table)
       }
     }
@@ -147,20 +235,25 @@ function merge({ query, queryOne, run, batch }, data) {
       const rows = data[table] || []
       if (rows.length === 0) continue
       const seen = key
-        ? new Set(query(`SELECT ${key} FROM ${table}`).map(r => r[key]))
-        : new Set(unique ? query(`SELECT ${unique.join(', ')} FROM ${table}`).map(r => unique.map(c => r[c]).join('')) : [])
+        ? new Set(query(`SELECT "${key}" FROM "${table}"`).map(r => r[key]))
+        : new Set(unique ? query(`SELECT ${unique.map(c => `"${c}"`).join(', ')} FROM "${table}"`).map(r => unique.map(c => r[c]).join('')) : [])
       for (const row of rows) {
-        const identity = key ? row[key] : (unique ? unique.map(c => row[c]).join('') : null)
+        const identity = key ? row?.[key] : (unique ? unique.map(c => row?.[c]).join('') : null)
         if (identity != null && seen.has(identity)) { bump(skipped, table); continue }
-        insertRow(run, table, row, new Set(key ? [] : ['id']))
+        // The row's own id is never taken from the file unless it IS the key:
+        // an autoincrement id from another machine collides with one here.
+        insertRow(run, table, cleanRow(query, cache, table, row, new Set(key === 'id' ? [] : ['id']), unknown))
         if (identity != null) seen.add(identity)
         bump(added, table)
       }
     }
-  })
+  }
+
+  transaction(body, { rollback: dryRun })
 
   const total = Object.values(added).reduce((n, v) => n + v, 0)
-  return { added, skipped, total }
+  const unknownColumns = Object.fromEntries(Object.entries(unknown).map(([t, set]) => [t, [...set].sort()]))
+  return { added, skipped, total, unknownColumns, dryRun }
 }
 
 module.exports = { build, merge, STANDALONE, CHILDREN }

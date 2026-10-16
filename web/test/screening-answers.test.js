@@ -169,5 +169,61 @@ function reset() { cache = new Map(); aiCalls = 0; asked = []; userReply = '' }
   })
   check('a fresh answer is used silently', logged.length, 0)
 
+  // ─── Choice fields: only an option label ever comes back ────────
+  // LinkedIn asked for an answer without the dropdown's options, recorded it,
+  // then selectOption({label}) failed silently on anything not exactly an
+  // option. The resolver now maps every answer onto the options or asks.
+  const { matchOption } = service('screeningAnswers')
+  const YN = ['Select an option', 'Yes', 'No']
+  check('exact match', matchOption('yes', YN), 'Yes')
+  check('a sentence that leads with the answer', matchOption('No, I would need sponsorship.', YN), 'No')
+  check('the placeholder is never chosen', matchOption('Select an option', YN), null)
+  check('a numeric answer finds its range', matchOption('4', ['0-1 years', '2-3 years', '4-6 years', '7+ years']), '4-6 years')
+  check('"or more" ranges', matchOption('10 years', ['Less than 2', '2 to 5', '5 or more']), '5 or more')
+  check('"less than" ranges', matchOption('1', ['Less than 2 years', '2-5 years']), 'Less than 2 years')
+  check('a typo still matches', matchOption('Permanant resident', ['Citizen', 'Permanent Resident', 'Visa holder']), 'Permanent Resident')
+  check('contained on word boundaries', matchOption('I am a permanent resident', ['Citizen', 'Permanent Resident']), 'Permanent Resident')
+  check('two "Yes" options are ambiguous, not a guess', matchOption('Yes', ['Yes - full rights', 'Yes - with sponsorship', 'No']), null)
+  check('nothing close is null', matchOption('Maybe later', YN), null)
+
+  reset()
+  aiReply = 'Yes'
+  r = await resolveAnswer({ question: 'Willing to relocate?', options: YN, cfg: unattended() })
+  check('a short model answer resolves to the option', r.answer, 'Yes')
+  check('and the option is what is cached', cache.get('Willing to relocate?').answer, 'Yes')
+
+  reset()
+  aiReply = 'I prefer hybrid work'
+  userReply = 'no'
+  let askedOptions = null
+  r = await resolveAnswer({
+    question: 'Willing to relocate?', options: YN,
+    cfg: { ...attended(), askQuestion: async (q, opts) => { asked.push(q); askedOptions = opts; return userReply } },
+  })
+  check('a model answer that is no option goes to the user', asked.length, 1)
+  check('with the options', askedOptions, ['Yes', 'No'])
+  check('the question text names them too', /Yes \/ No/.test(asked[0]), true)
+  check('the user\'s answer is mapped onto the option', r.answer, 'No')
+
+  reset()
+  aiReply = 'I prefer hybrid work'
+  r = await resolveAnswer({ question: 'Willing to relocate?', options: YN, cfg: unattended() })
+  check('with nobody to ask, a mismatch leaves the field alone', r.answer, '')
+
+  reset()
+  cache.set('Willing to relocate?', { answer: 'Happy to discuss', source: 'user' })
+  aiReply = 'No'
+  r = await resolveAnswer({ question: 'Willing to relocate?', options: YN, cfg: unattended() })
+  check('a cached answer that is no option is passed over', r.answer, 'No')
+  check('and the model is asked instead', aiCalls, 1)
+
+  reset()
+  aiReply = 'Yes'
+  r = await resolveAnswer({
+    question: 'Security clearance?', options: ['Yes, I hold a current security clearance', 'No'],
+    cfg: unattended(),
+  }).catch(e => e)
+  check('the OPTION is fabrication-checked, not just the model\'s word', r instanceof ScreeningAnswerRefused, true)
+
   done()
 })()

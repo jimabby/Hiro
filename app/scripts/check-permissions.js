@@ -5,9 +5,14 @@
 // plugins add their own. expo-camera, for example, adds RECORD_AUDIO to the
 // Android manifest by default, which is how Hiro ended up requesting a
 // microphone it never touches: nothing in app.json mentioned it, so nothing in
-// review caught it. This runs `expo config --type public` and checks the merged
-// result, so a dependency bump that reintroduces one fails CI instead of
+// review caught it. This runs `expo config --type introspect` and checks the
+// merged result, so a dependency bump that reintroduces one fails CI instead of
 // shipping.
+//
+// Introspect rather than public: the public config omits what plugins add in
+// their Info.plist and manifest mods. That hid every plugin-added iOS usage
+// description, and the READ/WRITE_EXTERNAL_STORAGE that Expo's auto-applied
+// expo-file-system plugin puts in the Android manifest.
 
 const { execFileSync } = require('child_process')
 const path = require('path')
@@ -23,6 +28,14 @@ const ALLOWED_ANDROID = {
   'android.permission.POST_NOTIFICATIONS': 'recruiter-reply and interview push notifications',
   'android.permission.RECEIVE_BOOT_COMPLETED': 'restoring scheduled notifications after a reboot',
   'android.permission.VIBRATE': 'notification feedback',
+  // Added by expo-local-authentication for the opt-in App Lock. USE_FINGERPRINT
+  // is the pre-Android 9 name for the same capability.
+  'android.permission.USE_BIOMETRIC': 'the opt-in biometric App Lock',
+  'android.permission.USE_FINGERPRINT': 'the opt-in biometric App Lock on Android 8 and older',
+  // Added by expo-calendar. Reading is needed to find a calendar the user can
+  // write to — Android has no single default calendar to hand an event to.
+  'android.permission.READ_CALENDAR': 'finding a writable calendar for "Add to calendar" on an interview',
+  'android.permission.WRITE_CALENDAR': 'adding an interview to the calendar when the user asks',
 }
 
 const ALLOWED_IOS_KEYS = {
@@ -30,6 +43,9 @@ const ALLOWED_IOS_KEYS = {
   NSAppTransportSecurity: 'plain-HTTP access to the desktop on the local network',
   NSLocalNetworkUsageDescription: 'discovering the desktop on the local network',
   NSBonjourServices: 'discovering the desktop on the local network',
+  NSFaceIDUsageDescription: 'the opt-in biometric App Lock',
+  NSCalendarsUsageDescription: 'adding an interview to the calendar when the user asks',
+  NSCalendarsFullAccessUsageDescription: 'adding an interview to the calendar when the user asks',
 }
 
 // Permissions that must never appear, whatever adds them. Listed explicitly so
@@ -55,7 +71,7 @@ try {
   // shell: true, and shell: true would concatenate the arguments instead of
   // escaping them.
   const cli = require.resolve('expo/bin/cli', { paths: [APP_DIR] })
-  const out = execFileSync(process.execPath, [cli, 'config', '--type', 'public', '--json'], {
+  const out = execFileSync(process.execPath, [cli, 'config', '--type', 'introspect', '--json'], {
     cwd: APP_DIR,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],

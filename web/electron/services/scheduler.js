@@ -245,12 +245,24 @@ function setupSmartSchedule(cfg) {
   if (cfg.enableSeek) totalLimit += cfg.dailyLimitSeek || 10
   if (cfg.enableIndeed) totalLimit += cfg.dailyLimitIndeed || 10
   if (cfg.enableLinkedIn) totalLimit += cfg.dailyLimitLinkedIn || 10
+  // Company career boards are a platform like the others. Leaving them out meant
+  // a user with only career boards enabled had a total of 0 — and a smart
+  // schedule that silently never ran.
+  if (cfg.enableAtsBoards) totalLimit += cfg.dailyLimitAts || 10
   const numBatches = Math.ceil(totalLimit / batchSize)
 
   const startMinutes = startH * 60 + startM
   const endMinutes = endH * 60 + endM
   const totalMinutes = endMinutes - startMinutes
-  if (totalMinutes <= 0 || numBatches <= 0) return
+  if (numBatches <= 0) {
+    log('Smart schedule: nothing scheduled — no platform is enabled (or every daily limit is 0).')
+    return
+  }
+  if (totalMinutes <= 0) {
+    log(`Smart schedule: nothing scheduled — the finish time (${cfg.smartScheduleEndTime || '17:00'}) `
+      + `is not after the start time (${cfg.smartScheduleStartTime || '09:00'}).`)
+    return
+  }
 
   // The window cannot hold more batches than it has minutes. Past that point
   // `interval` floors to 0, every batch is planned for the same moment, and
@@ -294,6 +306,25 @@ function setupSmartSchedule(cfg) {
   }
 }
 
+// Local calendar day, "YYYY-MM-DD".
+function dayKey(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// A jitter in [-jitter, jitter) that is fixed for a given day and batch slot.
+function seededJitter(day, index, jitter) {
+  if (!(jitter > 0)) return 0
+  const hash = require('crypto').createHash('sha256').update(`${day}:${index}`).digest()
+  return Math.floor((hash.readUInt32BE(0) / 0x100000000) * jitter * 2) - jitter
+}
+
+// Which of today's batch slots have fired. Reset when the day changes.
+let batchesRun = { day: '', slots: new Set() }
+function markBatchRun(day, index) {
+  if (batchesRun.day !== day) batchesRun = { day, slots: new Set() }
+  batchesRun.slots.add(index)
+}
+
 function scheduleTodayBatches(numBatches, interval, startMinutes, jitter, batchSize, endMinutes) {
   // Clear existing batch timeouts
   for (const t of batchTimeouts) clearTimeout(t)
@@ -302,10 +333,18 @@ function scheduleTodayBatches(numBatches, interval, startMinutes, jitter, batchS
 
   const now = new Date()
   const nowMinutes = now.getHours() * 60 + now.getMinutes()
+  const day = dayKey(now)
 
   for (let i = 0; i < numBatches; i++) {
+    // Already ran today. A settings save rebuilds today's plan, and with fresh
+    // random jitter a batch that ran at 10:05 could be re-planned for 10:20 and
+    // run a second time — so the slots that ran are remembered per day.
+    if (batchesRun.day === day && batchesRun.slots.has(i)) continue
     const baseMinutes = startMinutes + i * interval
-    const jitterOffset = jitter > 0 ? Math.floor(Math.random() * jitter * 2) - jitter : 0
+    // Seeded per day and slot rather than random per rebuild, so the same
+    // settings give the same plan all day: a slot that has already passed
+    // stays in the past instead of being jittered back into the future.
+    const jitterOffset = seededJitter(day, i, jitter)
     // Clamped at BOTH ends. Only the lower bound was enforced, so jitter on the
     // last batch pushed it past the finish time the user configured — a
     // 09:00–09:30 window scheduled its final batch at 09:41.
@@ -321,6 +360,7 @@ function scheduleTodayBatches(numBatches, interval, startMinutes, jitter, batchS
     batchSchedule.push(timeStr)
 
     const timeout = setTimeout(async () => {
+      markBatchRun(day, i)
       await runBatch(batchSize)
     }, delayMs)
     batchTimeouts.push(timeout)
@@ -975,6 +1015,15 @@ async function runInboxCheck({ manual = false } = {}) {
     } else {
       log(`Inbox checked: ${result.checked} emails scanned, no new replies.`)
     }
+    // Replies Hiro could not pin to one application — several are open at that
+    // employer and the email names none of them. No status was changed; the
+    // user is told instead, with the candidates, so they can set it by hand.
+    for (const item of result.needsReview || []) {
+      const roles = item.candidates.map(c => c.job_title).join(', ')
+      log(`Inbox: a reply from ${item.from} ("${item.subject}") could be about any of your ${item.company} applications (${roles}) — no status was changed; check it and update the right one.`)
+      notify({ type: 'inbox-ambiguous', item })
+      nativeNotify('Reply needs a look', `${item.company} replied, but Hiro can't tell which of ${item.candidates.length} applications it's about.`)
+    }
     return result
   } catch (err) {
     log(`Inbox check error: ${err.message}`)
@@ -1081,4 +1130,4 @@ function getBatchSchedule() {
 
 module.exports = { init, restart, stop, cancelScan, runNow, runDryRun, requestScan, processQueue, getScanInfo, getLastDryRun, runInboxCheck, runFollowUp, runStaleSweep, runContactReminders, runBackupDrill, runBackupDrillIfDue, getStatus, getBatchSchedule, runBatch,
   // exported for tests
-  evenHourInterval }
+  evenHourInterval, seededJitter, _markBatchRun: markBatchRun }

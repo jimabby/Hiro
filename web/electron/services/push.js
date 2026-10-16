@@ -60,13 +60,34 @@ function isEnabled(kind) {
 // Tokens are registered by the phone into the shared `devices` table, so they
 // come from cloudSync rather than local config. Required lazily: cloudSync
 // requires this module for its own notifications.
+//
+// Returns null when the list could not be READ, which is not the same as an
+// empty list. Both used to come back as [], so a desktop that was offline, or
+// whose cloud session had lapsed, recorded every reminder as delivered to "no
+// devices" and never sent it once the connection came back.
 async function getTargets() {
   try {
     const cloudSync = require('./cloudSync')
-    return await cloudSync.getPushTargets()
+    const targets = await cloudSync.getPushTargets()
+    if (!Array.isArray(targets)) return null
+    if (targets.length === 0 && typeof cloudSync.getStatus === 'function') {
+      // getPushTargets answers [] when it has no session to ask with. That is
+      // "could not look", not "nobody is registered".
+      const status = cloudSync.getStatus()
+      if (status && status.signedIn === false) return null
+    }
+    return targets
   } catch {
-    return []
+    return null
   }
+}
+
+// A failure that says nothing about the notification itself — the request never
+// reached Expo, or Expo could not take it right now. Worth trying again later.
+function isTransient(err) {
+  return !!err && (err.transient === true || err.name === 'AbortError' || err.name === 'TypeError'
+    || ['ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'ENETUNREACH']
+      .includes(err.code || err.cause?.code))
 }
 
 // An Expo token that no longer maps to an installed app comes back as
@@ -96,7 +117,12 @@ async function postToExpo(messages) {
       },
       body: JSON.stringify(messages),
     })
-    if (!res.ok) throw new Error(`Expo push returned HTTP ${res.status}`)
+    if (!res.ok) {
+      const err = new Error(`Expo push returned HTTP ${res.status}`)
+      // Overloaded or rate-limited: the message was not refused, just not taken.
+      err.transient = res.status >= 500 || res.status === 429
+      throw err
+    }
     const body = await res.json()
     return Array.isArray(body?.data) ? body.data : []
   } finally {
@@ -121,6 +147,12 @@ async function send({ kind, dedupeKey, title, body, data = {} }) {
     }
 
     const targets = await getTargets()
+    if (targets === null) {
+      // Give the key back: nothing was sent, and the next check — once the
+      // connection or the cloud session is back — should try again.
+      releaseKey(dedupeKey)
+      return { sent: 0, reason: 'targets-unavailable' }
+    }
     if (targets.length === 0) {
       // The key stays claimed: there is no phone to tell, and telling it later
       // about a reply from last Tuesday is worse than not telling it.
@@ -128,21 +160,36 @@ async function send({ kind, dedupeKey, title, body, data = {} }) {
     }
 
     let sent = 0
+    let delivered = false
     for (let i = 0; i < targets.length; i += MAX_PER_REQUEST) {
       const chunk = targets.slice(i, i + MAX_PER_REQUEST)
-      const tickets = await postToExpo(chunk.map(t => ({
-        to: t.token,
-        title,
-        body,
-        sound: 'default',
-        // Opens the right screen when the notification is tapped.
-        data: { kind, ...data },
-        // Group by kind so five expiring-application notices collapse into one
-        // stack on Android rather than five separate cards.
-        channelId: 'default',
-        categoryId: kind,
-        priority: kind === 'interview' ? 'high' : 'default',
-      })))
+      let tickets
+      try {
+        tickets = await postToExpo(chunk.map(t => ({
+          to: t.token,
+          title,
+          body,
+          sound: 'default',
+          // Opens the right screen when the notification is tapped.
+          data: { kind, ...data },
+          // Group by kind so five expiring-application notices collapse into one
+          // stack on Android rather than five separate cards.
+          channelId: 'default',
+          categoryId: kind,
+          priority: kind === 'interview' ? 'high' : 'default',
+        })))
+      } catch (err) {
+        // Nothing reached Expo at all: release the key so the event is retried.
+        // Once one batch has gone out the key stays claimed — releasing it then
+        // would send the same notification twice to the phones already told.
+        if (!delivered && isTransient(err)) {
+          releaseKey(dedupeKey)
+          logger.append(`[push] Could not reach Expo for "${title}" (${err.message}) — will try again`)
+          return { sent: 0, reason: err.message, retry: true }
+        }
+        throw err
+      }
+      delivered = true
 
       tickets.forEach((ticket, n) => {
         if (ticket?.status === 'ok') { sent++; return }
@@ -158,6 +205,10 @@ async function send({ kind, dedupeKey, title, body, data = {} }) {
     logger.append(`[push] Could not send "${title}": ${err.message}`)
     return { sent: 0, reason: err.message }
   }
+}
+
+function releaseKey(dedupeKey) {
+  try { database.releasePushKey(dedupeKey) } catch { /* the ledger is best-effort here */ }
 }
 
 // ─── Event notifications ─────────────────────────────────────────
@@ -389,6 +440,9 @@ async function runDueChecks() {
 // for a real event. Bypasses the ledger, since the point is to send it again.
 async function sendTest() {
   const targets = await getTargets()
+  if (targets === null) {
+    return { success: false, reason: 'Could not read the list of phones — check that cloud sync is signed in and this computer is online.' }
+  }
   if (targets.length === 0) {
     return { success: false, reason: 'No phone has registered for notifications yet. Sign in on the phone and enable notifications there.' }
   }

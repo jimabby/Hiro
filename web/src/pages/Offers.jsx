@@ -146,15 +146,25 @@ function NegotiationPanel({ offer, showToast, onSaved }) {
   }
 
   async function saveEdits() {
-    await window.api.saveOffer?.(offer.applicationId, {
-      ...formFrom(offer),
-      targetBase: targetBase === '' ? null : Number(targetBase),
-      targetBonus: targetBonus === '' ? null : Number(targetBonus),
-      priorities,
-      counterDraft: draft,
-    })
-    onSaved?.()
-    showToast?.('Draft saved', 'success')
+    // The result used to be ignored, so a rejected save still said "Draft
+    // saved" — and a thrown one said nothing at all.
+    try {
+      const res = await window.api.saveOffer?.(offer.applicationId, {
+        ...formFrom(offer),
+        targetBase: targetBase === '' ? null : Number(targetBase),
+        targetBonus: targetBonus === '' ? null : Number(targetBonus),
+        priorities,
+        counterDraft: draft,
+      })
+      if (res?.success === false) {
+        showToast?.(res.reason || res.error || 'Could not save the draft', 'error')
+        return
+      }
+      onSaved?.()
+      showToast?.('Draft saved', 'success')
+    } catch (err) {
+      showToast?.(`Could not save the draft: ${err.message}`, 'error')
+    }
   }
 
   return (
@@ -324,7 +334,13 @@ export default function Offers({ active, showToast, onOpenApplication }) {
       .filter(a => (a.status === 'offer' || a.status === 'interview') && !have.has(a.id)))
   }, [])
 
-  useEffect(() => { if (active !== false) load().catch(() => {}) }, [active, load])
+  // A first load that failed used to leave the page on "Loading…" forever.
+  const [loadError, setLoadError] = useState(null)
+  const reload = useCallback(() => {
+    setLoadError(null)
+    return load().catch(err => setLoadError(err?.message || String(err)))
+  }, [load])
+  useEffect(() => { if (active !== false) reload() }, [active, reload])
 
   async function save(applicationId) {
     setSaving(true)
@@ -345,6 +361,14 @@ export default function Offers({ active, showToast, onOpenApplication }) {
     }
   }
 
+  if (!data && loadError) {
+    return (
+      <div role="alert" style={{ color: 'var(--text-muted)', fontSize: 13 }}>
+        Could not load offers: {loadError}{' '}
+        <button className="btn btn-ghost btn-sm" onClick={reload}>Try again</button>
+      </div>
+    )
+  }
   if (!data) return <div style={{ color: 'var(--text-muted)' }}>Loading…</div>
 
   const offers = data.offers || []

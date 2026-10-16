@@ -66,7 +66,26 @@ Your phone and computer must be on the same network.
 - **Push notifications** (cloud mode) — recruiter replies, interview reminders, **offers about to expire** (seven days out, then three, then the last day), follow-ups coming due, closing dates, review-queue items, failed scans and new sign-ins. Tapping one opens what it was about
 - **Follows your phone's appearance setting** — light and dark, switching live. Nothing to configure: a phone's theme is already deliberate and usually scheduled, and a companion app that stays black while everything else on the device has turned white is the one that looks broken
 - **Haptics** — a light tap when a status, filter or sort changes, and a success or failure buzz when a save lands or is rolled back
-- **Settings** — connection test, re-pairing, notification toggle, and (cloud mode) permanent account deletion
+- **Settings** — connection test, re-pairing, notification toggle, App Lock, and (cloud mode) permanent account deletion
+- **App Lock** (opt-in) — Face ID, a fingerprint or the phone's passcode when Hiro opens, and again after 0, 1, 5 or 15 minutes in the background
+- **Import a job** (paired with the desktop) — share a job link into Hiro from another app (Android), open `hiro://import?url=<encoded URL>` (any platform, e.g. from an iOS Shortcut), or tap **Import job from clipboard** on the Dashboard. It lands in the desktop's Needs Attention list through `POST /api/import-job`, the route the browser extension uses, and waits on the phone if the desktop is out of reach. The iOS share-sheet entry is not built yet: it needs an App Group and a share-extension target (`disableIOS` on the `expo-share-intent` plugin in app.json)
+- **Offline** — the last Applications list and Dashboard figures are kept on the phone (titles, companies, statuses and counts only — never tokens, documents or notes) and shown with a "cached · 5 min ago" badge when the desktop or cloud can't be reached, refreshing on their own when it is back
+- **Add to calendar** — on each upcoming interview on the Dashboard, in the phone's time zone; a date-only interview becomes an all-day event
+
+## Desktop contract for queued requests
+
+A scan or job import that could not reach the desktop is held on the phone and
+retried. Each carries an `Idempotency-Key` header (random, up to 64 characters
+of `[a-z0-9-]`), the same key on every retry of the same request. A request
+that timed out may already have run, so the desktop should remember the key
+with its response for at least 24 hours and answer a repeat with that response
+instead of acting twice. A desktop that ignores the header still works; a retry
+after a lost reply can then run the scan twice.
+
+Only an unreachable desktop (no connection, timeout, captive portal) or a busy
+one (408/429/5xx) keeps a request waiting. 401 asks the user to re-pair, and
+any other 4xx — including 403 with a `scope` the device lacks — removes it
+with the reason shown.
 
 ## Notifications
 
@@ -119,8 +138,10 @@ Three things that are easy to miss and are handled deliberately:
 
 ## Permissions
 
-Hiro asks for the camera (to scan the desktop's pairing QR code) and, if you enable
-them, notifications. Nothing else.
+Hiro asks for the camera (to scan the desktop's pairing QR code) and, only when you
+use the feature: notifications, Face ID / biometrics (App Lock), and the calendar
+(Add to calendar). Nothing else. Android's storage permissions, which Expo's
+file-system module adds by default, are blocked.
 
 `npm run check:permissions` asserts that against the **resolved** Expo config, not
 `app.json`, because config plugins add permissions of their own — `expo-camera`

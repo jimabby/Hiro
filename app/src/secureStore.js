@@ -85,70 +85,154 @@ async function available() {
   }
 }
 
-async function clearChunks(key) {
-  const base = safeKey(key)
-  let count = 0
+// ── Generations ─────────────────────────────────────────────────────
+// A write used to delete the old chunks and then write the new ones, with
+// nothing stopping a second write (supabase-js refreshing the session while the
+// app saved it) from interleaving. Killed or raced partway, that left no value
+// at all — a signed-out user — or chunks from two different values under one
+// count.
+//
+// Now each value is written under a fresh generation id, and only once every
+// chunk is in place does one write to the pointer ("<gen>:<count>") make it
+// the current value. A write interrupted before that leaves the old value
+// intact; after it, the new one is complete. Old generations are deleted last,
+// best-effort. And every operation on a key runs one at a time.
+//
+// The layout before this — a bare count under COUNT_SUFFIX and chunks named
+// `<key>.<i>` — is still read, and replaced on the next write.
+
+const POINTER_SUFFIX = '__ptr'
+
+const locks = new Map()
+function withLock(key, op) {
+  const prev = locks.get(key) || Promise.resolve()
+  const run = prev.then(op, op)
+  const tail = run.then(() => {}, () => {})
+  locks.set(key, tail)
+  // Drop the entry once nothing is queued behind it, so the map does not grow.
+  tail.then(() => { if (locks.get(key) === tail) locks.delete(key) })
+  return run
+}
+
+function newGeneration() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+}
+
+function parsePointer(raw) {
+  const m = /^([a-z0-9]+):(\d+)$/.exec(raw || '')
+  return m ? { gen: m[1], count: parseInt(m[2], 10) } : null
+}
+
+const chunkKey = (base, gen, i) => `${base}.g${gen}.${i}`
+
+async function readPointer(base) {
+  try { return parsePointer(await SecureStore.getItemAsync(base + POINTER_SUFFIX)) } catch { return null }
+}
+
+async function readLegacyCount(base) {
   try {
-    count = parseInt(await SecureStore.getItemAsync(base + COUNT_SUFFIX), 10) || 0
-  } catch { count = 0 }
+    const raw = await SecureStore.getItemAsync(base + COUNT_SUFFIX)
+    return raw == null ? null : (parseInt(raw, 10) || 0)
+  } catch { return null }
+}
+
+async function deleteGeneration(base, ptr) {
+  if (!ptr) return
+  await Promise.all(Array.from({ length: ptr.count }, (_, i) =>
+    SecureStore.deleteItemAsync(chunkKey(base, ptr.gen, i)).catch(() => {})))
+}
+
+async function deleteLegacy(base) {
+  const count = await readLegacyCount(base)
   const deletions = [SecureStore.deleteItemAsync(base + COUNT_SUFFIX).catch(() => {})]
-  for (let i = 0; i < count; i++) {
+  for (let i = 0; i < (count || 0); i++) {
     deletions.push(SecureStore.deleteItemAsync(`${base}.${i}`).catch(() => {}))
   }
   await Promise.all(deletions)
 }
 
+async function writeValue(key, value) {
+  const base = safeKey(key)
+  const previous = await readPointer(base)
+  const gen = newGeneration()
+  const chunks = splitIntoChunks(value)
+  try {
+    await Promise.all(chunks.map((c, i) => SecureStore.setItemAsync(chunkKey(base, gen, i), c)))
+  } catch (err) {
+    // The pointer was never moved, so the old value is still the value. Tidy
+    // whatever part of the new generation did land.
+    await deleteGeneration(base, { gen, count: chunks.length })
+    throw err
+  }
+  // The commit: one write, and the new value is current.
+  await SecureStore.setItemAsync(base + POINTER_SUFFIX, `${gen}:${chunks.length}`)
+  await deleteGeneration(base, previous)
+  await deleteLegacy(base)
+}
+
+async function readValue(key) {
+  const base = safeKey(key)
+  const ptr = await readPointer(base)
+  if (ptr) {
+    const parts = await Promise.all(Array.from({ length: ptr.count }, (_, i) =>
+      SecureStore.getItemAsync(chunkKey(base, ptr.gen, i)).catch(() => null)))
+    // With writes serialised and committed by the pointer, a missing chunk
+    // means the keychain lost it. The value is unusable; report absence so the
+    // caller re-authenticates instead of sending a corrupted token.
+    if (parts.some(p => p == null)) {
+      await removeValue(key)
+      return null
+    }
+    return parts.join('')
+  }
+
+  const legacyCount = await readLegacyCount(base)
+  if (legacyCount != null) {
+    const parts = await Promise.all(Array.from({ length: legacyCount }, (_, i) =>
+      SecureStore.getItemAsync(`${base}.${i}`).catch(() => null)))
+    if (parts.some(p => p == null)) {
+      await deleteLegacy(base)
+      return null
+    }
+    return parts.join('')
+  }
+
+  // Nothing in SecureStore yet — an install upgrading from the AsyncStorage
+  // version. Move the value across, then remove the plaintext original.
+  const legacy = await AsyncStorage.getItem(key).catch(() => null)
+  if (legacy == null) return null
+  try {
+    await writeValue(key, legacy)
+    await AsyncStorage.removeItem(key)
+  } catch {
+    // Migration failed (keychain locked, out of space). Keep the legacy value
+    // rather than stranding the user signed out; the next read retries.
+  }
+  return legacy
+}
+
+async function removeValue(key) {
+  const base = safeKey(key)
+  const ptr = await readPointer(base)
+  // Pointer first: from this moment there is no value, whatever happens to
+  // the deletes after it.
+  await SecureStore.deleteItemAsync(base + POINTER_SUFFIX).catch(() => {})
+  await deleteGeneration(base, ptr)
+  await deleteLegacy(base)
+}
+
 async function setItem(key, value) {
   if (!(await available())) return AsyncStorage.setItem(key, value)
-  const base = safeKey(key)
-  await clearChunks(key)
-  const chunks = splitIntoChunks(value)
-  // Chunks first, count last: a write interrupted partway leaves no count, so
-  // getItem reports "nothing stored" rather than reassembling a truncated
-  // token and failing authentication in a way that looks like a server fault.
-  await Promise.all(chunks.map((c, i) => SecureStore.setItemAsync(`${base}.${i}`, c)))
-  await SecureStore.setItemAsync(base + COUNT_SUFFIX, String(chunks.length))
+  return withLock(safeKey(key), () => writeValue(key, value))
 }
 
 async function getItem(key) {
   if (!(await available())) return AsyncStorage.getItem(key)
-  const base = safeKey(key)
-  let count = null
-  try {
-    count = await SecureStore.getItemAsync(base + COUNT_SUFFIX)
-  } catch { count = null }
-
-  if (count == null) {
-    // Nothing in SecureStore yet — an install upgrading from the AsyncStorage
-    // version. Move the value across, then remove the plaintext original.
-    const legacy = await AsyncStorage.getItem(key).catch(() => null)
-    if (legacy == null) return null
-    try {
-      await setItem(key, legacy)
-      await AsyncStorage.removeItem(key)
-    } catch {
-      // Migration failed (keychain locked, out of space). Keep the legacy value
-      // rather than stranding the user signed out; the next read retries.
-      return legacy
-    }
-    return legacy
-  }
-
-  const n = parseInt(count, 10) || 0
-  const parts = await Promise.all(
-    Array.from({ length: n }, (_, i) => SecureStore.getItemAsync(`${base}.${i}`).catch(() => null))
-  )
-  // A missing chunk means the stored value is unusable; report absence so the
-  // caller re-authenticates instead of sending a corrupted token.
-  if (parts.some(p => p == null)) {
-    await clearChunks(key)
-    return null
-  }
-  return parts.join('')
+  return withLock(safeKey(key), () => readValue(key))
 }
 
 async function removeItem(key) {
-  await clearChunks(key)
+  if (await available()) await withLock(safeKey(key), () => removeValue(key))
   // Always clear the legacy copy too, so "log out" really removes everything.
   await AsyncStorage.removeItem(key).catch(() => {})
 }

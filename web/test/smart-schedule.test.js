@@ -125,6 +125,35 @@ function plan(overrides = {}) {
   check('the planned schedule is reported in chronological order', sorted, true)
 }
 
+// ── Career boards count towards the plan ───────────────────────────
+// The total ignored dailyLimitAts, so with only career boards enabled it was 0
+// and the smart schedule never scheduled anything, without a word.
+{
+  const times = plan({ enableSeek: false, enableIndeed: false, enableLinkedIn: false, enableAtsBoards: true, dailyLimitAts: 9 })
+  check('career boards alone still get batches', times.length, 3)
+  const none = plan({ enableSeek: false, enableIndeed: false, enableLinkedIn: false, enableAtsBoards: false })
+  check('nothing enabled plans nothing', none.length, 0)
+}
+
+// ── A settings save must not re-run a batch ───────────────────────
+// Saving settings rebuilds today's batches. With fresh random jitter each
+// rebuild, a batch that had already run could be re-planned later in the day
+// and run again.
+{
+  const first = plan()
+  const second = plan()
+  check('the same settings give the same plan all day', second, first)
+  check('jitter is seeded per day and slot', scheduler.seededJitter('2026-08-24', 3, 15), scheduler.seededJitter('2026-08-24', 3, 15))
+  check('different days jitter differently', [0, 1, 2, 3, 4, 5].some(i =>
+    scheduler.seededJitter('2026-08-24', i, 15) !== scheduler.seededJitter('2026-08-25', i, 15)), true)
+
+  // The first slot fires; a settings save follows. That slot must not come back.
+  scheduler._markBatchRun('2026-08-24', 0)
+  const after = plan()
+  check('a batch that already ran is not re-planned', after.length, first.length - 1)
+  check('the rest of the plan is unchanged', after, first.slice(1))
+}
+
 scheduler.stop({ abortRun: false })
 global.Date = RealDate
 done()

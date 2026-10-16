@@ -1,32 +1,16 @@
 const { chromium } = require('playwright')
-const { randomDelay, randomUserAgent, buildResumeFile, verifySubmission, confirmSubmission, gotoResultsPage, createSelectorProbe, launchOptions } = require('./utils')
+const { randomDelay, randomUserAgent, buildResumeFile, verifySubmission, captureProof, openPage, confirmSubmission, gotoResultsPage, createSelectorProbe, launchOptions } = require('./utils')
+const { answerScreeningQuestions } = require('./screening')
 
 // Which selectors matched on the most recent scrape — see seek.js.
 let lastSelectorReport = null
 function getSelectorReport() { return lastSelectorReport }
 const linkedinSession = require('../linkedinSession')
-const { resolveAnswer } = require('../screeningAnswers')
 const { isAiConfigured } = require('../ai/configured')
 
 // See seek.js — one page of results goes stale within days once already-seen
 // listings are skipped.
 const MAX_PAGES = 10
-
-// Node.js substitute for the browser-only CSS.escape(). A leading digit needs
-// the numeric escape form; a plain backslash produces a selector querySelector
-// rejects outright.
-function cssEscape(str) {
-  const s = String(str)
-  let out = ''
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i]
-    const code = s.charCodeAt(i)
-    if (i === 0 && code >= 0x30 && code <= 0x39) out += '\\3' + ch + ' '
-    else if (/[\w-]/.test(ch)) out += ch
-    else out += '\\' + ch
-  }
-  return out
-}
 
 function extractRecentJob(resumeText) {
   const clean = (resumeText || '').replace(/\*\*/g, '').replace(/^\*\s+/gm, '')
@@ -49,15 +33,12 @@ function extractRecentJob(resumeText) {
 
 async function scrape(cfg) {
   const { jobKeywords, jobLocation } = cfg
-  const browser = await chromium.launch(launchOptions({ headless: true }))
-
   const storagePath = linkedinSession.getStoragePath()
   const fs = require('fs')
   const contextOptions = { userAgent: randomUserAgent() }
   if (fs.existsSync(storagePath)) contextOptions.storageState = storagePath
-
-  const context = await browser.newContext(contextOptions)
-  const page = await context.newPage()
+  const browser = await chromium.launch(launchOptions({ headless: true }))
+  const page = await openPage(browser, contextOptions) // closes the browser if it throws
   const jobs = []
   const seen = new Set()
   const pages = Math.min(MAX_PAGES, Math.max(1, Number(cfg.scrapePages) || 1))
@@ -121,13 +102,12 @@ async function scrape(cfg) {
 }
 
 async function getJobDescription(jobUrl) {
-  const browser = await chromium.launch(launchOptions({ headless: true }))
   const storagePath = linkedinSession.getStoragePath()
   const fs = require('fs')
   const contextOptions = { userAgent: randomUserAgent() }
   if (fs.existsSync(storagePath)) contextOptions.storageState = storagePath
-  const context = await browser.newContext(contextOptions)
-  const page = await context.newPage()
+  const browser = await chromium.launch(launchOptions({ headless: true }))
+  const page = await openPage(browser, contextOptions) // closes the browser if it throws
 
   try {
     await page.goto(jobUrl, { waitUntil: 'domcontentloaded', timeout: 30000 })
@@ -147,15 +127,18 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
     return { success: false, reason: 'LinkedIn login required — go to Settings and click Login to LinkedIn' }
   }
 
-  const browser = await chromium.launch(launchOptions({ headless: false, slowMo: 50 }))
-
   const storagePath = linkedinSession.getStoragePath()
   const fs = require('fs')
   const contextOptions = { userAgent: randomUserAgent() }
   if (fs.existsSync(storagePath)) contextOptions.storageState = storagePath
 
-  const context = await browser.newContext(contextOptions)
-  const page = await context.newPage()
+  const browser = await chromium.launch(launchOptions({ headless: false, slowMo: 50 }))
+  let page
+  try {
+    page = await openPage(browser, contextOptions) // closes the browser if it throws
+  } catch (err) {
+    return { success: false, reason: `Could not open a LinkedIn session: ${err.message}` }
+  }
 
   let resumePath = null
   if (tailoredResume) {
@@ -275,49 +258,14 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
         }
       }
 
-      // Dynamically detect and answer screening questions
+      // Dynamically detect and answer screening questions — see ./screening.js
+      // (shared with Seek and Indeed). Choice fields are answered from their own
+      // option labels, and an answer is recorded only once the form shows it:
+      // this used to record the model's answer first and then select it with a
+      // selectOption() that failed silently whenever the wording was not exactly
+      // an option.
       if (isAiConfigured(cfg)) {
-        const labels = await page.$$('.jobs-easy-apply-modal label, label').catch(() => [])
-        for (const labelEl of labels) {
-          const questionText = await labelEl.evaluate(el => el.textContent?.trim()).catch(() => '')
-          if (!questionText || questionText.length < 3) continue
-          if (/cover.?letter/i.test(questionText)) continue
-
-          const forId = await labelEl.evaluate(el => el.getAttribute('for')).catch(() => null)
-          let input = null
-          if (forId) {
-            input = await page.$(`#${cssEscape(forId)}`).catch(() => null)
-          }
-          if (!input) {
-            input = await labelEl.$('input:not([type="hidden"]):not([type="file"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"]), textarea, select').catch(() => null)
-          }
-          if (!input) continue
-
-          const tag = await input.evaluate(el => el.tagName.toLowerCase()).catch(() => '')
-          if (!tag) continue
-
-          const currentVal = await input.inputValue().catch(() => '')
-          if (currentVal.trim()) continue
-
-          // Shared with seek.js and indeed.js — see services/screeningAnswers.js
-          // for why the fabrication check on an answer cannot live in three
-          // copies.
-          const { answer, source: answerSource } = await resolveAnswer({
-            question: questionText, cfg, log: cfg.log,
-          })
-
-          if (!answer) continue
-          // Recorded so the saved application shows what was submitted for the
-          // user, rather than leaving the detail panel's Q&A section empty.
-          recordAnswer(questionText, answer, answerSource)
-
-          if (tag === 'select') {
-            await input.selectOption({ label: answer }).catch(() => {})
-          } else {
-            await input.fill(answer).catch(() => {})
-          }
-          await randomDelay(300, 700)
-        }
+        await answerScreeningQuestions(page, { cfg, record: recordAnswer, labelSelector: '.jobs-easy-apply-modal label, label' })
       }
 
       // Check for submit button
@@ -343,7 +291,7 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
         await randomDelay(3000, 5000)
         const check = await verifySubmission(page)
         if (!check.ok) return { success: false, reason: check.reason, screeningQa }
-        return { success: true, screeningQa }
+        return { success: true, screeningQa, screenshot: await captureProof(page) }
       }
 
       // Click next/continue

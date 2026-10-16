@@ -33,7 +33,39 @@
     const signature = hex(await crypto.subtle.sign('HMAC', await key(token, 'HMAC'), encoder.encode(input)))
     return { 'X-Hiro-Timestamp': timestamp, 'X-Hiro-Nonce': nonce, 'X-Hiro-Signature': signature }
   }
-  const protocol = { encrypt, decrypt, signedHeaders }
+  // The desktop address the user typed, as a URL host. Parsed with URL rather
+  // than split on ':' — splitting turned "fd00::5" into "fd00" and asked for
+  // permission to reach a host that does not exist. A bare IPv6 address is
+  // bracketed first, which is the form URL (and a host permission) needs.
+  function parseDesktopAddress(input) {
+    let text = String(input || '').trim()
+    if (!text) throw new Error('Enter the desktop address.')
+    if (!/^https?:\/\//i.test(text)) {
+      if (!text.startsWith('[') && (text.match(/:/g) || []).length >= 2) text = `[${text}]`
+      text = `http://${text}`
+    }
+    let url
+    try { url = new URL(text) } catch { throw new Error('That is not a valid desktop address.') }
+    if (url.protocol !== 'http:' || !url.hostname) throw new Error('That is not a valid desktop address.')
+    return { host: url.hostname, port: url.port ? Number(url.port) : null, origin: `http://${url.hostname}/*` }
+  }
+
+  // Every request to the desktop gives up after a while. A desktop that is
+  // asleep, or an address that silently drops packets, otherwise left the popup
+  // on "Importing…" until the browser's own minutes-long timeout.
+  const REQUEST_TIMEOUT_MS = 10000
+  async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS, fetchImpl = fetch) {
+    try {
+      return await fetchImpl(url, { ...options, signal: AbortSignal.timeout(timeoutMs) })
+    } catch (err) {
+      if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+        throw new Error('The desktop did not answer. Check it is on, Hiro is running and the mobile server is enabled.')
+      }
+      throw err
+    }
+  }
+
+  const protocol = { encrypt, decrypt, signedHeaders, parseDesktopAddress, fetchWithTimeout, REQUEST_TIMEOUT_MS }
   root.HiroProtocol = protocol
   if (typeof module !== 'undefined') module.exports = protocol
 })(globalThis)

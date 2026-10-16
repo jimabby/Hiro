@@ -1,7 +1,10 @@
-import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense, memo } from 'react'
 import Setup from './pages/Setup'
 import Dashboard from './pages/Dashboard'
 import HiroLogo from './components/HiroLogo'
+import { appendLog, setLogs } from './logStore'
+import { pushToast, historyEntry, loadHistory, saveHistory, loadSeenAt, saveSeenAt, MAX_HISTORY } from './toasts'
+import { exportCsv } from './exportCsv'
 
 // Every page except the two that are needed immediately is its own chunk.
 //
@@ -17,18 +20,36 @@ import HiroLogo from './components/HiroLogo'
 // its scroll position and its subscriptions survive navigation exactly as they
 // did before. The only thing that changed is that a page you have never opened
 // costs nothing.
-const Pipeline = lazy(() => import('./pages/Pipeline'))
-const NeedsAttention = lazy(() => import('./pages/NeedsAttention'))
-const Review = lazy(() => import('./pages/Review'))
-const Settings = lazy(() => import('./pages/Settings'))
-const Timeline = lazy(() => import('./pages/Timeline'))
-const Analytics = lazy(() => import('./pages/Analytics'))
-const Workbench = lazy(() => import('./pages/Workbench'))
-const Offers = lazy(() => import('./pages/Offers'))
-const AskHiro = lazy(() => import('./pages/AskHiro'))
+//
+// Each page is wrapped in memo() as it loads. Every page stays mounted, so
+// without it any App state change — a toast, a badge count — re-rendered all of
+// them; with it, a page re-renders only when its own props change, which is why
+// every callback passed below is stable.
+const memoPage = (load) => lazy(() => load().then(m => ({ default: memo(m.default) })))
+const Pipeline = memoPage(() => import('./pages/Pipeline'))
+const NeedsAttention = memoPage(() => import('./pages/NeedsAttention'))
+const Review = memoPage(() => import('./pages/Review'))
+const Settings = memoPage(() => import('./pages/Settings'))
+const Timeline = memoPage(() => import('./pages/Timeline'))
+const Analytics = memoPage(() => import('./pages/Analytics'))
+const Workbench = memoPage(() => import('./pages/Workbench'))
+const Offers = memoPage(() => import('./pages/Offers'))
+const AskHiro = memoPage(() => import('./pages/AskHiro'))
 import useModalFocus from './hooks/useModalFocus'
 import ErrorBoundary from './components/ErrorBoundary'
 import ShortcutHelp from './components/ShortcutHelp'
+import CommandPalette from './components/CommandPalette'
+import NotificationCenter from './components/NotificationCenter'
+
+// Settings tabs the command palette can open directly.
+const SETTINGS_TABS = [
+  { id: 'accounts', label: 'Accounts & Schedule' },
+  { id: 'criteria', label: 'Job, Resume & Cover Letter' },
+  { id: 'automation', label: 'Automation & Boards' },
+  { id: 'notifications', label: 'Notifications' },
+  { id: 'data', label: 'Data Management' },
+  { id: 'about', label: 'About' },
+]
 
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: '▦', shortcut: '1' },
@@ -73,7 +94,12 @@ export default function App() {
 
   // Set when another page asks the Dashboard to open a specific application.
   const [focusApp, setFocusApp] = useState(null)
+  // Set when the command palette asks Settings to open on a specific tab.
+  const [focusSettingsTab, setFocusSettingsTab] = useState(null)
   const [setupDone, setSetupDone] = useState(null)
+  // Set when the config could not be read at all. Without it the window stayed
+  // blank forever — `setupDone` never left null.
+  const [loadError, setLoadError] = useState(null)
   // Three states, not two. 'system' follows the OS appearance setting and is the
   // default for a fresh install — an app that opens dark on a machine set to
   // light looks broken before it has done anything. An explicit choice sticks.
@@ -98,17 +124,28 @@ export default function App() {
   // and an update can land within the same second, and the old single-toast
   // state silently dropped everything but the last one.
   const [toasts, setToasts] = useState([])
-  const [logs, setLogs] = useState([])
+  // Every toast, kept after it leaves the screen — dismissed, timed out or
+  // pushed off the stack. Persisted (redacted) so a restart keeps it.
+  const [history, setHistory] = useState(loadHistory)
+  const [historySeenAt, setHistorySeenAt] = useState(loadSeenAt)
+  useEffect(() => { saveHistory(history) }, [history])
+  // The activity log lives in logStore, not here — see the note there.
   const [scanRunning, setScanRunning] = useState(false)
   const [resumeModal, setResumeModal] = useState(false)
   const [resumeUploading, setResumeUploading] = useState(false)
-  const [question, setQuestion] = useState(null)
+  // Queues, not single slots. Several apply flows can be waiting at once; a
+  // second question used to overwrite the first, which then timed out in the
+  // main process with an empty answer. The head of each queue is on screen.
+  const [questions, setQuestions] = useState([])
   const [questionAnswer, setQuestionAnswer] = useState('')
   // Final checkpoint before an approved draft reaches an employer.
-  const [submitReview, setSubmitReview] = useState(null)
+  const [submitReviews, setSubmitReviews] = useState([])
+  const question = questions[0] || null
+  const submitReview = submitReviews[0] || null
   const [scanMode, setScanMode] = useState('real') // 'real' | 'dry' — used by the resume-required flow
   // The keyboard shortcut list. Opened with "?" or from the sidebar footer.
   const [helpOpen, setHelpOpen] = useState(false)
+  const [paletteOpen, setPaletteOpen] = useState(false)
 
   const dismissToast = useCallback((id) => {
     setToasts(prev => prev.filter(t => t.id !== id))
@@ -119,23 +156,43 @@ export default function App() {
   // notice, because it is not telling the user something, it is offering them
   // a decision, and 4.5 seconds is not long enough to notice a row vanished,
   // read what happened and reach for the button.
-  const showToast = useCallback((msg, type = 'info', action = null) => {
+  // `options.sticky` keeps a toast up until dismissed, like an error.
+  const showToast = useCallback((msg, type = 'info', action = null, options = {}) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const toast = { id, msg, type, action, sticky: !!options.sticky }
+    // Errors, sticky and Undo toasts are never pushed off the stack by newer
+    // ones; the oldest transient toast goes first. See toasts.js.
+    setToasts(prev => pushToast(prev, toast))
+    setHistory(prev => [...prev, historyEntry(toast)].slice(-MAX_HISTORY))
     // Errors stay put until dismissed. A failed scan reported for four seconds
     // while the user was in another window is a failure they never saw.
-    setToasts(prev => [...prev.slice(-3), { id, msg, type, action }])
-    if (type === 'error') return
+    if (type === 'error' || toast.sticky) return
     setTimeout(() => dismissToast(id), action ? 12000 : 4500)
   }, [dismissToast])
 
+  const markHistorySeen = useCallback(() => {
+    const now = Date.now()
+    setHistorySeenAt(now)
+    saveSeenAt(now)
+  }, [])
+  const clearHistory = useCallback(() => setHistory([]), [])
+  const unreadCount = useMemo(() => history.filter(e => e.at > historySeenAt).length, [history, historySeenAt])
+
+  const loadConfig = useCallback(() => {
+    setLoadError(null)
+    window.api.getConfig()
+      .then(cfg => setSetupDone(!!cfg?.setupComplete))
+      .catch(err => setLoadError(err?.message || String(err)))
+  }, [])
+
   useEffect(() => {
-    window.api.getConfig().then(cfg => setSetupDone(cfg.setupComplete))
+    loadConfig()
 
     window.api.getStats().then(s => {
       setAttentionCount(s.attentionCount || 0)
       setHeldCount((s.heldCount || 0) + (s.followUpReviewCount || 0))
       setTodayCount(s.totalToday || 0)
-    })
+    }).catch(() => {})
 
     // A config file that failed to parse used to look exactly like a first run
     // — every setting gone with no explanation. Say what happened.
@@ -158,7 +215,7 @@ export default function App() {
     // Seed the activity log from the persisted file so it survives a restart.
     window.api.getRecentLogs?.().then(lines => {
       if (Array.isArray(lines) && lines.length) setLogs(lines)
-    })
+    }).catch(() => {})
 
     const offNotification = window.api.onNotification((data) => {
       if (data.type === 'attention') {
@@ -226,18 +283,35 @@ export default function App() {
     })
 
     const offLog = window.api.onAutomationLog((msg) => {
-      setLogs(prev => [...prev.slice(-200), msg])
-      if (msg.includes('Starting')) setScanRunning(true)
+      // Into the store, not App state: a log line must not re-render every page.
+      appendLog(msg)
+      if (typeof msg === 'string' && msg.includes('Starting')) setScanRunning(true)
     })
 
     const offQuestion = window.api.onQuestionAsk((q) => {
       // Payload is { id, question } (id routes the answer back to the right
       // apply flow); tolerate a plain string from an older main process.
-      setQuestion(typeof q === 'string' ? { id: null, question: q } : q)
-      setQuestionAnswer('')
+      const item = typeof q === 'string' ? { id: null, question: q } : q
+      setQuestions(prev => [...prev, { ...item, key: `${item.id ?? 'q'}-${Date.now()}-${Math.random()}` }])
     })
 
-    const offSubmitReview = window.api.onSubmitReview?.((payload) => setSubmitReview(payload))
+    // Main gave up waiting (5 min). The modal would otherwise sit there, and
+    // an answer typed into it would go nowhere.
+    const offQuestionCancel = window.api.onQuestionCancel?.(({ id } = {}) => {
+      setQuestions(prev => {
+        if (prev[0]?.id === id) setQuestionAnswer('')
+        return prev.filter(q => q.id !== id)
+      })
+    })
+
+    const offSubmitReview = window.api.onSubmitReview?.((payload) => setSubmitReviews(prev => [...prev, payload]))
+    const offSubmitCancel = window.api.onSubmitCancel?.(({ id } = {}) => {
+      setSubmitReviews(prev => {
+        if (!prev.some(r => r.id === id)) return prev
+        return prev.filter(r => r.id !== id)
+      })
+      showToast('An application waited too long for confirmation and was not sent — the draft is still held for review', 'info')
+    })
 
     // Each subscription is torn down individually. Tearing down the whole
     // channel here would also unsubscribe Settings' own panels, which listen to
@@ -246,10 +320,12 @@ export default function App() {
       offNotification?.()
       offLog?.()
       offQuestion?.()
+      offQuestionCancel?.()
       offSubmitReview?.()
+      offSubmitCancel?.()
       offUpdate?.()
     }
-  }, [showToast])
+  }, [showToast, loadConfig])
 
   // Safety net: while the UI thinks a scan is running, poll the main process
   // and clear the spinner if it disagrees (e.g. a missed scan-complete event).
@@ -265,11 +341,23 @@ export default function App() {
   }, [scanRunning])
 
   // Global keyboard shortcuts for nav
-  const modalOpen = !!(question || submitReview || resumeModal || helpOpen)
+  const modalOpen = !!(question || submitReview || resumeModal || helpOpen || paletteOpen)
   useEffect(() => {
     function handleGlobalKey(e) {
+      // Ctrl/Cmd+K opens the command palette — from anywhere, including a
+      // text field, which is where people expect it to work. Not over a
+      // blocking dialog: switching pages behind a pending question is how the
+      // user ends up somewhere they can't reach.
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'k' || e.key === 'K')) {
+        if (paletteOpen) { e.preventDefault(); setPaletteOpen(false); return }
+        if (modalOpen) return
+        e.preventDefault()
+        setPaletteOpen(true)
+        return
+      }
       // Don't fire when typing in inputs
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return
+      if (document.activeElement?.isContentEditable) return
       // Ctrl/Cmd/Alt+number belong to the OS and to Electron's own menu
       // accelerators; only a bare digit is ours.
       if (e.ctrlKey || e.metaKey || e.altKey) return
@@ -293,7 +381,7 @@ export default function App() {
     }
     window.addEventListener('keydown', handleGlobalKey)
     return () => window.removeEventListener('keydown', handleGlobalKey)
-  }, [modalOpen, helpOpen])
+  }, [modalOpen, helpOpen, paletteOpen])
 
   // Escape closes the resume prompt. The question and submit-confirmation
   // modals are deliberately excluded: both have an apply flow blocked on an
@@ -305,13 +393,8 @@ export default function App() {
     return () => window.removeEventListener('keydown', onEsc)
   }, [resumeModal, resumeUploading])
 
-  if (setupDone === null) return null // loading
-
-  if (!setupDone) {
-    return <Setup onComplete={() => setSetupDone(true)} />
-  }
-
-  async function startScanIpc(mode) {
+  // Stable, so the memoised pages that receive them don't re-render with App.
+  const startScanIpc = useCallback(async (mode) => {
     // If the scan can't start (already running, setup incomplete, IPC error),
     // reset the spinner — otherwise "Scanning…" would be stuck until restart.
     try {
@@ -324,10 +407,16 @@ export default function App() {
       setScanRunning(false)
       showToast(`Could not start scan: ${err.message}`, 'error')
     }
-  }
+  }, [showToast])
 
-  async function beginScan(mode = 'real') {
-    const cfg = await window.api.getConfig()
+  const beginScan = useCallback(async (mode = 'real') => {
+    let cfg
+    try {
+      cfg = await window.api.getConfig()
+    } catch (err) {
+      showToast(`Could not start scan: ${err.message}`, 'error')
+      return
+    }
     const hasResume = (cfg.resumes || []).length > 0 || cfg.masterResume
     if (!hasResume) {
       setScanMode(mode)
@@ -336,41 +425,95 @@ export default function App() {
     }
     setScanRunning(true)
     startScanIpc(mode)
-  }
+  }, [showToast, startScanIpc])
+  const startRealScan = useCallback(() => beginScan('real'), [beginScan])
+  const startDryScan = useCallback(() => beginScan('dry'), [beginScan])
 
-  function handleClearLogs() {
+  const handleClearLogs = useCallback(() => {
     window.api.clearLogs?.()
     setLogs([])
-  }
+  }, [])
 
-  async function handleResumeUpload() {
-    setResumeUploading(true)
-    const res = await window.api.importResumeFile()
-    setResumeUploading(false)
-    if (res.canceled || !res.success) return
-    const cfg = await window.api.getConfig()
-    const id = Date.now().toString()
-    const newResume = { id, name: res.fileName || 'My Resume', text: res.text, originalPath: res.originalPath, originalExt: res.originalExt }
-    const resumes = [...(cfg.resumes || []), newResume]
-    await window.api.saveConfig({ ...cfg, resumes, defaultResumeId: cfg.defaultResumeId || id })
-    setResumeModal(false)
-    setScanRunning(true)
-    startScanIpc(scanMode)
-  }
+  const openApplication = useCallback((id) => { setFocusApp(id); setPage('dashboard') }, [])
+  const clearFocusApp = useCallback(() => setFocusApp(null), [])
+  const clearFocusSettingsTab = useCallback(() => setFocusSettingsTab(null), [])
 
-  const pages = {
-    dashboard: <Dashboard active={page === 'dashboard'} logs={logs} scanRunning={scanRunning} onScanStart={() => beginScan('real')} onDryRun={() => beginScan('dry')} onClearLogs={handleClearLogs} showToast={showToast} focusApplicationId={focusApp} onFocusHandled={() => setFocusApp(null)} onNavigate={setPage} />,
+  // Everything the command palette can do besides opening an application.
+  const commands = useMemo(() => [
+    ...NAV.map(n => ({ id: `page-${n.id}`, group: 'page', label: n.label, hint: n.shortcut, run: () => setPage(n.id) })),
+    { id: 'scan', group: 'action', label: 'Start scan', run: startRealScan },
+    { id: 'dry-scan', group: 'action', label: 'Start test scan (nothing is submitted)', run: startDryScan },
+    { id: 'export', group: 'action', label: 'Export all applications to CSV', run: () => exportCsv({}, showToast) },
+    ...SETTINGS_TABS.map(t => ({
+      id: `settings-${t.id}`, group: 'action', label: `Open Settings: ${t.label}`,
+      run: () => { setFocusSettingsTab(t.id); setPage('settings') },
+    })),
+    { id: 'shortcuts', group: 'action', label: 'Show keyboard shortcuts', run: () => setHelpOpen(true) },
+  ], [startRealScan, startDryScan, showToast])
+
+  // Built once per change of what they show, so a page whose props are
+  // unchanged keeps the same element and is skipped entirely on re-render.
+  const pages = useMemo(() => ({
+    dashboard: <Dashboard active={page === 'dashboard'} scanRunning={scanRunning} onScanStart={startRealScan} onDryRun={startDryScan} onClearLogs={handleClearLogs} showToast={showToast} focusApplicationId={focusApp} onFocusHandled={clearFocusApp} onNavigate={setPage} />,
     // Clicking a card on the board opens that application on the Dashboard —
     // where the whole detail view already lives — rather than duplicating it.
-    pipeline: <Pipeline active={page === 'pipeline'} onOpenApplication={(id) => { setFocusApp(id); setPage('dashboard') }} />,
+    pipeline: <Pipeline active={page === 'pipeline'} onOpenApplication={openApplication} showToast={showToast} />,
     review: <Review active={page === 'review'} onCountChange={setHeldCount} showToast={showToast} />,
     attention: <NeedsAttention active={page === 'attention'} onCountChange={setAttentionCount} showToast={showToast} />,
     timeline: <Timeline active={page === 'timeline'} />,
     analytics: <Analytics active={page === 'analytics'} />,
-    offers: <Offers active={page === 'offers'} showToast={showToast} onOpenApplication={(id) => { setFocusApp(id); setPage('dashboard') }} />,
+    offers: <Offers active={page === 'offers'} showToast={showToast} onOpenApplication={openApplication} />,
     workbench: <Workbench active={page === 'workbench'} showToast={showToast} />,
-    settings: <Settings active={page === 'settings'} showToast={showToast} />,
-    ask: <AskHiro showToast={showToast} onNavigate={setPage} onOpenApplication={(id) => { setFocusApp(id); setPage('dashboard') }} />,
+    settings: <Settings active={page === 'settings'} showToast={showToast} focusTab={focusSettingsTab} onFocusTabHandled={clearFocusSettingsTab} />,
+    ask: <AskHiro showToast={showToast} onNavigate={setPage} onOpenApplication={openApplication} />,
+  }), [page, scanRunning, startRealScan, startDryScan, handleClearLogs, showToast, focusApp, clearFocusApp, openApplication, focusSettingsTab, clearFocusSettingsTab])
+
+  if (loadError) {
+    return (
+      <div role="alert" data-testid="load-error" style={{
+        height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center',
+        justifyContent: 'center', gap: 12, padding: 24, textAlign: 'center',
+      }}>
+        <HiroLogo size={36} />
+        <h1 style={{ fontSize: 18 }}>Hiro could not load its settings</h1>
+        <p style={{ color: 'var(--text-muted)', fontSize: 13, maxWidth: 460 }}>{loadError}</p>
+        <button className="btn btn-primary" onClick={loadConfig}>Try again</button>
+      </div>
+    )
+  }
+
+  if (setupDone === null) return null // loading
+
+  if (!setupDone) {
+    return <Setup onComplete={() => setSetupDone(true)} />
+  }
+
+  async function handleResumeUpload() {
+    setResumeUploading(true)
+    try {
+      const res = await window.api.importResumeFile()
+      if (res.canceled || !res.success) return
+      const cfg = await window.api.getConfig()
+      const id = Date.now().toString()
+      const newResume = { id, name: res.fileName || 'My Resume', text: res.text, originalPath: res.originalPath, originalExt: res.originalExt }
+      const resumes = [...(cfg.resumes || []), newResume]
+      await window.api.saveConfig({ ...cfg, resumes, defaultResumeId: cfg.defaultResumeId || id })
+      setResumeModal(false)
+      setScanRunning(true)
+      startScanIpc(scanMode)
+    } catch (err) {
+      showToast(`Could not add the resume: ${err.message}`, 'error')
+    } finally {
+      setResumeUploading(false)
+    }
+  }
+
+
+  // Answers the question on screen and moves on to the next one in the queue.
+  function answerQuestion(answer) {
+    window.api.sendQuestionAnswer({ id: question.id, answer })
+    setQuestions(prev => prev.slice(1))
+    setQuestionAnswer('')
   }
 
   const badgeFor = (id) => (id === 'attention' ? attentionCount : id === 'review' ? heldCount : 0)
@@ -433,6 +576,7 @@ export default function App() {
           <span style={{
             fontSize: 19, fontWeight: 650, color: 'var(--text)', letterSpacing: '-0.03em',
           }}>Hiro</span>
+          <NotificationCenter entries={history} unread={unreadCount} onOpen={markHistorySeen} onClear={clearHistory} />
         </div>
 
         {NAV.map(n => {
@@ -638,6 +782,7 @@ export default function App() {
         </div>
       </div>
       <ShortcutHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} onOpenApplication={openApplication} />
 
       {/* Resume required modal */}
       {resumeModal && (
@@ -671,6 +816,11 @@ export default function App() {
         }}>
           <div className="card modal-content" style={{ width: 620, maxHeight: '85vh', overflowY: 'auto' }}>
             <h2 id="submit-review-title" style={{ fontSize: 16, marginBottom: 8 }}>Send this application?</h2>
+            {submitReviews.length > 1 && (
+              <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
+                {submitReviews.length - 1} more waiting after this one
+              </p>
+            )}
             <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 14 }}>
               The form is filled in and one click from being submitted
               {submitReview.platform ? ` on ${submitReview.platform}` : ''}. These are the answers that
@@ -701,12 +851,12 @@ export default function App() {
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button className="btn btn-ghost" onClick={() => {
                 window.api.sendSubmitConfirm({ id: submitReview.id, approved: false })
-                setSubmitReview(null)
+                setSubmitReviews(prev => prev.slice(1))
                 showToast('Not sent — the draft is still held for review', 'info')
               }}>Don’t send</button>
               <button className="btn btn-primary" onClick={() => {
                 window.api.sendSubmitConfirm({ id: submitReview.id, approved: true })
-                setSubmitReview(null)
+                setSubmitReviews(prev => prev.slice(1))
               }}>Send application</button>
             </div>
           </div>
@@ -721,6 +871,11 @@ export default function App() {
         }}>
           <div className="card modal-content" style={{ width: 500 }}>
             <h2 id="question-modal-title" style={{ fontSize: 16, marginBottom: 8 }}>Application Question</h2>
+            {questions.length > 1 && (
+              <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
+                {questions.length - 1} more waiting after this one
+              </p>
+            )}
             <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 14 }}>
               The AI couldn't confidently answer this. Your answer will be saved for future applications.
             </p>
@@ -731,14 +886,14 @@ export default function App() {
               {question.question}
             </div>
             <textarea
+              // Keyed per question, so the next one in the queue gets focus
+              // and an empty box rather than inheriting this one.
+              key={question.key}
               autoFocus
               value={questionAnswer}
               onChange={e => setQuestionAnswer(e.target.value)}
               onKeyDown={e => {
-                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                  window.api.sendQuestionAnswer({ id: question.id, answer: questionAnswer })
-                  setQuestion(null)
-                }
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) answerQuestion(questionAnswer)
               }}
               placeholder="Type your answer... (Ctrl+Enter to submit)"
               style={{
@@ -749,14 +904,8 @@ export default function App() {
               }}
             />
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button className="btn btn-ghost" onClick={() => {
-                window.api.sendQuestionAnswer({ id: question.id, answer: '' })
-                setQuestion(null)
-              }}>Skip</button>
-              <button className="btn btn-primary" onClick={() => {
-                window.api.sendQuestionAnswer({ id: question.id, answer: questionAnswer })
-                setQuestion(null)
-              }}>Submit Answer</button>
+              <button className="btn btn-ghost" onClick={() => answerQuestion('')}>Skip</button>
+              <button className="btn btn-primary" onClick={() => answerQuestion(questionAnswer)}>Submit Answer</button>
             </div>
           </div>
         </div>

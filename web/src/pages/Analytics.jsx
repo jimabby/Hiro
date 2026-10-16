@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
 const PLATFORM_COLORS = { Seek: 'var(--accent)', LinkedIn: 'var(--green)', Indeed: 'var(--yellow)' }
 const STATUS_COLORS = {
@@ -527,17 +527,25 @@ export default function Analytics({ active }) {
   const [experiment, setExperiment] = useState(null)
   const [ghosts, setGhosts] = useState([])
 
+  // Reloads when the range changes AND each time the page becomes visible
+  // again (pages stay mounted, so a scan run elsewhere never reached here). The
+  // sequence number drops a response that a later request has superseded —
+  // flicking 7 → 30 → 90 quickly could otherwise land 30's data last.
+  const loadSeq = useRef(0)
   useEffect(() => {
+    if (active === false) return
+    const seq = ++loadSeq.current
     Promise.all([
       window.api.getStats(),
       window.api.getApplicationsPerDay(timeRange),
       window.api.getApplications({}),
     ]).then(([s, d, a]) => {
+      if (seq !== loadSeq.current) return
       setStats(s)
       setPerDay(d)
       setAllApps(a)
-    })
-  }, [timeRange])
+    }).catch(() => {})
+  }, [timeRange, active])
 
   // Re-read on every visit to the page — spend and conversion move whenever a
   // scan runs, and a stale panel here is a panel nobody trusts.

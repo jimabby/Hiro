@@ -9,6 +9,7 @@ const scheduler = require('./scheduler')
 const logger = require('./logger')
 const featureHub = require('./featureHub')
 const pairChannel = require('./pairChannel')
+const mobileActivity = require('./mobileActivity')
 
 // LAN HTTP API for the Hiro mobile companion app (app/ in this repo).
 // All data stays on this machine — the phone connects directly over the
@@ -45,11 +46,26 @@ function setApproveHandler(fn) { approveDrafts = typeof fn === 'function' ? fn :
 // Refreshed on start() and whenever Settings are saved (refreshPolicy).
 let policy = null
 
+// Whether the pre-pairing shared token is accepted at all.
+//
+// It used to default to on, and start() minted one on first launch — so every
+// install, including ones that had only ever paired, carried a never-expiring
+// credential that travels in cleartext. Now: an explicit setting wins; with no
+// setting (a config written before the switch existed) it stays on only for an
+// install that already HAS a shared token, so an old phone is not locked out on
+// upgrade. A new install has no token and so nothing to accept.
+function legacyTokenAllowed(cfg) {
+  if (!cfg.mobileApiToken) return false
+  if (cfg.mobileApiAllowLegacyToken === true) return true
+  if (cfg.mobileApiAllowLegacyToken === false) return false
+  return true
+}
+
 function refreshPolicy() {
   const cfg = configService.load()
   policy = {
     allowTailscale: !!cfg.mobileApiAllowTailscale,
-    allowLegacyToken: cfg.mobileApiAllowLegacyToken !== false,
+    allowLegacyToken: legacyTokenAllowed(cfg),
   }
   return policy
 }
@@ -58,17 +74,13 @@ function currentPolicy() {
   return policy || refreshPolicy()
 }
 
+// The shared token, if this install has one. Never minted implicitly any more —
+// only regenerateToken() (the user pressing the button) creates one.
 function getToken() {
   if (cachedToken) return cachedToken
   const cfg = configService.load()
-  if (cfg.mobileApiToken) {
-    cachedToken = cfg.mobileApiToken
-    return cachedToken
-  }
-  const token = crypto.randomBytes(16).toString('hex')
-  configService.update({ mobileApiToken: token })
-  cachedToken = token
-  return token
+  cachedToken = cfg.mobileApiToken || null
+  return cachedToken || ''
 }
 
 function regenerateToken() {
@@ -78,7 +90,17 @@ function regenerateToken() {
   // The phone has probably been failing against the stale token and may be
   // locked out at the exact moment the user re-pairs it — clear the slate.
   failures.clear()
+  refreshPolicy()
   return token
+}
+
+// Throw the shared token away entirely, for an install whose phones have all
+// paired. Unlike switching it off, nothing is left on disk to switch back on.
+function clearLegacyToken() {
+  configService.update({ mobileApiToken: '' })
+  cachedToken = null
+  refreshPolicy()
+  return { success: true }
 }
 
 // ─── Auth throttling ──────────────────────────────────────────────
@@ -162,11 +184,28 @@ function describeSignatureFailure(result) {
   return 'Unauthorized'
 }
 
-function encryptPayload(token, body) {
+// Response binding. A client that sends `X-Hiro-Response-Binding: 1` gets its
+// reply sealed with the request's method, path and nonce as GCM associated data,
+// under a label requests never carry — so a reply cannot be replayed against a
+// different request, nor the client's own encrypted request reflected back as
+// a reply. Marked `bound: 1`; a client that has seen one refuses unbound replies
+// from then on. Clients that do not ask get the unbound envelope as before.
+// The format is pinned to the phone's by app/src/responseBinding.js, which
+// web/test/secure-mobile-api.test.js requires.
+function responseAad(req) {
+  if (!req || String(req.headers?.['x-hiro-response-binding'] || '') !== '1') return null
+  const nonce = String(req.headers['x-hiro-nonce'] || '')
+  if (!nonce) return null
+  return ['hiro-response-v1', String(req.method).toUpperCase(), String(req.url), nonce].join('\n')
+}
+
+function encryptPayload(token, body, aad = null) {
   const key = crypto.createHash('sha256').update(token).digest(), iv = crypto.randomBytes(12)
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv)
+  if (aad) cipher.setAAD(Buffer.from(aad, 'utf8'))
   const ciphertext = Buffer.concat([cipher.update(JSON.stringify(body), 'utf8'), cipher.final()])
-  return { secure: 2, data: Buffer.concat([iv, ciphertext, cipher.getAuthTag()]).toString('base64') }
+  const data = Buffer.concat([iv, ciphertext, cipher.getAuthTag()]).toString('base64')
+  return aad ? { secure: 2, bound: 1, data } : { secure: 2, data }
 }
 
 function decryptPayload(token, envelope) {
@@ -178,16 +217,56 @@ function decryptPayload(token, envelope) {
   return JSON.parse(Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8'))
 }
 
+// The identity a lockout is held against.
+//
+// For IPv4 that is the address. For IPv6 it is the /64: a single host is handed
+// a whole /64 by SLAAC and can mint a fresh address from it for every request
+// (privacy extensions do exactly that on their own), so keying on the exact
+// address meant ten failures bought a lockout that the very next address walked
+// straight past.
+function lockoutKey(addr) {
+  let ip = String(addr || 'unknown')
+  if (ip.endsWith('/64')) return ip
+  const zone = ip.indexOf('%')
+  if (zone !== -1) ip = ip.slice(0, zone)
+  if (ip.toLowerCase().startsWith('::ffff:') && ip.includes('.')) return ip.slice(7)
+  if (!ip.includes(':')) return ip
+  const groups = expandIpv6(ip)
+  return groups ? `${groups.slice(0, 4).join(':')}::/64` : ip.toLowerCase()
+}
+
+// Eight 16-bit groups, lower-case and without leading zeros, or null if the text
+// is not an IPv6 address.
+function expandIpv6(ip) {
+  let text = ip.toLowerCase()
+  // A trailing dotted quad (::1.2.3.4 and friends) is two more groups.
+  const v4 = text.match(/(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (v4) {
+    const [a, b, c, d] = v4.slice(1).map(Number)
+    text = text.slice(0, -v4[0].length) + ((a << 8) | b).toString(16) + ':' + ((c << 8) | d).toString(16)
+  }
+  const halves = text.split('::')
+  if (halves.length > 2) return null
+  const head = halves[0] ? halves[0].split(':') : []
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : []
+  const missing = 8 - head.length - tail.length
+  if (halves.length === 1 ? missing !== 0 : missing < 1) return null
+  const groups = [...head, ...Array(halves.length === 2 ? missing : 0).fill('0'), ...tail]
+  if (groups.some(g => !/^[0-9a-f]{1,4}$/.test(g))) return null
+  return groups.map(g => parseInt(g, 16).toString(16))
+}
+
 // Is this peer currently locked out? Read-only: asking must not itself count as
 // an attempt, because this is consulted BEFORE any verification work is done.
 function lockoutFor(ip, now = Date.now()) {
-  const entry = failures.get(ip)
+  const entry = failures.get(lockoutKey(ip))
   if (entry?.until > now) return { locked: true, retryAfter: Math.ceil((entry.until - now) / 1000) }
   return { locked: false }
 }
 
 // Count one failed attempt, and start a lockout once there have been enough.
-function recordFailure(ip, now = Date.now()) {
+function recordFailure(addr, now = Date.now()) {
+  const ip = lockoutKey(addr)
   const entry = failures.get(ip)
   // `until: 0` means "counting failures, not locked out" — only a lockout that
   // has actually expired resets the tally, otherwise the count never grows.
@@ -203,6 +282,10 @@ function recordFailure(ip, now = Date.now()) {
   return { ok: false }
 }
 
+function clearFailures(addr) {
+  failures.delete(lockoutKey(addr))
+}
+
 function authCheck(ip, token) {
   const lockout = lockoutFor(ip)
   if (lockout.locked) return { ok: false, retryAfter: lockout.retryAfter }
@@ -213,7 +296,7 @@ function authCheck(ip, token) {
   // re-paired, rather than silently losing access on upgrade.
   const device = pairing.verifyDeviceToken(configService, token)
   if (device) {
-    failures.delete(ip)
+    clearFailures(ip)
     pairing.touchDevice(configService, device.id)
     return { ok: true, device }
   }
@@ -221,8 +304,9 @@ function authCheck(ip, token) {
   // The shared token predates pairing and is sent in the clear on every
   // request. Once every device has paired it is pure exposure, so it can be
   // switched off — a request presenting it is then just a failed attempt.
-  if (currentPolicy().allowLegacyToken && token && timingSafeEqualStr(token, getToken())) {
-    failures.delete(ip)
+  const shared = getToken()
+  if (currentPolicy().allowLegacyToken && token && shared && timingSafeEqualStr(token, shared)) {
+    clearFailures(ip)
     return { ok: true, legacy: true }
   }
 
@@ -288,9 +372,49 @@ function getLanAddresses() {
 // LAN can't read responses or send JSON POSTs from a browser — defense in
 // depth on top of the bearer token.
 function json(res, status, body) {
-  const data = JSON.stringify(res.secureToken ? encryptPayload(res.secureToken, body) : body)
+  const data = JSON.stringify(res.secureToken ? encryptPayload(res.secureToken, body, responseAad(res.req)) : body)
   res.writeHead(status, { 'Content-Type': 'application/json' })
   res.end(data)
+}
+
+// Idempotency-Key replay for the writes a phone retries from its offline queue
+// (POST /api/scan, /api/import-job). A request can reach the desktop, run, and
+// lose its reply on the way back; the phone sees a timeout and sends it again.
+// Without this, that retry started a second scan. The same key from the same
+// device within a day gets the first answer back instead of running twice.
+// Held in memory: a desktop restart forgets the keys, which costs at worst the
+// duplicate this exists to prevent, never a lost request.
+const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000
+const IDEMPOTENCY_MAX = 500
+const idempotent = new Map() // `${owner}:${key}` → { at, result: Promise<{status, body}> }
+
+function idempotencySlot(req, device) {
+  const key = String(req.headers['idempotency-key'] || '')
+  if (!/^[a-z0-9-]{1,64}$/i.test(key)) return null
+  return `${device?.id || 'shared'}:${key.toLowerCase()}`
+}
+
+async function respondOnce(res, slot, run) {
+  if (!slot) {
+    const { status, body } = await run()
+    return json(res, status, body)
+  }
+  const now = Date.now()
+  for (const [k, entry] of idempotent) {
+    if (now - entry.at > IDEMPOTENCY_TTL_MS) idempotent.delete(k)
+  }
+  let entry = idempotent.get(slot)
+  if (!entry) {
+    // The promise is stored before it settles, so two copies of one request
+    // racing each other still run once.
+    entry = { at: now, result: run() }
+    idempotent.set(slot, entry)
+    while (idempotent.size > IDEMPOTENCY_MAX) idempotent.delete(idempotent.keys().next().value)
+    // A failure is not an answer worth replaying — let the retry run for real.
+    entry.result.catch(() => idempotent.delete(slot))
+  }
+  const { status, body } = await entry.result
+  return json(res, status, body)
 }
 
 const MAX_BODY_BYTES = 1e6
@@ -400,8 +524,11 @@ async function handlePair(req, res, ip) {
   const { token, device } = pairing.issueDeviceToken(configService, {
     name: request.deviceName,
     platform: request.platform,
+    // From the pairing code, i.e. chosen on the desktop. Anything the device
+    // says about its own scopes is ignored.
+    scopes: attempt.scopes,
   })
-  failures.delete(ip)
+  clearFailures(ip)
   logger.append(`Mobile API: paired "${device.name}" (${device.platform})${secure ? '' : ' over the old cleartext protocol'}`)
   // The token is returned exactly once. Only its hash is kept here.
   const payload = { token, device, host: os.hostname() }
@@ -422,12 +549,45 @@ function timingSafeEqualStr(a, b) {
   return crypto.timingSafeEqual(ba, bb)
 }
 
+// Which scope a request needs. Decided from the method and path alone, before
+// any route runs, so a new endpoint is covered by default: a GET needs `read`,
+// anything else needs `write`, and the two scan controls need `scan`. The few
+// endpoints that concern only the caller's own credential need nothing beyond
+// being authenticated.
+const SELF_ENDPOINTS = new Set(['/api/ping', '/api/rotate', '/api/devices/self/revoke'])
+const SCAN_ENDPOINTS = new Set(['/api/scan', '/api/scan/cancel'])
+
+function requiredScope(method, path) {
+  if (SELF_ENDPOINTS.has(path)) return null
+  if (method === 'GET' || method === 'HEAD') return 'read'
+  if (SCAN_ENDPOINTS.has(path)) return 'scan'
+  return 'write'
+}
+
+// The server's request handler. Never rejects: anything that escapes the
+// routes is logged and answered with a 500, so a malformed request cannot leave
+// a socket hanging or surface as an unhandled rejection in the main process.
 async function handle(req, res) {
+  try {
+    await route(req, res)
+  } catch (err) {
+    logger.append(`Mobile API: ${req.method} request failed — ${err?.stack || err?.message || String(err)}`)
+    if (!res.headersSent) {
+      try { return json(res, 500, { error: 'The desktop hit an error handling that request. See the activity log for details.' }) } catch { /* fall through */ }
+    }
+    try { res.destroy() } catch { /* already gone */ }
+  }
+}
+
+async function route(req, res) {
   // 204 means "no content", so it must not carry a body — json() would send one
   // and set a Content-Length that contradicts the status.
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end() }
 
-  const url = new URL(req.url, 'http://localhost')
+  // `new URL` throws on a request target such as "http://[" — which used to
+  // escape as an unhandled rejection and leave the socket open with no reply.
+  let url
+  try { url = new URL(req.url, 'http://localhost') } catch { return json(res, 400, { error: 'Bad request' }) }
   const path = url.pathname
 
   const auth = req.headers.authorization || ''
@@ -498,7 +658,7 @@ async function handle(req, res) {
     // This used to live only inside authCheck, which the signed path skips — so
     // a phone could carry nine stale failures across any number of successful
     // requests and then be locked out by one unrelated blip.
-    failures.delete(ip)
+    clearFailures(ip)
   }
 
   const check = signed.ok ? { ok: true, device: signed.candidate.device } : authCheck(ip, token)
@@ -510,9 +670,65 @@ async function handle(req, res) {
     return json(res, 401, { error: 'Unauthorized' })
   }
 
+  // Per-device activity, written once the reply has gone out so the status
+  // recorded is the one the device actually received.
+  if (check.device?.id) {
+    const deviceId = check.device.id
+    res.once('finish', () => mobileActivity.record(deviceId, { method: req.method, path, ip, status: res.statusCode }))
+  }
+
+  // The shared token predates scopes and keeps every one of them; a paired
+  // device has what it was granted when it was paired (all three if it paired
+  // before scopes existed).
+  const scope = requiredScope(req.method, path)
+  if (scope && check.device && !pairing.hasScope(check.device, scope)) {
+    return json(res, 403, {
+      error: `This device is not allowed to ${scope === 'read' ? 'read data' : scope === 'scan' ? 'start or stop scans' : 'make changes'} on the desktop. `
+        + 'Change its permissions in Settings → Mobile App.',
+      scope,
+    })
+  }
+
   try {
     if (req.method === 'GET' && path === '/api/ping') {
-      return json(res, 200, { ok: true, app: 'hiro', host: os.hostname() })
+      return json(res, 200, { ok: true, app: 'hiro', host: os.hostname(), scopes: check.device ? pairing.deviceScopes(check.device) : pairing.SCOPES })
+    }
+
+    // Exchange this device's token for a fresh one with a new expiry, without
+    // re-pairing. Signed requests only: the reply carries the new token, so it
+    // has to travel encrypted, and only the signed protocol has a key for that.
+    // The old token stops working once the reply has been handed to the socket;
+    // if the connection drops before then, nothing changes and the old token
+    // stays valid for another attempt.
+    if (req.method === 'POST' && path === '/api/rotate') {
+      if (!signed.ok || !check.device) {
+        return json(res, 400, { error: 'Token rotation needs a signed request from a paired device.' })
+      }
+      const rotation = pairing.prepareRotation(configService, check.device.id)
+      if (!rotation) return json(res, 404, { error: 'This device is no longer paired.' })
+      let flushed = false
+      res.once('finish', () => {
+        flushed = true
+        if (rotation.commit()) logger.append(`Mobile API: "${check.device.name}" rotated its token`)
+      })
+      res.once('close', () => {
+        if (!flushed) logger.append(`Mobile API: token rotation for "${check.device.name}" was not delivered — the old token stays valid`)
+      })
+      return json(res, 200, { token: rotation.token, device: rotation.device, expiresAt: rotation.device.expiresAt })
+    }
+
+    // A device withdrawing its own access — the extension's "Forget pairing",
+    // or a phone being signed out. Without this, forgetting only deleted the
+    // local copy and left a valid 90-day token behind on the desktop.
+    if (req.method === 'POST' && path === '/api/devices/self/revoke') {
+      if (!check.device) return json(res, 400, { error: 'The shared token cannot be revoked from a device. Turn it off in Settings.' })
+      const result = pairing.revokeDevice(configService, check.device.id)
+      // After the reply, so the activity entry for this very request (recorded
+      // on 'finish' too, by a listener registered earlier) goes with the rest.
+      const revokedId = check.device.id
+      res.once('finish', () => mobileActivity.forget(revokedId))
+      logger.append(`Mobile API: "${check.device.name}" revoked its own pairing`)
+      return json(res, 200, { success: !!result.success })
     }
 
     if (req.method === 'GET' && path === '/api/stats') {
@@ -524,8 +740,10 @@ async function handle(req, res) {
     // phone; no shared bearer token is embedded in the extension.
     if (req.method === 'POST' && path === '/api/import-job') {
       const body = await readBody(req)
-      const result = featureHub.importJob(body)
-      return json(res, result?.success === false ? 400 : 200, result)
+      return respondOnce(res, idempotencySlot(req, check.device), async () => {
+        const result = featureHub.importJob(body)
+        return { status: result?.success === false ? 400 : 200, body: result }
+      })
     }
 
     if (req.method === 'GET' && path === '/api/applications') {
@@ -608,12 +826,14 @@ async function handle(req, res) {
     // as soon as the desktop is free (or on next launch if it's restarted).
     if (req.method === 'POST' && path === '/api/scan') {
       const body = await readBody(req)
-      const queued = scheduler.requestScan({
-        keywords: typeof body.keywords === 'string' ? body.keywords.slice(0, 500) : '',
-        location: typeof body.location === 'string' ? body.location.slice(0, 160) : '',
-        source: 'mobile',
+      return respondOnce(res, idempotencySlot(req, check.device), async () => {
+        const queued = scheduler.requestScan({
+          keywords: typeof body.keywords === 'string' ? body.keywords.slice(0, 500) : '',
+          location: typeof body.location === 'string' ? body.location.slice(0, 160) : '',
+          source: 'mobile',
+        })
+        return { status: 200, body: { queued: true, id: queued.id, ...scheduler.getScanInfo() } }
       })
-      return json(res, 200, { queued: true, id: queued.id, ...scheduler.getScanInfo() })
     }
 
     if (req.method === 'GET' && path === '/api/scan/status') {
@@ -719,7 +939,9 @@ function start() {
   if (server) return getInfo()
   const cfg = configService.load()
   const port = cfg.mobileApiPort || 4823
-  getToken() // ensure a token exists before the first client connects
+  // No shared token is minted here any more: pairing is how a device gets
+  // access, and an install that never had a shared token never needs one.
+  cachedToken = null
   refreshPolicy()
   // Long-dead device entries cost a keychain unwrap on every signed request.
   try {
@@ -727,7 +949,7 @@ function start() {
     if (removed) logger.append(`Mobile API: removed ${removed} long-expired device${removed === 1 ? '' : 's'} from the pairing list`)
   } catch { /* pruning is housekeeping — never block the server on it */ }
 
-  const srv = http.createServer((req, res) => { handle(req, res) })
+  const srv = http.createServer((req, res) => { handle(req, res).catch(() => {}) })
   server = srv
   return new Promise((resolve) => {
     let settled = false
@@ -771,12 +993,14 @@ function getInfo() {
     running: !!server,
     port: cfg.mobileApiPort || 4823,
     token: cfg.mobileApiToken || '',
+    hasLegacyToken: !!cfg.mobileApiToken,
     addresses: getLanAddresses(),
     // Paired phones, each with its own token. The shared token above is kept
     // only so installs that paired before this existed keep working.
     devices: pairing.listDevices(configService),
     tokenTtlDays: pairing.normaliseTtlDays(cfg.mobileTokenTtlDays),
-    allowLegacyToken: cfg.mobileApiAllowLegacyToken !== false,
+    allowLegacyToken: legacyTokenAllowed(cfg),
+    scopes: pairing.SCOPES,
     allowTailscale: !!cfg.mobileApiAllowTailscale,
     pairingCode: pairing.getActiveCode(),
   }
@@ -784,8 +1008,8 @@ function getInfo() {
 
 // Start a pairing window. The code is short-lived and single-use, so this is
 // safe to leave on screen for the minute it takes to point a phone at it.
-function startPairing() {
-  const issued = pairing.createPairingCode()
+function startPairing({ scopes } = {}) {
+  const issued = pairing.createPairingCode(Date.now(), { scopes })
   const info = getInfo()
   // What the QR encodes. The phone needs all three or the code is useless — an
   // address it cannot reach is not a pairing.
@@ -812,10 +1036,19 @@ function cancelPairing() {
 module.exports = {
   startPairing, cancelPairing,
   listDevices: () => pairing.listDevices(configService),
-  revokeDevice: (id) => pairing.revokeDevice(configService, id),
-  revokeAllDevices: () => pairing.revokeAll(configService),
-  start, stop, getInfo, regenerateToken, isPrivateAddress, refreshPolicy, setApproveHandler,
+  revokeDevice: (id) => {
+    const result = pairing.revokeDevice(configService, id)
+    if (result.success) mobileActivity.forget(id)
+    return result
+  },
+  revokeAllDevices: () => {
+    mobileActivity.forgetAll()
+    return pairing.revokeAll(configService)
+  },
+  setDeviceScopes: (id, scopes) => pairing.setDeviceScopes(configService, id, scopes),
+  deviceActivity: (id) => mobileActivity.list(id),
+  start, stop, getInfo, regenerateToken, clearLegacyToken, isPrivateAddress, refreshPolicy, setApproveHandler,
   // exported for tests
-  lockoutFor, recordFailure, verifySignedRequest, describeSignatureFailure,
+  lockoutFor, recordFailure, lockoutKey, requiredScope, verifySignedRequest, describeSignatureFailure, handle,
   _resetThrottle: () => { failures.clear(); seenNonces.clear() },
 }

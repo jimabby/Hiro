@@ -115,7 +115,28 @@ npm run smoke              # install it, launch it, drive it
 ```
 
 `npm run verify:signature -- --require-signed` exits non-zero when something is
-unsigned, which is what CI runs on a tagged release.
+unsigned, which is what CI runs on a tagged release. A DMG that is Developer ID
+signed but has no notarization ticket reports as `SIGNED-NOT-NOTARIZED`: it
+passes `--require-signed` (it is signed) and prints a warning, matching the
+"certificate, no API key" state described above.
+
+## How the release workflow handles secrets
+
+* `npm ci` runs first, while the job holds no secrets: no signing material
+  exists and no token is in the environment. Dependency install scripts run
+  with nothing to read.
+* The signing certificate, its password and the App Store Connect key are
+  passed as step-level `env` on the build step only, exported inside that
+  step's shell, and never written to `GITHUB_ENV` (which would hand them to
+  every later step). The `.p8` file is deleted when the step ends.
+* `GH_TOKEN` is set only on the build step, and only when publishing. The
+  workflow's default permissions are empty; `verify` reads, and only `build`
+  can write (for the release upload). Checkouts do not persist the token.
+* `HIRO_REQUIRE_BROWSER=1` makes a failed Chromium download fail the build job
+  instead of shipping an installer that cannot scrape. Locally, `npm run build`
+  has the same effect through its `prebuild` hook.
+* Actions are pinned by commit SHA, with the tag in a comment. To update one,
+  resolve the new tag with `gh api repos/actions/<name>/git/ref/tags/<tag>`.
 
 ## The smoke test
 

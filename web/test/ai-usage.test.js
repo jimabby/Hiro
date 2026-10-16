@@ -103,5 +103,28 @@ const err = (props) => Object.assign(new Error(props.message || 'boom'), props)
     ({ value: 'done', model: 'claude-sonnet-5', usage: { input_tokens: 5, output_tokens: 5 } }))
   check('zero means no cap', after, 'done')
 
+  // ── An unknown model is not free ───────────────────────────────
+  // A model id newer than the price table used to cost $0, so the monthly cap
+  // could never fire. It is now priced at that provider's dearest known tier.
+  check('an unknown Claude model takes the dearest Claude price', usage.estimateCost('claude-next-9', 1e6, 0, { provider: 'claude' }), 5)
+  check('an unknown OpenAI model takes the dearest OpenAI price', usage.estimateCost('gpt-9', 0, 1e6, { provider: 'chatgpt' }), 10)
+  check('a local model really is free', usage.estimateCost('llama3.1:8b', 1e6, 1e6, { provider: 'local' }), 0)
+  check('a known model keeps its own price', usage.estimateCost('claude-haiku-5-5', 1e6, 0, { provider: 'claude' }), 0.1)
+  check('current Sonnet 5 price', usage.priceFor('claude-sonnet-5').input, 2)
+
+  cfg = { aiMaxRetries: 0, aiMonthlyBudgetUsd: 0 }
+  const before = db.getAiUsageSummary().month.cost
+  await usage.withUsage('scoreMatch', 'claude', async () =>
+    ({ value: 'x', model: 'claude-brand-new', usage: { input_tokens: 1e6, output_tokens: 0 } }))
+  check('an unknown model\'s call is charged against the budget', db.getAiUsageSummary().month.cost - before > 0, true)
+
+  // ── Prompt-cache tokens ────────────────────────────────────────
+  const read = usage.readUsage({ input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 900, cache_creation_input_tokens: 50 })
+  check('cache reads are read from Anthropic usage', read.cacheReadTokens, 900)
+  check('cache writes are read too', read.cacheWriteTokens, 50)
+  // Haiku 5.5: $0.10/M input. Reads at 0.1×, writes at 1.25×.
+  check('cache reads cost a tenth of input', usage.estimateCost('claude-haiku-5-5', 0, 0, { cacheReadTokens: 1e6 }).toFixed(4), '0.0100')
+  check('cache writes cost 1.25× input', usage.estimateCost('claude-haiku-5-5', 0, 0, { cacheWriteTokens: 1e6 }).toFixed(4), '0.1250')
+
   done()
 })()

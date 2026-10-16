@@ -1,6 +1,6 @@
 import SavedViews from '../components/SavedViews'
 import ApplicationChecklist from '../components/ApplicationChecklist'
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, memo } from 'react'
 // One description of the status vocabulary, shared with Timeline — see
 // src/statuses.js for why these stopped living in each page.
 import { statusBadge, SETTABLE_STATUSES, FILTER_TABS } from '../statuses'
@@ -8,6 +8,54 @@ import GettingStarted from '../components/GettingStarted'
 import InterviewBrief from '../components/InterviewBrief'
 import ProposeTimes from '../components/ProposeTimes'
 import { exportCsv } from '../exportCsv'
+import { useLogs, useHasLogs } from '../logStore'
+
+// Filters and sort are remembered across restarts. localStorage can be missing
+// or throw (a locked profile, private storage), and a stored value may be from
+// an older shape — so every read is wrapped and merged over the defaults rather
+// than trusted.
+const FILTER_KEY = 'hiro.dashboard.filter'
+const SORT_KEY = 'hiro.dashboard.sort'
+const DEFAULT_FILTER = { status: '', platform: '', search: '', salaryFrom: '', salaryTo: '', minMatch: '', dueOnly: false }
+const DEFAULT_SORT = { key: 'applied_at', dir: 'desc' }
+
+function loadSaved(key, defaults) {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return defaults
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return defaults
+    const out = { ...defaults }
+    for (const k of Object.keys(defaults)) {
+      if (k in parsed && typeof parsed[k] === typeof defaults[k]) out[k] = parsed[k]
+    }
+    return out
+  } catch {
+    return defaults
+  }
+}
+
+function save(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)) } catch { /* storage unavailable — not worth failing over */ }
+}
+
+// True when a keystroke is going into a field. Arrow keys there move the caret
+// and Escape belongs to the field, not to the application panel.
+function isEditable(el) {
+  if (!el) return false
+  if (el.isContentEditable) return true
+  return ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)
+}
+
+// Another dialog is on screen — a screening question, the command palette, a
+// page's own modal. The application panel is itself aria-modal, so it is
+// excluded; and every page stays mounted, so a dialog on a hidden page is not
+// counted either.
+function otherDialogOpen() {
+  return [...document.querySelectorAll('[aria-modal="true"]')].some(el =>
+    !el.hasAttribute('data-application-detail')
+    && (typeof el.checkVisibility !== 'function' || el.checkVisibility()))
+}
 
 function safeParseJSON(str) {
   try { return JSON.parse(str || '[]') } catch { return [] }
@@ -91,6 +139,25 @@ function MyAnswer({ question, saved, editing, draft, drafting, onEdit, onChange,
     <button className="btn btn-ghost" style={{ fontSize: 11, marginTop: 6 }} onClick={onEdit}>
       Write your own answer
     </button>
+  )
+}
+
+// Proof of submission: the platform's confirmation page, captured when Hiro
+// verified the submit. Loaded on demand — it is a full-page image.
+function SubmissionProof({ id }) {
+  const [src, setSrc] = useState(null)
+  const [missing, setMissing] = useState(false)
+  const load = async () => {
+    const r = await window.api.getSubmissionScreenshot?.(id).catch(() => null)
+    if (r?.dataUrl) setSrc(r.dataUrl)
+    else setMissing(true)
+  }
+  return (
+    <div style={{ marginBottom: 16 }}>
+      {!src && !missing && <button className="btn btn-secondary btn-sm" onClick={load}>View submission screenshot</button>}
+      {missing && <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>The submission screenshot is no longer available.</div>}
+      {src && <img src={src} alt="Confirmation page after submitting" style={{ maxWidth: '100%', borderRadius: 8, border: '1px solid var(--border)' }} />}
+    </div>
   )
 }
 
@@ -284,12 +351,57 @@ function InterviewPrepPanel({ questions, applicationId, jobDescription }) {
   )
 }
 
-export default function Dashboard({ active = true, logs, scanRunning, onScanStart, onDryRun, onClearLogs, showToast, focusApplicationId, onFocusHandled, onNavigate }) {
+// The activity log card. Its own component so a log line re-renders this card
+// and nothing else — it reads the log store directly rather than taking it as a
+// prop from App, which re-rendered every page per line.
+function ActivityLog({ onClearLogs }) {
+  const logs = useLogs()
+  const [logCollapsed, setLogCollapsed] = useState(false)
+  const logRef = useRef(null)
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
+  }, [logs])
+  return (
+    <div className="card" style={{ minWidth: 0 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: logCollapsed ? 0 : 10 }}>
+        <button onClick={() => setLogCollapsed(c => !c)} style={{
+          background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+          display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text)',
+        }}>
+          <span style={{ fontWeight: 600, fontSize: 13 }}>Activity Log</span>
+          <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>{logCollapsed ? '▼' : '▲'}</span>
+        </button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{logs.length} entries</span>
+          <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }}
+            onClick={() => window.api.openLogFile?.()}
+            title="Open the full persistent log file (survives restarts)">
+            Open file
+          </button>
+          <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px', color: 'var(--red)' }}
+            onClick={() => { if (window.confirm('Clear the activity log? This deletes the saved log file too.')) onClearLogs?.() }}>
+            Clear
+          </button>
+        </div>
+      </div>
+      {!logCollapsed && <div className="log-box" ref={logRef}>{logs.join('\n')}</div>}
+    </div>
+  )
+}
+
+export default memo(function Dashboard({ active = true, scanRunning, onScanStart, onDryRun, onClearLogs, showToast, focusApplicationId, onFocusHandled, onNavigate }) {
   const [stats, setStats] = useState(null)
   const [apps, setApps] = useState([])
   const [selected, setSelected] = useState(null)
-  const [filter, setFilter] = useState({ status: '', platform: '', search: '', salaryFrom: '', salaryTo: '', minMatch: '', dueOnly: false })
-  const [sort, setSort] = useState({ key: 'applied_at', dir: 'desc' })
+  // The open application's id, readable from async callbacks that must not
+  // apply their result once the user has moved on to another one.
+  const selectedIdRef = useRef(null)
+  selectedIdRef.current = selected?.id ?? null
+  // Both survive a restart — see loadSaved().
+  const [filter, setFilter] = useState(() => loadSaved(FILTER_KEY, DEFAULT_FILTER))
+  const [sort, setSort] = useState(() => loadSaved(SORT_KEY, DEFAULT_SORT))
+  useEffect(() => { save(FILTER_KEY, filter) }, [filter])
+  useEffect(() => { save(SORT_KEY, sort) }, [sort])
   const [currentPage, setCurrentPage] = useState(1)
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [resumeExpanded, setResumeExpanded] = useState(false)
@@ -326,7 +438,6 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
   const [skippedApplying, setSkippedApplying] = useState(false)
   const [skippedApplyLog, setSkippedApplyLog] = useState([])
   const [skippedApplyResult, setSkippedApplyResult] = useState(null)
-  const [logCollapsed, setLogCollapsed] = useState(false)
   const [scanInfo, setScanInfo] = useState(null)
   const [icsMsg, setIcsMsg] = useState(null)
   const [interviews, setInterviews] = useState([])
@@ -336,7 +447,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
   // would be undone by the next refetch, and a later failure must reappear.
   const [dismissedScanAt, setDismissedScanAt] = useState(null)
   const skippedLogEndRef = useRef(null)
-  const logRef = useRef(null)
+  const hasLogs = useHasLogs()
   const searchRef = useRef(null)
 
   useEffect(() => { loadData() }, [])
@@ -361,10 +472,6 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
     // value from the previous run answers correctly.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, scanRunning])
-
-  useEffect(() => {
-    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
-  }, [logs])
 
   useEffect(() => {
     const off = window.api.onSkippedApplyLog(msg => setSkippedApplyLog(prev => [...prev, msg]))
@@ -397,7 +504,12 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
       // This used to read `saved.questions` and JSON.parse it — neither of which
       // an array has — so saved interview prep silently never came back, and
       // every visit to an application regenerated it from scratch.
+      // Guarded like the full-row fetch above: switching to B while A's prep
+      // was in flight used to show A's questions on B, and Save then stored
+      // them under B.
+      const prepFor = selected.id
       window.api.getInterviewPrep(selected.id).then(saved => {
+        if (selectedIdRef.current !== prepFor) return
         if (Array.isArray(saved) && saved.length > 0) setInterviewQuestions(saved)
       }).catch(() => {})
       window.api.getStatusHistory?.(selected.id).then(h => setStatusHistory(h || [])).catch(() => {})
@@ -619,10 +731,18 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
     function handler(e) {
       if (e.key === 'Escape') {
         if (pdfModal) { setPdfModal(null); return }
+        // Escape in a field belongs to the field, and while a dialog is open
+        // (a screening question, the command palette) it belongs to that.
+        if (isEditable(document.activeElement)) return
+        if (otherDialogOpen()) return
         setSelected(null)
+        return
       }
-      const focusedTag = document.activeElement?.tagName
-      if (e.key === '/' && focusedTag !== 'INPUT' && focusedTag !== 'TEXTAREA') {
+      // Nothing below fires while typing — ArrowUp/Down in a textarea used to
+      // switch the open application out from under the text being written.
+      if (isEditable(document.activeElement)) return
+      if (otherDialogOpen()) return
+      if (e.key === '/') {
         e.preventDefault()
         searchRef.current?.focus()
       }
@@ -982,12 +1102,12 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
           The log is deliberately still ABOVE the table rather than banished
           below it — it is what you watch while a scan runs, and a diagnostic
           you have to scroll past 25 table rows to find is one nobody reads. */}
-      {(interviews.length > 0 || logs.length > 0) && (
+      {(interviews.length > 0 || hasLogs) && (
         <div style={{
           display: 'grid', gap: 16, marginBottom: 24, alignItems: 'start',
           // Each column keeps a real minimum so the pair collapses to a single
           // column on a narrow window rather than crushing both.
-          gridTemplateColumns: interviews.length > 0 && logs.length > 0
+          gridTemplateColumns: interviews.length > 0 && hasLogs
             ? 'repeat(auto-fit, minmax(380px, 1fr))'
             : '1fr',
         }}>
@@ -1095,32 +1215,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
         </div>
       )}
       {/* Log */}
-      {logs.length > 0 && (
-        <div className="card" style={{ minWidth: 0 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: logCollapsed ? 0 : 10 }}>
-            <button onClick={() => setLogCollapsed(c => !c)} style={{
-              background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-              display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text)',
-            }}>
-              <span style={{ fontWeight: 600, fontSize: 13 }}>Activity Log</span>
-              <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>{logCollapsed ? '▼' : '▲'}</span>
-            </button>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{logs.length} entries</span>
-              <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }}
-                onClick={() => window.api.openLogFile?.()}
-                title="Open the full persistent log file (survives restarts)">
-                Open file
-              </button>
-              <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px', color: 'var(--red)' }}
-                onClick={() => { if (window.confirm('Clear the activity log? This deletes the saved log file too.')) onClearLogs?.() }}>
-                Clear
-              </button>
-            </div>
-          </div>
-          {!logCollapsed && <div className="log-box" ref={logRef}>{logs.join('\n')}</div>}
-        </div>
-      )}
+      {hasLogs && <ActivityLog onClearLogs={onClearLogs} />}
         </div>
       )}
 
@@ -1382,7 +1477,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
 
       {/* Detail modal */}
       {selected && (
-        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Application detail" style={{
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Application detail" data-application-detail style={{
           position: 'fixed', inset: 0, background: 'var(--scrim)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
         }} onClick={() => setSelected(null)}>
@@ -1455,17 +1550,28 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                 <button className="btn btn-ghost" style={{ fontSize: 12 }}
                   disabled={loadingQuestions}
                   onClick={async () => {
+                    const askedFor = selected.id
                     setLoadingQuestions(true)
-                    const cfg = await window.api.getConfig()
-                    const resume = (cfg.resumes || []).find(r => r.id === cfg.defaultResumeId)?.text || cfg.masterResume || ''
-                    // Passing the id lets the backend fold in what the employer
-                    // actually wrote — the round, the format, who is on the
-                    // panel. None of that is in the job ad.
-                    const res = await window.api.generateInterviewQuestions(selected.job_description || '', resume, selected.id)
-                    setLoadingQuestions(false)
-                    if (res.success) {
-                      setInterviewQuestions(res.questions)
-                      setPrepUsedReplies(!!res.usedReplies)
+                    try {
+                      const cfg = await window.api.getConfig()
+                      const resume = (cfg.resumes || []).find(r => r.id === cfg.defaultResumeId)?.text || cfg.masterResume || ''
+                      // Passing the id lets the backend fold in what the employer
+                      // actually wrote — the round, the format, who is on the
+                      // panel. None of that is in the job ad.
+                      const res = await window.api.generateInterviewQuestions(selected.job_description || '', resume, askedFor)
+                      // The user may have opened another application meanwhile;
+                      // these questions belong to the one they were asked for.
+                      if (selectedIdRef.current !== askedFor) return
+                      if (res?.success) {
+                        setInterviewQuestions(res.questions)
+                        setPrepUsedReplies(!!res.usedReplies)
+                      } else {
+                        showToast?.(res?.error || 'Could not generate interview questions', 'error')
+                      }
+                    } catch (err) {
+                      showToast?.(`Could not generate interview questions: ${err.message}`, 'error')
+                    } finally {
+                      setLoadingQuestions(false)
                     }
                   }}>
                   {loadingQuestions ? 'Generating...' : 'Interview Questions'}
@@ -1894,6 +2000,8 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
               </div>
             )}
 
+            {selected.submission_screenshot && <SubmissionProof key={selected.id} id={selected.id} />}
+
             {/* What the employer actually wrote. Sits directly above the prep,
                 because it is the thing the prep should be built from — and
                 because after a week of applications nobody remembers which
@@ -1945,7 +2053,7 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
                     ✓ Written from what this employer actually said, not the job ad alone.
                   </div>
                 )}
-                <InterviewPrepPanel questions={interviewQuestions} applicationId={selected.id} jobDescription={selected.job_description || ''} />
+                <InterviewPrepPanel key={selected.id} questions={interviewQuestions} applicationId={selected.id} jobDescription={selected.job_description || ''} />
               </>
             )}
 
@@ -2038,4 +2146,4 @@ export default function Dashboard({ active = true, logs, scanRunning, onScanStar
       )}
     </div>
   )
-}
+})

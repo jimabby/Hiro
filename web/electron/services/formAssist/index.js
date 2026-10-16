@@ -338,7 +338,9 @@ async function open({ source = 'attention', id }, { log = () => {}, resolveCfg =
       answer: async (question, options) => {
         try {
           return await resolveAnswer({
-            question, optionHint: (options || []).filter(Boolean).slice(0, 12).join(' / '),
+            // The labels themselves, so the answer comes back as one of them
+            // (or the user is asked) rather than as free text pickOption guesses at.
+            question, options: options && options.length ? options.filter(Boolean) : null,
             cfg: { ...cfg, jobDescription: job.job_description || '' }, log,
           })
         } catch (err) {

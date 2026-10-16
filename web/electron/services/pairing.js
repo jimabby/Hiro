@@ -35,7 +35,32 @@ const DEFAULT_TOKEN_TTL_DAYS = 90
 // while reading a code off one screen and typing it into another.
 const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
 
-// { code, expiresAt, used, channel }. The channel is the ephemeral P-256 key
+// What a paired device may do. A browser extension that only ever imports a
+// listing has no business approving drafts or starting scans, and a phone lent to
+// someone to glance at the pipeline need not be able to change it.
+//
+//   read  — every GET: stats, applications, interviews, offers, logs
+//   write — status, comments, follow-ups, imports, rejecting and approving drafts
+//   scan  — queue or cancel a scan on the desktop
+//
+// A device paired before scopes existed has none recorded and keeps all three,
+// so an upgrade never silently takes access away from a working phone.
+const SCOPES = ['read', 'write', 'scan']
+
+function normaliseScopes(value) {
+  if (!Array.isArray(value)) return [...SCOPES]
+  return SCOPES.filter(s => value.includes(s))
+}
+
+function deviceScopes(device) {
+  return device && Array.isArray(device.scopes) ? normaliseScopes(device.scopes) : [...SCOPES]
+}
+
+function hasScope(device, scope) {
+  return deviceScopes(device).includes(scope)
+}
+
+// { code, expiresAt, used, channel, scopes }. The channel is the ephemeral P-256 key
 // material for THIS pairing window — see pairChannel.js. It lives and dies with
 // the code, so a captured exchange cannot be replayed against a later one.
 let activeCode = null
@@ -49,10 +74,14 @@ function generateCode() {
 
 // Issue a pairing code, replacing any code still outstanding. Only one can be
 // live at a time — two valid codes means one the user has forgotten about.
-function createPairingCode(now = Date.now()) {
+//
+// The scopes are chosen here, on the desktop, and not by the device: the person
+// generating the code is the one deciding what the thing they are pairing may do.
+function createPairingCode(now = Date.now(), { scopes } = {}) {
   const code = generateCode()
-  activeCode = { code, expiresAt: now + CODE_TTL_MS, used: false, channel: pairChannel.createChannel(code) }
-  return { code, expiresAt: activeCode.expiresAt, ttlMs: CODE_TTL_MS }
+  const granted = normaliseScopes(scopes)
+  activeCode = { code, expiresAt: now + CODE_TTL_MS, used: false, channel: pairChannel.createChannel(code), scopes: granted }
+  return { code, expiresAt: activeCode.expiresAt, ttlMs: CODE_TTL_MS, scopes: granted }
 }
 
 // What the client needs to open a confidential channel: this window's public
@@ -91,7 +120,7 @@ function consumePairingCode(submitted, now = Date.now()) {
     return { ok: false, reason: 'Incorrect pairing code.' }
   }
   activeCode.used = true
-  return { ok: true }
+  return { ok: true, scopes: activeCode.scopes || [...SCOPES] }
 }
 
 function constantTimeEqual(a, b) {
@@ -125,7 +154,7 @@ function hashToken(token) {
 //               comment here used to claim it was.
 //
 // The plaintext is returned to the caller exactly once, here.
-function issueDeviceToken(configService, { name, platform }, now = Date.now()) {
+function issueDeviceToken(configService, { name, platform, scopes }, now = Date.now()) {
   const cfg = configService.load()
   const ttlDays = normaliseTtlDays(cfg.mobileTokenTtlDays)
   const token = crypto.randomBytes(TOKEN_BYTES).toString('hex')
@@ -138,6 +167,7 @@ function issueDeviceToken(configService, { name, platform }, now = Date.now()) {
     createdAt: new Date(now).toISOString(),
     lastSeenAt: new Date(now).toISOString(),
     expiresAt: ttlDays > 0 ? new Date(now + ttlDays * 86400000).toISOString() : null,
+    scopes: normaliseScopes(scopes),
   }
   const devices = listRaw(cfg).concat(device)
   configService.update({ mobileDevices: devices })
@@ -157,7 +187,7 @@ function listRaw(cfg) {
 
 function publicView(device, now = Date.now()) {
   const { tokenHash, tokenEnc, ...rest } = device
-  return { ...rest, expired: isExpired(device, now) }
+  return { ...rest, scopes: deviceScopes(device), expired: isExpired(device, now) }
 }
 
 function isExpired(device, now = Date.now()) {
@@ -275,6 +305,55 @@ function revokeDevice(configService, deviceId) {
   return { success: true }
 }
 
+// Replace a device's token without re-pairing it.
+//
+// Nothing is written here. The caller gets the new token and a commit function,
+// and commits only once the reply carrying the token has actually been handed to
+// the socket: committing first would revoke the old token for a phone that never
+// received the new one, locking it out with no way back short of re-pairing.
+// Not committing leaves the old token exactly as valid as it was.
+function prepareRotation(configService, deviceId, now = Date.now()) {
+  const cfg = configService.load()
+  const current = listRaw(cfg).find(d => d.id === deviceId)
+  if (!current) return null
+  const ttlDays = normaliseTtlDays(cfg.mobileTokenTtlDays)
+  const token = crypto.randomBytes(TOKEN_BYTES).toString('hex')
+  const fresh = {
+    tokenHash: hashToken(token),
+    tokenEnc: configService.encryptSecret ? configService.encryptSecret(token) : undefined,
+    expiresAt: ttlDays > 0 ? new Date(now + ttlDays * 86400000).toISOString() : null,
+    rotatedAt: new Date(now).toISOString(),
+  }
+  const commit = () => {
+    let applied = false
+    configService.update(latest => {
+      const devices = listRaw(latest).map(d => {
+        // Matched on the OLD hash too: a device revoked, or rotated by a second
+        // request, while this reply was in flight must not be resurrected.
+        if (d.id !== deviceId || d.tokenHash !== current.tokenHash) return d
+        applied = true
+        return { ...d, ...fresh }
+      })
+      return { ...latest, mobileDevices: devices }
+    })
+    clearSecretsCache()
+    return applied
+  }
+  return { token, device: publicView({ ...current, ...fresh }, now), commit }
+}
+
+// Change what an already-paired device may do. Narrowing takes effect on its
+// next request; nothing about its token changes.
+function setDeviceScopes(configService, deviceId, scopes) {
+  const devices = listRaw(configService.load())
+  const device = devices.find(d => d.id === deviceId)
+  if (!device) return { success: false, reason: 'Device not found' }
+  device.scopes = normaliseScopes(scopes)
+  configService.update({ mobileDevices: devices })
+  clearSecretsCache()
+  return { success: true, scopes: device.scopes }
+}
+
 function revokeAll(configService) {
   configService.update({ mobileDevices: [] })
   clearSecretsCache()
@@ -285,6 +364,7 @@ module.exports = {
   createPairingCode, getActiveCode, clearPairingCode, consumePairingCode,
   getHello, channelKey,
   issueDeviceToken, verifyDeviceToken, deviceSecrets, listDevices, revokeDevice, revokeAll, touchDevice,
+  prepareRotation, setDeviceScopes, deviceScopes, hasScope, normaliseScopes, SCOPES,
   clearSecretsCache,
   pruneExpiredDevices,
   hashToken, normaliseTtlDays,

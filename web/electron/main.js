@@ -40,10 +40,18 @@ const push = require('./services/push')
 const calendarSync = require('./services/calendarSync')
 const resumeExperiment = require('./services/resumeExperiment')
 const { isAiConfigured } = require('./services/ai/configured')
+const configGuard = require('./ipc/configGuard')
+const { installSenderGuard } = require('./ipc/senderGuard')
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
 let mainWindow
+
+// Every IPC handler — these below, the ipc/ modules', and any a service
+// registers later — only answers the app's own page. See ipc/senderGuard.js.
+installSenderGuard(ipcMain, (url) => isEntryPointUrl(url), {
+  onReject: (kind, url) => logger.append(`IPC: refused a ${kind} call from an unexpected frame (${String(url || 'no url').slice(0, 120)})`),
+})
 
 // ─── Last-resort error handling ──────────────────────────────────
 // Node has defaulted to terminating the process on an unhandled rejection since
@@ -254,31 +262,64 @@ app.on('web-contents-created', (_e, contents) => {
 // cannot diagnose and must not be left to guess at. Continuing would present an
 // empty dashboard, which is indistinguishable from having lost everything, so say
 // exactly what happened, point at the backups, and stop.
+//
+// When the key is the problem — a profile restored onto another machine, a reset
+// keychain — the recovery key is the fix, and the Settings page that accepts it
+// is exactly what cannot load. So the dialog offers it here: copy the recovery
+// key, press the button, and Hiro checks it against the database before
+// replacing anything (dbCrypto.importRecoveryKey), then tries again.
+const RECOVERABLE_DB_ERRORS = new Set(['key-unwrap-failed', 'key-corrupt', 'integrity-failed'])
+const USE_RECOVERY_KEY = 'Use recovery key from clipboard'
+
 async function openDatabaseOrExplain() {
-  try {
-    await database.init()
-    return true
-  } catch (err) {
-    logger.append(`Database could not be opened: ${err.message}`)
-    const encryptionRelated = err.name === 'DbCryptoError'
-    await dialog.showMessageBox({
-      type: 'error',
-      title: 'Hiro could not open its database',
-      message: encryptionRelated
-        ? 'The encrypted database could not be unlocked.'
-        : 'The database could not be opened.',
-      detail: `${err.message}\n\nYour data has not been changed. Daily backups are in the "backups" folder `
-        + 'inside your Hiro profile directory, and Hiro will not overwrite anything until it can open the '
-        + 'database successfully.',
-      buttons: ['Open the profile folder', 'Quit'],
-      defaultId: 0,
-      cancelId: 1,
-    }).then(({ response }) => {
-      if (response === 0) shell.openPath(configService.CONFIG_DIR)
-    }).catch(() => {})
-    app.quit()
-    return false
+  let note = ''
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      await database.init()
+      return true
+    } catch (err) {
+      logger.append(`Database could not be opened: ${err.message}`)
+      const encryptionRelated = err.name === 'DbCryptoError'
+      const offerRecovery = encryptionRelated && RECOVERABLE_DB_ERRORS.has(err.code)
+      const buttons = offerRecovery
+        ? [USE_RECOVERY_KEY, 'Open the profile folder', 'Quit']
+        : ['Open the profile folder', 'Quit']
+      let response = buttons.length - 1
+      try {
+        ({ response } = await dialog.showMessageBox({
+          type: 'error',
+          title: 'Hiro could not open its database',
+          message: encryptionRelated
+            ? 'The encrypted database could not be unlocked.'
+            : 'The database could not be opened.',
+          detail: `${note}${err.message}\n\nYour data has not been changed. Daily backups are in the "backups" folder `
+            + 'inside your Hiro profile directory, and Hiro will not overwrite anything until it can open the '
+            + 'database successfully.'
+            + (offerRecovery
+              ? '\n\nIf you saved a recovery key (it starts with HIRO-RECOVERY-1:), copy it to the clipboard and '
+                + `choose "${USE_RECOVERY_KEY}". It is checked against your database before anything is replaced.`
+              : ''),
+          buttons,
+          defaultId: 0,
+          cancelId: buttons.length - 1,
+        }))
+      } catch { /* a dialog that failed to show is treated as Quit */ }
+      const choice = buttons[response]
+      if (choice === USE_RECOVERY_KEY) {
+        const { clipboard } = require('electron')
+        const result = require('./services/dbCrypto').importRecoveryKey(clipboard.readText())
+        // Whatever happened, the key should not linger on the clipboard.
+        try { if (/HIRO-RECOVERY-1:/.test(clipboard.readText())) clipboard.clear() } catch { /* best-effort */ }
+        note = result.success ? '' : `${result.reason}\n\n`
+        continue
+      }
+      if (choice === 'Open the profile folder') shell.openPath(configService.CONFIG_DIR)
+      app.quit()
+      return false
+    }
   }
+  app.quit()
+  return false
 }
 
 // ─── The PDF preview scheme ─────────────────────────────────────────
@@ -347,6 +388,11 @@ app.whenReady().then(async () => {
   // long-running sessions still get one backup per day.
   database.maybeBackup()
   setInterval(() => database.maybeBackup(), 6 * 60 * 60 * 1000)
+  // Scheduled portable export: a no-op unless enabled in Settings -> Data and
+  // due. Hourly, so a laptop that slept through the due time catches up soon
+  // after waking. Never allowed to throw into startup.
+  try { dataTransfer.maybeRunScheduledExport() } catch { /* reported in Settings */ }
+  setInterval(() => { try { dataTransfer.maybeRunScheduledExport() } catch { /* as above */ } }, 60 * 60 * 1000)
   // Usage rows are diagnostic; six months is plenty and keeps the file small.
   database.pruneAiUsage(180)
   // The notification ledger is a dedupe mechanism, not history — nothing needs a
@@ -454,10 +500,26 @@ app.on('will-quit', () => {
   try { scheduler.stop() } catch { /* shutting down anyway */ }
   try { mobileApi.stop() } catch { /* shutting down anyway */ }
   try { tray.destroy() } catch { /* shutting down anyway */ }
+  // Decrypted copies of the activity log made by "Open log" — see logger.js.
+  try { logger.removePlainCopies() } catch { /* shutting down anyway */ }
+  try { require('./services/mobileActivity').flush() } catch { /* shutting down anyway */ }
 })
 
 // ─── IPC: Config ────────────────────────────────────────────────
-ipcMain.handle('config:get', () => configService.load())
+// Secrets go out as a placeholder and webhook URLs masked — see
+// ipc/configGuard.js. What was served is remembered under an id that rides in
+// the object, so config:save can tell what the user actually changed.
+const configSnapshots = configGuard.createSnapshotStore()
+
+ipcMain.handle('config:get', () => {
+  let cfg = configService.load()
+  // Webhooks saved before they had ids (or signing secrets) get them now, so a
+  // masked URL can be matched back to the stored one on save.
+  const webhooks = configGuard.withWebhookIdentity(cfg.webhooks, require('./services/webhooks').newSecret)
+  if (webhooks) cfg = configService.update({ webhooks })
+  const served = configGuard.redactForRenderer(cfg)
+  return { ...served, [configGuard.SNAPSHOT_KEY]: configSnapshots.remember(served) }
+})
 
 // Surfaced in Settings so a config file that failed to parse is reported
 // rather than silently appearing as a factory reset.
@@ -468,21 +530,16 @@ ipcMain.handle('config:loadError', () => configService.getLoadError())
 // left on disk untouched — see the note above preservedSecrets in config.js.
 ipcMain.handle('config:secretError', () => configService.getSecretError())
 
-// Keys owned by background services (scheduler, cloud sync, mobile API,
-// inbox). The renderer's form is a snapshot from page load — saving it
-// verbatim would clobber anything these services wrote since.
-const RUNTIME_CONFIG_KEYS = [
-  'pendingScans', 'lastScanAt', 'lastInboxCheck', 'lastCloudSyncAt', 'lastJobAlertCheck',
-  'cloudSyncEnabled', 'supabaseEmail', 'supabaseRefreshToken',
-  'cloudDataKey',
-  'mobileApiEnabled', 'mobileApiToken',
-  'lastBackupDrill', 'lastScanOutcome',
-]
-
+// The renderer's form is a snapshot from page load, and background services
+// (scheduler, cloud sync, mobile API, calendar, inbox) keep writing config under
+// it. Keys they own are never taken from the renderer, and every other key only
+// when the renderer actually changed it — see ipc/configGuard.js.
 ipcMain.handle('config:save', (_, config) => {
   const current = configService.load()
-  const merged = { ...config }
-  for (const key of RUNTIME_CONFIG_KEYS) merged[key] = current[key]
+  const snapshotId = config?.[configGuard.SNAPSHOT_KEY]
+  const merged = configGuard.mergeRendererSave(current, config, configSnapshots.get(snapshotId), {
+    newSecret: require('./services/webhooks').newSecret,
+  })
 
   // Stamp when an A/B test started, and re-stamp whenever its arms change.
   // Without this the result would be read over applications sent before the
@@ -499,6 +556,7 @@ ipcMain.handle('config:save', (_, config) => {
   }
 
   configService.save(merged)
+  configSnapshots.advance(snapshotId, config)
   // Keep the OS login item in step with the setting that claims to control it.
   if (merged.launchOnLogin !== current.launchOnLogin || merged.startMinimised !== current.startMinimised) {
     tray.applyLoginItem(merged.launchOnLogin, { startMinimised: merged.startMinimised })
@@ -566,7 +624,8 @@ ipcMain.handle('ai:modelChoices', () => {
 // local server's model, or the writing model picked for Claude/ChatGPT/DeepSeek.
 ipcMain.handle('ai:test', async (_, provider, apiKey, model) => {
   try {
-    await aiAdapter.testConnection(provider, apiKey, model)
+    // The form holds a placeholder for a key that is already saved.
+    await aiAdapter.testConnection(provider, configGuard.resolveSecret(apiKey, configService.load().aiApiKey), model)
     return { success: true }
   } catch (err) {
     return { success: false, error: err.message }
@@ -577,14 +636,21 @@ ipcMain.handle('ai:test', async (_, provider, apiKey, model) => {
 // Which servers a given address resolves to, and why it does not resolve when it
 // does not. Read-only and side-effect free, so Settings can show the answer as
 // the address is typed rather than only when Test Connection is pressed.
-ipcMain.handle('email:describeServers', (_, cfg) =>
-  require('./services/mailProvider').describe({ ...configService.load(), ...(cfg || {}) }))
+ipcMain.handle('email:describeServers', (_, cfg) => {
+  const saved = configService.load()
+  const overrides = { ...(cfg || {}) }
+  for (const key of configGuard.REDACTED_KEYS) {
+    if (key in overrides) overrides[key] = configGuard.resolveSecret(overrides[key], saved[key])
+  }
+  return require('./services/mailProvider').describe({ ...saved, ...overrides })
+})
 
 // `overrides` carries the custom-server fields as they stand in the Settings
 // form, so Test Connection tests what is on screen rather than what was saved.
 ipcMain.handle('email:test', async (_, email, password, overrides) => {
   try {
-    await emailService.testConnection(email, password, overrides || {})
+    const saved = configService.load()
+    await emailService.testConnection(email, configGuard.resolveSecret(password, saved.gmailAppPassword), overrides || {})
     return { success: true }
   } catch (err) {
     return { success: false, error: err.message }
@@ -687,8 +753,9 @@ ipcMain.handle('logs:openFile', async () => {
       await shell.openPath(logger.getPath())
       return { success: true, decryptedCopy: null }
     }
-    const copy = path.join(require('os').tmpdir(), `hiro-activity-log-${Date.now()}.txt`)
-    logger.writePlainCopy(copy)
+    // A private 0700 folder, a 0600 file, deleted after a few minutes and on
+    // quit — see writePrivatePlainCopy in logger.js.
+    const copy = logger.writePrivatePlainCopy()
     await shell.openPath(copy)
     return { success: true, decryptedCopy: copy }
   } catch (err) {
@@ -1447,6 +1514,42 @@ ipcMain.handle('data:import', (_, passphrase) => {
   }
 })
 
+// What the staged import WOULD do, without doing it: the merge runs inside a
+// transaction that is rolled back. Shown before the user confirms.
+ipcMain.handle('data:previewImport', (_, passphrase) => {
+  if (!pendingDataImportPath) return { success: false, error: 'Nothing staged — choose a file first.' }
+  try {
+    const raw = require('fs').readFileSync(pendingDataImportPath, 'utf8')
+    return dataTransfer.previewImport(raw, passphrase || '')
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('data:scheduledExport:get', () => {
+  try { return { success: true, ...dataTransfer.getScheduledExportStatus() } }
+  catch (err) { return { success: false, error: err.message } }
+})
+
+ipcMain.handle('data:scheduledExport:configure', (_, settings) => {
+  try { return dataTransfer.configureScheduledExport(settings || {}) }
+  catch (err) { return { success: false, error: err.message } }
+})
+
+ipcMain.handle('data:scheduledExport:chooseFolder', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+    title: 'Folder for scheduled exports',
+    properties: ['openDirectory', 'createDirectory'],
+  })
+  if (canceled || !filePaths.length) return { canceled: true }
+  return { success: true, folder: filePaths[0] }
+})
+
+ipcMain.handle('data:scheduledExport:runNow', () => {
+  try { return dataTransfer.runScheduledExport() }
+  catch (err) { return { success: false, error: err.message } }
+})
+
 ipcMain.handle('config:applyImport', () => {
   if (!pendingConfigImport) return { success: false, error: 'Nothing staged — choose a file first.' }
   try {
@@ -1562,14 +1665,33 @@ ipcMain.handle('analytics:getWeeklyData', () => {
 })
 
 // ─── IPC: Webhooks ──────────────────────────────────────────────
-ipcMain.handle('webhook:test', async (_, provider, url) => {
+// `id` identifies a saved webhook, whose URL the form only holds as a
+// placeholder and whose secret it never holds at all.
+ipcMain.handle('webhook:test', async (_, provider, url, id) => {
   try {
     const webhooks = require('./services/webhooks')
-    const ok = await webhooks.test(provider, url)
+    const stored = id ? (configService.load().webhooks || []).find(w => w?.id === id) : null
+    const target = configGuard.resolveSecret(url, stored?.url || '')
+    if (!target) return { success: false, error: 'Enter a webhook URL first.' }
+    const ok = await webhooks.test(provider, target, stored ? { ...stored, provider } : null)
     return { success: ok }
   } catch (err) {
     return { success: false, error: err.message }
   }
+})
+
+// A new webhook's identity and signing secret, minted here so the secret can be
+// shown (and copied into the receiver) before the first save.
+ipcMain.handle('webhook:create', () => ({
+  id: require('crypto').randomUUID(),
+  secret: require('./services/webhooks').newSecret(),
+}))
+
+// The signing secret of a saved webhook, on request only — config:get never
+// carries it.
+ipcMain.handle('webhook:getSecret', (_, id) => {
+  const wh = (configService.load().webhooks || []).find(w => w?.id === id)
+  return wh?.secret ? { success: true, secret: wh.secret } : { success: false, error: 'Save Settings first to create a signing secret.' }
 })
 
 // ─── IPC: Smart Scheduling ──────────────────────────────────────
@@ -1614,9 +1736,10 @@ ipcMain.handle('mobile:getInfo', () => mobileApi.getInfo())
 
 // QR pairing. The SVG is rendered in the main process because the renderer has
 // no network access and no module loader — it just draws what it is handed.
-ipcMain.handle('mobile:startPairing', async () => {
+ipcMain.handle('mobile:startPairing', async (_, options = {}) => {
   try {
-    const session = mobileApi.startPairing()
+    // Which scopes the device being paired will hold — chosen here, not by it.
+    const session = mobileApi.startPairing({ scopes: Array.isArray(options?.scopes) ? options.scopes : undefined })
     let svg = ''
     try {
       svg = await require('qrcode').toString(session.payload, {
@@ -1635,6 +1758,12 @@ ipcMain.handle('mobile:cancelPairing', () => mobileApi.cancelPairing())
 ipcMain.handle('mobile:listDevices', () => mobileApi.listDevices())
 ipcMain.handle('mobile:revokeDevice', (_, id) => mobileApi.revokeDevice(id))
 ipcMain.handle('mobile:revokeAllDevices', () => mobileApi.revokeAllDevices())
+ipcMain.handle('mobile:setDeviceScopes', (_, id, scopes) => mobileApi.setDeviceScopes(id, Array.isArray(scopes) ? scopes : []))
+ipcMain.handle('mobile:deviceActivity', (_, id) => mobileApi.deviceActivity(id))
+ipcMain.handle('mobile:clearLegacyToken', () => {
+  mobileApi.clearLegacyToken()
+  return mobileApi.getInfo()
+})
 
 ipcMain.handle('mobile:setEnabled', (_, enabled) => {
   configService.update({ mobileApiEnabled: !!enabled })

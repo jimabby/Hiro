@@ -23,7 +23,17 @@ const INDEED_REGIONS = [
   ['de', 'Germany'], ['nl', 'Netherlands'],
 ]
 
-export default function Settings({ showToast, active }) {
+// What config:get puts in place of a saved secret (see electron/ipc/configGuard.js).
+const SAVED_SECRET = '__hiro_saved_secret__'
+
+// The per-device permissions a paired phone or extension can hold.
+const MOBILE_SCOPES = [
+  { id: 'read', label: 'Read data', hint: 'Stats, applications, interviews, offers, the activity log' },
+  { id: 'write', label: 'Make changes', hint: 'Statuses, notes, follow-ups, importing jobs, approving or rejecting drafts' },
+  { id: 'scan', label: 'Run scans', hint: 'Start or stop a scan on this computer' },
+]
+
+export default function Settings({ showToast, active, focusTab, onFocusTabHandled }) {
   const [form, setForm] = useState(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -76,6 +86,12 @@ export default function Settings({ showToast, active }) {
   const [pairingSession, setPairingSession] = useState(null)
   const [pairedDevices, setPairedDevices] = useState(null)
   const [mobileBusy, setMobileBusy] = useState(false)
+  // What the next paired device may do, chosen before the code is generated.
+  const [pairScopes, setPairScopes] = useState(['read', 'write', 'scan'])
+  // deviceId -> its recent requests, for the ones whose activity is open.
+  const [deviceActivity, setDeviceActivity] = useState({})
+  // Webhook signing secrets the user asked to see, by webhook id.
+  const [revealedSecrets, setRevealedSecrets] = useState({})
   const [cloudStatus, setCloudStatus] = useState(null)
   // null = not opened yet; an array = loaded (possibly empty).
   const [syncConflicts, setSyncConflicts] = useState(null)
@@ -113,17 +129,30 @@ export default function Settings({ showToast, active }) {
   useEffect(() => {
     if (active === false) return
     window.api.getConfig().then(cfg => {
-      setForm(f => ({
-        ...cfg,
-        blacklistedCompanies: Array.isArray(cfg.blacklistedCompanies)
-          ? cfg.blacklistedCompanies.join(', ')
-          : cfg.blacklistedCompanies || '',
-        // Preserve fields the user is mid-edit so a tab switch doesn't discard
-        // unsaved typing; only unedited values are refreshed from disk.
-        ...(dirtyRef.current ? f : {}),
-      }))
-    })
+      setForm(f => {
+        // Preserve only the fields the user actually edited, so a tab switch
+        // doesn't discard unsaved typing. Spreading the whole stale form here
+        // used to put back every other field too — a company blacklisted from
+        // the Dashboard or a resume added elsewhere was reverted on Save.
+        const kept = {}
+        if (f) for (const key of editedRef.current) kept[key] = f[key]
+        return {
+          ...cfg,
+          blacklistedCompanies: Array.isArray(cfg.blacklistedCompanies)
+            ? cfg.blacklistedCompanies.join(', ')
+            : cfg.blacklistedCompanies || '',
+          ...kept,
+        }
+      })
+    }).catch(() => {})
   }, [active])
+
+  // Opened on a specific tab from elsewhere (the command palette).
+  useEffect(() => {
+    if (!focusTab) return
+    setSettingsTab(focusTab)
+    onFocusTabHandled?.()
+  }, [focusTab, onFocusTabHandled])
 
   useEffect(() => {
     window.api.linkedinStatus().then(s => setLinkedinLoggedIn(s.loggedIn))
@@ -150,16 +179,16 @@ export default function Settings({ showToast, active }) {
     }
   }, [])
 
-  // Tracks whether the form has edits the user hasn't saved yet, so refetching
-  // on tab-focus never throws away typing in progress.
-  const dirtyRef = useRef(false)
+  // Which fields the user has edited since the last save, so refetching on
+  // tab-focus keeps exactly that typing and refreshes everything else.
+  const editedRef = useRef(new Set())
   // The ref alone can't drive the UI. Mirroring it into state lets the header
   // say so: one Save button serves six tabs, and there was previously nothing
   // on screen distinguishing "saved" from "typed but not saved".
   const [dirty, setDirty] = useState(false)
 
   const set = (key, val) => {
-    dirtyRef.current = true
+    editedRef.current.add(key)
     setDirty(true)
     setForm(f => ({ ...f, [key]: val }))
   }
@@ -184,44 +213,59 @@ export default function Settings({ showToast, active }) {
     setSaving(true)
     setSaved(false)
     const clamp = (v, min, max, fallback) => { const n = parseInt(v); return isNaN(n) ? fallback : Math.min(max, Math.max(min, n)) }
-    await window.api.saveConfig({
-      ...form,
-      salaryMin: Math.max(0, parseInt(form.salaryMin) || 0),
-      matchThreshold: clamp(form.matchThreshold, 0, 100, 80),
-      dailyLimitSeek: clamp(form.dailyLimitSeek, 1, 100, 10),
-      dailyLimitIndeed: clamp(form.dailyLimitIndeed, 1, 100, 10),
-      dailyLimitLinkedIn: clamp(form.dailyLimitLinkedIn, 1, 100, 10),
-      blacklistedCompanies: (form.blacklistedCompanies || '').split(',').map(s => s.trim()).filter(Boolean),
-      followUpDays: clamp(form.followUpDays, 1, 30, 7),
-      // 1 is the original behaviour — one nudge, ever. The ceiling is 5 because
-      // past that it stops being a follow-up and starts being a nuisance to a
-      // real person's inbox, over the user's name.
-      followUpMaxCount: clamp(form.followUpMaxCount, 1, 5, 2),
-      // At least a week between rounds. The database accepts 0, but a follow-up
-      // the morning after the last one is not a cadence anybody wants and it is
-      // the sort of setting that is easy to type by accident.
-      followUpIntervalDays: clamp(form.followUpIntervalDays, 7, 90, 14),
-      // 0 is meaningful (stop flagging stale answers), so the floor is 0.
-      screeningAnswerStaleDays: clamp(form.screeningAnswerStaleDays, 0, 1095, 180),
-      companyCooldownDays: clamp(form.companyCooldownDays, 0, 365, 30),
-      smartScheduleBatchSize: clamp(form.smartScheduleBatchSize, 1, 20, 3),
-      smartScheduleJitter: clamp(form.smartScheduleJitter, 0, 60, 15),
-      // MAX_PAGES in the scrapers is 10; anything higher is silently capped
-      // there, so clamp here to keep the form honest about what will happen.
-      scrapePages: clamp(form.scrapePages, 1, 10, 3),
-      // 0 is meaningful (disables the sweep), so the floor is 0, not 1.
-      staleAfterDays: clamp(form.staleAfterDays, 0, 365, 45),
-      inboxCheckHours: clamp(form.inboxCheckHours, 1, 24, 2),
-      // Drop rules whose resume was deleted, or the applicator would silently
-      // fall through to the default for a rule the user thinks is active.
-      resumeRules: (form.resumeRules || []).filter(r =>
-        r?.keywords?.trim() && (form.resumes || []).some(x => x.id === r.resumeId)),
-    })
-    dirtyRef.current = false // saved state now matches disk — safe to refetch
-    setDirty(false)
-    setSaving(false)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 3000)
+    // Snapshot of what is being saved: an edit typed while the save is in
+    // flight is not on disk yet and must stay marked as edited.
+    const editedAtSave = new Set(editedRef.current)
+    // A save that threw, or came back { success: false }, used to leave the
+    // button reading "Saving…" forever with no message. Same shape as Setup.
+    try {
+      const res = await window.api.saveConfig({
+        ...form,
+        salaryMin: Math.max(0, parseInt(form.salaryMin) || 0),
+        matchThreshold: clamp(form.matchThreshold, 0, 100, 80),
+        dailyLimitSeek: clamp(form.dailyLimitSeek, 1, 100, 10),
+        dailyLimitIndeed: clamp(form.dailyLimitIndeed, 1, 100, 10),
+        dailyLimitLinkedIn: clamp(form.dailyLimitLinkedIn, 1, 100, 10),
+        blacklistedCompanies: (form.blacklistedCompanies || '').split(',').map(s => s.trim()).filter(Boolean),
+        followUpDays: clamp(form.followUpDays, 1, 30, 7),
+        // 1 is the original behaviour — one nudge, ever. The ceiling is 5 because
+        // past that it stops being a follow-up and starts being a nuisance to a
+        // real person's inbox, over the user's name.
+        followUpMaxCount: clamp(form.followUpMaxCount, 1, 5, 2),
+        // At least a week between rounds. The database accepts 0, but a follow-up
+        // the morning after the last one is not a cadence anybody wants and it is
+        // the sort of setting that is easy to type by accident.
+        followUpIntervalDays: clamp(form.followUpIntervalDays, 7, 90, 14),
+        // 0 is meaningful (stop flagging stale answers), so the floor is 0.
+        screeningAnswerStaleDays: clamp(form.screeningAnswerStaleDays, 0, 1095, 180),
+        companyCooldownDays: clamp(form.companyCooldownDays, 0, 365, 30),
+        smartScheduleBatchSize: clamp(form.smartScheduleBatchSize, 1, 20, 3),
+        smartScheduleJitter: clamp(form.smartScheduleJitter, 0, 60, 15),
+        // MAX_PAGES in the scrapers is 10; anything higher is silently capped
+        // there, so clamp here to keep the form honest about what will happen.
+        scrapePages: clamp(form.scrapePages, 1, 10, 3),
+        // 0 is meaningful (disables the sweep), so the floor is 0, not 1.
+        staleAfterDays: clamp(form.staleAfterDays, 0, 365, 45),
+        inboxCheckHours: clamp(form.inboxCheckHours, 1, 24, 2),
+        // Drop rules whose resume was deleted, or the applicator would silently
+        // fall through to the default for a rule the user thinks is active.
+        resumeRules: (form.resumeRules || []).filter(r =>
+          r?.keywords?.trim() && (form.resumes || []).some(x => x.id === r.resumeId)),
+      })
+      if (res?.success === false) {
+        showToast?.(res.error || 'Could not save your settings', 'error')
+        return
+      }
+      // Saved state now matches disk for these fields — safe to refetch them.
+      for (const key of editedAtSave) editedRef.current.delete(key)
+      setDirty(editedRef.current.size > 0)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 3000)
+    } catch (err) {
+      showToast?.(`Could not save your settings: ${err.message}`, 'error')
+    } finally {
+      setSaving(false)
+    }
   }
 
   // The same offer the Dashboard and Needs Attention make after a delete. Both
@@ -990,6 +1034,7 @@ export default function Settings({ showToast, active }) {
         <h3 style={{ marginBottom: 8, fontSize: 15 }}>Webhook Notifications</h3>
         <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 16 }}>
           Get notified on Discord or Slack when jobs need attention, scans complete, or inbox replies arrive.
+          A generic webhook posts the event as JSON to any URL, signed so the receiver can check it came from Hiro.
         </p>
         {(form.webhooks || []).map((wh, i) => (
           <div key={i} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 14, marginBottom: 12 }}>
@@ -1019,17 +1064,61 @@ export default function Settings({ showToast, active }) {
                 }}>
                   <option value="discord">Discord</option>
                   <option value="slack">Slack</option>
+                  <option value="generic">Generic (signed JSON)</option>
                 </select>
               </div>
               <div className="form-group" style={{ flex: 3 }}>
                 <label htmlFor={`set-f30-${i}`}>Webhook URL</label>
-                <input id={`set-f30-${i}`} value={wh.url || ''} placeholder="https://discord.com/api/webhooks/..." onChange={e => {
-                  const webhooks = [...(form.webhooks || [])]
-                  webhooks[i] = { ...webhooks[i], url: e.target.value }
-                  set('webhooks', webhooks)
-                }} />
+                {/* A saved URL is never sent to this page — it holds a
+                    placeholder, shown as an empty field with the host as a
+                    hint. Typing replaces it; leaving it alone keeps it. */}
+                <input id={`set-f30-${i}`}
+                  value={wh.url === SAVED_SECRET ? '' : (wh.url || '')}
+                  placeholder={wh.url === SAVED_SECRET
+                    ? `Saved (${wh.urlHint || 'hidden'}) — type to replace`
+                    : 'https://discord.com/api/webhooks/...'}
+                  onChange={e => {
+                    const webhooks = [...(form.webhooks || [])]
+                    webhooks[i] = { ...webhooks[i], url: e.target.value }
+                    set('webhooks', webhooks)
+                  }} />
               </div>
             </div>
+            {wh.provider === 'generic' && (
+              <div className="form-group" style={{ marginBottom: 8 }}>
+                <label>Signing secret</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12 }}>
+                  {(wh.secret || revealedSecrets[wh.id])
+                    ? <code style={{ wordBreak: 'break-all' }}>{wh.secret || revealedSecrets[wh.id]}</code>
+                    : <span style={{ color: 'var(--text-muted)' }}>{wh.hasSecret ? 'Hidden' : 'Created when you save'}</span>}
+                  {!wh.secret && wh.hasSecret && !revealedSecrets[wh.id] && (
+                    <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={async () => {
+                      const r = await window.api.getWebhookSecret?.(wh.id)
+                      if (r?.success) setRevealedSecrets(m => ({ ...m, [wh.id]: r.secret }))
+                      else showToast?.(r?.error || 'Could not read the secret', 'error')
+                    }}>Show</button>
+                  )}
+                  {(wh.secret || revealedSecrets[wh.id]) && (
+                    <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={() => {
+                      navigator.clipboard.writeText(wh.secret || revealedSecrets[wh.id])
+                      showToast?.('Secret copied', 'success')
+                    }}>Copy</button>
+                  )}
+                </div>
+                <p style={{ color: 'var(--text-muted)', fontSize: 11, margin: '4px 0 0' }}>
+                  Each request carries <code>X-Hiro-Timestamp</code> and <code>X-Hiro-Signature: sha256=&lt;hex&gt;</code>,
+                  an HMAC-SHA256 of <code>timestamp + &quot;.&quot; + body</code> keyed with this secret.
+                </p>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginTop: 6, fontSize: 12 }}>
+                  <input type="checkbox" style={{ width: 'auto' }} checked={!!wh.allowPrivateNetwork} onChange={e => {
+                    const webhooks = [...(form.webhooks || [])]
+                    webhooks[i] = { ...webhooks[i], allowPrivateNetwork: e.target.checked }
+                    set('webhooks', webhooks)
+                  }} />
+                  Allow private network address (this computer, your router, a home-lab server)
+                </label>
+              </div>
+            )}
             <div className="form-group" style={{ marginBottom: 8 }}>
               <label>Events</label>
               <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
@@ -1048,14 +1137,17 @@ export default function Settings({ showToast, active }) {
             </div>
             <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={async () => {
               try {
-                const res = await window.api.testWebhook(wh.provider || 'discord', wh.url)
-                showToast?.(res.success ? 'Test notification sent!' : 'Failed to send test notification', res.success ? 'success' : 'error')
+                const res = await window.api.testWebhook(wh.provider || 'discord', wh.url, wh.id)
+                showToast?.(res.success ? 'Test notification sent!' : (res.error || 'Failed to send test notification'), res.success ? 'success' : 'error')
               } catch { showToast?.('Error testing webhook', 'error') }
             }}>Send Test</button>
           </div>
         ))}
-        <button className="btn btn-ghost" style={{ fontSize: 13 }} onClick={() => {
-          const webhooks = [...(form.webhooks || []), { provider: 'discord', url: '', enabled: true, events: ['attention', 'scan-complete', 'inbox-reply', 'weekly-report'] }]
+        <button className="btn btn-ghost" style={{ fontSize: 13 }} onClick={async () => {
+          // The id and signing secret come from the main process, so a generic
+          // webhook's secret can be copied into the receiver before saving.
+          const identity = await window.api.createWebhookIdentity?.().catch(() => null)
+          const webhooks = [...(form.webhooks || []), { ...(identity || {}), provider: 'discord', url: '', enabled: true, events: ['attention', 'scan-complete', 'inbox-reply', 'weekly-report'] }]
           set('webhooks', webhooks)
         }}>+ Add Webhook</button>
       </div>
@@ -1115,30 +1207,43 @@ export default function Settings({ showToast, active }) {
                 ? mobileInfo.addresses.map(a => <code key={a} style={{ marginRight: 8 }}>{a}:{mobileInfo.port}</code>)
                 : <span style={{ color: 'var(--text-muted)' }}>no network connection found</span>}
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <span style={{ color: 'var(--text-muted)' }}>Pairing token: </span>
-              <code style={{ wordBreak: 'break-all' }}>{mobileInfo.token}</code>
-              <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={() => {
-                navigator.clipboard.writeText(mobileInfo.token)
-                showToast?.('Token copied', 'success')
-              }}>Copy</button>
-              <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={async () => {
-                const info = await window.api.regenerateMobileToken()
-                setMobileInfo(info)
-                showToast?.('New token generated — re-pair your phone', 'info')
-              }}>Regenerate</button>
-            </div>
-            <p style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 10, marginBottom: 0 }}>
-              The token above is shared by every phone that has ever used it and never expires.
-              Pairing below gives each phone its own token instead — one you can age out and
-              withdraw from a single lost device.
-            </p>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginTop: 10, fontSize: 12 }}>
-              <input type="checkbox" style={{ width: 'auto' }}
-                checked={form.mobileApiAllowLegacyToken !== false}
-                onChange={e => set('mobileApiAllowLegacyToken', e.target.checked)} />
-              Accept the shared token (turn off once every phone is paired — it is sent unencrypted)
-            </label>
+            {mobileInfo.hasLegacyToken ? (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Shared token (old phones): </span>
+                  <code style={{ wordBreak: 'break-all' }}>{mobileInfo.token}</code>
+                  <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={() => {
+                    navigator.clipboard.writeText(mobileInfo.token)
+                    showToast?.('Token copied', 'success')
+                  }}>Copy</button>
+                  <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={async () => {
+                    const info = await window.api.regenerateMobileToken()
+                    setMobileInfo(info)
+                    showToast?.('New token generated — re-pair your phone', 'info')
+                  }}>Regenerate</button>
+                  <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={async () => {
+                    if (!window.confirm('Delete the shared token? Phones still using it will need pairing.')) return
+                    const info = await window.api.clearLegacyMobileToken?.()
+                    if (info) setMobileInfo(info)
+                  }}>Delete</button>
+                </div>
+                <p style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 10, marginBottom: 0 }}>
+                  The token above is shared by every phone that has ever used it and never expires.
+                  Pairing below gives each phone its own token instead — one you can age out and
+                  withdraw from a single lost device.
+                </p>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginTop: 10, fontSize: 12 }}>
+                  <input type="checkbox" style={{ width: 'auto' }}
+                    checked={form.mobileApiAllowLegacyToken !== false}
+                    onChange={e => set('mobileApiAllowLegacyToken', e.target.checked)} />
+                  Accept the shared token (turn off once every phone is paired — it is sent unencrypted)
+                </label>
+              </>
+            ) : (
+              <p style={{ color: 'var(--text-muted)', fontSize: 12, margin: 0 }}>
+                Each phone or extension pairs with its own token below. There is no shared token on this computer.
+              </p>
+            )}
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginTop: 6, fontSize: 12 }}>
               <input type="checkbox" style={{ width: 'auto' }}
                 checked={!!form.mobileApiAllowTailscale}
@@ -1152,11 +1257,23 @@ export default function Settings({ showToast, active }) {
             {/* ── QR pairing ───────────────────────────────────── */}
             <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
               {!pairingSession ? (
-                <button className="btn btn-primary" style={{ fontSize: 12 }} onClick={async () => {
-                  const s = await window.api.startPairing?.()
-                  if (s?.error) return showToast?.(`Could not start pairing: ${s.error}`, 'error')
-                  setPairingSession(s)
-                }}>Pair a phone</button>
+                <div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>The device being paired may:</div>
+                  <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
+                    {MOBILE_SCOPES.map(sc => (
+                      <label key={sc.id} title={sc.hint} style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 12, marginBottom: 0 }}>
+                        <input type="checkbox" style={{ width: 'auto' }} checked={pairScopes.includes(sc.id)}
+                          onChange={e => setPairScopes(list => e.target.checked ? [...new Set([...list, sc.id])] : list.filter(x => x !== sc.id))} />
+                        {sc.label}
+                      </label>
+                    ))}
+                  </div>
+                  <button className="btn btn-primary" style={{ fontSize: 12 }} disabled={pairScopes.length === 0} onClick={async () => {
+                    const s = await window.api.startPairing?.({ scopes: pairScopes })
+                    if (s?.error) return showToast?.(`Could not start pairing: ${s.error}`, 'error')
+                    setPairingSession(s)
+                  }}>Pair a phone or extension</button>
+                </div>
               ) : (
                 <div>
                   <div style={{ display: 'flex', gap: 18, alignItems: 'flex-start', flexWrap: 'wrap' }}>
@@ -1218,7 +1335,37 @@ export default function Settings({ showToast, active }) {
                             {' · last seen '}{new Date(d.lastSeenAt).toLocaleString()}
                             {d.expiresAt && ` · expires ${new Date(d.expiresAt).toLocaleDateString()}`}
                           </div>
+                          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 4 }}>
+                            {MOBILE_SCOPES.map(sc => (
+                              <label key={sc.id} title={sc.hint} style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 11, marginBottom: 0 }}>
+                                <input type="checkbox" style={{ width: 'auto' }} checked={(d.scopes || []).includes(sc.id)}
+                                  onChange={async e => {
+                                    const next = e.target.checked ? [...new Set([...(d.scopes || []), sc.id])] : (d.scopes || []).filter(x => x !== sc.id)
+                                    const r = await window.api.setPairedDeviceScopes?.(d.id, next)
+                                    if (!r?.success) showToast?.(`Could not change permissions: ${r?.reason || 'unknown error'}`, 'error')
+                                    setPairedDevices(await window.api.listPairedDevices?.() || [])
+                                  }} />
+                                {sc.label}
+                              </label>
+                            ))}
+                          </div>
+                          {deviceActivity[d.id] && (
+                            <div style={{ marginTop: 6, maxHeight: 180, overflowY: 'auto', fontFamily: 'monospace', fontSize: 11 }}>
+                              {deviceActivity[d.id].length === 0 && <div style={{ color: 'var(--text-muted)' }}>No requests recorded yet.</div>}
+                              {deviceActivity[d.id].map((a, n) => (
+                                <div key={n} style={{ color: a.status >= 400 ? 'var(--red)' : undefined }}>
+                                  {new Date(a.at).toLocaleString()} · {a.method} {a.path} · {a.status} · {a.ip}
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
+                        <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }}
+                          onClick={async () => {
+                            if (deviceActivity[d.id]) return setDeviceActivity(m => { const n = { ...m }; delete n[d.id]; return n })
+                            const list = await window.api.getPairedDeviceActivity?.(d.id) || []
+                            setDeviceActivity(m => ({ ...m, [d.id]: list }))
+                          }}>{deviceActivity[d.id] ? 'Hide activity' : 'View activity'}</button>
                         <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }}
                           onClick={async () => {
                             const r = await window.api.revokePairedDevice?.(d.id)

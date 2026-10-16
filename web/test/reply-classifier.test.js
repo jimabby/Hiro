@@ -62,4 +62,39 @@ check('an acknowledgement is pending', classifySubject('We received your applica
 check('an empty subject is pending', classifySubject(''), 'pending')
 check('a missing subject is pending', classifySubject(undefined), 'pending')
 
+// ─── Unanchored patterns read ordinary mail as rejections ────────
+// `not.*fit` matched "notification … benefits", `not.*progress` matched
+// "Notification: … in progress", and either one caught any company called
+// Notion or Nothing. Each of these used to classify as 'rejected'.
+const NOT_REJECTIONS = [
+  ['Interview notification - your schedule and benefits inside', 'interview'],
+  ['Notification: your application is in progress', 'pending'],
+  ['Notion — your application for Product Designer', 'pending'],
+  ['Nothing Technology: thanks for your profit-sharing questions', 'pending'],
+  ['Your application is progressing to the next stage', 'pending'],
+  ['A note on benefits and fitness perks', 'pending'],
+]
+for (const [subject, want] of NOT_REJECTIONS) {
+  check(`not a rejection: "${subject.slice(0, 44)}"`, classifySubject(subject), want)
+}
+
+// The standard rejection phrasings still classify, inside the new bounds.
+const STANDARD_REJECTIONS = [
+  'We will not be moving forward with your application',
+  'We have decided not to progress your application',
+  'Unfortunately you were not successful',
+  'We regret to inform you',
+  'You were not the right fit for this role',
+  'We are unable to offer you the position',
+  'The position has now been filled',
+  'We have filled the role',
+  'Your application was unsuccessful',
+  'We are no longer considering applications for this role',
+  'We have decided to pursue other candidates',
+  'We will not proceed with your application',
+]
+for (const subject of STANDARD_REJECTIONS) {
+  check(`still a rejection: "${subject.slice(0, 44)}"`, classifySubject(subject), 'rejected')
+}
+
 done()

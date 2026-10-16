@@ -15,7 +15,12 @@ const CONFIG_DIR = path.join(os.tmpdir(), 'hiro-pairing-' + Date.now())
 let store = { mobileDevices: [], mobileTokenTtlDays: 90 }
 const configDouble = {
   load: () => JSON.parse(JSON.stringify(store)),
-  update: (patch) => { store = { ...store, ...JSON.parse(JSON.stringify(patch)) } },
+  // Function patches too, as the real config.update accepts — rotation commits
+  // with one so it reads the device list as it is at that moment.
+  update: (patch) => {
+    const next = typeof patch === 'function' ? patch(JSON.parse(JSON.stringify(store))) : patch
+    store = { ...store, ...JSON.parse(JSON.stringify(next)) }
+  },
   CONFIG_DIR,
 }
 stub({ './config': configDouble })
@@ -218,6 +223,56 @@ const reset = () => { store = { mobileDevices: [], mobileTokenTtlDays: 90 }; pai
   check('a live device is kept', names.includes('Live phone'), true)
 
   check('pruning again removes nothing', pairing.pruneExpiredDevices(configDouble, now).removed, 0)
+}
+
+
+// ── Scopes ─────────────────────────────────────────────────────
+{
+  reset()
+  const issued = pairing.createPairingCode(Date.now(), { scopes: ['read', 'bogus'] })
+  check('only known scopes are granted', issued.scopes, ['read'])
+  const attempt = pairing.consumePairingCode(issued.code)
+  check('the code carries its scopes to the exchange', attempt.scopes, ['read'])
+  const { device } = pairing.issueDeviceToken(configDouble, { name: 'Lent phone', scopes: attempt.scopes })
+  check('the device holds what the code granted', device.scopes, ['read'])
+  check('hasScope agrees', [pairing.hasScope(device, 'read'), pairing.hasScope(device, 'write')], [true, false])
+
+  // A device paired before scopes existed has none recorded — and keeps all
+  // three, so an upgrade never takes access away from a working phone.
+  store.mobileDevices.push({ id: 'legacy', name: 'Old phone', tokenHash: 'x', createdAt: new Date().toISOString() })
+  check('a pre-scope device keeps every scope', pairing.listDevices(configDouble).find(d => d.id === 'legacy').scopes, ['read', 'write', 'scan'])
+  check('a code with no scopes chosen grants all three', pairing.createPairingCode().scopes, ['read', 'write', 'scan'])
+
+  check('scopes can be narrowed later', pairing.setDeviceScopes(configDouble, 'legacy', ['scan']).scopes, ['scan'])
+  check('an unknown device is reported', pairing.setDeviceScopes(configDouble, 'nope', ['read']).success, false)
+}
+
+// ── Rotation ───────────────────────────────────────────────────
+{
+  reset()
+  const t0 = Date.now() - 80 * 86400000 // paired 80 days ago: 10 days left
+  const { token: oldToken, device } = pairing.issueDeviceToken(configDouble, { name: 'Phone', scopes: ['read', 'write'] }, t0)
+  const rotation = pairing.prepareRotation(configDouble, device.id)
+  check('rotation mints a different token', rotation.token !== oldToken, true)
+  check('with a fresh expiry', new Date(rotation.device.expiresAt) > new Date(device.expiresAt), true)
+
+  // Nothing changes until the reply has been handed to the socket: a phone
+  // that never got the new token must not lose the old one.
+  check('before commit the old token still works', !!pairing.verifyDeviceToken(configDouble, oldToken), true)
+  check('and the new one does not yet', pairing.verifyDeviceToken(configDouble, rotation.token), null)
+
+  check('commit applies it', rotation.commit(), true)
+  check('after commit the new token works', pairing.verifyDeviceToken(configDouble, rotation.token)?.id, device.id)
+  check('and the old one is revoked', pairing.verifyDeviceToken(configDouble, oldToken), null)
+  check('the device keeps its id, name and scopes',
+    pairing.listDevices(configDouble).map(d => [d.id, d.name, d.scopes]), [[device.id, 'Phone', ['read', 'write']]])
+
+  // Revoked while the reply was in flight: committing must not bring it back.
+  const second = pairing.prepareRotation(configDouble, device.id)
+  pairing.revokeDevice(configDouble, device.id)
+  check('a device revoked mid-rotation is not resurrected', second.commit(), false)
+  check('the list stays empty', store.mobileDevices.length, 0)
+  check('an unknown device cannot rotate', pairing.prepareRotation(configDouble, 'nope'), null)
 }
 
 done()

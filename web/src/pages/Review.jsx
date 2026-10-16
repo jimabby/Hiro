@@ -195,6 +195,13 @@ export default function Review({ active, showToast, onCountChange }) {
   const [edit, setEdit] = useState(null)
   const [savingEdit, setSavingEdit] = useState(false)
   const logRef = useRef(null)
+  // The draft the user most recently opened. Responses for any other one are
+  // stale — opening A then B quickly used to show A's flags on B.
+  const openIdRef = useRef(null)
+  const closeDetail = () => {
+    openIdRef.current = null
+    setDetail(null)
+  }
 
   const load = useCallback(async () => {
     try {
@@ -240,11 +247,13 @@ export default function Review({ active, showToast, onCountChange }) {
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(held.map(h => h.id)))
 
   async function loadHold(id) {
+    let next
     try {
-      setHold(await window.api.getHoldExplanation?.(id) || { flags: [], diff: [], hasBase: false })
+      next = await window.api.getHoldExplanation?.(id) || { flags: [], diff: [], hasBase: false }
     } catch {
-      setHold({ flags: [], diff: [], hasBase: false })
+      next = { flags: [], diff: [], hasBase: false }
     }
+    if (openIdRef.current === id) setHold(next)
   }
 
   function startEdit() {
@@ -279,15 +288,16 @@ export default function Review({ active, showToast, onCountChange }) {
   async function openDetail(row) {
     // The list query omits the document columns — fetch the full row so the
     // drafted resume and cover letter can actually be read before approving.
+    openIdRef.current = row.id
     setEdit(null)
     setHold(null)
     setShowDiff(false)
+    let full = null
     try {
-      const full = await window.api.getApplication(row.id)
-      setDetail(full || row)
-    } catch {
-      setDetail(row)
-    }
+      full = await window.api.getApplication(row.id)
+    } catch { /* fall back to the list row */ }
+    if (openIdRef.current !== row.id) return
+    setDetail(full || row)
     // Separately, and allowed to fail on its own: the guard's objections and
     // the base-vs-tailored diff. A build without the handler, or a row from
     // before it existed, must still open the draft.
@@ -320,7 +330,7 @@ export default function Review({ active, showToast, onCountChange }) {
       setBusy(false)
       setBulkRunning(false)
       setStopping(false)
-      setDetail(null)
+      closeDetail()
       load()
     }
   }
@@ -343,7 +353,7 @@ export default function Review({ active, showToast, onCountChange }) {
       showToast?.(`Form error: ${err.message}`, 'error')
     } finally {
       setBusy(false)
-      setDetail(null)
+      closeDetail()
       load()
     }
   }
@@ -355,13 +365,34 @@ export default function Review({ active, showToast, onCountChange }) {
 
   async function reject(id) {
     try {
-      await window.api.rejectHeldApplication(id)
-      showToast?.('Draft rejected — filed as skipped so it will not be re-drafted', 'info')
+      const res = await window.api.rejectHeldApplication(id)
+      if (res?.success === false) {
+        showToast?.(res.error || res.reason || 'Could not reject that draft', 'error')
+      } else if (res?.undo?.token) {
+        // The same offer the deletes make: a reject is one click in a dense
+        // row, and it takes the draft out of the queue for good otherwise.
+        const token = res.undo.token
+        showToast?.(res.undo.label || 'Draft rejected', 'info', {
+          label: 'Undo',
+          onAction: async () => {
+            try {
+              const undone = await window.api.undoRejectHeldApplication?.(token)
+              if (undone?.success) showToast?.('Draft restored to the review queue', 'success')
+              else showToast?.(undone?.error || 'That could not be undone', 'error')
+            } catch (err) {
+              showToast?.(`Could not undo: ${err.message}`, 'error')
+            }
+            load()
+          },
+        })
+      } else {
+        showToast?.('Draft rejected — filed as skipped so it will not be re-drafted', 'info')
+      }
     } catch (err) {
       showToast?.(`Could not reject: ${err.message}`, 'error')
     } finally {
       setConfirmReject(null)
-      setDetail(null)
+      closeDetail()
       load()
     }
   }
@@ -547,7 +578,7 @@ export default function Review({ active, showToast, onCountChange }) {
                   {detail.salary ? detail.salary : 'Salary not listed in the ad'}
                 </div>
               </div>
-              <button className="btn btn-ghost" onClick={() => { setEdit(null); setDetail(null) }}>Close</button>
+              <button className="btn btn-ghost" onClick={() => { setEdit(null); closeDetail() }}>Close</button>
             </div>
 
             {detail.match_explanation && (

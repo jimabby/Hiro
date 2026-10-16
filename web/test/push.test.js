@@ -23,9 +23,12 @@ const setConfig = (patch) => { config = { ...config, ...patch } }
 const sent = []
 let expoReply = (messages) => messages.map(() => ({ status: 'ok' }))
 let expoThrow = null
+// A connection-level failure, the way Node's fetch reports one.
+let expoUnreachable = false
 
 global.fetch = async (url, options) => {
   const messages = JSON.parse(options.body)
+  if (expoUnreachable) throw new TypeError('fetch failed')
   sent.push({ url, messages })
   if (expoThrow) throw new Error(expoThrow)
   return { ok: true, status: 200, json: async () => ({ data: expoReply(messages) }) }
@@ -34,11 +37,16 @@ global.fetch = async (url, options) => {
 // Devices the desktop would find registered on the account.
 let targets = [{ deviceId: 'phone-1', token: 'ExponentPushToken[aaa]' }]
 const cleared = []
+// The device list cannot be read (offline, Supabase down), or there is no
+// cloud session to read it with.
+let targetsThrow = false
+let signedIn = true
 
 stub({
   './config': { CONFIG_DIR: TMP, load: () => config, update: (p) => setConfig(p) },
   './cloudSync': {
-    getPushTargets: async () => targets,
+    getPushTargets: async () => { if (targetsThrow) throw new Error('offline'); return signedIn ? targets : [] },
+    getStatus: () => ({ signedIn }),
     clearPushToken: async (id) => { cleared.push(id) },
   },
   './logger': { append: () => {} },
@@ -142,6 +150,32 @@ async function main() {
   res = await push.send({ kind: 'reply', dedupeKey: 'boom:1', title: 'x', body: 'y' })
   check('a transport failure is reported, not thrown', [res.sent, res.reason], [0, 'network is down'])
   expoThrow = null
+
+  // ── A reminder that could not go out is not recorded as sent ──
+  // The key used to be claimed before the device list was fetched, and a failed
+  // fetch read as "no devices" — so the reminder was marked sent and lost.
+  targetsThrow = true
+  res = await push.send({ kind: 'reply', dedupeKey: 'lost:1', title: 'x', body: 'y' })
+  check('an unreadable device list is reported', [res.sent, res.reason], [0, 'targets-unavailable'])
+  targetsThrow = false
+  res = await push.send({ kind: 'reply', dedupeKey: 'lost:1', title: 'x', body: 'y' })
+  check('and the same reminder goes out once it can be read', res.sent, 1)
+
+  signedIn = false
+  res = await push.send({ kind: 'reply', dedupeKey: 'lost:2', title: 'x', body: 'y' })
+  check('no cloud session is "could not look", not "no devices"', res.reason, 'targets-unavailable')
+  signedIn = true
+  res = await push.send({ kind: 'reply', dedupeKey: 'lost:2', title: 'x', body: 'y' })
+  check('and that reminder is sent once signed in again', res.sent, 1)
+
+  expoUnreachable = true
+  res = await push.send({ kind: 'reply', dedupeKey: 'lost:3', title: 'x', body: 'y' })
+  check('an unreachable Expo is a retryable failure', [res.sent, res.retry], [0, true])
+  expoUnreachable = false
+  res = await push.send({ kind: 'reply', dedupeKey: 'lost:3', title: 'x', body: 'y' })
+  check('and the reminder is retried once Expo is reachable', res.sent, 1)
+  res = await push.send({ kind: 'reply', dedupeKey: 'lost:3', title: 'x', body: 'y' })
+  check('after which it is not sent again', res.reason, 'already-sent')
 
   // ── Payload shape ─────────────────────────────────────────────
   sent.length = 0

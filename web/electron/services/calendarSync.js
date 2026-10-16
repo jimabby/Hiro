@@ -54,6 +54,9 @@ async function api(method, url, body) {
       headers: {
         Authorization: `Bearer ${token}`,
         ...(body ? { 'Content-Type': 'application/json' } : {}),
+        // Ask Graph for every time in UTC, explicitly. Its default is also UTC,
+        // but zone-less — see graphInstant(), which converts either way.
+        ...(String(url).startsWith(GRAPH_API) ? { Prefer: 'outlook.timezone="UTC"' } : {}),
       },
       body: body ? JSON.stringify(body) : undefined,
     })
@@ -101,6 +104,43 @@ const isoDate = (p) => `${p.year}-${pad(p.month)}-${pad(p.day)}`
 // explicit timeZone, which is what keeps a 2pm interview at 2pm rather than
 // shifting it by the machine's UTC offset.
 const isoLocal = (p) => `${isoDate(p)}T${pad(p.hour)}:${pad(p.minute)}:00`
+
+// Graph's dateTimeTimeZone, { dateTime: '2026-10-20T03:00:00.0000000', timeZone:
+// 'UTC' }, as an ISO instant with an explicit offset.
+//
+// The zone-less dateTime used to be passed through and then read as LOCAL time
+// by toLocalSql — but Graph returns UTC unless asked otherwise, so every
+// interview pulled from Outlook moved by the machine's UTC offset (an
+// interview at 2pm in Sydney came back as 3am). The zone is now honoured:
+// UTC gets a 'Z'; a named IANA zone is converted; anything else is treated as
+// UTC, which is what api() asks Graph for with its Prefer header.
+function graphInstant(dt) {
+  const value = String(dt?.dateTime || '')
+  if (!value) return null
+  if (/[zZ]$|[+-]\d\d:\d\d$/.test(value)) return value
+  const tz = String(dt?.timeZone || 'UTC')
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/.exec(value)
+  if (!m) return null
+  const [, y, mo, d, h, mi, s = '0'] = m
+  const wallAsUtc = Date.UTC(+y, +mo - 1, +d, +h, +mi, +s)
+  if (/^(utc|etc\/utc|gmt|etc\/gmt|coordinated universal time)$/i.test(tz)) return new Date(wallAsUtc).toISOString()
+  const offsetAt = (instant) => {
+    try {
+      const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+        timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+      }).formatToParts(new Date(instant)).map(p => [p.type, p.value]))
+      return Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour % 24, +parts.minute, +parts.second) - instant
+    } catch {
+      return null // not an IANA name (Graph can return Windows names) — read as UTC
+    }
+  }
+  const first = offsetAt(wallAsUtc)
+  if (first == null) return new Date(wallAsUtc).toISOString()
+  // Second pass settles a wall time near a DST change onto the right offset.
+  const second = offsetAt(wallAsUtc - first)
+  return new Date(wallAsUtc - (second ?? first)).toISOString()
+}
 
 function localTimeZone() {
   try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' } catch { return 'UTC' }
@@ -326,7 +366,9 @@ const outlook = {
         // Recovered from the body marker, since Graph has no private property
         // that round-trips reliably.
         hiroInterviewId: (/\[Hiro interview #(\d+)\]/.exec(e.body?.content || e.bodyPreview || '') || [])[1] || null,
-        start: e.start?.dateTime || null,
+        // A timed event becomes an instant with its zone applied; an all-day
+        // event keeps its date (Graph sends it as midnight).
+        start: e.isAllDay === false ? graphInstant(e.start) : (e.start?.dateTime || null),
         hasTime: e.isAllDay === false,
       })),
     }
@@ -341,8 +383,9 @@ const outlook = {
       const res = await api('GET', url)
       for (const e of res.value || []) {
         if (e.isCancelled || e.showAs === 'free') continue
-        const asUtc = v => new Date(/[zZ]|[+-]\d\d:\d\d$/.test(v) ? v : `${v}Z`)
-        if (e.start?.dateTime && e.end?.dateTime) out.push({ start: asUtc(e.start.dateTime), end: asUtc(e.end.dateTime) })
+        const start = graphInstant(e.start)
+        const end = graphInstant(e.end)
+        if (start && end) out.push({ start: new Date(start), end: new Date(end) })
       }
       url = res['@odata.nextLink'] || null
     }
@@ -608,5 +651,5 @@ module.exports = {
   syncNow, listCalendars, getStatus, disconnect, getBusy,
   connect: calendarAuth.connect,
   // exported for tests
-  localHash, toLocalSql, endOf,
+  localHash, toLocalSql, endOf, graphInstant,
 }

@@ -19,7 +19,7 @@ import { Platform } from 'react-native'
 import Constants from 'expo-constants'
 import * as Device from 'expo-device'
 import * as Notifications from 'expo-notifications'
-import { registerDevice, clearPushToken } from './deviceRegistry'
+import { registerDevice, clearPushToken, getRegisteredPushToken } from './deviceRegistry'
 
 // A notification that arrives while the app is open should still be visible —
 // otherwise a reply that lands while the user is looking at the dashboard is
@@ -103,6 +103,47 @@ export async function enablePush(userId) {
 export async function disablePush(userId) {
   await clearPushToken(userId)
   return { success: true }
+}
+
+// What "notifications on this phone" actually is. The OS permission alone said
+// "Enabled" on a phone whose token had been cleared (signed out and back in, a
+// revoked device, notifications turned off here) — the permission was still
+// granted, but the desktop had nothing to send to.
+//   'on'          permission granted and a token on this phone's row
+//   'off'         no token registered
+//   'blocked'     a token is registered but the OS permission is off, so
+//                 nothing will be shown
+//   'unknown'     the row could not be read (offline); say so, do not guess
+export async function getPushState(userId) {
+  const [permission, token] = await Promise.all([getPermissionStatus(), getRegisteredPushToken(userId)])
+  if (token === undefined) return 'unknown'
+  if (!token) return 'off'
+  return permission === 'granted' ? 'on' : 'blocked'
+}
+
+// Keep the registered token current. Run on launch and on every foreground
+// while signed in. Only refreshes a token that is already registered: a phone
+// whose owner turned notifications off here must not be turned back on just
+// because the OS permission is still granted.
+export async function syncPushToken(userId) {
+  if (!userId || !Device.isDevice) return
+  const registered = await getRegisteredPushToken(userId)
+  if (!registered) return
+  if ((await getPermissionStatus()) !== 'granted') return
+  const projectId = Constants.expoConfig?.extra?.eas?.projectId || Constants.easConfig?.projectId
+  try {
+    const { data } = await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined)
+    if (data && data !== registered) await registerDevice(userId, { pushToken: data })
+  } catch { /* the old token stays; the next launch tries again */ }
+}
+
+// APNs and FCM rotate the device token (a restore onto a new phone, an app
+// reinstall, FCM's own refresh). Without a listener the row kept the old one
+// and notifications silently stopped until the user toggled them off and on.
+export function subscribeToTokenRotation(userId) {
+  if (!userId) return () => {}
+  const sub = Notifications.addPushTokenListener(() => { syncPushToken(userId) })
+  return () => sub.remove()
 }
 
 // Tapping a notification should land on the thing it was about. The desktop puts

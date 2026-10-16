@@ -1,35 +1,19 @@
 const { chromium } = require('playwright-extra')
 const StealthPlugin = require('puppeteer-extra-plugin-stealth')
 chromium.use(StealthPlugin())
-const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown, verifySubmission, confirmSubmission, gotoResultsPage, createSelectorProbe, launchOptions } = require('./utils')
+const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown, verifySubmission, captureProof, openPage, confirmSubmission, gotoResultsPage, createSelectorProbe, launchOptions } = require('./utils')
+const { answerScreeningQuestions } = require('./screening')
 
 // Which selectors matched on the most recent scrape — see seek.js.
 let lastSelectorReport = null
 function getSelectorReport() { return lastSelectorReport }
 const indeedSession = require('../indeedSession')
-const { resolveAnswer } = require('../screeningAnswers')
 const { isAiConfigured } = require('../ai/configured')
 const { indeedSearchUrl } = require('./indeedRegion')
 
 // See seek.js — one page of results goes stale within days once already-seen
 // listings are skipped.
 const MAX_PAGES = 10
-
-// Node.js substitute for the browser-only CSS.escape(). A leading digit needs
-// the numeric escape form; a plain backslash produces a selector querySelector
-// rejects outright.
-function cssEscape(str) {
-  const s = String(str)
-  let out = ''
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i]
-    const code = s.charCodeAt(i)
-    if (i === 0 && code >= 0x30 && code <= 0x39) out += '\\3' + ch + ' '
-    else if (/[\w-]/.test(ch)) out += ch
-    else out += '\\' + ch
-  }
-  return out
-}
 
 // Extract the most recent job title + company from resume text
 // Looks for a job line whose next non-empty line is a date range containing "present"
@@ -56,8 +40,7 @@ function extractRecentJob(resumeText) {
 async function scrape(cfg) {
   const { jobKeywords, jobLocation, salaryMin } = cfg
   const browser = await chromium.launch(launchOptions({ headless: true }))
-  const context = await browser.newContext({ userAgent: randomUserAgent() })
-  const page = await context.newPage()
+  const page = await openPage(browser, { userAgent: randomUserAgent() })
 
   const jobs = []
   const seen = new Set()
@@ -116,8 +99,7 @@ async function scrape(cfg) {
 
 async function getJobDescription(jobUrl) {
   const browser = await chromium.launch(launchOptions({ headless: true }))
-  const context = await browser.newContext({ userAgent: randomUserAgent() })
-  const page = await context.newPage()
+  const page = await openPage(browser, { userAgent: randomUserAgent() })
 
   try {
     await page.goto(jobUrl, { waitUntil: 'domcontentloaded', timeout: 30000 })
@@ -133,15 +115,18 @@ async function getJobDescription(jobUrl) {
 }
 
 async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
-  const browser = await chromium.launch(launchOptions({ headless: false, slowMo: 50 }))
-
   const storagePath = indeedSession.getStoragePath()
   const fs = require('fs')
   const contextOptions = { userAgent: randomUserAgent() }
   if (fs.existsSync(storagePath)) contextOptions.storageState = storagePath
 
-  const context = await browser.newContext(contextOptions)
-  const page = await context.newPage()
+  const browser = await chromium.launch(launchOptions({ headless: false, slowMo: 50 }))
+  let page
+  try {
+    page = await openPage(browser, contextOptions) // closes the browser if it throws
+  } catch (err) {
+    return { success: false, reason: `Could not open a Indeed session: ${err.message}` }
+  }
 
   let resumePath = null
   if (tailoredResume) {
@@ -289,136 +274,11 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
         }
       }
 
-      // Dynamically detect and answer screening questions on this step
+      // Dynamically detect and answer screening questions on this step — see
+      // ./screening.js (shared with Seek and LinkedIn). An answer is recorded
+      // on `screeningQa` only once the form shows it selected or filled.
       if (isAiConfigured(cfg)) {
-        // Every answer handed back is recorded on `screeningQa` so the saved
-        // application shows what was actually submitted for the user.
-        // Shared with seek.js and linkedin.js — see services/screeningAnswers.js
-        // for why the fabrication check on an answer cannot live in three copies.
-        async function getAnswer(questionText, optionHint) {
-          const { answer, source } = await resolveAnswer({
-            question: questionText, optionHint, cfg, log: cfg.log,
-          })
-          if (answer) recordAnswer(questionText, answer, source)
-          return answer
-        }
-
-        // ── Radio button groups ─────────────────────────────────────────────
-        const fieldsetEls = await workFrame.$$('fieldset').catch(() => [])
-        for (const fieldset of fieldsetEls) {
-          const radios = await fieldset.$$('input[type="radio"]').catch(() => [])
-          if (radios.length === 0) continue
-          const anyChecked = await fieldset.$('input[type="radio"]:checked').catch(() => null)
-          if (anyChecked) continue
-
-          const questionText = await fieldset.evaluate(el => {
-            const legend = el.querySelector('legend')
-            if (legend) return legend.textContent?.trim() || ''
-            return el.querySelector('p, [data-automation]')?.textContent?.trim() || ''
-          }).catch(() => '')
-          if (!questionText || questionText.length < 3) continue
-          if (/cover.?letter/i.test(questionText)) continue
-
-          const options = []
-          for (const radio of radios) {
-            const label = await radio.evaluate(el => {
-              const id = el.id
-              if (id) {
-                const lbl = document.querySelector(`label[for="${CSS.escape(id)}"]`)
-                if (lbl) return lbl.textContent?.trim() || ''
-              }
-              return el.closest('label')?.textContent?.trim() || el.value || ''
-            }).catch(() => '')
-            if (label) options.push({ radio, label })
-          }
-          if (options.length === 0) continue
-
-          const optionHint = options.map(o => o.label).join(' / ')
-          const answer = await getAnswer(questionText, optionHint)
-          if (!answer) continue
-
-          const answerLow = answer.trim().toLowerCase()
-          const matched = options.find(o =>
-            o.label.toLowerCase().includes(answerLow) || answerLow.includes(o.label.toLowerCase())
-          )
-          if (matched) {
-            await matched.radio.click().catch(() => {})
-            await randomDelay(200, 400)
-          }
-        }
-
-        // ── Text / select / number inputs ───────────────────────────────────
-        const labels = await workFrame.$$('label').catch(() => [])
-        for (const labelEl of labels) {
-          const questionText = await labelEl.evaluate(el => el.textContent?.trim()).catch(() => '')
-          if (!questionText || questionText.length < 3) continue
-          if (/cover.?letter/i.test(questionText)) continue
-
-          const forId = await labelEl.evaluate(el => el.getAttribute('for')).catch(() => null)
-          let input = null
-          if (forId) input = await workFrame.$(`#${cssEscape(forId)}`).catch(() => null)
-          if (!input) {
-            input = await labelEl.$('input:not([type="hidden"]):not([type="file"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"]), textarea, select').catch(() => null)
-          }
-          if (!input) continue
-
-          const tag = await input.evaluate(el => el.tagName.toLowerCase()).catch(() => '')
-          const inputType = await input.evaluate(el => el.type || 'text').catch(() => 'text')
-          if (!tag || inputType === 'radio' || inputType === 'checkbox') continue
-
-          const currentVal = await input.inputValue().catch(() => '')
-          if (currentVal.trim()) continue
-
-          let optionHint = ''
-          if (tag === 'select') {
-            const opts = await input.evaluate(el =>
-              Array.from(el.options).map(o => o.text.trim()).filter(t => t)
-            ).catch(() => [])
-            if (opts.length) optionHint = opts.join(' / ')
-          }
-
-          const answer = await getAnswer(questionText, optionHint)
-          if (!answer) continue
-
-          if (tag === 'select') {
-            const options = await input.evaluate(el =>
-              Array.from(el.options).map(o => ({ text: o.text.trim(), value: o.value }))
-            ).catch(() => [])
-            const ansLow = answer.toLowerCase()
-            const ansNum = parseFloat(answer.replace(/[^0-9.]/g, '')) || 0
-
-            let match = options.find(o => o.text.toLowerCase() === ansLow)
-            if (!match) match = options.find(o => o.text.toLowerCase().includes(ansLow) || ansLow.includes(o.text.toLowerCase()))
-            if (!match && !isNaN(ansNum)) {
-              match = options.find(o => {
-                const nums = o.text.match(/(\d+)/g)
-                if (!nums) return false
-                if (nums.length === 1) return ansNum === parseFloat(nums[0])
-                if (nums.length >= 2) return ansNum >= parseFloat(nums[0]) && ansNum <= parseFloat(nums[1])
-                return false
-              })
-            }
-            if (!match && /^(no|0|none|n\/a)/i.test(answer)) {
-              match = options.find(o => /^(no|0|none|never|n\/a)/i.test(o.text)) || options[1]
-            }
-            if (!match && /^yes/i.test(answer)) {
-              match = options.find(o => /^yes/i.test(o.text))
-            }
-
-            if (match) {
-              await input.selectOption({ label: match.text }).catch(async () => {
-                await input.selectOption({ value: match.value }).catch(() => {})
-              })
-            } else {
-              await input.selectOption({ label: answer }).catch(async () => {
-                await input.selectOption({ value: answer }).catch(() => {})
-              })
-            }
-          } else {
-            await input.fill(answer).catch(() => {})
-          }
-          await randomDelay(300, 700)
-        }
+        await answerScreeningQuestions(workFrame, { cfg, record: recordAnswer })
       }
 
       // Check for submit button
@@ -444,7 +304,7 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
         await randomDelay(3000, 5000)
         const check = await verifySubmission(workFrame)
         if (!check.ok) return { success: false, reason: check.reason, screeningQa }
-        return { success: true, screeningQa }
+        return { success: true, screeningQa, screenshot: await captureProof(page) }
       }
 
       // Click next/continue to advance the wizard

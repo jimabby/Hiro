@@ -87,7 +87,9 @@ async function summarise(company, headlines, cfg) {
   try {
     const text = await aiAdapter.chat(cfg.aiProvider, cfg.aiApiKey, {
       operation: 'companyResearch', tier: 'fast', maxTokens: 500, system: SYSTEM,
-      messages: [{ role: 'user', content: `Company: ${company}\n\n${FENCE_RULES}\n\n${fence('HEADLINES', list, 4000)}` }],
+      // The company name is scraped from the listing too, so it is fenced
+      // with the headlines rather than written into the prompt as fact.
+      messages: [{ role: 'user', content: `${FENCE_RULES}\n\n${fence('COMPANY', company, 120)}\n\n${fence('HEADLINES', list, 4000)}` }],
     }, cfg.geminiModel)
     return String(text || '').replace(/\*\*/g, '').trim()
   } catch {

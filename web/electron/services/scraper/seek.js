@@ -1,5 +1,6 @@
 const { chromium } = require('playwright')
-const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown, verifySubmission, confirmSubmission, gotoResultsPage, createSelectorProbe, launchOptions } = require('./utils')
+const { randomDelay, randomUserAgent, buildResumeFile, stripMarkdown, verifySubmission, captureProof, openPage, confirmSubmission, gotoResultsPage, createSelectorProbe, launchOptions } = require('./utils')
+const { answerScreeningQuestions } = require('./screening')
 
 // Which selectors matched on the most recent scrape, so automation health can
 // name the one that moved rather than only reporting that something did.
@@ -11,38 +12,13 @@ function getSelectorReport() { return lastSelectorReport }
 // within a few days of running. Bounded so a scan can't crawl indefinitely.
 const MAX_PAGES = 10
 
-// Node.js substitute for the browser-only CSS.escape().
-// A leading digit needs the numeric escape form (`\31 foo`), not a backslash —
-// `#1foo` is not a valid selector at all, and querySelector rejects it. The
-// failure was silent (swallowed by the caller's .catch), so any screening field
-// whose id started with a digit was skipped without explanation.
-function cssEscape(str) {
-  const s = String(str)
-  let out = ''
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i]
-    const code = s.charCodeAt(i)
-    // A digit is only a problem in first position; elsewhere it's fine bare.
-    if (i === 0 && code >= 0x30 && code <= 0x39) {
-      out += '\\3' + ch + ' '
-    } else if (/[\w-]/.test(ch)) {
-      out += ch
-    } else {
-      out += '\\' + ch
-    }
-  }
-  return out
-}
-
 const seekSession = require('../seekSession')
-const { resolveAnswer } = require('../screeningAnswers')
 const { isAiConfigured } = require('../ai/configured')
 
 async function scrape(cfg) {
   const { jobKeywords, jobLocation, salaryMin } = cfg
   const browser = await chromium.launch(launchOptions({ headless: true }))
-  const context = await browser.newContext({ userAgent: randomUserAgent() })
-  const page = await context.newPage()
+  const page = await openPage(browser, { userAgent: randomUserAgent() })
 
   const jobs = []
   const seen = new Set()
@@ -105,8 +81,7 @@ async function scrape(cfg) {
 
 async function getJobDescription(jobUrl) {
   const browser = await chromium.launch(launchOptions({ headless: true }))
-  const context = await browser.newContext({ userAgent: randomUserAgent() })
-  const page = await context.newPage()
+  const page = await openPage(browser, { userAgent: randomUserAgent() })
 
   try {
     await page.goto(jobUrl, { waitUntil: 'domcontentloaded', timeout: 30000 })
@@ -120,17 +95,20 @@ async function getJobDescription(jobUrl) {
 
 
 async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
-  // Run headed so the user can watch if debugging is needed
-  const browser = await chromium.launch(launchOptions({ headless: false, slowMo: 50 }))
-
   // Restore full Seek session (all cookies + localStorage) from saved storage state
   const storagePath = seekSession.getStoragePath()
   const fs = require('fs')
   const contextOptions = { userAgent: randomUserAgent() }
   if (fs.existsSync(storagePath)) contextOptions.storageState = storagePath
 
-  const context = await browser.newContext(contextOptions)
-  const page = await context.newPage()
+  // Run headed so the user can watch if debugging is needed
+  const browser = await chromium.launch(launchOptions({ headless: false, slowMo: 50 }))
+  let page
+  try {
+    page = await openPage(browser, contextOptions) // closes the browser if it throws
+  } catch (err) {
+    return { success: false, reason: `Could not open a Seek session: ${err.message}` }
+  }
 
   // Pre-build resume file for upload (uses original DOCX/PDF if available, else generates PDF)
   let resumePath = null
@@ -341,156 +319,13 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
         }
       }
 
-      // Dynamically detect and answer screening questions on this step
+      // Dynamically detect and answer screening questions on this step. The
+      // cache, the model, the fabrication check, option matching and the
+      // fall-back-to-the-user path live in services/screeningAnswers.js; the
+      // filling — and recording an answer only once the page shows it — in
+      // ./screening.js, shared with Indeed and LinkedIn.
       if (isAiConfigured(cfg)) {
-        // Helper: get/cache an AI answer for a question. Every answer it hands
-        // back is also recorded on `screeningQa` so the finished application
-        // shows what was actually submitted on the user's behalf — the detail
-        // panel has always had a section for this and it was always empty.
-        // The cache lookup, the model call, the fabrication check and the
-        // fall-back-to-the-user path all live in services/screeningAnswers.js —
-        // three copies of that, one per scraper, is three places for a safety
-        // check to drift.
-        async function getAnswer(questionText, optionHint) {
-          const { answer, source } = await resolveAnswer({
-            question: questionText, optionHint, cfg, log: cfg.log,
-          })
-          if (answer) recordAnswer(questionText, answer, source)
-          return answer
-        }
-
-        // ── Radio button groups (YES/NO eligibility questions) ──────────────
-        const fieldsetEls = await page.$$('fieldset').catch(() => [])
-        for (const fieldset of fieldsetEls) {
-          const radios = await fieldset.$$('input[type="radio"]').catch(() => [])
-          if (radios.length === 0) continue
-          const anyChecked = await fieldset.$('input[type="radio"]:checked').catch(() => null)
-          if (anyChecked) continue
-
-          const questionText = await fieldset.evaluate(el => {
-            const legend = el.querySelector('legend')
-            if (legend) return legend.textContent?.trim() || ''
-            return el.querySelector('p, [data-automation]')?.textContent?.trim() || ''
-          }).catch(() => '')
-          if (!questionText || questionText.length < 3) continue
-          if (/cover.?letter/i.test(questionText)) continue
-
-          const options = []
-          for (const radio of radios) {
-            const label = await radio.evaluate(el => {
-              const id = el.id
-              if (id) {
-                const lbl = document.querySelector(`label[for="${CSS.escape(id)}"]`)
-                if (lbl) return lbl.textContent?.trim() || ''
-              }
-              return el.closest('label')?.textContent?.trim() || el.value || ''
-            }).catch(() => '')
-            if (label) options.push({ radio, label })
-          }
-          if (options.length === 0) continue
-
-          const optionHint = options.map(o => o.label).join(' / ')
-          const answer = await getAnswer(questionText, optionHint)
-          if (!answer) continue
-
-          const answerLow = answer.trim().toLowerCase()
-          const matched = options.find(o =>
-            o.label.toLowerCase().includes(answerLow) || answerLow.includes(o.label.toLowerCase())
-          )
-          if (matched) {
-            await matched.radio.click().catch(() => {})
-            await randomDelay(200, 400)
-          }
-        }
-
-        // ── Text / select / number inputs ───────────────────────────────────
-        const labels = await page.$$('label').catch(() => [])
-        for (const labelEl of labels) {
-          const questionText = await labelEl.evaluate(el => el.textContent?.trim()).catch(() => '')
-          if (!questionText || questionText.length < 3) continue
-          if (/cover.?letter/i.test(questionText)) continue
-
-          const forId = await labelEl.evaluate(el => el.getAttribute('for')).catch(() => null)
-          let input = null
-          if (forId) input = await page.$(`#${cssEscape(forId)}`).catch(() => null)
-          if (!input) {
-            input = await labelEl.$('input:not([type="hidden"]):not([type="file"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"]), textarea, select').catch(() => null)
-          }
-          if (!input) continue
-
-          const tag = await input.evaluate(el => el.tagName.toLowerCase()).catch(() => '')
-          const inputType = await input.evaluate(el => el.type || 'text').catch(() => 'text')
-          if (!tag || inputType === 'radio' || inputType === 'checkbox') continue
-
-          const currentVal = await input.inputValue().catch(() => '')
-          if (currentVal.trim()) continue
-
-          // For select dropdowns, pass available options to AI so it picks a valid one
-          let optionHint = ''
-          if (tag === 'select') {
-            const opts = await input.evaluate(el =>
-              Array.from(el.options).map(o => o.text.trim()).filter(t => t)
-            ).catch(() => [])
-            if (opts.length) optionHint = opts.join(' / ')
-          }
-
-          const answer = await getAnswer(questionText, optionHint)
-          if (!answer) continue
-
-          if (tag === 'select') {
-            const options = await input.evaluate(el =>
-              Array.from(el.options).map(o => ({ text: o.text.trim(), value: o.value }))
-            ).catch(() => [])
-            const ansLow = answer.toLowerCase()
-            const ansNum = parseFloat(answer.replace(/[^0-9.]/g, '')) || 0
-
-            // 1. Exact label match
-            let match = options.find(o => o.text.toLowerCase() === ansLow)
-            // 2. Partial text match
-            if (!match) match = options.find(o => o.text.toLowerCase().includes(ansLow) || ansLow.includes(o.text.toLowerCase()))
-            // 3. Numeric range match (e.g. answer "3" → option "3-5 years")
-            if (!match && !isNaN(ansNum)) {
-              match = options.find(o => {
-                const nums = o.text.match(/(\d+)/g)
-                if (!nums) return false
-                if (nums.length === 1) return ansNum === parseFloat(nums[0])
-                if (nums.length >= 2) return ansNum >= parseFloat(nums[0]) && ansNum <= parseFloat(nums[1])
-                return false
-              })
-            }
-            // 4. "No" / "0" / "none" → first non-placeholder option
-            if (!match && /^(no|0|none|n\/a)/i.test(answer)) {
-              match = options.find(o => /^(no|0|none|never|n\/a)/i.test(o.text)) || options[1] // skip placeholder at [0]
-            }
-            // 5. "Yes" → find a "Yes" option
-            if (!match && /^yes/i.test(answer)) {
-              match = options.find(o => /^yes/i.test(o.text))
-            }
-
-            if (match) {
-              await input.selectOption({ label: match.text }).catch(async () => {
-                await input.selectOption({ value: match.value }).catch(() => {})
-              })
-            } else {
-              // Last resort: try raw answer
-              await input.selectOption({ label: answer }).catch(async () => {
-                await input.selectOption({ value: answer }).catch(() => {})
-              })
-            }
-          } else if (inputType === 'number') {
-            const num = answer.replace(/[$,]/g, '').replace(/k$/i, '000').match(/\d+/)
-            if (num) {
-              await input.fill(num[0]).catch(() => {})
-              await input.dispatchEvent('input').catch(() => {})
-              await input.dispatchEvent('change').catch(() => {})
-            }
-          } else {
-            await input.fill(answer).catch(() => {})
-            await input.dispatchEvent('input').catch(() => {})
-            await input.dispatchEvent('change').catch(() => {})
-          }
-          await randomDelay(200, 400)
-        }
+        await answerScreeningQuestions(page, { cfg, record: recordAnswer })
       }
 
       // Check for final submit button
@@ -516,7 +351,7 @@ async function apply(jobUrl, tailoredResume, coverLetter, cfg) {
         await randomDelay(3000, 5000)
         const check = await verifySubmission(page)
         if (!check.ok) return { success: false, reason: check.reason, screeningQa }
-        return { success: true, screeningQa }
+        return { success: true, screeningQa, screenshot: await captureProof(page) }
       }
 
       // Look for Next/Continue button to advance the wizard

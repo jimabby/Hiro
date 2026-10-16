@@ -113,17 +113,25 @@ async function startCallbackListener(expectedState, timeoutMs = 5 * 60 * 1000) {
     if (url.pathname !== '/callback') { res.writeHead(404).end('Not found'); return }
 
     const html = { 'Content-Type': 'text/html' }
+    // A mismatched state means this redirect did not come from the request Hiro
+    // started — the check CSRF protection exists for. It is checked FIRST and
+    // simply refused: it used to reject the whole flow, so anything able to reach
+    // the loopback port (a web page firing a request at 127.0.0.1, another local
+    // process) could cancel a sign-in the user was halfway through, with a bare
+    // ?error= or a wrong state. Only the genuine redirect may end the wait.
+    if (url.searchParams.get('state') !== expectedState) {
+      res.writeHead(400, html).end(resultPage('Calendar not connected', 'The response did not match the request. Please try again.'))
+      return
+    }
     const error = url.searchParams.get('error')
     if (error) {
       res.writeHead(200, html).end(resultPage('Calendar not connected', `The provider reported: ${error}. You can close this tab.`))
       finish(settle.reject, new Error(`Authorization was refused: ${error}`))
       return
     }
-    // A mismatched state means this redirect did not come from the request Hiro
-    // started — the check CSRF protection exists for.
-    if (!url.searchParams.get('code') || url.searchParams.get('state') !== expectedState) {
-      res.writeHead(400, html).end(resultPage('Calendar not connected', 'The response did not match the request. Please try again.'))
-      finish(settle.reject, new Error('The authorization response did not match the request that started it.'))
+    if (!url.searchParams.get('code')) {
+      res.writeHead(400, html).end(resultPage('Calendar not connected', 'The response carried no authorization code. Please try again.'))
+      finish(settle.reject, new Error('The authorization response carried no code.'))
       return
     }
     res.writeHead(200, html).end(resultPage('Calendar connected', 'You can close this tab and go back to Hiro.'))
@@ -148,13 +156,26 @@ async function startCallbackListener(expectedState, timeoutMs = 5 * 60 * 1000) {
   return { port, code, cancel: () => finish(settle.reject, new Error('Cancelled.')) }
 }
 
-async function exchange(provider, params) {
+// A token endpoint that accepts the connection and never answers would
+// otherwise hold a calendar sync — or the connect button — forever.
+const EXCHANGE_TIMEOUT_MS = 20000
+
+async function exchange(provider, params, { timeoutMs = EXCHANGE_TIMEOUT_MS } = {}) {
   const p = providerFor(provider)
-  const res = await fetch(p.tokenUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams(params).toString(),
-  })
+  let res
+  try {
+    res = await fetch(p.tokenUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(params).toString(),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+  } catch (err) {
+    if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+      throw new Error(`${p.label} did not answer within ${Math.round(timeoutMs / 1000)} seconds. Try again.`)
+    }
+    throw err
+  }
   const body = await res.json().catch(() => ({}))
   if (!res.ok) {
     // Both providers put the useful part in error_description; the bare `error`
@@ -287,4 +308,8 @@ function isConnected() {
   return !!(cfg.calendarProvider && cfg.calendarRefreshToken)
 }
 
-module.exports = { connect, disconnect, getAccessToken, isConnected, describeProviders, PROVIDERS }
+module.exports = {
+  connect, disconnect, getAccessToken, isConnected, describeProviders, PROVIDERS,
+  // exported for tests
+  startCallbackListener, exchange,
+}

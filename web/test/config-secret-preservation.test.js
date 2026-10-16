@@ -126,4 +126,127 @@ seed({ setupComplete: true })
 configService.load()
 check('a clean load clears a previous report', configService.getSecretError(), null)
 
+
+// ─── What the renderer sees, and what it may write back ──────────
+//
+// config:get used to hand every decrypted secret to the renderer, and
+// config:save wrote the renderer's stale form back almost verbatim — so saving
+// Settings resurrected revoked phone tokens and disconnected calendar tokens.
+// ipc/configGuard.js is the boundary main.js now puts around both.
+const guard = require('../electron/ipc/configGuard')
+const P = guard.SECRET_PLACEHOLDER
+
+const stored = {
+  aiApiKey: 'sk-real', gmailAddress: 'me@example.com', gmailAppPassword: 'app-pass',
+  supabaseRefreshToken: 'refresh-1', cloudDataKey: 'data-key', calendarRefreshToken: 'cal-refresh',
+  calendarClientSecret: 'cal-secret', proxyPassword: 'proxy-pass', mobileApiToken: 'legacy',
+  scheduledExportPassphrase: 'export-pass',
+  proxyServer: 'http://proxy:8080', matchThreshold: 80,
+  mobileDevices: [{ id: 'phone-a', tokenHash: 'h1' }, { id: 'phone-b', tokenHash: 'h2' }],
+  calendarProvider: 'google', calendarSyncEnabled: true, calendarId: 'work',
+  webhooks: [{ id: 'w1', provider: 'generic', url: 'https://hooks.example.com/abc', secret: 'f'.repeat(64), enabled: true }],
+}
+
+const served = guard.redactForRenderer(stored)
+for (const key of guard.REDACTED_KEYS) {
+  check(`config:get never carries ${key}`, served[key], P)
+}
+check('an unset secret is served as empty, not as the placeholder',
+  guard.redactForRenderer({ aiApiKey: '' }).aiApiKey, '')
+check('a webhook URL is masked', served.webhooks[0].url, P)
+check('with a hint of where it points', served.webhooks[0].urlHint, 'https://hooks.example.com/…')
+check('a webhook secret is never served', 'secret' in served.webhooks[0], false)
+check('but whether it has one is', served.webhooks[0].hasSecret, true)
+check('ordinary settings are served as they are', served.matchThreshold, 80)
+check('nothing in the served config is a real secret',
+  JSON.stringify(served).includes('sk-real') || JSON.stringify(served).includes('refresh-1')
+    || JSON.stringify(served).includes('hooks.example.com/abc'), false)
+
+// A test button sends whatever is in the form, which for a saved key is the
+// placeholder — the handler swaps the stored value back in.
+check('the placeholder resolves to the stored secret', guard.resolveSecret(P, 'sk-real'), 'sk-real')
+check('a typed value is used as typed', guard.resolveSecret('sk-new', 'sk-real'), 'sk-new')
+
+const store = guard.createSnapshotStore()
+const id = store.remember(served)
+
+// Services move on while the form sits on screen: a phone is revoked, the
+// calendar is disconnected, the refresh token is rotated.
+const later = {
+  ...stored,
+  mobileDevices: [{ id: 'phone-a', tokenHash: 'h1' }],
+  supabaseRefreshToken: 'refresh-2',
+  calendarProvider: '', calendarRefreshToken: '', calendarSyncEnabled: false, calendarId: '',
+  gmailAddress: '', gmailAppPassword: '', // the mailbox was disconnected
+}
+// …and the user saves the stale form, having changed only the threshold.
+const staleForm = { ...served, [guard.SNAPSHOT_KEY]: id, matchThreshold: 70 }
+let merged = guard.mergeRendererSave(later, staleForm, store.get(id))
+check('the user\'s actual change is saved', merged.matchThreshold, 70)
+check('a revoked phone stays revoked', merged.mobileDevices.map(d => d.id), ['phone-a'])
+check('a rotated refresh token is not rolled back', merged.supabaseRefreshToken, 'refresh-2')
+check('a disconnected calendar stays disconnected', [merged.calendarProvider, merged.calendarRefreshToken], ['', ''])
+check('an untouched toggle a service changed keeps the service\'s value', merged.calendarSyncEnabled, false)
+check('a signed-out mailbox is not signed back in', [merged.gmailAddress, merged.gmailAppPassword], ['', ''])
+check('a placeholder never reaches disk', JSON.stringify(merged).includes(P), false)
+check('the snapshot id is not saved', guard.SNAPSHOT_KEY in merged, false)
+
+// Credentials the user edits in a form must still be saveable.
+merged = guard.mergeRendererSave(stored, { ...served, [guard.SNAPSHOT_KEY]: id, gmailAppPassword: 'new-app-pass', aiApiKey: 'sk-typed' }, store.get(id))
+check('a newly typed app password is saved', merged.gmailAppPassword, 'new-app-pass')
+check('a newly typed API key is saved', merged.aiApiKey, 'sk-typed')
+check('an untouched secret keeps its stored value', merged.proxyPassword, 'proxy-pass')
+merged = guard.mergeRendererSave(stored, { ...served, [guard.SNAPSHOT_KEY]: id, proxyPassword: '' }, store.get(id))
+check('clearing a saved secret on purpose clears it', merged.proxyPassword, '')
+
+// Service-owned keys are refused outright, even when "changed".
+merged = guard.mergeRendererSave(later, { ...served, mobileDevices: stored.mobileDevices, calendarRefreshToken: 'forged', deviceId: 'x' }, null)
+check('the renderer cannot write the device list', merged.mobileDevices.length, 1)
+check('or a calendar token', merged.calendarRefreshToken, '')
+check('or the device id', merged.deviceId, undefined)
+
+// Without a snapshot (the setup wizard builds its form from scratch) typed
+// values are still taken, placeholders still are not.
+merged = guard.mergeRendererSave(stored, { aiApiKey: 'sk-setup', gmailAppPassword: P, matchThreshold: 90 }, null)
+check('without a snapshot a typed key is saved', merged.aiApiKey, 'sk-setup')
+check('without a snapshot a placeholder keeps the stored secret', merged.gmailAppPassword, 'app-pass')
+check('a key the renderer omits is kept rather than dropped', merged.proxyServer, 'http://proxy:8080')
+
+// After a save the form IS what it sent; the next save compares against that.
+const id2 = store.remember(served)
+const firstSave = { ...served, [guard.SNAPSHOT_KEY]: id2, matchThreshold: 75 }
+store.advance(id2, firstSave)
+merged = guard.mergeRendererSave({ ...stored, matchThreshold: 75, calendarId: 'changed-by-service' }, { ...firstSave }, store.get(id2))
+check('a second save of the same form does not undo a service write', merged.calendarId, 'changed-by-service')
+
+// ─── Webhooks ────────────────────────────────────────────────────
+const wid = store.remember(served)
+merged = guard.mergeRendererSave(stored, {
+  ...served, [guard.SNAPSHOT_KEY]: wid,
+  webhooks: [{ ...served.webhooks[0], enabled: false }],
+}, store.get(wid))
+check('a masked webhook URL is restored from the stored one', merged.webhooks[0].url, 'https://hooks.example.com/abc')
+check('the stored signing secret is kept', merged.webhooks[0].secret, 'f'.repeat(64))
+check('the edit itself is saved', merged.webhooks[0].enabled, false)
+check('the display-only fields are not saved', ['urlHint', 'hasSecret'].some(k => k in merged.webhooks[0]), false)
+
+merged = guard.mergeRendererSave(stored, {
+  ...served, [guard.SNAPSHOT_KEY]: wid,
+  webhooks: [{ ...served.webhooks[0], secret: '0'.repeat(64) }],
+}, store.get(wid), { newSecret: () => 'n'.repeat(64) })
+check('an existing webhook\'s secret cannot be replaced from the form', merged.webhooks[0].secret, 'f'.repeat(64))
+
+merged = guard.mergeRendererSave(stored, {
+  ...served, [guard.SNAPSHOT_KEY]: wid,
+  webhooks: [...served.webhooks, { id: 'w2', provider: 'generic', url: 'https://new.example.com', secret: 'a'.repeat(64) },
+    { provider: 'discord', url: 'https://discord.com/api/webhooks/1' }],
+}, store.get(wid), { newSecret: () => 'n'.repeat(64) })
+check('a new webhook keeps the secret it was shown on creation', merged.webhooks[1].secret, 'a'.repeat(64))
+check('a webhook with no secret gets one', merged.webhooks[2].secret, 'n'.repeat(64))
+check('and an id', typeof merged.webhooks[2].id, 'string')
+
+check('older webhooks are given ids and secrets',
+  guard.withWebhookIdentity([{ provider: 'slack', url: 'https://hooks.slack.com/x' }], () => 's'.repeat(64))[0].secret, 's'.repeat(64))
+check('webhooks that already have both are left alone', guard.withWebhookIdentity(stored.webhooks, () => 'x'), null)
+
 done()

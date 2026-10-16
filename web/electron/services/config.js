@@ -23,7 +23,18 @@ const SECRET_KEYS = [
   'cloudDataKey',
   // Handed to Chromium for proxy authentication, never to a job board.
   'proxyPassword',
+  // Encrypts the scheduled portable export (services/dataTransfer.js). It
+  // unlocks every résumé and recruiter address in those files, so it is held
+  // like any other credential.
+  'scheduledExportPassphrase',
 ]
+
+// Secrets that live inside a list rather than at the top level: key -> the
+// field of each entry that is secret. A Slack or Discord webhook URL IS the
+// credential: the token is in the path, and anyone holding it can post to the
+// channel as the integration. They were stored and exported in the clear.
+const NESTED_SECRET_FIELDS = { webhooks: 'url' }
+const nestedKey = (key, index) => `${key}[${index}]`
 const ENC_PREFIX = 'enc:v1:'
 
 let safeStorage = null
@@ -107,6 +118,22 @@ function decryptForLoad(config) {
       if (!reason) reason = err.message
     }
   }
+  for (const [key, field] of Object.entries(NESTED_SECRET_FIELDS)) {
+    if (!Array.isArray(out[key])) continue
+    out[key] = out[key].map((item, i) => {
+      if (!item || typeof item !== 'object') return item
+      try {
+        return { ...item, [field]: decryptValue(item[field]) }
+      } catch (err) {
+        // Same rule as the top-level secrets: remembered and written back
+        // verbatim rather than flattened to '' and lost on the next save.
+        preservedSecrets.set(nestedKey(key, i), item[field])
+        unreadable.push(`${key} ${i + 1}`)
+        if (!reason) reason = err.message
+        return { ...item, [field]: '' }
+      }
+    })
+  }
   secretError = unreadable.length
     ? `${unreadable.length} saved secret${unreadable.length === 1 ? '' : 's'} (${unreadable.join(', ')}) could not be decrypted because ${reason}. `
       + 'They have been left untouched on disk and will work again once the keychain is available. '
@@ -128,6 +155,15 @@ function encryptForSave(config) {
     }
     if (!out[key] && preservedSecrets.has(key)) out[key] = preservedSecrets.get(key)
     else out[key] = encryptValue(out[key])
+  }
+  for (const [key, field] of Object.entries(NESTED_SECRET_FIELDS)) {
+    if (!Array.isArray(out[key])) continue
+    out[key] = out[key].map((item, i) => {
+      if (!item || typeof item !== 'object') return item
+      const preserved = preservedSecrets.get(nestedKey(key, i))
+      if (!item[field] && preserved) return { ...item, [field]: preserved }
+      return { ...item, [field]: encryptValue(item[field]) }
+    })
   }
   return out
 }
@@ -478,6 +514,17 @@ const DEFAULTS = {
   // turning it on is a one-way door on machines whose keychain can be lost —
   // see services/dbCrypto.js.
   encryptDatabase: false,
+
+  // ─── Scheduled portable export (services/dataTransfer.js) ──────
+  // A passphrase-encrypted copy of the whole job search, written to a folder
+  // the user chose (typically one a backup tool or a cloud drive already
+  // watches) daily or weekly, keeping the newest `keep`. Unlike the rotating
+  // database backups it does not need this machine's keychain to read.
+  // Changed only through its own IPC, never through the Settings form.
+  scheduledExport: { enabled: false, folder: '', frequency: 'weekly', keep: 5 },
+  scheduledExportPassphrase: '',
+  scheduledExportLastRunAt: null,
+  scheduledExportLastResult: null,
 }
 
 // The profile directory holds config.json, the database, the backups and the

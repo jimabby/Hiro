@@ -1,3 +1,4 @@
+const crypto = require('crypto')
 const nodemailer = require('nodemailer')
 const configService = require('./config')
 const mailProvider = require('./mailProvider')
@@ -120,16 +121,36 @@ async function sendDailyReport(stats) {
 // Callers must supply a job with a recruiter_email — the scheduler skips jobs
 // without one before it gets here. Refuse rather than silently mailing the
 // user their own follow-up, which reads like a delivery but reaches nobody.
+//
+// The Message-ID is chosen here rather than left to the transport, and stored
+// against the application (sent_messages), so that a reply — which carries it in
+// In-Reply-To / References — is matched to this application by thread instead
+// of by guessing from the sender's domain. See inbox.js. Returns the id.
+function makeMessageId(cfg) {
+  const domain = mailProvider.domainOf(cfg.gmailAddress) || 'hiro.local'
+  return `<hiro.${Date.now().toString(36)}.${crypto.randomBytes(8).toString('hex')}@${domain}>`
+}
+
 async function sendFollowUpEmail(job, emailText, cfg) {
   if (!cfg.gmailAddress || !cfg.gmailAppPassword) return
   if (!job.recruiter_email) throw new Error('No recruiter email on file for this application')
   const transport = createTransport(cfg)
-  await transport.sendMail({
+  const subject = `Follow-up: ${job.job_title} at ${job.company}`
+  const messageId = makeMessageId(cfg)
+  const info = await transport.sendMail({
     from: cfg.gmailAddress,
     to: job.recruiter_email,
-    subject: `Follow-up: ${job.job_title} at ${job.company}`,
+    subject,
     text: emailText,
+    messageId,
   })
+  const sentId = info?.messageId || messageId
+  if (job.id) {
+    try {
+      require('./database').recordSentMessage({ applicationId: job.id, messageId: sentId, to: job.recruiter_email, subject })
+    } catch { /* thread matching is a bonus — never fail a send that went out */ }
+  }
+  return sentId
 }
 
 module.exports = { testConnection, sendNewJobAlert, sendDailyReport, sendFollowUpEmail }

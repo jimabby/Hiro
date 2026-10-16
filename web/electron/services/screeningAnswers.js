@@ -78,14 +78,114 @@ function isUncertain(answer) {
   return !answer || String(answer).trim().length < 3 || UNCERTAIN_RE.test(answer)
 }
 
+// ─── Options ─────────────────────────────────────────────────────
+// A dropdown or a radio group only accepts one of its own labels. The answer
+// used to be requested without them (LinkedIn) or with them only as a hint, then
+// recorded as submitted, and then `selectOption({label: answer})` failed
+// silently — so the saved application claimed an answer the form never got.
+// Every answer for a choice field now passes through matchOption, and what comes
+// back is the option's own label or nothing.
+
+const normOption = s => String(s || '').toLowerCase()
+  .replace(/[^\p{L}\p{N}+ ]/gu, ' ').replace(/\s+/g, ' ').trim()
+
+const PLACEHOLDER_RE = /^(?:select|choose|please (?:select|choose)|pick)\b|^-+$|^—+$/i
+
+// The options a person could actually pick: placeholders ("Select…", "--")
+// and blanks removed, duplicates collapsed.
+function realOptions(options) {
+  const out = []
+  for (const o of options || []) {
+    const s = String(o ?? '').replace(/\s+/g, ' ').trim()
+    if (!s || PLACEHOLDER_RE.test(s) || out.includes(s)) continue
+    out.push(s)
+  }
+  return out
+}
+
+const hasWords = (hay, needle) => ` ${hay} `.includes(` ${needle} `)
+
+// Does a number satisfy an option like "3-5 years", "5+ years", "Less than 1"?
+function numberFits(n, label) {
+  const nums = (label.match(/\d+(?:\.\d+)?/g) || []).map(Number)
+  if (nums.length === 0) return false
+  const l = label.toLowerCase()
+  if (nums.length >= 2) return n >= nums[0] && n <= nums[1]
+  if (/\+|or more|more than|over|at least|above/.test(l)) return n >= nums[0]
+  if (/less than|under|fewer than|below|up to/.test(l)) return /up to/.test(l) ? n <= nums[0] : n < nums[0]
+  return n === nums[0]
+}
+
+// Character-bigram similarity, for an answer that is an option with a typo or
+// different punctuation ("Permanant resident" for "Permanent Resident").
+function similarity(a, b) {
+  const grams = s => { const g = []; for (let i = 0; i < s.length - 1; i++) g.push(s.slice(i, i + 2)); return g }
+  const ga = grams(a)
+  const gb = grams(b)
+  if (!ga.length || !gb.length) return a === b ? 1 : 0
+  const pool = [...gb]
+  let hits = 0
+  for (const g of ga) {
+    const i = pool.indexOf(g)
+    if (i >= 0) { hits++; pool.splice(i, 1) }
+  }
+  return (2 * hits) / (ga.length + gb.length)
+}
+
+// The option label an answer means, or null when it matches none of them
+// unambiguously. Null is the safe result: the caller asks the user rather than
+// submitting a guess.
+function matchOption(answer, options) {
+  const opts = realOptions(options).map(raw => ({ raw, n: normOption(raw) })).filter(o => o.n)
+  const a = normOption(answer)
+  if (!a || opts.length === 0) return null
+  const unique = list => (list.length === 1 ? list[0].raw : null)
+
+  const exact = opts.filter(o => o.n === a)
+  if (exact.length) return exact[0].raw
+
+  // "Yes, I have full working rights" → "Yes".
+  const lead = a.split(' ')[0]
+  if (['yes', 'no'].includes(lead)) {
+    const yn = unique(opts.filter(o => o.n === lead || o.n.startsWith(`${lead} `)))
+    if (yn) return yn
+  }
+
+  // One contains the other, on word boundaries ("Permanent resident" ↔
+  // "I am a permanent resident").
+  const contained = unique(opts.filter(o => hasWords(a, o.n) || hasWords(o.n, a)))
+  if (contained) return contained
+
+  // "4" or "4 years" → "3-5 years".
+  const num = a.match(/^(?:about |around |approximately )?(\d+(?:\.\d+)?)\b/)
+  if (num) {
+    const fits = unique(opts.filter(o => numberFits(Number(num[1]), o.raw)))
+    if (fits) return fits
+  }
+
+  const fuzzy = opts.map(o => ({ o, s: similarity(a, o.n) })).sort((x, y) => y.s - x.s)
+  if (fuzzy[0].s >= 0.8 && (fuzzy.length === 1 || fuzzy[0].s - fuzzy[1].s >= 0.1)) return fuzzy[0].o.raw
+
+  return null
+}
+
 // Resolve one question to the string that will be typed into the form.
+//
+// `options`, for a select or radio group, is the list of labels on the page.
+// When it is given, every candidate answer — profile, cache, model, user — is
+// mapped onto one of those labels (matchOption) and the label is what is
+// returned; an answer that matches none of them is never returned.
 //
 // Returns { answer, source } — source is 'profile' | 'cache' | 'ai' | 'user' —
 // or { answer: '', source: '' } when there is nothing safe to say and the field
 // should simply be left alone. Throws ScreeningAnswerRefused when an answer was
 // produced, was not trustworthy, and there was no one to ask.
-async function resolveAnswer({ question, optionHint = '', cfg, log }) {
-  const prompt = optionHint ? `${question} (${optionHint})` : question
+async function resolveAnswer({ question, options = null, optionHint = '', cfg, log }) {
+  const choices = realOptions(Array.isArray(options) ? options : [])
+  const hint = optionHint || choices.slice(0, 20).join(' / ')
+  const prompt = hint ? `${question} (${hint})` : question
+  // Map a candidate answer onto the field. Free-text fields take it as is.
+  const fit = (ans) => (choices.length ? matchOption(ans, choices) : ans)
 
   // ── The application profile ────────────────────────────────────
   //
@@ -100,13 +200,23 @@ async function resolveAnswer({ question, optionHint = '', cfg, log }) {
   // applicationProfile.js.
   const known = applicationProfile.answerFor(question, cfg)
   if (known) {
-    log?.(`  Answered "${trim(question, 60)}" from your application profile (${known.label}).`)
-    return { answer: known.answer, source: 'profile' }
+    const fitted = fit(known.answer)
+    if (fitted) {
+      log?.(`  Answered "${trim(question, 60)}" from your application profile (${known.label}).`)
+      return { answer: fitted, source: 'profile' }
+    }
+    log?.(`  Your profile's answer for "${trim(question, 60)}" is not one of the form's options.`)
   }
 
   // ── Cache ──────────────────────────────────────────────────────
   const cached = database.getCachedAnswerRecord(question)
-  if (cached) {
+  // A cached answer that is not one of THIS form's options is passed over, not
+  // deleted: the same question elsewhere may be free text, where it is right.
+  const cachedFit = cached ? fit(cached.answer) : null
+  if (cached && !cachedFit) {
+    log?.(`  The saved answer for "${trim(question, 60)}" is not one of this form's options — asking again.`)
+  }
+  if (cached && cachedFit) {
     // Say so when an answer is old enough to have drifted. NOT a refusal: this
     // is about to be typed into a form, there may be nobody at the keyboard, and
     // withholding a probably-correct answer to avoid a possibly-stale one is the
@@ -118,9 +228,9 @@ async function resolveAnswer({ question, optionHint = '', cfg, log }) {
       log?.(`  Reusing an answer last confirmed ${age} days ago for "${trim(question, 60)}" — `
         + 'review it in Settings if the facts have changed.')
     }
-    if (cached.source === 'user') return { answer: cached.answer, source: 'cache' }
-    const verdict = inspectScreeningAnswer(cfg.masterResume || '', cached.answer)
-    if (verdict.safe) return { answer: cached.answer, source: 'cache' }
+    if (cached.source === 'user') return { answer: cachedFit, source: 'cache' }
+    const verdict = inspectScreeningAnswer(cfg.masterResume || '', cachedFit)
+    if (verdict.safe) return { answer: cachedFit, source: 'cache' }
     // A cached model answer that no longer passes. Drop it rather than keep
     // serving it — it is being replayed to employers who never saw the ad it
     // came from.
@@ -135,32 +245,46 @@ async function resolveAnswer({ question, optionHint = '', cfg, log }) {
     try {
       aiAnswer = await aiAdapter.answerScreeningQuestion(
         cfg.aiProvider, cfg.aiApiKey,
-        optionHint ? `${question} (options: ${optionHint})` : question,
+        hint ? `${question} (options: ${hint})` : question,
         cfg.jobDescription || '', cfg.masterResume || '', cfg.geminiModel
       )
     } catch { /* fall through to asking the user */ }
   }
 
   let refusalDetail = null
-  if (!isUncertain(aiAnswer)) {
-    const verdict = inspectScreeningAnswer(cfg.masterResume || '', aiAnswer)
-    if (verdict.safe) {
-      database.saveCachedAnswer(question, aiAnswer, 'ai')
-      return { answer: aiAnswer, source: 'ai' }
+  if (!isUncertain(aiAnswer) || (choices.length && aiAnswer && fit(aiAnswer))) {
+    const fitted = fit(aiAnswer)
+    if (!fitted) {
+      // Not one of the options. Typing it would fail silently; picking the
+      // nearest would be a guess submitted under the user's name.
+      log?.(`  The model answered "${trim(aiAnswer, 40)}" to "${trim(question, 60)}", which is not one of the options.`)
+    } else {
+      // The OPTION is what gets submitted, so it is what is checked — an
+      // employer's "Yes, I hold a clearance" is a claim even if the model only
+      // said "Yes".
+      const verdict = inspectScreeningAnswer(cfg.masterResume || '', fitted)
+      if (verdict.safe) {
+        database.saveCachedAnswer(question, fitted, 'ai')
+        return { answer: fitted, source: 'ai' }
+      }
+      refusalDetail = describeFlags(verdict.flags)
+      log?.(`  Screening answer rejected — it claims ${refusalDetail}, which the resume does not support.`)
     }
-    refusalDetail = describeFlags(verdict.flags)
-    log?.(`  Screening answer rejected — it claims ${refusalDetail}, which the resume does not support.`)
   }
 
   // ── The user ───────────────────────────────────────────────────
-  // Reached when the model was unsure, unavailable, or said something the resume
-  // does not support. All three mean the same thing: a person has to decide.
+  // Reached when the model was unsure, unavailable, said something the resume
+  // does not support, or picked something that is not an option. All mean the
+  // same thing: a person has to decide. The options go with the question so the
+  // prompt can offer them.
   if (cfg.askQuestion) {
-    const userAnswer = await cfg.askQuestion(prompt).catch(() => '')
-    if (userAnswer) {
-      database.saveCachedAnswer(question, userAnswer, 'user')
-      return { answer: userAnswer, source: 'user' }
+    const userAnswer = await cfg.askQuestion(prompt, choices.length ? choices : undefined).catch(() => '')
+    const fitted = userAnswer ? fit(userAnswer) : ''
+    if (fitted) {
+      database.saveCachedAnswer(question, fitted, 'user')
+      return { answer: fitted, source: 'user' }
     }
+    if (userAnswer) log?.(`  "${trim(userAnswer, 40)}" is not one of the options for "${trim(question, 60)}" — left for you to fill.`)
     return { answer: '', source: '' }
   }
 
@@ -173,4 +297,4 @@ async function resolveAnswer({ question, optionHint = '', cfg, log }) {
   return { answer: '', source: '' }
 }
 
-module.exports = { resolveAnswer, ScreeningAnswerRefused, isUncertain, staleDays }
+module.exports = { resolveAnswer, matchOption, realOptions, ScreeningAnswerRefused, isUncertain, staleDays }

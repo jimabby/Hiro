@@ -56,10 +56,17 @@ function classifySubject(subject) {
   // forward" is at least as common a phrasing as "we will not move forward",
   // and the literal form missed it — so the most standard rejection sentence in
   // the language fell through to 'pending'.
-  if (/unfortunately|regret|not.*mov(?:e|ing) forward|not.*proceed|not.*progress|unable to (?:offer|proceed|progress)|unsuccessful|no longer|other candidate|filled.*position|position.*filled|not.*fit|decided.*not/i.test(s)) return 'rejected'
+  //
+  // Every pattern is anchored on word boundaries and bounded in distance (and
+  // kept within one sentence — `[^.]`). The unanchored forms read
+  // "Interview notification - … benefits inside" as `not.*fit` and "Your
+  // application is in progress" (after "Notification:") as `not.*progress`, so
+  // ordinary updates — and any company called Notion or Nothing — classified
+  // as rejections.
+  if (/\bunfortunately\b|\bregret\b|\bnot\b[^.]{0,40}\bmov(?:e|ing) forward\b|\bnot\b[^.]{0,30}\bproceed(?:ing)?\b|\bnot\b[^.]{0,30}\bprogress(?:ing)?\b|\bunable to (?:offer|proceed|progress)\b|\bunsuccessful\b|\bno longer\b[^.]{0,30}\b(?:consider\w*|available|open|proceed\w*|pursu\w*|recruit\w*|hiring|moving)\b|\bother candidates?\b|\bfilled\b[^.]{0,30}\b(?:position|role|vacancy)\b|\b(?:position|role|vacancy)\b[^.]{0,30}\bfilled\b|\bnot\b[^.]{0,40}\bfit\b|\bdecided\b[^.]{0,30}\bnot\b/i.test(s)) return 'rejected'
   // "schedule a call" / "set up a chat" are invitations as plainly as
   // "schedule a meeting" is; only the meeting wording was matched.
-  if (/interview|schedul\w*.*(?:meet|call|chat|time|interview)|meet.*schedule|set up.*(?:call|chat|meeting)|invitation|invite|phone screen|video call|zoom|teams meeting|book.*time|pick.*time|available.*chat/i.test(s)) return 'interview'
+  if (/\binterview|\bschedul\w*[^.]{0,40}\b(?:meet|call|chat|time|interview)|\bmeet\w*[^.]{0,30}\bschedule|\bset up\b[^.]{0,30}\b(?:call|chat|meeting)\b|\binvitation\b|\binvit(?:e|ed|ing)\b|\bphone screen|\bvideo call\b|\bzoom\b|\bteams meeting\b|\bbook\b[^.]{0,30}\btime\b|\bpick\b[^.]{0,30}\btime\b|\bavailable\b[^.]{0,30}\bchat\b/i.test(s)) return 'interview'
   return 'pending' // reply received but unclear — mark as pending for user review
 }
 
@@ -79,6 +86,165 @@ function parseSqliteUtc(s) {
   const d = new Date(s.includes('T') ? s : s.replace(' ', 'T') + 'Z')
   return isNaN(d.getTime()) ? null : d
 }
+
+// ─── Which messages are replies, and to which application ────────
+
+// Job platforms' own notifications — not recruiter replies. Their job-alert
+// emails are read separately, by services/jobAlerts.js.
+const PLATFORM_DOMAINS = ['seek.com.au', 'seek.co.nz', 'indeed.com', 'linkedin.com',
+  'noreply.linkedin.com', 'indeedemail.com', 'seek.com', 'jobseek.com']
+
+// Applicant-tracking systems that mail candidates on an employer's behalf. Their
+// sender domain is never the company's, so the company has to be named in the
+// message instead.
+const ATS_DOMAINS = ['greenhouse.io', 'greenhouse-mail.io', 'lever.co', 'myworkday.com', 'workday.com',
+  'smartrecruiters.com', 'smartrecruiters-mail.com', 'ashbyhq.com', 'icims.com', 'jobvite.com', 'workable.com',
+  'bamboohr.com', 'recruitee.com', 'teamtailor.com', 'teamtailor-mail.com', 'pageuppeople.com',
+  'successfactors.com', 'taleo.net', 'breezy.hr', 'jazzhr.com', 'applytojob.com', 'jobadder.com']
+
+const isDomainIn = (domain, list) => list.some(d => domain === d || domain.endsWith(`.${d}`))
+
+// A subject that is commerce or account housekeeping, never a hiring decision.
+const TRANSACTIONAL_RE = /\b(?:your order|order (?:#|no\b|number|confirm\w*|status|update|details)|(?:has|have) (?:been )?(?:shipped|dispatched|delivered)|shipping|shipment|out for delivery|tracking number|receipt for|your receipt|invoice|payment (?:received|failed|due)|refund|subscription|renewal|password|verification code|verify your (?:email|account)|security alert|sign[- ]in attempt|newsletter|% off|sale ends|your cart|wish ?list)\b/i
+
+// Automated senders. Allowed through only when the subject is about hiring or
+// the sender is an ATS — a no-reply rejection from Greenhouse is still a reply.
+const AUTOMATED_SENDER_RE = /^(?:no[-_.]?reply|do[-_.]?not[-_.]?reply|donotreply|notifications?|mailer-daemon|postmaster|bounces?|alerts?|news(?:letter)?|marketing|promo\w*|deals|offers|updates?|shipment[-_.]?tracking|auto[-_.]?confirm|orders?|store|shop|billing|accounts?|security)[^@]*@/i
+
+const RECRUITING_RE = /\b(?:applica\w*|applied|applying|candida\w*|interview\w*|position|role|vacanc\w*|recruit\w*|hiring|talent|careers?|resume|résumé|cv|job|opportunit\w*|shortlist\w*|offer of employment)\b/i
+
+function isNoise(m) {
+  if (TRANSACTIONAL_RE.test(m.subject || '')) return true
+  const domain = (m.from.split('@')[1] || '')
+  if (AUTOMATED_SENDER_RE.test(m.from) && !isDomainIn(domain, ATS_DOMAINS) && !RECRUITING_RE.test(m.subject || '')) return true
+  return false
+}
+
+// The References header as a list of Message-IDs. imapflow hands back the raw
+// requested header lines as a Buffer.
+function parseReferences(raw) {
+  const text = Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw || '')
+  // Not multiline: `$` must mean the end of the block, and a folded header
+  // continues on lines that start with whitespace.
+  const m = /(?:^|\n)references:[ \t]*([\s\S]*?)(?:\r?\n(?![ \t])|$)/i.exec(text)
+  return m ? (m[1].match(/<[^>]+>/g) || []) : []
+}
+
+function companyWordsOf(app) {
+  return String(app.company || '').toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '')
+    .split(/\s+/)
+    .filter(w => w.length > 2 && !GENERIC_COMPANY_WORDS.has(w))
+}
+
+const TITLE_FILLER = new Set(['with', 'from', 'role', 'position', 'team', 'remote', 'hybrid', 'full', 'time', 'part', 'contract', 'permanent'])
+function titleWordsOf(app) {
+  return String(app.job_title || '').toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 3 && !TITLE_FILLER.has(w))
+}
+
+// How much of an application's job title the text names, 0–1.
+function titleScore(app, text) {
+  const words = titleWordsOf(app)
+  if (words.length === 0) return 0
+  const hay = ` ${String(text || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ')} `
+  return words.filter(w => hay.includes(` ${w} `)).length / words.length
+}
+
+// Of several applications this email could be about, the one its text names —
+// or null when no single one stands out.
+function disambiguate(candidates, text) {
+  const scored = candidates.map(app => ({ app, score: titleScore(app, text) })).sort((a, b) => b.score - a.score)
+  if (scored[0].score === 0) return null
+  if (scored.length > 1 && scored[0].score - scored[1].score < 0.25) return null
+  return scored[0].app
+}
+
+function appliedBefore(app, m) {
+  const appliedAt = parseSqliteUtc(app.applied_at)
+  return !(appliedAt && m.date && new Date(m.date) < appliedAt)
+}
+
+// Match one message to an application.
+//
+// Returns { app, kind, named } — kind is 'thread' | 'recruiter' | 'company', and
+// `named` says the message names the role — or { ambiguous: [apps] } when it
+// belongs to one of several applications and nothing says which, or null.
+//
+// In order of how much they prove:
+//   1. Thread. In-Reply-To / References carries the Message-ID of a follow-up
+//      Hiro sent (sent_messages), which names exactly one application.
+//   2. A recruiter address already on file for an application.
+//   3. The company — by sender domain, by an ATS sender naming it, or by the
+//      subject naming both company and role — and, where that leaves more than
+//      one application, by which job title the subject or body names.
+async function matchMessage(m, apps, { bodyOf = async () => '', findByMessageIds = database.findApplicationByMessageIds } = {}) {
+  const open = apps.filter(a => appliedBefore(a, m))
+  if (open.length === 0) return null
+
+  // 1. Thread
+  const ids = [m.inReplyTo, ...(m.references || [])].filter(Boolean)
+  if (ids.length) {
+    let appId = null
+    try { appId = findByMessageIds(ids) } catch { /* table not there yet */ }
+    const app = appId != null && open.find(a => a.id === appId)
+    if (app) return { app, kind: 'thread', named: true }
+  }
+
+  let body = null
+  const text = async () => {
+    if (body == null) body = String(await bodyOf(m.uid) || '')
+    return `${m.subject}\n${body}`
+  }
+
+  // 2. Known recruiter address
+  const byRecruiter = open.filter(a => a.recruiter_email && a.recruiter_email.toLowerCase() === m.from)
+  if (byRecruiter.length === 1) return { app: byRecruiter[0], kind: 'recruiter', named: titleScore(byRecruiter[0], m.subject) > 0 }
+  if (byRecruiter.length > 1) {
+    const t = await text()
+    const app = disambiguate(byRecruiter, t)
+    return app ? { app, kind: 'recruiter', named: true } : { ambiguous: byRecruiter }
+  }
+
+  // 3. Company
+  const domain = m.from.split('@')[1] || ''
+  const flatDomain = domain.replace(/\./g, '')
+  const viaAts = isDomainIn(domain, ATS_DOMAINS)
+  const subjectLower = m.subject.toLowerCase()
+  const candidates = []
+  let domainOnly = true
+  for (const app of open) {
+    const words = companyWordsOf(app)
+    if (words.length === 0) continue // nothing distinctive to match on
+    // Domain matching needs a longer word — short fragments match too freely.
+    const domainMatch = !viaAts && words.some(w => w.length >= 4 && flatDomain.includes(w))
+    const subjectCompany = words.some(w => subjectLower.includes(w))
+    const subjectRole = titleWordsOf(app).some(w => subjectLower.includes(w))
+    if (domainMatch || (subjectCompany && subjectRole) || (viaAts && subjectCompany)) {
+      candidates.push(app)
+      if (!domainMatch || subjectCompany) domainOnly = false
+    }
+  }
+  if (candidates.length === 0) return null
+
+  // A match resting on the sender's domain alone must at least be about
+  // hiring. Anyone at a large employer can email you about anything.
+  if (domainOnly && !RECRUITING_RE.test(await text())) return null
+
+  if (candidates.length === 1) {
+    const app = candidates[0]
+    const named = titleScore(app, m.subject) > 0 || titleScore(app, await text()) >= 0.5
+    return { app, kind: 'company', named }
+  }
+  const app = disambiguate(candidates, await text())
+  return app ? { app, kind: 'company', named: true } : { ambiguous: candidates }
+}
+
+// Replies already handed to the user as ambiguous in this session, so the
+// overlap window does not announce them again on the next check.
+const announcedAmbiguous = new Set()
 
 // Server selection lives in services/mailProvider.js, shared with the SMTP side.
 // Reading replies and sending reports have to agree about which account this is:
@@ -116,6 +282,7 @@ async function runCheck() {
   })
 
   const updated = []
+  const needsReview = []
   let checked = 0
 
   try {
@@ -144,65 +311,80 @@ async function runCheck() {
           ? new Date(Math.max(oldestApplied.getTime(), lastCheck.getTime() - OVERLAP_MS))
           : oldestApplied
 
-        // Job platform domains to ignore — these are notifications, not recruiter replies
-        const PLATFORM_DOMAINS = ['seek.com.au', 'seek.co.nz', 'indeed.com', 'linkedin.com',
-          'noreply.linkedin.com', 'indeedemail.com', 'seek.com', 'jobseek.com']
-
-        // Fetch all message envelopes since the oldest application
+        // Fetch every message since the window opened, with the threading
+        // headers. In-Reply-To arrives in the envelope; References does not.
         const messages = []
-        for await (const msg of client.fetch({ since }, { envelope: true })) {
+        for await (const msg of client.fetch({ since }, { envelope: true, headers: ['references'] })) {
           const from = msg.envelope.from?.[0]?.address?.toLowerCase() || ''
           const fromDomain = from.split('@')[1] || ''
-          // Skip emails from job platforms — they're confirmations, not recruiter replies
+          // Skip emails from job platforms — they're confirmations, not
+          // recruiter replies. (Their job-alert emails are read separately, by
+          // services/jobAlerts.js.)
           if (PLATFORM_DOMAINS.some(d => fromDomain === d || fromDomain.endsWith('.' + d))) continue
-          messages.push({
+          const parsed = {
             from,
             subject: msg.envelope.subject || '',
             date: msg.envelope.date,
             uid: msg.uid,
-          })
+            messageId: msg.envelope.messageId || '',
+            inReplyTo: msg.envelope.inReplyTo || '',
+            references: parseReferences(msg.headers),
+          }
           checked++
+          // Order confirmations, shipping notices, password resets and the
+          // like. A shop the user ordered from can also be a company they
+          // applied to, and "item no longer available" read as a rejection.
+          if (isNoise(parsed)) continue
+          messages.push(parsed)
         }
 
-        // Match messages to applications
+        // Bodies are downloaded at most once per message per check: matching
+        // may need one to tell two applications apart, and classification
+        // needs the same one afterwards.
+        const bodies = new Map()
+        const bodyOf = (uid) => {
+          if (!bodies.has(uid)) bodies.set(uid, fetchBodySnippet(client, uid))
+          return bodies.get(uid)
+        }
+
+        // Match each message to at most ONE application — by thread, then by a
+        // known recruiter address, then by company with disambiguation. This
+        // used to run the other way round: each application took the newest
+        // email from its company's domain, so one rejection from Atlassian
+        // rejected every open Atlassian application at once.
+        //
+        // Newest first, so the first message assigned to an application is the
+        // newest — a recruiter thread produces several, and the latest one
+        // carries the current state of the conversation.
+        messages.sort((a, b) => {
+          const ta = a.date ? new Date(a.date).getTime() : 0
+          const tb = b.date ? new Date(b.date).getTime() : 0
+          return tb - ta || b.uid - a.uid
+        })
+        const assignments = new Map()
+        for (const m of messages) {
+          const result = await matchMessage(m, apps, { bodyOf })
+          if (result?.app) {
+            if (!assignments.has(result.app.id)) assignments.set(result.app.id, { msg: m, kind: result.kind, named: result.named })
+          } else if (result?.ambiguous && !announcedAmbiguous.has(m.uid)) {
+            // Several open applications at this employer and nothing in the
+            // email says which one it is about. Changing any status would be a
+            // guess, so none is changed and the reply is handed to the user.
+            announcedAmbiguous.add(m.uid)
+            needsReview.push({
+              uid: m.uid,
+              from: m.from,
+              subject: m.subject,
+              receivedAt: m.date ? new Date(m.date).toISOString() : null,
+              company: result.ambiguous[0].company,
+              candidates: result.ambiguous.map(a => ({ id: a.id, job_title: a.job_title, company: a.company })),
+            })
+          }
+        }
+
         for (const app of apps) {
-          const companyWords = app.company.toLowerCase()
-            .replace(/[^a-z0-9\s]/g, '')
-            .split(/\s+/)
-            .filter(w => w.length > 2 && !GENERIC_COMPANY_WORDS.has(w))
-          if (companyWords.length === 0) continue // nothing distinctive to match on
-
-          const jobWords = app.job_title.toLowerCase()
-            .replace(/[^a-z0-9\s]/g, '')
-            .split(/\s+/)
-            .filter(w => w.length > 3)
-
-          const appliedAt = parseSqliteUtc(app.applied_at)
-
-          const matches = messages.filter(m => {
-            // A reply can only arrive after the application was submitted
-            if (appliedAt && m.date && new Date(m.date) < appliedAt) return false
-
-            const fromDomain = (m.from.split('@')[1] || '').replace(/\./g, '')
-            const subjectLower = m.subject.toLowerCase()
-
-            // Domain matching needs a longer word — short fragments match too freely
-            const domainMatch = companyWords.some(w => w.length >= 4 && fromDomain.includes(w))
-            const subjectCompanyMatch = companyWords.some(w => subjectLower.includes(w))
-            const subjectJobMatch = jobWords.some(w => subjectLower.includes(w))
-
-            return domainMatch || (subjectCompanyMatch && subjectJobMatch)
-          })
-
-          // The NEWEST matching email wins. A recruiter thread produces several,
-          // and the latest one carries the current state of the conversation —
-          // taking the first match instead meant a follow-up email that upgraded
-          // "we'll be in touch" to an actual interview time was never read.
-          const match = matches.sort((a, b) => {
-            const ta = a.date ? new Date(a.date).getTime() : 0
-            const tb = b.date ? new Date(b.date).getTime() : 0
-            return tb - ta || b.uid - a.uid
-          })[0]
+          const assigned = assignments.get(app.id)
+          const match = assigned?.msg
 
           if (match) {
             // Already classified this exact email on an earlier pass. Now that
@@ -224,7 +406,7 @@ async function runCheck() {
             // read before it can be dismissed — see services/replyFilter.js.
             const needsBody = isAiConfigured(cfg) || newStatus === 'interview'
               || (newStatus === 'pending' && mightBeAcknowledgement(match.subject))
-            if (needsBody) body = await fetchBodySnippet(client, match.uid)
+            if (needsBody) body = await bodyOf(match.uid)
 
             let acknowledgement = false
             if (isAiConfigured(cfg)) {
@@ -252,7 +434,7 @@ async function runCheck() {
             // ever downloading the body. Fetch it now, before it is stored —
             // the interview-time parser below needs it anyway.
             if (!body && (newStatus === 'interview' || newStatus === 'offer')) {
-              body = await fetchBodySnippet(client, match.uid)
+              body = await bodyOf(match.uid)
             }
 
             database.updateApplicationStatus(app.id, newStatus)
@@ -280,7 +462,13 @@ async function runCheck() {
             // The sender of a real reply is the best follow-up address there
             // is — a human who has already read the application. Without this,
             // recruiter_email stayed blank and auto follow-up skipped the job.
-            if (cfg.extractRecruiterEmail !== false && !app.recruiter_email) {
+            //
+            // Only from an email that is demonstrably about THIS application —
+            // a reply in its thread, or one that names the role. A message
+            // matched on the company's domain alone may be from anyone there
+            // (or an automated sender), and follow-ups would go to them.
+            const aboutThisJob = assigned.kind === 'thread' || assigned.named
+            if (cfg.extractRecruiterEmail !== false && !app.recruiter_email && aboutThisJob) {
               try {
                 const { recruiterEmailFromReply } = require('./contactExtractor')
                 const contact = recruiterEmailFromReply(match.from, { company: app.company })
@@ -296,7 +484,7 @@ async function runCheck() {
             // notification so "interview detected for …" can say whose clock.
             let interviewZone = null
             if (newStatus === 'interview') {
-              if (!body) body = await fetchBodySnippet(client, match.uid)
+              if (!body) body = await bodyOf(match.uid)
               const parsed = parseInterviewTime(match.subject, body)
               if (parsed) {
                 try {
@@ -347,7 +535,7 @@ async function runCheck() {
     throw new Error(`Inbox check failed: ${err.message}`)
   }
 
-  return { checked, updated }
+  return { checked, updated, needsReview }
 }
 
-module.exports = { checkInbox }
+module.exports = { checkInbox, matchMessage, isNoise, parseReferences, titleScore, classifySubject }

@@ -156,6 +156,34 @@ async function verifySubmission(pageOrFrame) {
   }
 }
 
+// A context and page on a browser that has just been launched, closing the
+// browser if either cannot be created. The scrapers used to launch and then
+// call newContext()/newPage() BEFORE entering their try/finally, so a corrupt
+// saved-session file (newContext throws on bad storageState) left a Chromium
+// process running for every scan that hit it.
+async function openPage(browser, contextOptions = {}) {
+  try {
+    const context = await browser.newContext(contextOptions)
+    return await context.newPage()
+  } catch (err) {
+    await browser.close().catch(() => {})
+    throw err
+  }
+}
+
+// Proof of submission: the confirmation page as a full-page PNG, taken right
+// after verifySubmission() accepted it (see services/submissionProof.js). Null
+// when the page has already gone — a post-submit redirect that closed it is
+// still a success, just one without a picture.
+async function captureProof(page) {
+  try {
+    if (!page || (page.isClosed && page.isClosed())) return null
+    return await page.screenshot({ fullPage: true, type: 'png', timeout: 15000 })
+  } catch {
+    return null
+  }
+}
+
 // One implementation, shared with the AI adapters — see ai/markdown.js for why
 // it must never touch the candidate's own text.
 const { stripMarkdown } = require('../ai/markdown')
@@ -952,4 +980,4 @@ function safeConfig() {
   try { return require('../config').load() } catch { return null }
 }
 
-module.exports = { RESUME_TEMPLATES, randomUserAgent, randomDelay, humanType, stripMarkdown, verifySubmission, confirmSubmission, detectBlock, blockReason, BlockedError, gotoResultsPage, buildResumePDF, buildResumeDocx, buildCoverLetterPDF, buildAnalyticsReportPDF, tailorDocx, buildResumeFile, createSelectorProbe, launchOptions, proxyFor }
+module.exports = { RESUME_TEMPLATES, randomUserAgent, randomDelay, humanType, stripMarkdown, verifySubmission, captureProof, openPage, confirmSubmission, detectBlock, blockReason, BlockedError, gotoResultsPage, buildResumePDF, buildResumeDocx, buildCoverLetterPDF, buildAnalyticsReportPDF, tailorDocx, buildResumeFile, createSelectorProbe, launchOptions, proxyFor }

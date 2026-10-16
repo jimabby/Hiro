@@ -6,6 +6,8 @@ const path_ = require('path')
 const { stub, service, createChecker } = require('./helpers')
 // The browser extension's own implementation, run in Node.
 const pairChannel = require(path_.join(__dirname, '..', '..', 'extension', 'pairChannel.js'))
+// The phone's response-binding format (plain CommonJS, no React Native).
+const responseBinding = require(path_.join(__dirname, '..', '..', 'app', 'src', 'responseBinding.js'))
 
 const PORT = 48232
 const cfg = { mobileApiEnabled: true, mobileApiPort: PORT, mobileApiToken: 'l'.repeat(32), mobileDevices: [] }
@@ -39,9 +41,10 @@ function encrypt(token, value) {
   return JSON.stringify({ secure: 2, data: Buffer.concat([iv, data, cipher.getAuthTag()]).toString('base64') })
 }
 
-function decrypt(token, envelope) {
+function decrypt(token, envelope, aad = null) {
   const combined = Buffer.from(envelope.data, 'base64')
   const decipher = crypto.createDecipheriv('aes-256-gcm', key(token), combined.subarray(0, 12))
+  if (aad) decipher.setAAD(Buffer.from(aad, 'utf8'))
   decipher.setAuthTag(combined.subarray(-16))
   return JSON.parse(Buffer.concat([decipher.update(combined.subarray(12, -16)), decipher.final()]).toString())
 }
@@ -119,8 +122,102 @@ function headers(token, method, path, raw, timestamp = String(Date.now()), nonce
     check('secure extension import succeeds', importRes.status, 200)
     check('extension import reaches Needs Attention', imported.job_title, 'Platform Engineer')
 
+    // Response binding: a phone that asks gets a reply sealed to this request's
+    // method, path and nonce. The AAD is computed with the PHONE's own module,
+    // so a drift between the two halves fails here.
+    const bindNonce = crypto.randomBytes(16).toString('hex')
+    const boundRes = await fetch(`http://127.0.0.1:${PORT}${path}`, {
+      headers: { ...headers(paired.token, 'GET', path, '', String(Date.now()), bindNonce), 'X-Hiro-Response-Binding': '1' },
+    })
+    const boundEnvelope = await boundRes.json()
+    check('a bound reply is marked bound', boundEnvelope.bound, 1)
+    const aad = responseBinding.responseAad('GET', path, bindNonce)
+    check('it opens with the phone-computed binding', decrypt(paired.token, boundEnvelope, aad).totalAllTime, 17)
+    const opensWith = a => { try { decrypt(paired.token, boundEnvelope, a); return true } catch { return false } }
+    check('it does not open without the binding', opensWith(null), false)
+    check('it does not open for another nonce', opensWith(responseBinding.responseAad('GET', path, 'other')), false)
+    check('it does not open for another path', opensWith(responseBinding.responseAad('GET', '/api/offers', bindNonce)), false)
+    check('a client that does not ask still gets the legacy envelope', statsEnvelope.bound, undefined)
+
     const replay = await fetch(`http://127.0.0.1:${PORT}${path}`, { headers: signed })
     check('replayed nonce is rejected', replay.status, 401)
+
+    // ── Per-device activity ─────────────────────────────────────────
+    await new Promise(r => setTimeout(r, 20))
+    const firstDevice = cfg.mobileDevices[0]
+    const activity = api.deviceActivity(firstDevice.id)
+    // stats, the status write, the import and the bound stats read; the replay
+    // was refused before any device was identified, so it belongs to nobody.
+    check('each request is recorded against its device', activity.map(a => a.path), ['/api/stats', '/api/import-job', '/api/applications/9/status', '/api/stats'])
+    check('newest first, with method, status and address',
+      [activity[0].method, activity[0].status, activity[0].ip.includes('127.0.0.1'), typeof activity[0].at], ['GET', 200, true, 'string'])
+    check('the import is recorded as a write',
+      [activity[1].method, activity[1].status], ['POST', 200])
+    check('the query string is never recorded',
+      activity.every(a => !a.path.includes('?')), true)
+
+    // ── Scopes, chosen on the desktop when the code is generated ────
+    async function pairDevice(scopes, name) {
+      const session = api.startPairing({ scopes })
+      const hi = await (await fetch(`http://127.0.0.1:${PORT}/api/pair/hello`)).json()
+      const ch = await pairChannel.openChannel(hi, session.code)
+      // A device asking for more than it was granted is ignored.
+      const body = JSON.stringify(await pairChannel.sealRequest(ch, { code: session.code, deviceName: name, platform: 'test', scopes: ['read', 'write', 'scan'] }))
+      const res = await fetch(`http://127.0.0.1:${PORT}/api/pair`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+      return pairChannel.openResponse(ch, await res.json())
+    }
+    async function signedCall(token, method, p, value) {
+      const raw = value === undefined ? '' : encrypt(token, value)
+      const res = await fetch(`http://127.0.0.1:${PORT}${p}`, { method, headers: headers(token, method, p, raw), body: raw || undefined })
+      const envelope = await res.json().catch(() => null)
+      return { status: res.status, body: envelope?.secure === 2 ? decrypt(token, envelope) : envelope }
+    }
+
+    const reader = await pairDevice(['read'], 'Read-only phone')
+    check('the pairing reply states the granted scopes', reader.device.scopes, ['read'])
+    check('a read-only device can read', (await signedCall(reader.token, 'GET', '/api/stats')).status, 200)
+    const refused = await signedCall(reader.token, 'POST', '/api/applications/9/status', { status: 'offer' })
+    check('a read-only device cannot write', refused.status, 403)
+    check('and is told which permission it lacks', refused.body.scope, 'write')
+    check('a read-only device cannot start a scan', (await signedCall(reader.token, 'POST', '/api/scan', {})).status, 403)
+    check('ping reports the device its scopes', (await signedCall(reader.token, 'GET', '/api/ping')).body.scopes, ['read'])
+
+    const readerId = cfg.mobileDevices.find(d => d.name === 'Read-only phone').id
+    check('scopes can be changed after pairing', api.setDeviceScopes(readerId, ['read', 'write']).scopes, ['read', 'write'])
+    check('and take effect on the next request',
+      (await signedCall(reader.token, 'POST', '/api/applications/9/status', { status: 'offer' })).status, 200)
+    check('the device list shows them', api.listDevices().find(d => d.id === readerId).scopes, ['read', 'write'])
+    check('a device paired before scopes existed keeps all three', api.listDevices().find(d => d.id === firstDevice.id).scopes, ['read', 'write', 'scan'])
+
+    // ── Rotation without re-pairing ─────────────────────────────────
+    const beforeExpiry = cfg.mobileDevices.find(d => d.id === readerId).expiresAt
+    await new Promise(r => setTimeout(r, 5))
+    const rotated = await signedCall(reader.token, 'POST', '/api/rotate')
+    check('a signed rotation succeeds', rotated.status, 200)
+    check('it returns a new token', typeof rotated.body.token === 'string' && rotated.body.token !== reader.token, true)
+    check('with the device it belongs to', rotated.body.device.id, readerId)
+    check('and a later expiry', new Date(rotated.body.expiresAt) > new Date(beforeExpiry), true)
+    await new Promise(r => setTimeout(r, 20))
+    check('the new token works', (await signedCall(rotated.body.token, 'GET', '/api/stats')).status, 200)
+    check('the old token is retired once the reply went out', (await signedCall(reader.token, 'GET', '/api/stats')).status, 401)
+    check('the device keeps its scopes across rotation',
+      api.listDevices().find(d => d.id === readerId).scopes, ['read', 'write'])
+    check('no second device was created', cfg.mobileDevices.filter(d => d.name === 'Read-only phone').length, 1)
+    api._resetThrottle()
+
+    const bearerRotate = await fetch(`http://127.0.0.1:${PORT}/api/rotate`, {
+      method: 'POST', headers: { Authorization: `Bearer ${rotated.body.token}` },
+    })
+    check('rotation over the unsigned bearer path is refused', bearerRotate.status, 400)
+
+    // ── A device can revoke itself ──────────────────────────────────
+    const revoked = await signedCall(rotated.body.token, 'POST', '/api/devices/self/revoke', {})
+    check('self-revocation succeeds', [revoked.status, revoked.body.success], [200, true])
+    check('the device is gone from the list', cfg.mobileDevices.some(d => d.id === readerId), false)
+    check('and its token no longer works', (await signedCall(rotated.body.token, 'GET', '/api/stats')).status, 401)
+    check('its activity log went with it', api.deviceActivity(readerId), [])
+    check('other devices are untouched', cfg.mobileDevices.some(d => d.id === firstDevice.id), true)
+    api._resetThrottle()
   } finally {
     await api.stop()
     done()

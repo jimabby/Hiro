@@ -33,7 +33,13 @@ function makeConfirmSubmit(win) {
       clearTimeout(timeout)
       ipcMain.removeListener('submit:confirm', handler)
     }
-    const timeout = setTimeout(() => { cleanup(); resolve(false) }, TIMEOUT_MS)
+    // The renderer is told, so the modal closes rather than offering a
+    // "Send" button that would now be ignored.
+    const timeout = setTimeout(() => {
+      cleanup()
+      if (!win.isDestroyed()) win.webContents.send('submit:cancel', { id })
+      resolve(false)
+    }, TIMEOUT_MS)
 
     ipcMain.on('submit:confirm', handler)
     win.webContents.send('submit:review', { id, ...details })

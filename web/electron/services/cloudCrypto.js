@@ -70,16 +70,54 @@ function deriveAccountKeys(email, password) {
 // deliberately unreadable rather than silently trusted.
 const ENVELOPE_VERSION = 3
 
-function encrypt(key64, value) {
+// ─── Binding an envelope to its row ──────────────────────────────
+//
+// GCM proves a ciphertext was written by someone holding the key. On its own it
+// does not prove WHERE it was written. Every row and every envelope column is
+// sealed under the same account key, so anyone with write access to the
+// project (the provider, or a stolen session) could copy one application's
+// encrypted_meta onto another row, or move an encrypted_comment into a
+// different application, and both clients would decrypt it without complaint.
+// Nothing would look wrong; a note would simply be attached to the wrong
+// employer.
+//
+// So an envelope written now carries a context string naming the table, the
+// row's cloud id and the column, and that string is fed to GCM as additional
+// authenticated data. Editing the string breaks the tag. Moving the envelope
+// somewhere else is caught by the reader, which knows where it found it and
+// passes that as `expectedContext`.
+//
+// The context is stored in the clear inside the envelope (`ctx`) so a reader
+// that does not know where an envelope came from can still open it. Readers that
+// do know must say so; that is where the protection comes from.
+//
+// Envelopes written before this have no `ctx` and are still read, because
+// refusing them would strand every existing row until its desktop happened to
+// rewrite it. open() reports them as `legacy` so the desktop can re-upload them
+// in the bound form on its next push.
+//
+// The envelope version stays 3 on purpose: the phone rejects any other number
+// as "retired key", which would be the wrong message. app/src/cloudCrypto.js
+// reads and writes `ctx` the same way.
+function rowContext(table, rowId, column) {
+  return `hiro:${table}:${rowId}:${column}`
+}
+
+function encrypt(key64, value, context = null) {
   if (!key64) return null
   const key = Buffer.from(key64, 'base64'), iv = crypto.randomBytes(12)
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv)
+  if (context) cipher.setAAD(Buffer.from(String(context), 'utf8'))
   const data = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()])
-  return JSON.stringify({ v: ENVELOPE_VERSION, data: Buffer.concat([iv, data, cipher.getAuthTag()]).toString('base64') })
+  const envelope = { v: ENVELOPE_VERSION }
+  if (context) envelope.ctx = String(context)
+  envelope.data = Buffer.concat([iv, data, cipher.getAuthTag()]).toString('base64')
+  return JSON.stringify(envelope)
 }
 
-function decrypt(key64, payload) {
-  if (!key64 || !payload) return null
+// Decrypt, and say whether the envelope was bound to its row. { value, legacy }
+function open(key64, payload, expectedContext = null) {
+  if (!key64 || !payload) return { value: null, legacy: false }
   const env = typeof payload === 'string' ? JSON.parse(payload) : payload, key = Buffer.from(key64, 'base64')
   if (env.v !== ENVELOPE_VERSION) {
     const err = new Error('Cloud data uses an obsolete encryption format.')
@@ -89,9 +127,20 @@ function decrypt(key64, payload) {
     err.obsoleteEnvelope = true
     throw err
   }
+  if (env.ctx != null && expectedContext && env.ctx !== expectedContext) {
+    const err = new Error('Cloud data was moved here from another row and has been ignored.')
+    err.misboundEnvelope = true
+    throw err
+  }
   const combined = Buffer.from(env.data, 'base64'), iv = combined.subarray(0, 12), tag = combined.subarray(-16), data = combined.subarray(12, -16)
   const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv); decipher.setAuthTag(tag)
-  return JSON.parse(Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8'))
+  if (env.ctx != null) decipher.setAAD(Buffer.from(String(env.ctx), 'utf8'))
+  const value = JSON.parse(Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8'))
+  return { value, legacy: env.ctx == null }
 }
 
-module.exports = { deriveKey, deriveAuthSecret, deriveAccountKeys, encrypt, decrypt, ENVELOPE_VERSION }
+function decrypt(key64, payload, expectedContext = null) {
+  return open(key64, payload, expectedContext).value
+}
+
+module.exports = { deriveKey, deriveAuthSecret, deriveAccountKeys, encrypt, decrypt, open, rowContext, ENVELOPE_VERSION }

@@ -31,6 +31,8 @@ export default function Setup({ onComplete }) {
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState(null)
   const [saving, setSaving] = useState(false)
+  // The uploaded file behind the master resume, if it came from one.
+  const [resumeFile, setResumeFile] = useState(null)
   const [validationErrors, setValidationErrors] = useState([])
   // The validation-error region, so a failed Continue can put the reader on it.
   const errorRef = useRef(null)
@@ -98,7 +100,7 @@ export default function Setup({ onComplete }) {
     setSaving(true)
     setValidationErrors([])
     const resumes = form.masterResume
-      ? [{ id: Date.now().toString(), name: 'My Resume', text: form.masterResume }]
+      ? [{ id: Date.now().toString(), name: 'My Resume', text: form.masterResume, ...(resumeFile || {}) }]
       : []
     // A save that threw used to leave the button reading "Saving…" forever with
     // no message — the last step of setup, and the wizard simply stopped.
@@ -361,7 +363,12 @@ export default function Setup({ onComplete }) {
                   <label htmlFor="sup-f15" style={{ marginBottom: 0 }}>Resume Text</label>
                   <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={async () => {
                     const res = await window.api.importResumeFile()
-                    if (res.success) set('masterResume', res.text)
+                    if (res.success) {
+                      set('masterResume', res.text)
+                      // Kept beside the text so the first resume can still be
+                      // shown and sent as the original file, not a re-render.
+                      setResumeFile({ originalPath: res.originalPath, originalExt: res.originalExt })
+                    }
                   }}>
                     Upload File (PDF / DOCX / TXT)
                   </button>
