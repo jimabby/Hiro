@@ -108,7 +108,36 @@ function deleteView(id) {
   configService.update({ applicationViews: savedViews().filter(v => v.id !== id) })
 }
 
+function taskInbox() {
+  const tasks = []
+  for (const app of database.getApplications()) {
+    if (['rejected', 'withdrawn', 'skipped'].includes(app.status)) continue
+    const add = (kind, due, title, taskId) => tasks.push({ id: `${kind}:${app.id}:${taskId || ''}`, applicationId: app.id,
+      company: app.company, jobTitle: app.job_title, kind, due: due || '', title, taskId })
+    for (const task of database.getChecklist(app.id)) if (!task.done) add('checklist', task.due, task.title, task.id)
+    if (app.next_action_at && !app.next_action_done_at) add('follow-up', app.next_action_at, app.next_action_note || 'Follow up')
+    if (app.closing_date && ['held', 'failed'].includes(app.status)) add('closing', app.closing_date, 'Application closes')
+  }
+  for (const offer of database.getOffers().offers) {
+    if (offer.decision !== 'considering' || !offer.respond_by) continue
+    tasks.push({ id: `offer:${offer.applicationId}`, applicationId: offer.applicationId, company: offer.company,
+      jobTitle: offer.job_title, kind: 'offer', due: offer.respond_by, title: 'Respond to offer' })
+  }
+  for (const job of database.getAttentionJobs()) {
+    if (job.closing_date) tasks.push({ id: `attention:${job.id}`, kind: 'attention', due: job.closing_date,
+      company: job.company, jobTitle: job.job_title, title: 'Application closes' })
+  }
+  return tasks.sort((a, b) => (a.due || '9999').localeCompare(b.due || '9999') || a.id.localeCompare(b.id))
+}
+
+function completeInboxTask(task = {}) {
+  if (task.kind === 'checklist') { database.updateChecklist(Number(task.applicationId), { id: task.taskId, done: true }); return { success: true } }
+  if (task.kind === 'follow-up') return database.completeNextAction(Number(task.applicationId))
+  throw new Error('Open this application to complete the action.')
+}
+
 module.exports = {
+  taskInbox, completeInboxTask,
   savedViews, saveView, deleteView,
   listCampaigns, saveCampaign, deleteCampaign, importJob,
   listContacts, dueContacts, saveContact, deleteContact, completeContact, snoozeContact,

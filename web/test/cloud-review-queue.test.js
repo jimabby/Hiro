@@ -1,48 +1,47 @@
-// The cloud review queue: a phone's approval is put back only when the desktop
-// was merely busy. A permanent failure used to be re-queued too, so the same
-// doomed approval was retried on every sync, forever.
-
 const { stub, service, createChecker } = require('./helpers')
 const os = require('os')
+let cfg = { deviceId: 'desktop', deviceName: 'Test' }
 stub({
-  './config': { load: () => ({}), update: () => ({}), CONFIG_DIR: os.tmpdir() },
-  './logger': { append: () => {} },
-  './database': { getApplicationByCloudId: id => ({ id: Number(id.replace('cloud-', '')) }) },
+  './config': { load: () => cfg, update: patch => { cfg = typeof patch === 'function' ? patch(cfg) : { ...cfg, ...patch }; return cfg }, CONFIG_DIR: os.tmpdir() },
+  './logger': { append() {} },
+  './database': { getApplicationByCloudId: () => ({ id: 7 }) },
 })
-const cloudSync = service('cloudSync')
+const { processCommands } = service('cloudCommands')
 const { check, done } = createChecker()
-
-function fakeClient(queue) {
-  const requeued = []
-  const chain = (result) => {
-    const q = { eq: () => q, in: () => q, order: () => q, select: () => q, then: (ok, bad) => Promise.resolve(result()).then(ok, bad) }
-    return q
-  }
-  return {
-    requeued,
-    from: () => ({
-      select: () => chain(() => ({ data: [...queue], error: null })),
-      delete: () => chain(() => { const taken = queue.splice(0); return { data: taken, error: null } }),
-      upsert: async (row) => { requeued.push(row); return { error: null } },
-    }),
-  }
+function fakeClient(row) {
+  return { from: () => ({ update: patch => {
+    const filters = []
+    const q = { eq: (k, v) => { filters.push([k, v]); return q }, select: async () => {
+      if (!filters.every(([k, v]) => row[k] === v)) return { data: [], error: null }
+      Object.assign(row, patch); return { data: [{ ...row }], error: null }
+    } }; return q
+  } }) }
 }
-
 ;(async () => {
-  const user = { id: 'u1' }
-  const seen = []
-
-  const permanent = fakeClient([{ id: 1, application_cloud_id: 'cloud-7', action: 'approve' }])
-  await cloudSync._pollReviewRequests(permanent, user, async (r) => { seen.push(r.application_local_id); throw new Error('Career-board drafts are submitted from the desktop') })
-  check('the request was attempted', seen, [7])
-  check('a permanent failure is not put back', permanent.requeued.length, 0)
-
-  const busy = fakeClient([{ id: 2, application_cloud_id: 'cloud-8', action: 'approve' }])
-  await cloudSync._pollReviewRequests(busy, user, async () => { const e = new Error('A scan is currently running'); e.retryable = true; throw e })
-  check('a busy desktop puts it back for the next sync', busy.requeued.map(r => r.application_cloud_id), ['cloud-8'])
-
-  const fine = fakeClient([{ id: 3, application_cloud_id: 'cloud-9', action: 'reject' }])
-  await cloudSync._pollReviewRequests(fine, user, async () => ({ success: true }))
-  check('a processed request is gone', fine.requeued.length, 0)
+  const make = id => ({ id, user_id: 'u', application_cloud_id: 'job', action: 'approve', status: 'queued' })
+  let row = make('permanent'), calls = 0
+  await processCommands(fakeClient(row), 'u', 'review_requests', [{ ...row }], async () => { calls++; throw new Error('Rejected') })
+  check('permanent failure retained', row.status, 'failed')
+  check('failure explanation retained', row.error, 'Rejected')
+  row = make('busy')
+  await processCommands(fakeClient(row), 'u', 'review_requests', [{ ...row }], async () => { const e = new Error('Busy'); e.retryable = true; throw e })
+  check('busy remains durably accepted', row.status, 'accepted')
+  await processCommands(fakeClient(row), 'u', 'review_requests', [{ ...row }], async () => { calls++; return { success: true } })
+  check('accepted command eventually completes', row.status, 'completed')
+  row.status = 'running'
+  await processCommands(fakeClient(row), 'u', 'review_requests', [{ ...row }], async () => { calls++ })
+  check('receipt replays acknowledgement without resubmitting', calls, 2)
+  check('receipt restores completed status', row.status, 'completed')
+  row = { ...make('interrupted'), status: 'running', claimed_by: 'desktop' }
+  await processCommands(fakeClient(row), 'u', 'review_requests', [{ ...row }], async () => { calls++ })
+  check('uncertain submission requires manual review', row.status, 'failed')
+  check('uncertain submission never auto-retries', calls, 2)
+  row = make('race')
+  const c = fakeClient(row)
+  await Promise.all([processCommands(c, 'u', 'review_requests', [{ ...row }], async () => { calls++ }), processCommands(c, 'u', 'review_requests', [{ ...row }], async () => { calls++ })])
+  check('competing claims submit once', calls, 3)
+  row = make('declined')
+  await processCommands(fakeClient(row), 'u', 'review_requests', [{ ...row }], async () => ({ success: false, reason: 'Flagged draft' }))
+  check('returned refusal is a failure', row.status, 'failed')
   done()
-})().catch(err => { console.error(err); process.exitCode = 1 })
+})().catch(e => { console.error(e); process.exitCode = 1 })

@@ -240,3 +240,21 @@ the phone. The script is transactional and safe to run again.
   next sync. **Update the phone app together with the desktop.** An older phone
   cannot open bound envelopes and shows those rows as pending until it is
   updated. The mirror tables' envelopes are not bound yet.
+
+
+## Durable command history upgrade
+
+Stop all connected desktops, run the complete updated `schema.sql` in the SQL editor,
+then install updated desktop and mobile clients before restarting sync. No service-role
+key is required. This adds status, owner, error and timestamp columns to scan/review
+requests, plus a unique scan request key for offline retries. Existing queued rows
+receive the `queued` default. Existing application encryption remains compatible.
+
+Requests are retained with their outcome. A desktop claims a queued row with a conditional
+update and persists scan acceptance before acknowledging it. Submission receipts are
+persisted before reporting completion. An interrupted submission without a receipt is
+reported as uncertain and requires manual checking, never automatic resubmission.
+Failed commands can be retried from Settings > Cloud Sync or the phone Dashboard.
+A retry gets a new command ID. Accepted commands belong to the claiming desktop;
+bring that desktop back online to continue them. Older clients must not share the queue:
+they use the retired delete-on-claim protocol and would erase status history.

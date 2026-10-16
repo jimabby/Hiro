@@ -299,10 +299,14 @@ contextBridge.exposeInMainWorld('api', {
   getSavedViews: () => ipcRenderer.invoke('features:views'),
   saveView: (view) => ipcRenderer.invoke('features:saveView', view),
   deleteView: (id) => ipcRenderer.invoke('features:deleteView', id),
+  getTaskInbox: () => ipcRenderer.invoke('features:taskInbox'),
+  completeInboxTask: (task) => ipcRenderer.invoke('features:completeInboxTask', task),
   getChecklist: (id) => ipcRenderer.invoke('features:checklist', id),
   updateChecklist: (id, change) => ipcRenderer.invoke('features:updateChecklist', id, change),
 
   // Cloud sync (Supabase)
+  getCloudCommands: () => ipcRenderer.invoke('cloud:commands'),
+  retryCloudCommand: (kind, id) => ipcRenderer.invoke('cloud:retryCommand', kind, id),
   cloudStatus: () => ipcRenderer.invoke('cloud:status'),
   cloudResolveFirstSync: (choice) => ipcRenderer.invoke('cloud:resolveFirstSync', choice),
   cloudListDevices: () => ipcRenderer.invoke('cloud:listDevices'),
@@ -314,7 +318,7 @@ contextBridge.exposeInMainWorld('api', {
   cloudSignOutEverywhere: () => ipcRenderer.invoke('cloud:signOutEverywhere'),
   cloudConflicts: () => ipcRenderer.invoke('cloud:conflicts'),
   cloudClearConflicts: () => ipcRenderer.invoke('cloud:clearConflicts'),
-  cloudApplyConflict: (id) => ipcRenderer.invoke('cloud:applyConflict', id),
+  cloudApplyConflict: (id, mode) => ipcRenderer.invoke('cloud:applyConflict', id, mode),
   cloudSignIn: (email, password) => ipcRenderer.invoke('cloud:signIn', email, password),
   cloudSignOut: () => ipcRenderer.invoke('cloud:signOut'),
   cloudSyncNow: () => ipcRenderer.invoke('cloud:syncNow'),
@@ -354,7 +358,7 @@ contextBridge.exposeInMainWorld('api', {
   getSuppressedRoles: () => ipcRenderer.invoke('analytics:suppressedRoles'),
 
   // Advertised pay for comparable roles, and where a figure sits in it.
-  getSalaryBenchmark: (jobTitle, value) => ipcRenderer.invoke('analytics:salaryBenchmark', jobTitle, value),
+  getSalaryBenchmark: (jobTitle, value, currency) => ipcRenderer.invoke('analytics:salaryBenchmark', jobTitle, value, currency),
 
   // Company career boards (Greenhouse / Lever / Ashby)
   testAtsBoard: (provider, slug) => ipcRenderer.invoke('ats:testBoard', provider, slug),

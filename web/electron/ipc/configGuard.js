@@ -50,6 +50,7 @@ const REDACTED_KEYS = [
 // RUNTIME_KEYS in services/configTransfer.js, which answers the related question
 // of what must not travel to another machine.
 const SERVICE_OWNED_KEYS = [
+  'cloudCommandReceipts', 'cloudScanResults',
   'pendingScans', 'lastScanAt', 'lastInboxCheck', 'lastCloudSyncAt', 'lastJobAlertCheck',
   'lastBackupDrill', 'lastScanOutcome',
   'cloudSyncEnabled', 'supabaseEmail', 'supabaseRefreshToken', 'cloudDataKey',

@@ -1,3 +1,4 @@
+import CloudCommands from '../components/CloudCommands'
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { View, Text, ScrollView, RefreshControl, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, Linking, Platform, AppState, Keyboard } from 'react-native'
 import { radius, statusLabel, useTheme, useStatusColors } from '../theme'
@@ -609,6 +610,7 @@ export default function DashboardScreen({ client, active = true, onOpenApplicati
           </View>
         </>
       )}
+    <CloudCommands client={client} active={active} />
     </ScrollView>
   )
 }

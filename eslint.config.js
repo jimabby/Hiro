@@ -44,6 +44,7 @@ const shared = {
 module.exports = [
   {
     ignores: [
+      '.claude/**',
       '**/node_modules/**',
       'web/**',          // has its own config — see web/eslint.config.js
       'dist/**',

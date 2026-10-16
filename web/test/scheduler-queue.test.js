@@ -8,17 +8,19 @@
 const { stub, service, createChecker, tick } = require('./helpers')
 
 let pending = []
+let cloudScanResults = {}
 let applicatorBusy = false
 let applicatorRunCalls = 0
 let runImpl = async () => ({ dryRun: false, applied: 0 })
 
 stub({
   './config': {
-    load: () => ({ setupComplete: true, pendingScans: pending, scheduledScanTime: '09:00', dailyReportTime: '18:00' }),
+    load: () => ({ setupComplete: true, pendingScans: pending, cloudScanResults, scheduledScanTime: '09:00', dailyReportTime: '18:00' }),
     update: (patch) => {
-      const cfg = { setupComplete: true, pendingScans: pending }
+      const cfg = { setupComplete: true, pendingScans: pending, cloudScanResults }
       const next = typeof patch === 'function' ? patch(cfg) : { ...cfg, ...patch }
       if (next.pendingScans) pending = next.pendingScans
+      if (next.cloudScanResults) cloudScanResults = next.cloudScanResults
       return next
     },
     CONFIG_DIR: '/tmp/hiro-test',
@@ -71,5 +73,26 @@ const { check, done } = createChecker()
   check('failed scan marked not-ok', info.lastScanOk, false)
   check('failed request not retried forever', pending.length, 0)
 
+  applicatorBusy = true
+  scheduler.requestScan({ source: 'cloud', cloudCommandId: 'u:one' })
+  scheduler.requestScan({ source: 'cloud', cloudCommandId: 'u:one' })
+  check('cloud delivery is idempotent before execution', pending.length, 1)
+  check('durable queue reports accepted', scheduler.cloudCommandStatus('u:one').status, 'accepted')
+  applicatorBusy = false
+  runImpl = async () => ({ applied: 0 })
+  await scheduler.processQueue()
+  check('cloud outcome persists after queue removal', scheduler.cloudCommandStatus('u:one').status, 'completed')
+  scheduler.requestScan({ source: 'cloud', cloudCommandId: 'u:one' })
+  check('redelivery of completed scan never runs again', pending.length, 0)
+  const callsBeforeCrash = applicatorRunCalls
+  pending = [{ id: 'crashed', cloudCommandId: 'u:crashed' }]
+  cloudScanResults['u:crashed'] = { status: 'running', error: '' }
+  await scheduler.processQueue()
+  check('interrupted scan is not silently repeated', applicatorRunCalls, callsBeforeCrash)
+  check('interrupted scan has an actionable failure', scheduler.cloudCommandStatus('u:crashed').status, 'failed')
+  pending = [{ id: 'other-account', cloudCommandId: 'other:one', cloudAccount: 'https://other:account' }]
+  await scheduler.processQueue()
+  check('signed-out or other-account cloud request is held', pending.length, 1)
+  check('other-account request is never executed', applicatorRunCalls, callsBeforeCrash)
   done()
 })()

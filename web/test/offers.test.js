@@ -52,7 +52,7 @@ async function main() {
   check('an offer with no application id is refused',
     db.saveOffer(null, {}).success, false)
 
-  db.saveOffer(a, { baseSalary: 150000, bonus: 20000, respondBy: offsetDate(5), excitement: 4, pros: 'Team', cons: 'Commute' })
+  db.saveOffer(a, { currency: 'AUD', baseSalary: 150000, bonus: 20000, respondBy: offsetDate(5), excitement: 4, pros: 'Team', cons: 'Commute' })
 
   // Recording an offer promotes the application, so the dashboard and the
   // offers board cannot disagree about what this row is.
@@ -71,7 +71,7 @@ async function main() {
 
   // An offer with no figures entered yet falls back to the advertised range,
   // and says that it did.
-  db.saveOffer(b, { respondBy: offsetDate(2) })
+  db.saveOffer(b, { currency: 'AUD', respondBy: offsetDate(2) })
   const two = db.getOffers()
   const beta = two.offers.find(o => o.applicationId === b)
   check('a figureless offer has no total', beta.totalComp, null)
@@ -82,14 +82,14 @@ async function main() {
 
   // Saving twice must update, never duplicate — the table is keyed by
   // application, and two rows for one job would double-count the comparison.
-  db.saveOffer(a, { baseSalary: 160000, bonus: 20000, respondBy: offsetDate(5) })
+  db.saveOffer(a, { currency: 'AUD', baseSalary: 160000, bonus: 20000, respondBy: offsetDate(5) })
   const updated = db.getOffers()
   check('saving again updates in place', updated.offers.length, 2)
   check('the updated figure is used', updated.offers.find(o => o.applicationId === a).totalComp, 180000)
 
   // Input handling. A hostile or fat-fingered value must be clamped or
   // rejected, never stored raw.
-  db.saveOffer(a, { baseSalary: -5, bonus: 'abc', excitement: 99, decision: 'nonsense', respondBy: 'not-a-date' })
+  db.saveOffer(a, { currency: 'AUD', baseSalary: -5, bonus: 'abc', excitement: 99, decision: 'nonsense', respondBy: 'not-a-date' })
   const cleaned = db.getOffers().offers.find(o => o.applicationId === a)
   check('a negative salary is clamped to zero', cleaned.base_salary, 0)
   check('a non-numeric bonus becomes null', cleaned.bonus, null)
@@ -99,7 +99,7 @@ async function main() {
   check('an offer with no deadline has no countdown', cleaned.daysToRespond, null)
 
   // A past deadline on an undecided offer is the thing worth shouting about.
-  db.saveOffer(b, { respondBy: offsetDate(-3) })
+  db.saveOffer(b, { currency: 'AUD', respondBy: offsetDate(-3) })
   check('a passed deadline is flagged',
     db.getOffers().offers.find(o => o.applicationId === b).expired, true)
   check('an expired deadline counts backwards',
@@ -111,8 +111,8 @@ async function main() {
   // A is restored to a real figure first: the clamping checks above deliberately
   // left it at zero, and `best` is only meaningful against a live offer worth
   // something.
-  db.saveOffer(a, { baseSalary: 180000, respondBy: offsetDate(5) })
-  db.saveOffer(b, { baseSalary: 250000, decision: 'declined' })
+  db.saveOffer(a, { currency: 'AUD', baseSalary: 180000, respondBy: offsetDate(5) })
+  db.saveOffer(b, { currency: 'AUD', baseSalary: 250000, decision: 'declined' })
   const decided = db.getOffers()
   check('a declined offer leaves the live count', decided.live, 1)
   check('a declined offer stays on the board', decided.offers.length, 2)

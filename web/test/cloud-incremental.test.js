@@ -12,7 +12,7 @@ let cfg = {
   cloudFirstSyncChoice: 'merge', deviceId: 'desktop-A', cloudDataKey: crypto.randomBytes(32).toString('base64'),
 }
 const tables = { applications: [], devices: [], scan_requests: [], review_requests: [], interview_events: [], attention_jobs: [], offers: [] }
-let schemaVersion = 2
+let schemaVersion = 3
 // Every request the desktop makes, so a test can say what was (not) fetched.
 let log = []
 // The server clock: strictly increasing, like now() across transactions.
@@ -83,7 +83,7 @@ const cloudRow = (cloudId) => tables.applications.find(r => r.id === cloudId)
   schemaVersion = null
   status = await sync.sync()
   check('a project without the version function is stale too', /schema is out of date/i.test(status.error || ''), true)
-  schemaVersion = 2
+  schemaVersion = 3
 
   // ── First sync: full download, then the cursor takes over ─────────
   for (let i = 0; i < 5; i++) {

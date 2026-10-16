@@ -37,7 +37,7 @@ function money(amount, currency) {
   const n = Number(amount)
   if (!Number.isFinite(n)) return '—'
   const short = n >= 1000 ? `${Math.round(n / 1000)}k` : String(Math.round(n))
-  return currency ? `${short} ${currency}` : short
+  return currency ? `${short} ${currency}` : `${short} (currency unset)`
 }
 
 const DECISION_LABELS = {
@@ -121,19 +121,20 @@ export default function OffersScreen({ client, active = true }) {
           </View>
           {board.best != null && (
             <View style={styles.summaryCell}>
-              <Text style={styles.summaryValue}>{money(board.best, live[0]?.currency)}</Text>
+              <Text style={styles.summaryValue}>{money(board.best, board.comparisonCurrency)}</Text>
               <Text style={styles.summaryLabel}>best</Text>
             </View>
           )}
           {board.spread != null && (
             <View style={styles.summaryCell}>
-              <Text style={styles.summaryValue}>{money(board.spread, live[0]?.currency)}</Text>
+              <Text style={styles.summaryValue}>{money(board.spread, board.comparisonCurrency)}</Text>
               <Text style={styles.summaryLabel}>spread</Text>
             </View>
           )}
         </View>
       )}
 
+      {!!board?.comparisonNote && live.length > 0 && <Text style={styles.emptyBody}>{board.comparisonNote}</Text>}
       {live.map(o => (
         <OfferCard
           key={o.id}
@@ -171,7 +172,7 @@ function OfferCard({ offer, open, onToggle, settled = false }) {
   const colors = useTheme()
   const styles = useMemo(() => makeStyles(colors), [colors])
   const u = urgency(offer.daysToRespond, colors)
-  const hasDetail = !!(offer.pros || offer.cons || offer.notes || offer.equity
+  const hasDetail = !!(offer.benefits || offer.pros || offer.cons || offer.notes || offer.equity
     || offer.location || offer.remote || offer.start_date || offer.metaPending)
 
   return (
@@ -249,6 +250,7 @@ function OfferCard({ offer, open, onToggle, settled = false }) {
           {!!offer.start_date && <Detail label="Starts" value={formatDay(offer.start_date)} />}
           {!!offer.location && <Detail label="Location" value={offer.location} />}
           {!!offer.remote && <Detail label="Remote" value={offer.remote} />}
+          {!!offer.benefits && <Detail label="Benefits" value={offer.benefits} />}
           {!!offer.equity && <Detail label="Equity" value={offer.equity} />}
           {!!offer.pros && <Detail label="For" value={offer.pros} />}
           {!!offer.cons && <Detail label="Against" value={offer.cons} />}

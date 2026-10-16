@@ -1,3 +1,4 @@
+import CloudCommands from './CloudCommands'
 import { useEffect, useState } from 'react'
 
 export default function SyncHealth() {
@@ -26,5 +27,6 @@ export default function SyncHealth() {
     {!!pending.length && <details><summary>Pending applications</summary><ul>{pending.map(row => <li key={row.id}>{row.title} · {row.company}</li>)}</ul></details>}
     {!!status?.failedItems?.length && <details open><summary>Failed uploads</summary><ul>{status.failedItems.map(row => <li key={row.id}>{row.title}: {row.error}</li>)}</ul></details>}
     <button className="btn btn-ghost" disabled={busy || status?.syncing || !!status?.pendingFirstSync} onClick={retry}>{busy ? 'Retrying…' : 'Sync / retry pending changes'}</button>
+    <CloudCommands />
   </section>
 }

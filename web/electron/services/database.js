@@ -3,7 +3,7 @@ const path = require('path')
 const configService = require('./config')
 const dbCrypto = require('./dbCrypto')
 const { CONFIG_DIR } = configService
-const { parseSalaryColumns } = require('./salaryParser')
+const { parseSalaryColumns, salaryCurrency, parseCompensation } = require('./salaryParser')
 const jobFingerprint = require('./jobFingerprint')
 const dataExport = require('./dataExport')
 
@@ -668,6 +668,7 @@ function migrateExperimentAndSyncState() {
 const SCHEMA_MIGRATIONS = [
   { version: 1, name: 'baseline columns and indexes', up: migrateBaseline },
   { version: 2, name: 'experiment arms, mirror state, timestamp format', up: migrateExperimentAndSyncState },
+  { version: 3, name: 'offer benefits', up: () => ensureColumn('offers', 'benefits', "TEXT DEFAULT ''") },
 ]
 const SCHEMA_VERSION = SCHEMA_MIGRATIONS[SCHEMA_MIGRATIONS.length - 1].version
 
@@ -1129,19 +1130,39 @@ function clearSyncConflicts() {
 
 // Take the discarded side after the fact. The remote value is kept in the log
 // precisely so a wrong automatic resolution is recoverable.
-function applyConflictResolution(id) {
+function applyConflictResolution(id, mode = 'restore') {
   const conflict = queryOne('SELECT * FROM sync_conflicts WHERE id = ?', [id])
   if (!conflict) return { success: false, reason: 'Conflict not found' }
   if (!['status', 'comment', 'next_action_at', 'next_action_note', 'next_action_done_at', 'checklist'].includes(conflict.field)) {
     return { success: false, reason: `Cannot re-apply the "${conflict.field}" field` }
   }
-  const exists = queryOne('SELECT id FROM applications WHERE id = ?', [conflict.application_id])
+  if (!['restore', 'merge'].includes(mode)) return { success: false, reason: 'Unknown resolution.' }
+  if (conflict.resolved_as !== 'local-kept') return { success: false, reason: 'This conflict is already resolved.' }
+  const exists = getApplication(conflict.application_id)
   if (!exists) return { success: false, reason: 'That application no longer exists' }
 
+  let value = conflict.remote_value
+  if (mode === 'merge') {
+    if (conflict.field === 'comment' || conflict.field === 'next_action_note') {
+      value = [...new Set([exists[conflict.field], value].filter(Boolean))].join('\n\n')
+    } else if (conflict.field === 'checklist') {
+      try {
+        const current = getChecklist(conflict.application_id), remote = JSON.parse(value || '[]')
+        if (!Array.isArray(remote) || remote.some(t => !t.id || typeof t.title !== 'string')) throw new Error()
+        value = JSON.stringify([...current, ...remote.filter(t => !current.some(c => c.id === t.id))])
+      } catch { return { success: false, reason: 'Checklist data is invalid.' } }
+    } else return { success: false, reason: 'This field cannot be merged.' }
+  } else if (String(exists[conflict.field] ?? '') !== String(conflict.local_value ?? '')) {
+    return { success: false, reason: 'This field changed again. Review its current value before resolving.' }
+  }
+  if (conflict.field === 'checklist') {
+    try { const tasks = JSON.parse(value || '[]'); if (!Array.isArray(tasks) || tasks.length > 100 || tasks.some(t => !t.id || typeof t.title !== 'string')) throw new Error() }
+    catch { return { success: false, reason: 'Checklist data is invalid or exceeds 100 tasks.' } }
+  }
   run(`UPDATE applications SET ${conflict.field} = ?, updated_at = datetime('now'), cloud_dirty = 1 WHERE id = ?`,
-    [conflict.remote_value, conflict.application_id])
+    [value, conflict.application_id])
   if (conflict.field === 'status') recordStatusChange(conflict.application_id, conflict.remote_value)
-  run('UPDATE sync_conflicts SET resolved_as = ? WHERE id = ?', ['remote-applied', id])
+  run('UPDATE sync_conflicts SET resolved_as = ? WHERE id = ?', [mode === 'merge' ? 'merged' : 'remote-applied', id])
   return { success: true }
 }
 
@@ -1538,36 +1559,23 @@ function pruneOrphanedRows() {
 // they existed. Runs on launch; idempotent, and skips rows already backfilled
 // so it costs one query once the sweep has happened.
 function backfillSalaryColumns() {
-  try {
-    const rows = query(`
-      SELECT id, salary FROM applications
-      WHERE salary_min IS NULL AND salary_max IS NULL AND salary IS NOT NULL AND salary != ''
-    `)
-    const attention = query(`
-      SELECT id, salary FROM attention_jobs
-      WHERE salary_min IS NULL AND salary_max IS NULL AND salary IS NOT NULL AND salary != ''
-    `)
-    if (rows.length === 0 && attention.length === 0) return { updated: 0 }
-
-    let updated = 0
-    batch(() => {
-      for (const r of rows) {
-        const { salary_min, salary_max } = parseSalaryColumns(r.salary)
-        if (salary_min == null && salary_max == null) continue
-        run('UPDATE applications SET salary_min = ?, salary_max = ? WHERE id = ?', [salary_min, salary_max, r.id])
+  let updated = 0
+  batch(() => {
+    // Re-evaluate historical values once for the fractional-rate/bonus fix.
+    const upgrade = getSyncState('salaryParserVersion') !== '2'
+    for (const table of ['applications', 'attention_jobs']) {
+      const rows = query(`SELECT id, salary, salary_min, salary_max FROM ${table}
+        WHERE salary IS NOT NULL AND salary != '' ${upgrade ? '' : 'AND salary_min IS NULL AND salary_max IS NULL'}`)
+      for (const row of rows) {
+        const parsed = parseSalaryColumns(row.salary)
+        if (parsed.salary_min === row.salary_min && parsed.salary_max === row.salary_max) continue
+        run(`UPDATE ${table} SET salary_min = ?, salary_max = ? ${table === 'applications' ? ', cloud_dirty = 1' : ''} WHERE id = ?`, [parsed.salary_min, parsed.salary_max, row.id])
         updated++
       }
-      for (const r of attention) {
-        const { salary_min, salary_max } = parseSalaryColumns(r.salary)
-        if (salary_min == null && salary_max == null) continue
-        run('UPDATE attention_jobs SET salary_min = ?, salary_max = ? WHERE id = ?', [salary_min, salary_max, r.id])
-        updated++
-      }
-    })
-    return { updated }
-  } catch {
-    return { updated: 0 }
-  }
+    }
+    setSyncState('salaryParserVersion', '2')
+  })
+  return { updated }
 }
 
 // Salary distribution across everything actually submitted, for the Analytics
@@ -1783,15 +1791,15 @@ function titleTokens(title) {
     .filter(w => w.length > 2 && !TITLE_STOPWORDS.has(w))
 }
 
-function getSalaryBenchmark(jobTitle, { minSample = 5 } = {}) {
+function getSalaryBenchmark(jobTitle, { minSample = 5, currency } = {}) {
   const tokens = titleTokens(jobTitle)
   if (tokens.length === 0) return { sample: 0, tokens: [], comparable: false }
 
   const rows = query(`
-    SELECT job_title, salary_min, salary_max FROM applications
+    SELECT job_title, salary, salary_min, salary_max FROM applications
     WHERE salary_min IS NOT NULL OR salary_max IS NOT NULL
     UNION ALL
-    SELECT job_title, salary_min, salary_max FROM attention_jobs
+    SELECT job_title, salary, salary_min, salary_max FROM attention_jobs
     WHERE salary_min IS NOT NULL OR salary_max IS NOT NULL
   `)
 
@@ -1801,6 +1809,7 @@ function getSalaryBenchmark(jobTitle, { minSample = 5 } = {}) {
   const needed = Math.max(1, Math.ceil(tokens.length / 2))
   const midpoints = []
   for (const r of rows) {
+    if (currency !== undefined && (!currency || salaryCurrency(r.salary) !== currency)) continue
     const other = new Set(titleTokens(r.job_title))
     if (tokens.filter(t => other.has(t)).length < needed) continue
     if (r.salary_min != null && r.salary_max != null) midpoints.push((r.salary_min + r.salary_max) / 2)
@@ -3317,6 +3326,7 @@ function saveOffer(applicationId, data = {}) {
   if (!app) return { success: false, reason: 'That application no longer exists' }
 
   const int = (v, max = 100000000) => {
+    if (v == null || String(v).trim() === '') return null
     const n = Number(v)
     return Number.isFinite(n) ? Math.max(0, Math.min(max, Math.round(n))) : null
   }
@@ -3351,7 +3361,7 @@ function saveOffer(applicationId, data = {}) {
       updated_at = datetime('now')
   `, [
     applicationId, int(data.baseSalary), int(data.bonus, 10000000),
-    String(data.equity || '').slice(0, 200), String(data.currency || '').slice(0, 8),
+    String(data.equity || '').slice(0, 200), /^[A-Z]{3}$/.test(String(data.currency || '').trim().toUpperCase()) ? String(data.currency).trim().toUpperCase() : '',
     date(data.startDate), date(data.respondBy),
     String(data.location || '').slice(0, 160), String(data.remote || '').slice(0, 40),
     String(data.pros || '').slice(0, 4000), String(data.cons || '').slice(0, 4000),
@@ -3362,6 +3372,8 @@ function saveOffer(applicationId, data = {}) {
     data.counterDraft === undefined ? null : String(data.counterDraft || '').slice(0, 20000),
     data.counterDraft === undefined ? null : new Date().toISOString(),
   ])
+
+  if (data.benefits !== undefined) run('UPDATE offers SET benefits = ? WHERE application_id = ?', [String(data.benefits || '').slice(0, 4000), applicationId])
 
   // Recording an offer against a row that is not yet marked as one is almost
   // certainly the user telling us it IS one. Promote it rather than leaving the
@@ -3526,6 +3538,8 @@ function getOffers() {
       ...r,
       applicationId: r.application_id,
       totalComp: total,
+      currency: total == null ? (salaryCurrency(r.salary) || r.currency || '') : (r.currency || salaryCurrency(r.salary)),
+      advertisedCompensation: parseCompensation(r.salary),
       // Fall back to the advertised midpoint so a half-filled offer still sorts
       // and charts sensibly, but say which it is.
       comparableComp: total ?? midpoint(r.salary_min, r.salary_max),
@@ -3536,12 +3550,20 @@ function getOffers() {
   })
 
   const live = offers.filter(o => o.decision === 'considering')
-  const comps = live.map(o => o.comparableComp).filter(v => v != null)
+  const currencies = [...new Set(live.filter(o => o.comparableComp != null).map(o => o.currency || ''))]
+  const comparable = currencies.length === 1 && !!currencies[0]
+  const comps = comparable ? live.map(o => o.comparableComp).filter(v => v != null) : []
+  const byCurrency = currencies.filter(Boolean).map(currency => {
+    const values = live.filter(o => o.currency === currency).map(o => o.comparableComp).filter(v => v != null)
+    return { currency, best: Math.max(...values), spread: values.length > 1 ? Math.max(...values) - Math.min(...values) : null }
+  })
   return {
     offers,
     // The summary the page leads with: how many decisions are open, what is at
     // stake, and what expires first.
     live: live.length,
+    comparisonCurrency: comparable ? currencies[0] : '', byCurrency,
+    comparisonNote: comparable ? '' : 'Choose a currency for each offer. Different currencies are shown separately; no exchange rate is assumed.',
     best: comps.length ? Math.max(...comps) : null,
     spread: comps.length >= 2 ? Math.max(...comps) - Math.min(...comps) : null,
     nextDeadline: live

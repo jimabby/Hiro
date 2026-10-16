@@ -17,10 +17,10 @@ const DECISIONS = [
   { id: 'expired', label: 'Expired' },
 ]
 
-const money = (n) => (n == null ? '—' : `$${Number(n).toLocaleString()}`)
+const money = (n, currency = '') => (n == null ? '—' : `${currency || 'Currency unset'} ${Number(n).toLocaleString()}`)
 
 const blankForm = {
-  baseSalary: '', bonus: '', equity: '', currency: '', startDate: '', respondBy: '',
+  baseSalary: '', bonus: '', equity: '', currency: '', benefits: '', startDate: '', respondBy: '',
   location: '', remote: '', pros: '', cons: '', notes: '', excitement: '', decision: 'considering',
 }
 
@@ -28,7 +28,7 @@ function formFrom(offer) {
   if (!offer) return { ...blankForm }
   return {
     baseSalary: offer.base_salary ?? '', bonus: offer.bonus ?? '', equity: offer.equity || '',
-    currency: offer.currency || '', startDate: offer.start_date || '', respondBy: offer.respond_by || '',
+    currency: offer.currency || '', benefits: offer.benefits || '', startDate: offer.start_date || '', respondBy: offer.respond_by || '',
     location: offer.location || '', remote: offer.remote || '', pros: offer.pros || '',
     cons: offer.cons || '', notes: offer.notes || '', excitement: offer.excitement ?? '',
     decision: offer.decision || 'considering',
@@ -64,17 +64,17 @@ function deadlineText(offer) {
 // a handful of comparable listings it shows the figures but withholds the
 // percentile, because a "75th percentile" drawn from three adverts is a sentence
 // about three adverts.
-function Benchmark({ jobTitle, value }) {
+function Benchmark({ jobTitle, value, currency }) {
   const [data, setData] = useState(null)
 
   useEffect(() => {
     let cancelled = false
     if (!jobTitle || !Number.isFinite(Number(value))) { setData(null); return undefined }
-    window.api.getSalaryBenchmark?.(jobTitle, Number(value))
+    window.api.getSalaryBenchmark?.(jobTitle, Number(value), currency)
       .then(b => { if (!cancelled) setData(b || null) })
       .catch(() => {})
     return () => { cancelled = true }
-  }, [jobTitle, value])
+  }, [jobTitle, value, currency])
 
   if (!data?.sample) return null
 
@@ -88,7 +88,7 @@ function Benchmark({ jobTitle, value }) {
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <span style={{ color: 'var(--text-muted)' }}>
-          Comparable ads: {money(data.p25)} – {money(data.p75)} (median {money(data.median)})
+          Comparable ads: {money(data.p25, currency)} – {money(data.p75, currency)} (median {money(data.median, currency)})
         </span>
         <span style={{ color: tone, fontWeight: data.comparable ? 600 : 400 }}>
           {data.comparable && pct != null
@@ -272,6 +272,8 @@ function OfferForm({ form, setForm, onSave, onCancel, saving }) {
     <div style={{ padding: 14, background: 'var(--surface2)', borderRadius: 8, marginTop: 12 }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
         <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Base salary{field('baseSalary', { type: 'number', min: 0, placeholder: '150000' })}</label>
+        <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Currency (ISO code){field('currency', { placeholder: 'AUD', maxLength: 3, pattern: '[A-Za-z]{3}' })}</label>
+        <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Benefits (not included in cash total){field('benefits', { placeholder: 'Super, leave, health insurance' })}</label>
         <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Bonus{field('bonus', { type: 'number', min: 0, placeholder: '20000' })}</label>
         <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Equity{field('equity', { placeholder: '0.1% / 500 RSUs' })}</label>
         <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Respond by{field('respondBy', { type: 'date' })}</label>
@@ -376,6 +378,8 @@ export default function Offers({ active, showToast, onOpenApplication }) {
 
   return (
     <div>
+      {data.comparisonNote && <p>{data.comparisonNote}</p>}
+      {data.byCurrency?.length > 1 && <p>{data.byCurrency.map(group => `${group.currency}: best ${money(group.best, group.currency)}`).join(' / ')}</p>}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 0 }}>Offers</h1>
         {candidates.length > 0 && (
@@ -426,12 +430,12 @@ export default function Offers({ active, showToast, onOpenApplication }) {
             <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>open decision{data.live === 1 ? '' : 's'}</div>
           </div>
           <div className="card">
-            <div style={{ fontSize: 22, fontWeight: 700 }}>{money(data.best)}</div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>best on the table</div>
+            <div style={{ fontSize: 22, fontWeight: 700 }}>{money(data.best, data.comparisonCurrency)}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>best in comparison currency</div>
           </div>
           {data.spread != null && (
             <div className="card">
-              <div style={{ fontSize: 22, fontWeight: 700 }}>{money(data.spread)}</div>
+              <div style={{ fontSize: 22, fontWeight: 700 }}>{money(data.spread, data.comparisonCurrency)}</div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>between highest and lowest</div>
             </div>
           )}
@@ -462,13 +466,13 @@ export default function Offers({ active, showToast, onOpenApplication }) {
               </div>
             </div>
             <div style={{ textAlign: 'right' }}>
-              <div style={{ fontSize: 20, fontWeight: 700 }}>{money(o.comparableComp)}</div>
+              <div style={{ fontSize: 20, fontWeight: 700 }}>{money(o.comparableComp, o.currency)}</div>
               <div style={{ fontSize: 10, color: o.compIsAdvertised ? 'var(--yellow)' : 'var(--text-muted)' }}>
                 {/* Never let an advert masquerade as an offer. */}
                 {o.compIsAdvertised
                   ? 'advertised range — no offer figure entered'
                   : o.bonus
-                    ? `${money(o.base_salary)} base + ${money(o.bonus)} bonus`
+                    ? `${money(o.base_salary, o.currency)} base + ${money(o.bonus, o.currency)} bonus`
                     : 'base salary'}
               </div>
             </div>
@@ -479,6 +483,7 @@ export default function Offers({ active, showToast, onOpenApplication }) {
               {deadlineText(o)}
             </span>
             {o.start_date && <span style={{ color: 'var(--text-muted)' }}>Starts {o.start_date}</span>}
+            {o.benefits && <span>Benefits: {o.benefits}</span>}
             {o.equity && <span style={{ color: 'var(--text-muted)' }}>Equity: {o.equity}</span>}
             {o.excitement != null && (
               <span style={{ color: 'var(--text-muted)' }}>
@@ -513,7 +518,7 @@ export default function Offers({ active, showToast, onOpenApplication }) {
               advertised range against other advertised ranges would compare a
               number to the population it came from and call it a finding. */}
           {!o.compIsAdvertised && o.comparableComp != null && (
-            <Benchmark jobTitle={o.job_title} value={o.comparableComp} />
+            <Benchmark jobTitle={o.job_title} value={o.base_salary} currency={o.currency} />
           )}
 
           <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>

@@ -78,4 +78,8 @@ check('p.m. directly after the figure is monthly', parseSalary('$8,000 p.m.'), {
 check('a rate named before the figure still counts', parseSalary('Hourly rate of $65'), { min: 65 * HOURS_PER_YEAR, max: 65 * HOURS_PER_YEAR })
 check('an annual-looking amount is never multiplied', parseSalary('$120,000 a week'), { min: 120000, max: 120000 })
 
+check('fractional hourly rate retains cents', parseSalary('$60.50/hour'), { min: 119548, max: 119548 })
+check('bonus is not the bottom of a range', parseSalary('$100,000 + $20,000 bonus'), { min: 100000, max: 100000 })
+check('pounds are parsed', parseSalary('\u00a350,000 - \u00a360,000 a year'), { min: 50000, max: 60000 })
+check('euros are parsed', parseSalary('\u20ac70,000 per year'), { min: 70000, max: 70000 })
 done()

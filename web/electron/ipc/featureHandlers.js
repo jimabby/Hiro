@@ -2,6 +2,8 @@ const database = require('../services/database')
 const featureHub = require('../services/featureHub')
 
 module.exports = function registerFeatureHandlers({ ipcMain, scheduler, getWindow }) {
+  ipcMain.handle('features:taskInbox', () => featureHub.taskInbox())
+  ipcMain.handle('features:completeInboxTask', (_, task) => featureHub.completeInboxTask(task))
   ipcMain.handle('features:views', () => featureHub.savedViews())
   ipcMain.handle('features:saveView', (_, view) => featureHub.saveView(view))
   ipcMain.handle('features:deleteView', (_, id) => featureHub.deleteView(id))

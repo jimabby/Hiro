@@ -566,6 +566,11 @@ async function runDryRun(mainWindow) {
 // desktop is idle. `opts` may carry { keywords, location } to override the
 // saved search for this run, and `source` for logging.
 function requestScan(opts = {}) {
+  if (opts.cloudCommandId) {
+    const cfg = configService.load()
+    const existing = (cfg.pendingScans || []).find(r => r.cloudCommandId === opts.cloudCommandId)
+    if (existing || cfg.cloudScanResults?.[opts.cloudCommandId]) return existing || cfg.cloudScanResults[opts.cloudCommandId]
+  }
   const requestedSalary = Number(opts.salaryMin)
   const req = {
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
@@ -573,6 +578,8 @@ function requestScan(opts = {}) {
     keywords: (opts.keywords || '').trim(),
     location: (opts.location || '').trim(),
     source: opts.source || 'desktop',
+    cloudCommandId: opts.cloudCommandId || null,
+    cloudAccount: opts.cloudAccount || null,
     campaignId: opts.campaignId || null,
     salaryMin: Number.isFinite(requestedSalary) ? Math.min(10000000, Math.max(0, requestedSalary)) : 0,
     resumeId: opts.resumeId || '',
@@ -600,13 +607,22 @@ async function processQueue() {
   const pending = Array.isArray(cfg.pendingScans) ? cfg.pendingScans : []
   if (pending.length === 0) return
 
-  const req = pending[0]
+  const req = pending.find(r => !r.cloudAccount || (cfg.cloudSyncEnabled && cfg.supabaseRefreshToken && r.cloudAccount === cfg.cloudIdentityAccount))
+  if (!req) return
+  if (req.cloudCommandId && cfg.cloudScanResults?.[req.cloudCommandId]?.status === 'running') {
+    configService.update(c => ({ ...c, cloudScanResults: { ...c.cloudScanResults, [req.cloudCommandId]: { status: 'failed', error: 'Desktop restarted during scan. Review results before retrying.' } }, pendingScans: c.pendingScans.filter(r => r.id !== req.id) }))
+    return
+  }
+  if (req.cloudCommandId) configService.update(c => ({ ...c, cloudScanResults: { ...c.cloudScanResults, [req.cloudCommandId]: { status: 'running', error: '' } } }))
   const result = await runScan({ ...req, fromQueue: true })
 
   // Only pop the request if the scan actually ran. If the desktop was busy or
   // setup isn't complete yet, the request stays queued and is retried after
   // the current scan finishes / setup completes (previously it was discarded).
-  if (!result?.ran) return
+  if (!result?.ran) {
+    if (req.cloudCommandId) configService.update(c => ({ ...c, cloudScanResults: { ...c.cloudScanResults, [req.cloudCommandId]: { status: 'accepted', error: result?.reason || '' } } }))
+    return
+  }
 
   // A failure to write config here (disk full, permissions) must not leave the
   // request at the head of the queue to be re-run forever, nor propagate out of
@@ -617,6 +633,7 @@ async function processQueue() {
     after = configService.update(c => ({
       ...c,
       pendingScans: (c.pendingScans || []).filter(r => r.id !== req.id),
+      ...(req.cloudCommandId ? { cloudScanResults: { ...c.cloudScanResults, [req.cloudCommandId]: { status: result.ok ? 'completed' : 'failed', error: result.cancelled ? 'Scan cancelled.' : result.error || '' } } } : {}),
     }))
   } catch (err) {
     log(`Could not clear the finished scan request from the queue: ${describeError(err)}`)
@@ -1128,6 +1145,11 @@ function getBatchSchedule() {
   return batchSchedule
 }
 
-module.exports = { init, restart, stop, cancelScan, runNow, runDryRun, requestScan, processQueue, getScanInfo, getLastDryRun, runInboxCheck, runFollowUp, runStaleSweep, runContactReminders, runBackupDrill, runBackupDrillIfDue, getStatus, getBatchSchedule, runBatch,
+function cloudCommandStatus(id) {
+  const cfg = configService.load()
+  return cfg.cloudScanResults?.[id] || ((cfg.pendingScans || []).some(r => r.cloudCommandId === id) ? { status: 'accepted', error: '' } : null)
+}
+
+module.exports = { cloudCommandStatus, init, restart, stop, cancelScan, runNow, runDryRun, requestScan, processQueue, getScanInfo, getLastDryRun, runInboxCheck, runFollowUp, runStaleSweep, runContactReminders, runBackupDrill, runBackupDrillIfDue, getStatus, getBatchSchedule, runBatch,
   // exported for tests
   evenHourInterval, seededJitter, _markBatchRun: markBatchRun }

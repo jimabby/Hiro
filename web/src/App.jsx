@@ -457,7 +457,7 @@ export default function App() {
     dashboard: <Dashboard active={page === 'dashboard'} scanRunning={scanRunning} onScanStart={startRealScan} onDryRun={startDryScan} onClearLogs={handleClearLogs} showToast={showToast} focusApplicationId={focusApp} onFocusHandled={clearFocusApp} onNavigate={setPage} />,
     // Clicking a card on the board opens that application on the Dashboard —
     // where the whole detail view already lives — rather than duplicating it.
-    pipeline: <Pipeline active={page === 'pipeline'} onOpenApplication={openApplication} showToast={showToast} />,
+    pipeline: <Pipeline onNavigate={setPage} active={page === 'pipeline'} onOpenApplication={openApplication} showToast={showToast} />,
     review: <Review active={page === 'review'} onCountChange={setHeldCount} showToast={showToast} />,
     attention: <NeedsAttention active={page === 'attention'} onCountChange={setAttentionCount} showToast={showToast} />,
     timeline: <Timeline active={page === 'timeline'} />,

@@ -532,12 +532,28 @@ create index if not exists idx_apps_user_synced
 -- rather than failing on whichever column it happens to touch first.
 -- Bump the number whenever this file gains something a client depends on, and
 -- REQUIRED_CLOUD_SCHEMA in web/electron/services/cloudSync.js with it.
+-- Durable phone commands: retain requests and outcomes instead of deleting on claim.
+-- Upgrade all clients together; older desktops use the retired delete-on-claim protocol.
+alter table public.scan_requests add column if not exists status text not null default 'queued';
+alter table public.scan_requests add column if not exists claimed_by text;
+alter table public.scan_requests add column if not exists error text not null default '';
+alter table public.scan_requests add column if not exists updated_at timestamptz not null default now();
+alter table public.review_requests add column if not exists status text not null default 'queued';
+alter table public.review_requests add column if not exists claimed_by text;
+alter table public.review_requests add column if not exists error text not null default '';
+alter table public.review_requests add column if not exists updated_at timestamptz not null default now();
+create index if not exists idx_scan_commands_status on public.scan_requests(user_id, status);
+create index if not exists idx_review_commands_status on public.review_requests(user_id, status);
+
+alter table public.scan_requests add column if not exists request_key text;
+create unique index if not exists idx_scan_request_key on public.scan_requests(user_id, request_key);
+
 create or replace function public.hiro_schema_version()
 returns integer
 language sql
 immutable
 set search_path = ''
-as $$ select 2 $$;
+as $$ select 3 $$;
 
 revoke execute on function public.hiro_schema_version() from public;
 grant execute on function public.hiro_schema_version() to anon, authenticated;

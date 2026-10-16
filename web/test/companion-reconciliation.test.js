@@ -99,6 +99,20 @@ const phone = new sandbox.Client('user')
   failUploads = false; status = await sync.sync()
   check('retry clears failed uploads', status.failedItems.length, 0)
   check('retry clears pending changes', status.pendingChanges.length, 0)
+  const copied = tables.applications.find(r => r.id === localId)
+  const goodPayload = copied.encrypted_payload, goodChecklist = copied.encrypted_checklist
+  copied.encrypted_payload = encryption.encrypt(cfg.cloudDataKey, { tailored_resume: 'Wrong application' }, encryption.rowContext('applications', remoteId, 'encrypted_payload'))
+  let refused = false
+  try { await phone.getApplication(localId) } catch (e) { refused = !!e.misboundEnvelope }
+  check('phone refuses another application documents', refused, true)
+  copied.encrypted_payload = goodPayload
+  copied.encrypted_checklist = encryption.encrypt(cfg.cloudDataKey, { checklist: '[]' }, encryption.rowContext('applications', remoteId, 'encrypted_checklist'))
+  refused = false
+  try { await phone.getChecklist(localId) } catch (e) { refused = !!e.misboundEnvelope }
+  check('phone refuses another application checklist', refused, true)
+  copied.encrypted_checklist = goodChecklist
+  await phone.updateChecklist(localId, { title: 'Bound task' })
+  check('phone binds checklist writes', JSON.parse(copied.encrypted_checklist).ctx, encryption.rowContext('applications', localId, 'encrypted_checklist'))
   db.deleteApplication(local.id); await sync.sync()
   check('UUID tombstone deletes only its own job', tables.applications.map(r => r.id), [remoteId])
   check('unrelated colliding job remains local', db.countApplications(), 1)

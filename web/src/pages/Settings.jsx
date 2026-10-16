@@ -1504,7 +1504,7 @@ export default function Settings({ showToast, active, focusTab, onFocusTabHandle
                           {c.field}: kept <strong>{c.local_value}</strong> · phone had <strong>{c.remote_value}</strong>
                           {' · '}{new Date(String(c.detected_at).replace(' ', 'T') + 'Z').toLocaleString()}
                         </div>
-                        {c.resolved_as === 'local-kept' && (c.field === 'status' || c.field === 'comment') && (
+                        {c.resolved_as === 'local-kept' && ['status', 'comment', 'next_action_at', 'next_action_note', 'next_action_done_at', 'checklist'].includes(c.field) && (
                           <button className="btn btn-ghost" style={{ fontSize: 11, marginTop: 6, padding: '2px 8px' }}
                             onClick={async () => {
                               const r = await window.api.cloudApplyConflict?.(c.id)
@@ -1513,6 +1513,14 @@ export default function Settings({ showToast, active, focusTab, onFocusTabHandle
                               setSyncConflicts(await window.api.cloudConflicts?.() || [])
                             }}>Use the phone’s value instead</button>
                         )}
+                        {c.resolved_as === 'local-kept' && ['comment', 'next_action_note', 'checklist'].includes(c.field) && <button className="btn btn-ghost" onClick={async () => {
+                          try {
+                            const result = await window.api.cloudApplyConflict(c.id, 'merge')
+                            showToast?.(result.success ? 'Merged both copies' : result.reason, result.success ? 'success' : 'error')
+                            setSyncConflicts(await window.api.cloudConflicts() || [])
+                          } catch (err) { showToast?.(err.message, 'error') }
+                        }}>Merge both copies{c.field === 'checklist' ? ' (keep current tasks on matching IDs)' : ''}</button>}
+                        {c.resolved_as === 'merged' && <div>Merged both copies</div>}
                         {c.resolved_as === 'remote-applied' && (
                           <div style={{ color: 'var(--green)', marginTop: 4 }}>Phone’s value applied</div>
                         )}

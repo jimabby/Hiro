@@ -1,3 +1,4 @@
+import TaskInbox from '../components/TaskInbox'
 import { useState, useEffect, useCallback, useMemo } from 'react'
 
 // The follow-up pipeline.
@@ -209,7 +210,7 @@ function Card({ item, today, editing, onEdit, onSave, onCancel, onDone, onOpen, 
   )
 }
 
-export default function Pipeline({ active, onOpenApplication, showToast }) {
+export default function Pipeline({ active, onOpenApplication, onNavigate, showToast }) {
   const [data, setData] = useState(null)
   const [editingId, setEditingId] = useState(null)
   const [error, setError] = useState(null)
@@ -323,6 +324,7 @@ export default function Pipeline({ active, onOpenApplication, showToast }) {
   if (!data) {
     return (
       <div data-testid="pipeline">
+      <TaskInbox onNavigate={onNavigate} active={active} onOpenApplication={onOpenApplication} showToast={showToast} />
         <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>Pipeline</h1>
         {/* Shaped placeholders rather than the word "Loading" — the board's
             layout appears immediately, so the page doesn't jump when it lands. */}
@@ -355,6 +357,7 @@ export default function Pipeline({ active, onOpenApplication, showToast }) {
 
   return (
     <div data-testid="pipeline">
+      <TaskInbox onNavigate={onNavigate} active={active} onOpenApplication={onOpenApplication} showToast={showToast} />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Pipeline</h1>
         <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={load}>Refresh</button>

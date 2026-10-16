@@ -210,7 +210,7 @@ export class CloudClient {
       // are most of what this screen shows. Surface the documents as pending
       // instead of failing the read.
       try {
-        Object.assign(data, await decryptCloudPayload(data.encrypted_payload) || {})
+        Object.assign(data, await decryptCloudPayload(data.encrypted_payload, rowContext('applications', data.id, 'encrypted_payload')) || {})
       } catch (err) {
         if (!err.obsoleteEnvelope) throw err
         data.documents_pending = 'Documents are still encrypted with a retired key. Open Hiro on the desktop to re-upload them.'
@@ -222,18 +222,21 @@ export class CloudClient {
   async getChecklist(id) {
     const row = await this.getApplication(id)
     if (!row) throw new Error('Application not found.')
-    const value = row.encrypted_checklist ? await decryptCloudPayload(row.encrypted_checklist) : null
+    const value = row.encrypted_checklist ? await decryptCloudPayload(row.encrypted_checklist, rowContext('applications', row.id, 'encrypted_checklist')) : null
     return JSON.parse(value?.checklist || '[]')
   }
 
   async updateChecklist(id, change) {
     const row = await this.getApplication(id)
     if (!row) throw new Error('Application not found.')
-    const value = row.encrypted_checklist ? await decryptCloudPayload(row.encrypted_checklist) : null
+    const value = row.encrypted_checklist ? await decryptCloudPayload(row.encrypted_checklist, rowContext('applications', row.id, 'encrypted_checklist')) : null
     const items = JSON.parse(value?.checklist || '[]')
     const existing = items.find(t => t.id === change.id)
     if (change.id && !existing) throw new Error('This task has changed. Refresh and try again.')
-    if (change.remove) items.splice(items.indexOf(existing), 1)
+    if (change.remove) {
+      if (!existing) throw new Error('Task not found.')
+      items.splice(items.indexOf(existing), 1)
+    }
     else {
       const title = String(change.title ?? existing?.title ?? '').trim().slice(0, 200)
       const due = change.due ?? existing?.due ?? ''
@@ -244,7 +247,7 @@ export class CloudClient {
       if (existing) items[items.indexOf(existing)] = item
       else items.push(item)
     }
-    const encrypted = await encryptCloudPayload({ checklist: JSON.stringify(items) })
+    const encrypted = await encryptCloudPayload({ checklist: JSON.stringify(items) }, rowContext('applications', row.id, 'encrypted_checklist'))
     // Refuse a stale read-modify-write rather than silently erase another device's task.
     const { data, error } = await supabase.from('applications').update({ encrypted_checklist: encrypted, updated_at: new Date().toISOString() })
       .eq('user_id', this.userId).eq('id', row.id).eq('updated_at', row.updated_at).select('id')
@@ -455,10 +458,14 @@ export class CloudClient {
     })
 
     const live = decrypted.filter(o => o.decision === 'considering')
-    const comps = live.map(o => o.comparableComp).filter(v => v != null)
+    const currencies = [...new Set(live.filter(o => o.comparableComp != null).map(o => o.currency || ''))]
+    const comparable = currencies.length === 1 && !!currencies[0]
+    const comps = comparable ? live.map(o => o.comparableComp).filter(v => v != null) : []
     return {
       offers: decrypted,
       live: live.length,
+      comparisonCurrency: comparable ? currencies[0] : '',
+      comparisonNote: comparable ? '' : 'Different or unset currencies cannot be compared.',
       best: comps.length ? Math.max(...comps) : null,
       spread: comps.length >= 2 ? Math.max(...comps) - Math.min(...comps) : null,
       nextDeadline: live.find(o => o.respond_by) || null,
@@ -481,7 +488,7 @@ export class CloudClient {
       const { count } = await supabase
         .from('scan_requests')
         .select('id', { count: 'exact', head: true })
-        .eq('user_id', this.userId)
+        .eq('user_id', this.userId).in('status', ['queued', 'accepted', 'running'])
       queued = count || 0
     } catch { /* older schema without scan_requests */ }
     // If the desktop crashed mid-scan it never wrote running=false; treat a
@@ -494,12 +501,12 @@ export class CloudClient {
   // Queue a scan through the cloud: the desktop drains scan_requests during
   // its periodic sync. `cloud: true` tells the UI to phrase the confirmation
   // accordingly (no live desktop status available here).
-  async requestScan({ keywords = '', location = '' } = {}) {
+  async requestScan({ keywords = '', location = '' } = {}, { idempotencyKey = '' } = {}) {
     keywords = String(keywords).trim().slice(0, 500)
     location = String(location).trim().slice(0, 160)
     const { error } = await supabase
       .from('scan_requests')
-      .insert({ user_id: this.userId, keywords, location })
+      .upsert({ request_key: idempotencyKey || randomUUID(), user_id: this.userId, keywords, location }, { onConflict: 'user_id,request_key', ignoreDuplicates: true })
     if (error) {
       if (/scan_requests/.test(error.message)) {
         throw new Error('Cloud scan requests need the scan_requests table — re-run supabase/schema.sql in your project.')
@@ -507,6 +514,29 @@ export class CloudClient {
       throw new Error(error.message)
     }
     return { cloud: true }
+  }
+
+  async getCloudCommands() {
+    const rows = [], applications = await this._all()
+    for (const table of ['scan_requests', 'review_requests']) {
+      const { data, error } = await supabase.from(table).select('*').eq('user_id', this.userId).order('created_at', { ascending: false }).limit(50)
+      if (error) throw new Error(error.message)
+      rows.push(...(data || []).map(row => {
+        const app = applications.find(a => a.id === row.application_cloud_id)
+        return { ...row, kind: table === 'scan_requests' ? 'scan' : 'review', jobTitle: app?.job_title, company: app?.company }
+      }))
+    }
+    return rows.sort((a, b) => b.created_at.localeCompare(a.created_at))
+  }
+
+  async retryCloudCommand(kind, id) {
+    const table = kind === 'scan' ? 'scan_requests' : kind === 'review' ? 'review_requests' : null
+    if (!table) throw new Error('Invalid command kind.')
+    const { data, error } = await supabase.from(table).update({ id: randomUUID(), status: 'queued', claimed_by: null, error: '', updated_at: new Date().toISOString() })
+      .eq('user_id', this.userId).eq('id', id).eq('status', 'failed').select('id')
+    if (error) throw new Error(error.message)
+    if (!data?.length) throw new Error('Only failed commands can be retried. Refresh command history.')
+    return { success: true }
   }
 
   // Batch approval over the cloud: one queued request per draft, processed by
@@ -523,9 +553,16 @@ export class CloudClient {
 
   async requestReviewAction(id, action) {
     if (!['approve', 'reject'].includes(action)) throw new Error('Invalid review action.')
-    const { error } = await supabase.from('review_requests').upsert({
+    const { data: existing, error: readError } = await supabase.from('review_requests').select('id, status')
+      .eq('user_id', this.userId).eq('application_cloud_id', id).maybeSingle()
+    if (readError) throw new Error(readError.message)
+    if (existing) {
+      if (['queued', 'accepted', 'running'].includes(existing.status)) return { success: true, queued: true }
+      throw new Error('A previous command exists. Check command history and retry there if needed.')
+    }
+    const { error } = await supabase.from('review_requests').insert({
       user_id: this.userId, application_cloud_id: id, action,
-    }, { onConflict: 'user_id,application_cloud_id' })
+    })
     if (error) throw new Error(/review_requests/.test(error.message)
       ? 'Remote review needs the review_requests table — re-run supabase/schema.sql.' : error.message)
     return { success: true, queued: true }

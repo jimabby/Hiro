@@ -99,6 +99,10 @@ const columns = (raw, table) => raw.exec(`PRAGMA table_info("${table}")`)[0].val
   check('a launch with nothing to upgrade is a no-op', threw, null)
 
   // ── A newer build's database is left alone ───────────────────────
+  await rewrite(raw => { raw.run('ALTER TABLE offers DROP COLUMN benefits'); raw.run('PRAGMA user_version = 2') })
+  await db.init()
+  check('existing version 2 installs gain benefits', (await inspect(raw => columns(raw, 'offers'))).includes('benefits'), true)
+
   await rewrite(raw => raw.run(`PRAGMA user_version = ${db.SCHEMA_VERSION + 5}`))
   await db.init()
   check('a database from a newer build keeps its version', db.getSchemaVersion(), db.SCHEMA_VERSION + 5)

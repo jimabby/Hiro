@@ -38,6 +38,7 @@ describe('Application organisation', () => {
     const status = { error: 'Offline', pendingChanges: [{ id: 1, title: 'Engineer', company: 'Acme' }], failedItems: [{ id: 1, title: 'Engineer', error: 'Offline' }], stage: 'Upload applications' }
     window.api.cloudStatus = vi.fn(async () => status)
     window.api.cloudSyncNow = vi.fn(async () => ({ success: false, error: 'Still offline', status }))
+    window.api.getCloudCommands = vi.fn(async () => [])
     render(<SyncHealth />)
     await screen.findByText('Needs attention')
     expect(screen.getByText('Engineer: Offline')).toBeTruthy()

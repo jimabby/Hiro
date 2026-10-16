@@ -66,7 +66,7 @@ function toNumber(raw, suffix) {
   const s = (suffix || '').toLowerCase()
   if (s === 'k') return Math.round(n * 1000)
   if (s === 'm') return Math.round(n * 1000000)
-  return Math.round(n)
+  return n
 }
 
 // Every number in the string that looks like money, in order of appearance.
@@ -74,7 +74,7 @@ function toNumber(raw, suffix) {
 // "2025" don't register as pay.
 function extractFigures(text) {
   const out = []
-  const re = /(?:\$|AUD?\s*\$?|NZD?\s*\$?)\s*(\d[\d,]*(?:\.\d+)?)\s*([km])?\b|\b(\d[\d,]*(?:\.\d+)?)\s*([km])\b/gi
+  const re = /(?:AUD\s*\$?|NZD\s*\$?|USD\s*\$?|CAD\s*\$?|SGD\s*\$?|GBP\s*\u00a3?|EUR\s*\u20ac?|INR\s*\u20b9?|\$|\u00a3|\u20ac|\u20b9)\s*(\d[\d,]*(?:\.\d+)?)\s*([km])?\b|\b(\d[\d,]*(?:\.\d+)?)\s*([km])\b/gi
   let m
   while ((m = re.exec(text)) !== null) {
     const value = toNumber(m[1] ?? m[3], m[2] ?? m[4])
@@ -113,9 +113,35 @@ function plausible(value) {
 // Returns { min, max } in annual dollars, or null when nothing usable was
 // found. A single figure yields min === max, except for an explicit "up to" /
 // "from" bound, where only the stated side is set.
+// Benefits and bonuses are additions, not the lower end of a salary range.
+function baseSalaryText(text) {
+  return text.split(/\s*(?:\+|\bplus\b)\s*/i)[0].replace(/,?\s*(?:including|with)\s+.*(?:bonus|super|benefits|equity).*$/i, '').trim()
+}
+
+function salaryCurrency(text) {
+  const s = String(text || '')
+  const code = s.match(/\b(AUD|NZD|USD|CAD|SGD|GBP|EUR|INR)\b/i)
+  if (code) return code[1].toUpperCase()
+  if (s.includes('\u00a3')) return 'GBP'
+  if (s.includes('\u20ac')) return 'EUR'
+  if (s.includes('\u20b9')) return 'INR'
+  // A bare dollar sign does not identify a country.
+  return ''
+}
+
+function parseCompensation(text) {
+  const salary = parseSalary(text)
+  const additions = String(text || '').split(/\s*(?:\+|\bplus\b)\s*/i).slice(1)
+  const bonusText = additions.find(part => /\bbonus\b/i.test(part)) || ''
+  const bonusFigures = extractFigures(bonusText)
+  return { currency: salaryCurrency(text), base: salary, bonus: bonusFigures.length === 1 ? bonusFigures[0].value : null,
+    benefits: additions.filter(part => !/\bbonus\b/i.test(part)).join(' + ') }
+}
+
 function parseSalary(text) {
   if (!text || typeof text !== 'string') return null
-  const s = text.trim()
+  const original = text.trim()
+  const s = baseSalaryText(original)
   if (!s) return null
 
   const found = extractFigures(s)
@@ -136,7 +162,7 @@ function parseSalary(text) {
     // A bare trailing "+" means "or more". "+ super" / "+ bonus" does not — in
     // Australian ads that's the base figure plus entitlements on top, which is
     // still a single stated number, not an open-ended range.
-    const bareTrailingPlus = /\d[\d,.k]*\s*\+\s*$/i.test(s.trim())
+    const bareTrailingPlus = /\d[\d,.k]*\s*\+\s*$/i.test(original)
     if (/\b(?:from|starting\s+(?:at|from)|min(?:imum)?\s+of|upwards\s+of)\b/i.test(s) || bareTrailingPlus) {
       return { min: lo, max: null }
     }
@@ -162,7 +188,7 @@ function formatSalaryRange(min, max) {
 }
 
 module.exports = {
-  parseSalary,
+  parseSalary, salaryCurrency, parseCompensation,
   parseSalaryColumns,
   formatSalaryRange,
   // exported for tests

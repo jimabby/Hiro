@@ -6,6 +6,14 @@
 
 ## Features
 
+- **Unified task inbox** in Pipeline brings checklist tasks, follow-ups, application closing dates and offer deadlines together. Complete tasks or open the application from the inbox.
+- **Recover sync conflicts** in Settings: restore phone values for all editable fields, merge notes, or combine checklists. Matching checklist IDs keep the current desktop task; later edits are protected against stale restores.
+- **Durable phone commands** in desktop Cloud Sync and the phone Dashboard show queued, accepted, running, completed and failed requests with explanations and retry controls. Interrupted submissions require checking the employer site before retrying; they are never automatically resubmitted.
+- **Currency-aware compensation** separates base salary, bonus, equity and benefits. Offer comparisons group currencies without assuming exchange rates, and advertised-pay benchmarks match the selected currency. A bare `$` remains unspecified until you choose a currency.
+
+**Cloud command upgrade:** stop older desktops, run the updated `supabase/schema.sql`, and update all desktop and mobile clients together. Older desktops delete requests when claiming them and must not run alongside the durable-command clients. Accepted commands stay assigned to their original desktop; an offline desktop's claim is not automatically reassigned.
+
+
 - **Sync health** — Settings shows pending application changes, deletions, failed uploads, the last successful sync, and a retry button. Cloud application identity uses UUIDs so merging desktops does not overwrite unrelated jobs with the same local row number.
 - **Saved application views** — save and reopen Dashboard filters and sorting, including minimum match score, salary range and applications with a follow-up scheduled.
 - **Application checklists** — add, edit, complete and delete per-job tasks with optional due dates on desktop or mobile. Checklists sync encrypted; desktop application details mark overdue tasks.

@@ -573,6 +573,8 @@ registerFeatureHandlers({ ipcMain, scheduler, getWindow: () => mainWindow })
 const { reviewLog } = registerApplicationHandlers({ ipcMain, scheduler, getWindow: () => mainWindow })
 
 // ─── IPC: Cloud sync ────────────────────────────────────────────
+ipcMain.handle('cloud:commands', () => cloudSync.listCommands())
+ipcMain.handle('cloud:retryCommand', (_, kind, id) => cloudSync.retryCommand(kind, id))
 ipcMain.handle('cloud:status', () => cloudSync.getStatus())
 ipcMain.handle('cloud:resolveFirstSync', async (_, choice) => {
   try { return await cloudSync.resolveFirstSync(choice) } catch (err) { return { success: false, reason: err.message } }
@@ -593,7 +595,7 @@ ipcMain.handle('cloud:signOutEverywhere', async () => {
 })
 ipcMain.handle('cloud:conflicts', () => database.getSyncConflicts())
 ipcMain.handle('cloud:clearConflicts', () => database.clearSyncConflicts())
-ipcMain.handle('cloud:applyConflict', (_, id) => database.applyConflictResolution(id))
+ipcMain.handle('cloud:applyConflict', (_, id, mode) => database.applyConflictResolution(id, mode))
 
 ipcMain.handle('cloud:signIn', async (_, email, password) => {
   try {
@@ -1795,8 +1797,8 @@ ipcMain.handle('analytics:suppressedRoles', () => database.listSuppressedRoles()
 
 // Advertised-pay distribution for roles like this one, plus where a figure sits
 // in it. Used by the Offers page.
-ipcMain.handle('analytics:salaryBenchmark', (_, jobTitle, value) => {
-  const benchmark = database.getSalaryBenchmark(jobTitle)
+ipcMain.handle('analytics:salaryBenchmark', (_, jobTitle, value, currency) => {
+  const benchmark = database.getSalaryBenchmark(jobTitle, { currency: currency || '' })
   return {
     ...benchmark,
     percentile: Number.isFinite(Number(value)) ? database.percentileFor(benchmark, Number(value)) : null,
@@ -1846,7 +1848,7 @@ ipcMain.handle('offer:draftCounter', async (_, applicationId, options = {}) => {
     // Advertised ranges, and only enough of them to be worth mentioning. Below
     // the sample floor the prompt is told there is nothing to say rather than
     // being handed three adverts to reason about — see ai/prompts.js.
-    const benchmark = database.getSalaryBenchmark(offer.job_title)
+    const benchmark = database.getSalaryBenchmark(offer.job_title, { currency: offer.currency || '' })
     const comparables = benchmark.comparable
       ? { count: benchmark.sample, low: benchmark.low, high: benchmark.high, median: benchmark.median }
       : { count: benchmark.sample || 0 }

@@ -922,7 +922,7 @@ async function pushOffers(c) {
   return mirrorTable(c, 'offers', rows, (o, seal) => {
     const meta = seal({
       job_title: o.job_title || '', company: o.company || '',
-      job_url: o.job_url || '', currency: o.currency || '',
+      job_url: o.job_url || '', currency: o.currency || '', benefits: o.benefits || '',
       base_salary: o.base_salary ?? null, bonus: o.bonus ?? null,
       equity: o.equity || '', location: o.location || '',
       remote: o.remote || '', pros: o.pros || '', cons: o.cons || '',
@@ -968,7 +968,7 @@ async function pollScanRequests(c) {
   try {
     data = await selectAll(() => c
       .from('scan_requests')
-      .select('id, keywords, location')
+      .select('*')
       .eq('user_id', user.id)
       .order('created_at', { ascending: true }))
   } catch (error) {
@@ -981,20 +981,7 @@ async function pollScanRequests(c) {
   }
   if (!data || data.length === 0) return
 
-  const { data: claimed, error: delErr } = await c
-    .from('scan_requests')
-    .delete()
-    .eq('user_id', user.id)
-    .in('id', data.map(r => r.id))
-    .select('id, keywords, location')
-  if (delErr) throw new Error(delErr.message)
-
-  // Lazy require: scheduler requires cloudSync at module load, so a top-level
-  // require here would be circular.
-  const scheduler = require('./scheduler')
-  for (const req of claimed || []) {
-    scheduler.requestScan({ keywords: req.keywords || '', location: req.location || '', source: 'cloud' })
-  }
+  await require('./cloudCommands').processCommands(c, user.id, 'scan_requests', data)
 }
 
 async function pollReviewRequests(c) {
@@ -1002,43 +989,14 @@ async function pollReviewRequests(c) {
   let pending
   try {
     pending = await selectAll(() => c.from('review_requests')
-      .select('id, application_local_id, application_cloud_id, action')
+      .select('*')
       .eq('user_id', user.id)
       .order('created_at', { ascending: true }))
   } catch (error) {
     if (isMissingTable({ message: error.message }, 'review_requests')) return
     throw error
   }
-  pending = pending.filter(r => r.application_cloud_id
-    ? !!database.getApplicationByCloudId?.(r.application_cloud_id)
-    : false)
-  if (!pending.length) return
-  const { data: claimed, error } = await c.from('review_requests').delete()
-    .eq('user_id', user.id).in('id', pending.map(r => r.id))
-    .select('id, application_local_id, application_cloud_id, action')
-  if (error) throw new Error(error.message)
-  for (const request of claimed || []) {
-    try {
-      const local = database.getApplicationByCloudId(request.application_cloud_id)
-      if (!local) continue
-      await onRemoteReview({ ...request, application_local_id: local.id })
-      logger.append(`Cloud review: ${request.action} processed for application ${request.application_local_id}`)
-    } catch (err) {
-      // A desktop that is busy right now is worth asking again: put the
-      // command back rather than turning the phone's "queued" into loss. Any
-      // other failure is final — re-queuing it meant the same doomed approval
-      // was retried on every sync, forever.
-      if (!err.retryable) {
-        logger.append(`Cloud review for application ${request.application_local_id} not completed: ${err.message}`)
-        continue
-      }
-      await c.from('review_requests').upsert({
-        id: request.id, user_id: user.id, application_local_id: null, application_cloud_id: request.application_cloud_id,
-        action: request.action,
-      })
-      logger.append(`Cloud review deferred for application ${request.application_local_id}: ${err.message}`)
-    }
-  }
+  await require('./cloudCommands').processCommands(c, user.id, 'review_requests', pending, onRemoteReview)
 }
 
 // Mirror the desktop's scan-running state to the cloud (scan_status table) so
@@ -1069,7 +1027,7 @@ async function updateScanStatus(running) {
 // last installed. The desktop checks it once per session before reading or
 // writing anything, and a project that is behind gets a sentence saying what to
 // do. Bump REQUIRED_CLOUD_SCHEMA together with the function in schema.sql.
-const REQUIRED_CLOUD_SCHEMA = 2
+const REQUIRED_CLOUD_SCHEMA = 3
 let verifiedSchemaFor = null
 
 function staleSchemaError(found) {
@@ -1538,7 +1496,35 @@ async function init(hooks = {}) {
   }
 }
 
+async function listCommands() {
+  const c = getClient()
+  if (!c || !(await ensureSession())) return []
+  const rows = []
+  for (const table of ['scan_requests', 'review_requests']) {
+    const { data, error } = await c.from(table).select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(50)
+    if (error) throw new Error(error.message)
+    rows.push(...(data || []).map(row => {
+      const app = row.application_cloud_id ? database.getApplicationByCloudId(row.application_cloud_id) : null
+      return { ...row, kind: table === 'scan_requests' ? 'scan' : 'review', applicationId: app?.id, jobTitle: app?.job_title, company: app?.company }
+    }))
+  }
+  return rows.sort((a, b) => b.created_at.localeCompare(a.created_at))
+}
+
+async function retryCommand(kind, id) {
+  const c = getClient()
+  if (!c || !(await ensureSession())) throw new Error('Sign in to cloud sync first.')
+  const table = kind === 'scan' ? 'scan_requests' : kind === 'review' ? 'review_requests' : null
+  if (!table) throw new Error('Invalid command kind.')
+  const { data, error } = await c.from(table).update({ id: require('crypto').randomUUID(), status: 'queued', claimed_by: null, error: '', updated_at: new Date().toISOString() })
+    .eq('user_id', user.id).eq('id', id).eq('status', 'failed').select('id')
+  if (error) throw new Error(error.message)
+  if (!data?.length) throw new Error('Only failed commands can be retried. Refresh command history.')
+  return { success: true }
+}
+
 module.exports = {
+  listCommands, retryCommand,
   init, signIn, signOut, sync, getStatus, updateScanStatus,
   resolveFirstSync, selectAll,
   listDevices, revokeDevice, forgetDevice, signOutEverywhere,
