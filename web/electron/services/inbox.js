@@ -9,6 +9,14 @@ const { parseInterviewTime } = require('./dateParser')
 
 const REPLY_STATUSES = ['interview', 'rejected', 'offer', 'pending']
 
+// Rows already past the first reply. database.OPEN_STATUSES keeps them in the
+// inbox's scope so the rejection or offer after an interview is read, but an
+// email may only move them FORWARD: an unclassifiable "thanks, see you
+// Tuesday" (→ 'pending') must not demote an interview back to "reply
+// received". Anything other than a forward move keeps the current status.
+const INTERVIEW_STAGE_STATUSES = new Set(['interview'])
+const FORWARD_FROM_INTERVIEW = new Set(['interview', 'offer', 'rejected'])
+
 // How far back to re-scan on an incremental pass. The window starts at the
 // last successful check minus this overlap, so a reply that arrived while a
 // check was mid-flight (or with a slightly skewed server clock) isn't missed.
@@ -283,6 +291,7 @@ async function runCheck() {
 
   const updated = []
   const needsReview = []
+  const invitations = []
   let checked = 0
 
   try {
@@ -437,7 +446,18 @@ async function runCheck() {
               body = await bodyOf(match.uid)
             }
 
-            database.updateApplicationStatus(app.id, newStatus)
+            // What the email itself said, before the row's stage is applied.
+            // Everything interview-specific below (storing it as an interview
+            // reply, parsing a time, drafting availability) keys on this: on a
+            // row already at interview, "Thanks, we'll be in touch" clamps to
+            // 'interview' as a status but is not an invitation.
+            const verdict = newStatus
+            if (INTERVIEW_STAGE_STATUSES.has(app.status) && !FORWARD_FROM_INTERVIEW.has(newStatus)) {
+              newStatus = app.status
+            }
+            // The interview the row is already at is not news, and re-writing it
+            // would add a duplicate entry to the status timeline.
+            if (newStatus !== app.status) database.updateApplicationStatus(app.id, newStatus)
             database.setLastReplyUid(app.id, match.uid)
 
             // Keep what they actually wrote. It was already downloaded to
@@ -454,7 +474,7 @@ async function runCheck() {
                 from: match.from,
                 subject: match.subject,
                 body,
-                classifiedAs: newStatus,
+                classifiedAs: verdict,
                 receivedAt: match.date ? new Date(match.date).toISOString() : null,
               })
             } catch { /* the reply log is a bonus, never a blocker */ }
@@ -483,7 +503,7 @@ async function runCheck() {
             // The zone the employer wrote, when they wrote one — carried into the
             // notification so "interview detected for …" can say whose clock.
             let interviewZone = null
-            if (newStatus === 'interview') {
+            if (verdict === 'interview') {
               if (!body) body = await bodyOf(match.uid)
               const parsed = parseInterviewTime(match.subject, body)
               if (parsed) {
@@ -510,6 +530,12 @@ async function runCheck() {
             // status the row already had is real work done, but announcing
             // "status updated to pending" when it was already pending is noise
             // the user can't act on.
+            // An invitation with no time in it is usually "when are you free?".
+            // Remember it; times are drafted below, once the mailbox is closed.
+            if (verdict === 'interview' && !interviewAt) {
+              invitations.push({ applicationId: app.id, uid: match.uid, isNew: newStatus !== app.status })
+            }
+
             if (newStatus !== app.status || interviewAt) {
               updated.push({
                 id: app.id,
@@ -535,7 +561,43 @@ async function runCheck() {
     throw new Error(`Inbox check failed: ${err.message}`)
   }
 
+  // Draft proposed times for each invitation that named none. After logout, so
+  // a slow calendar read never holds the mailbox lock. Best-effort throughout:
+  // the inbox check has done its job whether or not a draft could be made.
+  for (const inv of invitations) {
+    const proposal = await draftProposedTimes(inv.applicationId, { replyUid: inv.uid })
+    const item = updated.find(u => u.id === inv.applicationId)
+    if (item && proposal) item.proposedTimes = proposal.slots.length
+  }
+
   return { checked, updated, needsReview }
 }
 
-module.exports = { checkInbox, matchMessage, isNoise, parseReferences, titleScore, classifySubject }
+// Interview invitation without a time → offer some, from the availability
+// service, as a stored DRAFT on the application. Never sent: the user opens it
+// from the task inbox or the application, checks it, and sends it from their own
+// mail app (ProposeTimes.jsx). Re-reading the same email does not redraft — the
+// uid is recorded — but a newer invitation replaces the draft.
+//
+// `getBusy` defaults to calendarSync.getBusy, required lazily (it pulls in the
+// calendar clients); tests inject their own.
+async function draftProposedTimes(applicationId, { replyUid = null, getBusy } = {}) {
+  try {
+    const existing = database.getTimeProposal?.(applicationId)
+    if (existing && replyUid != null && existing.replyUid === replyUid) return null
+    if (getBusy === undefined) {
+      try { getBusy = require('./calendarSync').getBusy } catch { getBusy = null }
+    }
+    const result = await require('./availability').propose(applicationId, { getBusy: getBusy || undefined })
+    if (!result?.slots?.length) return null
+    database.saveTimeProposal({
+      applicationId, slots: result.slots, email: result.email, subject: result.subject,
+      recipient: result.to || '', calendarChecked: !!result.calendarChecked, replyUid,
+    })
+    return result
+  } catch {
+    return null
+  }
+}
+
+module.exports = { checkInbox, draftProposedTimes, matchMessage, isNoise, parseReferences, titleScore, classifySubject }

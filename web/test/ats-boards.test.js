@@ -82,5 +82,37 @@ check('career boards declare they cannot auto-apply', ats.supportsAutoApply, fal
   check('an unknown provider is ignored',
     (await ats.scrape({ atsBoards: [{ provider: 'nope', slug: 'x' }] })).length, 0)
 
+  // ── Board discovery ────────────────────────────────────────────
+  const discovery = require(path.join(__dirname, '..', 'electron', 'services', 'atsDiscovery.js'))
+  check('a one-word company is one candidate', discovery.slugCandidates('Canva'), ['canva'])
+  check('legal suffixes are dropped', discovery.slugCandidates('Atlassian Pty Ltd'), ['atlassian'])
+  check('two words give joined and hyphenated, nothing more', discovery.slugCandidates('Rocket Lab Inc.'), ['rocketlab', 'rocket-lab'])
+  check('a bracketed region is ignored', discovery.slugCandidates('Acme (Australia)'), ['acme'])
+  check('accents are folded', discovery.slugCandidates('Société Générale'), ['societegenerale', 'societe-generale'])
+  check('a name too short to be specific gives none', discovery.slugCandidates('AB'), [])
+  check('an empty name gives none', discovery.slugCandidates(''), [])
+
+  const probes = []
+  const fakeBoard = async (provider, slug) => {
+    probes.push(`${provider}:${slug}`)
+    if (provider === 'lever' && slug === 'rocketlab') return { count: 4, sample: ['Engineer'], boardName: '' }
+    if (provider === 'greenhouse' && slug === 'emptyco') return { count: 0, sample: [] }
+    const err = new Error('board not found'); err.notFound = true; throw err
+  }
+  const found = await discovery.discover({ companies: ['Rocket Lab', 'Emptyco', 'Watched'], existing: [{ provider: 'ashby', slug: 'watched', label: 'Something' }], testBoard: fakeBoard, delayMs: 0 })
+  check('a board with open roles is offered', found.hits, [{ company: 'Rocket Lab', provider: 'lever', slug: 'rocketlab', count: 4, sample: ['Engineer'], boardName: '' }])
+  check('probing stops at the first hit for a company', probes.filter(p => p.endsWith(':rocketlab') || p.endsWith(':rocket-lab')), ['greenhouse:rocketlab', 'lever:rocketlab'])
+  check('an empty board is not offered', found.hits.some(h => h.company === 'Emptyco'), false)
+  check('a company already watched is not probed', probes.some(p => p.endsWith(':watched')), false)
+  check('it reports how much it probed', found.probed, probes.length)
+
+  probes.length = 0
+  const blocked = await discovery.discover({
+    companies: ['Alpha', 'Beta'], testBoard: async (p, s) => { probes.push(`${p}:${s}`); const e = new Error('slow down'); e.blocked = true; throw e }, delayMs: 0,
+  })
+  check('rate limiting stops the whole search', [probes.length, !!blocked.stopped], [1, true])
+  const many = await discovery.discover({ companies: Array.from({ length: 30 }, (_, i) => `Company${i}`), testBoard: async () => ({ count: 0 }), delayMs: 0 })
+  check('the number of companies probed is capped', many.companies, discovery.MAX_COMPANIES)
+
   done()
 })()

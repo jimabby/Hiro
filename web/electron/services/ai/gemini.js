@@ -1,6 +1,6 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai')
 const { withUsage } = require('./usage')
-const { interviewQuestionsPrompt, followUpEmailPrompt, counterOfferPrompt, interviewAnswerPrompt } = require('./prompts')
+const { interviewQuestionsPrompt, followUpEmailPrompt, counterOfferPrompt, interviewAnswerPrompt, TAILOR_RESUME_RULES } = require('./prompts')
 const { fence, FENCE_RULES } = require('./untrusted')
 const { parseScore, parseScoreWithExplanation } = require('./scoring')
 
@@ -31,10 +31,8 @@ async function testConnection(apiKey, modelName) {
 
 async function tailorResume(jobDescription, masterResume, apiKey, modelName) {
   const text = await complete('tailorResume', apiKey, modelName, {
-    contents: [{ role: 'user', parts: [{ text: `You are an expert resume writer. Tailor the following resume for the job description below.
-Keep it truthful — only rephrase and emphasise existing experience to match the job.
-IMPORTANT: Preserve the EXACT section names, section order, and overall structure of the master resume. Do NOT add, remove, or reorder sections. Do NOT invent new experience.
-Return ONLY the tailored resume text, no commentary.
+    contents: [{ role: 'user', parts: [{ text: `Tailor the following resume for the job description below.
+${TAILOR_RESUME_RULES}
 
 ${FENCE_RULES}
 

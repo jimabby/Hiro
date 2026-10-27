@@ -113,6 +113,28 @@ const phone = new sandbox.Client('user')
   copied.encrypted_checklist = goodChecklist
   await phone.updateChecklist(localId, { title: 'Bound task' })
   check('phone binds checklist writes', JSON.parse(copied.encrypted_checklist).ctx, encryption.rowContext('applications', localId, 'encrypted_checklist'))
+  // A cloud client moving a sent application back to 'held' (approving it
+  // again would submit twice) gets the LAN API's answer: refused. The other
+  // fields of the same edit still apply, and the desktop pushes its status back.
+  const sent = tables.applications.find(r => r.id === localId)
+  Object.assign(sent, { status: 'held', status_set_by: 'phone', next_action_note: 'From the phone', updated_at: new Date(Date.now() + 60000).toISOString() })
+  await sync.sync(); await sync.sync()
+  check('a cloud status of held is refused', db.getApplication(local.id).status, 'applied')
+  check('the rest of that edit still applies', db.getApplication(local.id).next_action_note, 'From the phone')
+  check('the desktop status is pushed back over it', tables.applications.find(r => r.id === localId).status, 'applied')
+  Object.assign(sent, { status: 'interview', updated_at: new Date(Date.now() + 120000).toISOString() })
+  await sync.sync()
+  check('an allowed cloud status still applies', db.getApplication(local.id).status, 'interview')
+  db.recordSyncConflict({ applicationId: local.id, field: 'status', localValue: 'interview', remoteValue: 'skipped', resolvedAs: 'local-kept' })
+  const restore = db.applyConflictResolution(db.getSyncConflicts()[0].id)
+  check('restoring a logged desktop-only status is refused', [restore.success, db.getApplication(local.id).status], [false, 'interview'])
+  // The same value from ANOTHER desktop on the account (an Undo back to held)
+  // is legitimate. The server stamps who set it; this desktop must accept it,
+  // not push its own status back over the other desktop's.
+  Object.assign(sent, { status: 'held', status_set_by: 'desktop', updated_at: new Date(Date.now() + 180000).toISOString() })
+  await sync.sync(); await sync.sync()
+  check('a held status set by another desktop is accepted', db.getApplication(local.id).status, 'held')
+  check('and stays in the cloud', tables.applications.find(r => r.id === localId).status, 'held')
   db.deleteApplication(local.id); await sync.sync()
   check('UUID tombstone deletes only its own job', tables.applications.map(r => r.id), [remoteId])
   check('unrelated colliding job remains local', db.countApplications(), 1)

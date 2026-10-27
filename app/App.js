@@ -328,6 +328,13 @@ function AppContent() {
       <LockScreen onUnlock={appLock.unlock} />
     </View>
   )
+  // The app-switcher cover: a blank screen in the app's own background while
+  // Hiro is inactive or backgrounded with App Lock on, so the snapshot the OS
+  // keeps of the last frame shows nothing. The lock overlay already covers
+  // everything when it is up, so this is only drawn when it is not.
+  const privacyCover = appLock.obscured && !appLock.locked && (
+    <View style={[StyleSheet.absoluteFill, styles.root]} importantForAccessibility="no" accessibilityElementsHidden />
+  )
   const coveredProps = appLock.locked
     ? { importantForAccessibility: 'no-hide-descendants', accessibilityElementsHidden: true }
     : {}
@@ -340,6 +347,7 @@ function AppContent() {
           <ConnectScreen onConnected={handleConnected} />
         </View>
         {lockOverlay}
+        {privacyCover}
       </SafeAreaView>
     )
   }
@@ -419,6 +427,7 @@ function AppContent() {
         </View>
       </View>
       {lockOverlay}
+      {privacyCover}
     </SafeAreaView>
   )
 }

@@ -117,7 +117,9 @@ async function main() {
   // finally schedules an interview is never read.
   const awaiting = db.getApplicationsAwaitingReply().map(a => a.status).sort()
   check('inbox watches applied and pending', awaiting.includes('applied') && awaiting.includes('pending'), true)
-  check('inbox ignores resolved statuses', awaiting.some(s => ['interview', 'offer', 'rejected', 'skipped'].includes(s)), false)
+  check('inbox ignores resolved statuses', awaiting.some(s => ['offer', 'rejected', 'skipped'].includes(s)), false)
+  // An interview is not an outcome: the rejection or offer after it must be read.
+  check('inbox watches interview-stage rows', awaiting.includes('interview'), true)
 
   // Reply-uid bookkeeping stops the same email being re-classified every pass.
   const pendingRow = db.getApplications({ status: 'pending' })[0]

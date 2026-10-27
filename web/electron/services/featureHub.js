@@ -48,6 +48,24 @@ function deleteCampaign(id) {
 // `success`, and the endpoint maps a false result to 400. A throw bypassed all
 // of that and surfaced a plainly invalid URL to the browser extension as a
 // 500 Internal Server Error.
+// The closing date an import carries, as the YYYY-MM-DD that attention_jobs
+// .closing_date holds everywhere else (taskInbox and the closing-soon query
+// compare it as text against date('now')). The extension sends schema.org's
+// validThrough, which is usually a full timestamp — "2026-11-30T23:59:59+11:00"
+// — and the date as written there is the employer's local date, which is the
+// one that matters; so the date part is taken as-is rather than converted
+// through this machine's time zone. Anything that is not a real calendar date
+// is dropped rather than stored as a deadline that never comes.
+function importClosingDate(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(clean(value, 40))
+  if (!m) return null
+  const [y, mo, d] = m.slice(1).map(Number)
+  const date = new Date(Date.UTC(y, mo - 1, d))
+  if (date.getUTCFullYear() !== y || date.getUTCMonth() !== mo - 1 || date.getUTCDate() !== d) return null
+  if (y < 2000 || y > 2100) return null
+  return m.slice(1).join('-')
+}
+
 function importJob(input = {}) {
   let url
   try { url = new URL(clean(input.url, 2000)) } catch {
@@ -66,6 +84,9 @@ function importJob(input = {}) {
     match_score: null,
     talking_points: '[]',
     reason: 'Imported manually — review the listing and apply with Hiro’s prepared workflow.',
+    // Stored on the row taskInbox already reads, so an imported job with a
+    // closing date shows up as an "Application closes" task like a scanned one.
+    closing_date: importClosingDate(input.closingDate ?? input.closing_date),
   })
 }
 
@@ -108,24 +129,49 @@ function deleteView(id) {
   configService.update({ applicationViews: savedViews().filter(v => v.id !== id) })
 }
 
+// Every open to-do across applications, offers and Needs Attention, soonest
+// first.
+//
+// Read from getTaskInboxRows rather than getApplications(): that was SELECT *
+// (every résumé and cover letter) followed by a second full-row read per
+// application inside getChecklist. A checklist that cannot be parsed — they
+// arrive from the cloud unvalidated — used to throw out of the loop and empty
+// the whole inbox; now that one row reports itself and the rest still show.
+//
+// Closing dates only matter for something not yet sent. 'held' is the only
+// application status that means that ('failed' was never a status, so the old
+// filter was 'held' with a dead branch); unsent Needs Attention jobs are the
+// other half and come from their own table.
+const UNSENT_STATUSES = ['held']
+const DATE_RE = /^\d{4}-\d{2}-\d{2}/
+
 function taskInbox() {
   const tasks = []
-  for (const app of database.getApplications()) {
-    if (['rejected', 'withdrawn', 'skipped'].includes(app.status)) continue
+  const { applications, attention } = database.getTaskInboxRows()
+  for (const app of applications) {
     const add = (kind, due, title, taskId) => tasks.push({ id: `${kind}:${app.id}:${taskId || ''}`, applicationId: app.id,
-      company: app.company, jobTitle: app.job_title, kind, due: due || '', title, taskId })
-    for (const task of database.getChecklist(app.id)) if (!task.done) add('checklist', task.due, task.title, task.id)
+      company: app.company, jobTitle: app.job_title, kind, due: DATE_RE.test(String(due || '')) ? String(due) : '', title, taskId })
+    const checklist = database.parseChecklist(app.checklist)
+    if (!checklist) add('checklist-error', '', 'Checklist could not be read — open the application to fix it')
+    else for (const task of checklist) if (!task.done && task.title) add('checklist', task.due, String(task.title).slice(0, 200), task.id)
     if (app.next_action_at && !app.next_action_done_at) add('follow-up', app.next_action_at, app.next_action_note || 'Follow up')
-    if (app.closing_date && ['held', 'failed'].includes(app.status)) add('closing', app.closing_date, 'Application closes')
+    if (app.closing_date && UNSENT_STATUSES.includes(app.status)) add('closing', app.closing_date, 'Application closes')
   }
   for (const offer of database.getOffers().offers) {
     if (offer.decision !== 'considering' || !offer.respond_by) continue
     tasks.push({ id: `offer:${offer.applicationId}`, applicationId: offer.applicationId, company: offer.company,
       jobTitle: offer.job_title, kind: 'offer', due: offer.respond_by, title: 'Respond to offer' })
   }
-  for (const job of database.getAttentionJobs()) {
-    if (job.closing_date) tasks.push({ id: `attention:${job.id}`, kind: 'attention', due: job.closing_date,
+  for (const job of attention) {
+    tasks.push({ id: `attention:${job.id}`, kind: 'attention', due: job.closing_date, attentionId: job.id,
       company: job.company, jobTitle: job.job_title, title: 'Application closes' })
+  }
+  // Interview times Hiro drafted when an invitation arrived without one (see
+  // inbox.js). Listed until the user dismisses it; nothing is sent for them.
+  for (const p of database.getOpenTimeProposals()) {
+    tasks.push({ id: `propose-times:${p.applicationId}`, applicationId: p.applicationId, company: p.company,
+      jobTitle: p.jobTitle, kind: 'propose-times', due: String(p.createdAt || '').slice(0, 10),
+      title: `Reply with your availability (${p.slots.length} time${p.slots.length === 1 ? '' : 's'} drafted)` })
   }
   return tasks.sort((a, b) => (a.due || '9999').localeCompare(b.due || '9999') || a.id.localeCompare(b.id))
 }
@@ -133,13 +179,14 @@ function taskInbox() {
 function completeInboxTask(task = {}) {
   if (task.kind === 'checklist') { database.updateChecklist(Number(task.applicationId), { id: task.taskId, done: true }); return { success: true } }
   if (task.kind === 'follow-up') return database.completeNextAction(Number(task.applicationId))
+  if (task.kind === 'propose-times') return database.dismissTimeProposal(Number(task.applicationId))
   throw new Error('Open this application to complete the action.')
 }
 
 module.exports = {
   taskInbox, completeInboxTask,
   savedViews, saveView, deleteView,
-  listCampaigns, saveCampaign, deleteCampaign, importJob,
+  listCampaigns, saveCampaign, deleteCampaign, importJob, importClosingDate,
   listContacts, dueContacts, saveContact, deleteContact, completeContact, snoozeContact,
   campaignAnalytics, insights,
   rejectionAnalysis, versionOutcomes, applicationVersions,

@@ -34,6 +34,8 @@ const statusWrites = []
 const lastUids = []
 let classifyCalls = 0
 let classifyAnswer = 'interview'
+const proposals = []
+let proposeCalls = 0
 
 stub({
   imapflow: { ImapFlow: FakeImap },
@@ -46,7 +48,17 @@ stub({
     saveRecruiterReply: () => {},
     updateRecruiterEmail: () => {},
     upsertDetectedInterview: () => {},
+    getTimeProposal: (id) => proposals.filter(p => p.applicationId === id).at(-1) || null,
+    saveTimeProposal: (p) => { proposals.push({ ...p }) },
   },
+  './availability': {
+    propose: async (id, { getBusy }) => {
+      proposeCalls++
+      return { slots: [{ start: 'a', end: 'b', label: 'Tue 10:00' }, { start: 'c', end: 'd', label: 'Wed 14:00' }],
+        email: 'Hi,\nI am free…', subject: 'Re: chat', to: 'sam@globex.com', calendarChecked: typeof getBusy === 'function' }
+    },
+  },
+  './calendarSync': { getBusy: async () => [] },
   './ai/index': { classifyReply: async () => { classifyCalls++; return classifyAnswer } },
   './dateParser': { parseInterviewTime: () => null },
 })
@@ -98,6 +110,43 @@ const msg = (uid, subject, from = 'talent@globex.com') => ({
   result = await inbox.checkInbox()
   check('the local model was asked', classifyCalls, 1)
   check('and its answer was used', statusWrites.at(-1)?.status, 'interview')
+
+  // ── An invitation with no time gets times drafted, never sent ───
+  check('times were drafted for the invitation', proposals.length, 1)
+  check('the draft is stored against the application', proposals[0]?.applicationId, 1)
+  check('with the calendar consulted', proposals[0]?.calendarChecked, true)
+  check('and remembers which email it answers', proposals[0]?.replyUid, 13)
+  check('the announcement says times are waiting', result.updated[0]?.proposedTimes, 2)
+  // The same email read again does not redraft.
+  await inbox.draftProposedTimes(1, { replyUid: 13 })
+  check('the same invitation is not redrafted', proposeCalls, 1)
+
+  // ── Interview-stage rows: only forward moves ────────────────────
+  statusWrites.length = 0
+  config = { ...base }
+  apps = [{ ...app, status: 'interview', last_reply_uid: 13 }]
+  messages = [msg(14, 'Re: Globex Corporation Platform Engineer — logistics', 'sam@globex.com')]
+  bodies[14] = 'Thanks, see you then.'
+  classifyAnswer = 'pending'
+  const draftsBefore = proposals.length
+  result = await inbox.checkInbox()
+  check('an unclear reply does not demote an interview', statusWrites.length, 0)
+  check('and is not announced as a change', result.updated.length, 0)
+  // Clamped to 'interview' as a status, but it is not an invitation: no
+  // availability is drafted, so a dismissed "propose times" task stays dismissed.
+  check('an unclear reply at interview stage drafts no times', proposals.length, draftsBefore)
+  classifyAnswer = 'interview'
+  messages = [msg(15, 'Globex Corporation Platform Engineer — unfortunately unsuccessful', 'sam@globex.com')]
+  result = await inbox.checkInbox()
+  check('a rejection after an interview is applied', statusWrites.at(-1)?.status, 'rejected')
+  check('and announced', result.updated[0]?.previousStatus, 'interview')
+  messages = [msg(16, 'Second interview invitation — Globex Corporation Platform Engineer', 'sam@globex.com')]
+  bodies[16] = 'We would like to invite you to a second interview.'
+  const before = statusWrites.length
+  await inbox.checkInbox()
+  check('a second-round invitation does not rewrite the status', statusWrites.length, before)
+  check('but drafts fresh times for it', proposals.at(-1)?.replyUid, 16)
+  apps = [{ ...app }]
 
   // ── Two checks at once share one pass ───────────────────────────
   connects = 0

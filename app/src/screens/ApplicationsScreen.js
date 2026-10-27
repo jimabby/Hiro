@@ -83,12 +83,20 @@ export default function ApplicationsScreen({ client, active = true, openApplicat
     AsyncStorage.setItem(SWIPE_HINT_KEY, '1').catch(() => {})
   }, [])
 
+  // Every load takes a ticket; only the newest one may touch state. Over LAN a
+  // search for "ac" can be answered after the one for "acme" (the desktop does
+  // a slower scan for the broader term), and without this the older, wrong
+  // list would overwrite the right one.
+  const loadSeq = useRef(0)
   const load = useCallback(async () => {
+    const ticket = ++loadSeq.current
+    const stale = () => ticket !== loadSeq.current
     try {
       const filters = {}
       if (statusFilter !== 'all') filters.status = statusFilter
       if (search) filters.search = search
       const list = await client.getApplications(filters)
+      if (stale()) return
       setApps(list)
       setError('')
       setCached(null)
@@ -96,8 +104,10 @@ export default function ApplicationsScreen({ client, active = true, openApplicat
       // applied to it locally (filterApplications).
       if (statusFilter === 'all' && !search) saveCache(client, 'applications', slimApplications(list))
     } catch (err) {
+      if (stale()) return
       if (shouldUseCache(err)) {
         const entry = await loadCache(client, 'applications')
+        if (stale()) return
         if (entry) {
           setApps(filterApplications(entry.data, { status: statusFilter, search }))
           setCached(entry)

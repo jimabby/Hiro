@@ -303,6 +303,15 @@ export class HiroClient {
     return orEmptyOn404(this.request('/api/offers'), { offers: [], live: 0, best: null, spread: null, nextDeadline: null })
   }
 
+  // The desktop's own task inbox (featureHub.taskInbox) — follow-ups,
+  // checklist items, offer and closing deadlines in one read. Null from a
+  // desktop too old to have the route, so the Today screen builds the list
+  // itself instead (see src/todayLoader.js).
+  async getTaskInbox() {
+    const tasks = await orEmptyOn404(this.request('/api/tasks'), null)
+    return Array.isArray(tasks) ? tasks : null
+  }
+
   // Queue a scan on the desktop. `opts` may include { keywords, location } to
   // override the desktop's saved search for this run.
   //

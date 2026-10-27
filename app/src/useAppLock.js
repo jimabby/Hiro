@@ -9,7 +9,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { AppState } from 'react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as LocalAuthentication from 'expo-local-authentication'
-import { SETTINGS_KEY, parseLockSettings, shouldLock } from './appLock'
+import { SETTINGS_KEY, parseLockSettings, shouldLock, shouldObscure } from './appLock'
 
 // Whether this phone can lock at all: biometrics enrolled, or at least a
 // passcode set (the fallback). A phone with neither has nothing to unlock with.
@@ -42,6 +42,10 @@ export function useAppLock() {
   // flashing the unlocked content before the lock appears.
   const [settings, setSettings] = useState(undefined)
   const [locked, setLocked] = useState(false)
+  // True while the app is inactive/backgrounded with the lock on, so App.js
+  // can cover the content before the OS takes the app-switcher snapshot.
+  // Locking alone is too late for that: it only happens on return.
+  const [obscured, setObscured] = useState(false)
   const backgroundedAt = useRef(null)
   // The passcode screen (and on some Android builds the biometric sheet) is
   // another activity, so asking for it sends Hiro to the "background" and
@@ -66,6 +70,11 @@ export function useAppLock() {
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', state => {
+      setObscured(shouldObscure({
+        enabled: !!settingsRef.current?.enabled,
+        appState: state,
+        prompting: Date.now() < promptingUntil.current,
+      }))
       if (Date.now() < promptingUntil.current) {
         backgroundedAt.current = null
         return
@@ -123,5 +132,5 @@ export function useAppLock() {
     await save({ ...(settingsRef.current || parseLockSettings(null)), timeoutMinutes })
   }, [save])
 
-  return { settings, locked, unlock, setEnabled, setTimeoutMinutes }
+  return { settings, locked, obscured, unlock, setEnabled, setTimeoutMinutes }
 }

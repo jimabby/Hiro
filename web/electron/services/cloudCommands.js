@@ -3,6 +3,7 @@
 const config = require('./config')
 const identity = require('./deviceIdentity')
 const database = require('./database')
+const commandOutcomes = require('./commandOutcomes')
 
 async function update(c, table, userId, id, patch, conditions = {}) {
   let q = c.from(table).update(patch).eq('user_id', userId).eq('id', id)
@@ -15,7 +16,11 @@ async function update(c, table, userId, id, patch, conditions = {}) {
 async function processBatch(c, userId, table, rows, review) {
   const owner = identity.ensureDeviceIdentity(config).deviceId
   for (let row of rows) {
-    if (['completed', 'failed'].includes(row.status)) continue
+    // 'cancelled' is final too: the phone cancelled (or replaced) the command
+    // before this desktop started it. A replaced command also changes its row
+    // id, so the claim and start below — both conditional on id and status —
+    // can never act on a decision the phone has since withdrawn.
+    if (['completed', 'failed', 'cancelled'].includes(row.status)) continue
     if (table === 'review_requests' && !database.getApplicationByCloudId(row.application_cloud_id)) continue
     if (!row.status) throw new Error('Update the cloud schema before processing phone commands.')
     if (row.status === 'queued') {
@@ -24,8 +29,11 @@ async function processBatch(c, userId, table, rows, review) {
     }
     if (row.claimed_by !== owner) continue
     const key = `${userId}:${row.id}`
-    const finish = async result => {
-      await update(c, table, userId, row.id, { ...result, updated_at: new Date().toISOString() }, { claimed_by: owner })
+    // Only the outcome itself goes to the cloud; local bookkeeping (the
+    // timestamp commandOutcomes stamps for pruning) has no column there. A
+    // replaced command has a new id and no claim, so this matches nothing.
+    const finish = async ({ status, error }) => {
+      await update(c, table, userId, row.id, { status, error: error || '', updated_at: new Date().toISOString() }, { claimed_by: owner })
     }
     if (table === 'scan_requests') {
       const scheduler = require('./scheduler')
@@ -57,7 +65,7 @@ async function processBatch(c, userId, table, rows, review) {
     }
     // Persist before acknowledgement: a failed network write can be replayed
     // without repeating the external action.
-    config.update(cfg => ({ ...cfg, cloudCommandReceipts: { ...cfg.cloudCommandReceipts, [key]: result } }))
+    config.update(cfg => ({ ...cfg, cloudCommandReceipts: commandOutcomes.record(cfg.cloudCommandReceipts, key, result) }))
     await finish(result)
   }
 }

@@ -406,6 +406,23 @@ function adapter(provider) {
   throw new Error(`Unknown calendar provider: ${provider}`)
 }
 
+// ─── Automatic interview prep ────────────────────────────────────
+// An interview reaching the calendar is the moment it becomes real enough to
+// prepare for, so that is when its brief's questions and company research are
+// scheduled (services/interviewPrep.js decides when, and whether it may spend
+// anything). Required lazily and fully guarded: prep is an extra, and nothing
+// about it may fail or slow a calendar sync. A run that is already due is
+// started without being awaited.
+function queuePrep(ev) {
+  try {
+    const prep = require('./interviewPrep')
+    const { due } = prep.schedule(ev)
+    if (due) prep.runDue({ log: msg => logger.append(msg) }).catch(() => {})
+  } catch (err) {
+    logger.append(`Interview prep could not be scheduled: ${err.message}`)
+  }
+}
+
 // ─── Outgoing: Hiro → calendar ───────────────────────────────────
 
 async function pushLocal(provider, cfg) {
@@ -423,6 +440,7 @@ async function pushLocal(provider, cfg) {
       const { externalId, remoteUpdatedAt } = await impl.create(ev, cfg)
       database.saveCalendarLink({ interviewId: ev.id, provider, externalId, origin: 'hiro', localHash: hash, remoteUpdatedAt })
       created++
+      queuePrep(ev)
       continue
     }
     if (link.local_hash === hash) continue // nothing has changed on this side
@@ -544,6 +562,8 @@ async function pullRemote(provider, cfg) {
       })
       moved++
       logger.append(`Calendar: ${current.company || 'interview'} moved to ${scheduledAt} in your calendar — updated locally.`)
+      // A new time is a new prep job; the one for the old time retires itself.
+      queuePrep({ ...current, scheduled_at: scheduledAt, has_time: remote.hasTime ? 1 : 0 })
     }
 
     // Re-hash from the now-current local row, so the outgoing pass does not

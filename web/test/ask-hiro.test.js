@@ -63,6 +63,95 @@ async function main() {
   try { await askHiro.ask('x', [], { cfg: {} }) } catch (err) { threw = err.message }
   check('without an AI provider it says how to set one up', /AI provider/.test(threw), true)
 
+  // ─── The snapshot reads only slim fields ───────────────────────
+  const realGetApplications = db.getApplications
+  let fullReads = 0
+  db.getApplications = (...args) => { fullReads++; return realGetApplications(...args) }
+  askHiro.snapshot()
+  check('the snapshot never loads full application rows', fullReads, 0)
+  db.getApplications = realGetApplications
+  check('the slim query carries no document columns', Object.keys(db.getApplicationsForAsk(5)[0]).includes('tailored_resume'), false)
+
+  // ─── Write amplification ───────────────────────────────────────
+  // Every persist rewrites the whole file via a .tmp. Asking a question costs
+  // exactly the usage record; the snapshot itself writes nothing, and a write
+  // statement that matched no row writes nothing either.
+  let writes = 0
+  const realWrite = fs.writeFileSync
+  fs.writeFileSync = (file, ...rest) => { if (String(file).endsWith('.tmp')) writes++; return realWrite(file, ...rest) }
+  askHiro.snapshot()
+  check('building the snapshot writes nothing to disk', writes, 0)
+  db.completeNextAction(999999)
+  check('an UPDATE that matched no row does not rewrite the database', writes, 0)
+  db.updateApplicationComment(acme.id, 'still here')
+  check('a real change is still written', writes, 1)
+  // A batch whose own write failed (here: appendAskTurn) leaves its rows in
+  // memory only. The next statement must flush them even if it changes nothing,
+  // whichever path the failure happened on.
+  let failNext = true
+  fs.writeFileSync = (file, ...rest) => {
+    if (String(file).endsWith('.tmp')) {
+      if (failNext) { failNext = false; throw Object.assign(new Error('disk full'), { code: 'ENOSPC' }) }
+      writes++
+    }
+    return realWrite(file, ...rest)
+  }
+  writes = 0
+  try { db.appendAskTurn(null, [{ role: 'user', content: 'unsaved' }], { title: 'Unsaved' }) } catch { /* the failed write */ }
+  db.completeNextAction(999999)
+  check('after a failed batch write, a no-op statement still flushes it', writes, 1)
+  db.completeNextAction(999999)
+  check('and once flushed, no-ops are skipped again', writes, 1)
+  fs.writeFileSync = realWrite
+  for (const t of db.listAskThreads().filter(t => t.title === 'Unsaved')) db.deleteAskThread(t.id)
+
+  // ─── Follow-up suggestions ─────────────────────────────────────
+  const NOW = new Date(2026, 9, 27, 12).getTime() // 27 Oct 2026, local
+  const byId = new Map([[acme.id, { id: acme.id, title: 'Data Engineer', company: 'Acme' }]])
+  const fu = (json) => askHiro.parseActions(`x\nACTIONS: [${json}]`, byId, { now: NOW }).actions
+  check('a follow-up on a real application and an upcoming date is kept',
+    fu(`{"type":"setFollowUp","id":${acme.id},"date":"2026-10-30","note":"Chase   Sam"}`),
+    [{ type: 'setFollowUp', id: acme.id, date: '2026-10-30', note: 'Chase Sam', title: 'Data Engineer', company: 'Acme' }])
+  check('a follow-up for an unknown application is dropped', fu('{"type":"setFollowUp","id":999,"date":"2026-10-30"}'), [])
+  check('a follow-up in the past is dropped', fu(`{"type":"setFollowUp","id":${acme.id},"date":"2026-10-26"}`), [])
+  check('an impossible date is dropped', fu(`{"type":"setFollowUp","id":${acme.id},"date":"2026-02-31"}`), [])
+  check('a date years away is dropped', fu(`{"type":"setFollowUp","id":${acme.id},"date":"2029-01-01"}`), [])
+  check('a malformed date is dropped', fu(`{"type":"setFollowUp","id":${acme.id},"date":"next friday"}`), [])
+
+  // Applying is validated again, server-side.
+  check('applying to a missing application is refused', askHiro.applyFollowUp(999999, '2026-10-30', '', { now: NOW }).success, false)
+  check('applying a past date is refused', askHiro.applyFollowUp(acme.id, '2026-10-01', '', { now: NOW }).success, false)
+  check('applying a non-numeric id is refused', askHiro.applyFollowUp('1 OR 1=1', '2026-10-30', '', { now: NOW }).success, false)
+  check('a confirmed follow-up is applied', askHiro.applyFollowUp(acme.id, '2026-10-30', 'Chase Sam', { now: NOW }), { success: true, date: '2026-10-30' })
+  const after = db.getApplication(acme.id)
+  check('it is written through the pipeline next-action fields', [after.next_action_at, after.next_action_note], ['2026-10-30', 'Chase Sam'])
+
+  // ─── Stored conversations ──────────────────────────────────────
+  ai.chat = async (_p, _k, input) => { sent = input; return 'Two are quiet.' }
+  const first = await askHiro.askInThread('Which are quiet?', null)
+  check('a first question starts a thread', typeof first.threadId, 'number')
+  check('the thread is titled from the question', db.listAskThreads()[0].title, 'Which are quiet?')
+  check('the turn is stored', db.getAskThread(first.threadId).messages.map(m => m.role), ['user', 'assistant'])
+
+  ai.chat = async () => { throw new Error('provider timed out') }
+  let failed = null
+  try { await askHiro.askInThread('And Globex?', first.threadId) } catch (err) { failed = err }
+  check('a failed turn still reports which thread it belongs to', failed?.threadId, first.threadId)
+  const stored = db.getAskThread(first.threadId).messages
+  check('the error is kept so a reopened thread explains itself', stored[stored.length - 1].error, true)
+
+  ai.chat = async (_p, _k, input) => { sent = input; return 'Fine.' }
+  await askHiro.askInThread('Next steps?', first.threadId)
+  const contents = sent.messages.map(m => m.content).join('\n')
+  check('the history is the stored thread', contents.includes('Which are quiet?') && contents.includes('Two are quiet.'), true)
+  check('an error turn is never sent back to the model', contents.includes('provider timed out'), false)
+  check('nor is the question it failed to answer', contents.includes('And Globex?'), false)
+  check('a renderer-supplied error turn is filtered too',
+    askHiro.modelHistory([{ role: 'user', content: 'a' }, { role: 'assistant', content: 'boom', error: true }, { role: 'user', content: 'b' }]).map(m => m.content), ['b'])
+
+  check('threads can be deleted', db.deleteAskThread(first.threadId).success && db.getAskThread(first.threadId), null)
+  check('deleting leaves no messages behind', db.listAskThreads().length, 0)
+
   done()
 }
 

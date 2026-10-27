@@ -31,11 +31,17 @@ contextBridge.exposeInMainWorld('api', {
   getCompanyResearch: (company, opts) => ipcRenderer.invoke('company:research', company, opts),
   // Free interview slots from the calendar, and a drafted reply offering them.
   proposeInterviewTimes: (applicationId) => ipcRenderer.invoke('availability:propose', applicationId),
+  getProposedTimesDraft: (applicationId) => ipcRenderer.invoke('availability:draft', applicationId),
   openMailDraft: (draft) => ipcRenderer.invoke('shell:openMailDraft', draft),
   // Ask Hiro: questions about your own job search; suggested scans run only
   // when the user presses the button.
-  askHiro: (question, history) => ipcRenderer.invoke('ask:question', question, history),
+  askHiro: (question, threadId) => ipcRenderer.invoke('ask:question', question, threadId),
   askHiroRunScan: (keywords) => ipcRenderer.invoke('ask:runScan', keywords),
+  // Stored conversations, and the confirm-to-apply follow-up action.
+  askHiroThreads: () => ipcRenderer.invoke('ask:threads'),
+  askHiroThread: (id) => ipcRenderer.invoke('ask:thread', id),
+  askHiroDeleteThread: (id) => ipcRenderer.invoke('ask:deleteThread', id),
+  askHiroSetFollowUp: (id, date, note) => ipcRenderer.invoke('ask:setFollowUp', id, date, note),
   // Résumé PDF layouts, and a preview of one with the user's own résumé.
   getResumeTemplates: () => ipcRenderer.invoke('resume:templates'),
   previewResumeTemplate: (id) => ipcRenderer.invoke('resume:previewTemplate', id),
@@ -362,6 +368,10 @@ contextBridge.exposeInMainWorld('api', {
 
   // Company career boards (Greenhouse / Lever / Ashby)
   testAtsBoard: (provider, slug) => ipcRenderer.invoke('ats:testBoard', provider, slug),
+  // Probe likely board slugs for employers already applied to; never adds any.
+  discoverAtsBoards: (existing) => ipcRenderer.invoke('ats:discoverBoards', existing),
+  // Offers: the user's own exchange rates for comparing mixed currencies.
+  setOfferExchangeRates: (fx) => ipcRenderer.invoke('features:setExchangeRates', fx),
 
   // Updates
   getUpdateStatus: () => ipcRenderer.invoke('update:status'),

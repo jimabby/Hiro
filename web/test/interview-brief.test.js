@@ -103,6 +103,71 @@ async function main() {
   check('it is sent once, however often the check runs', (await brief.runDue({ now: evening, cfg: config, notify })).length, 0)
   check('switched off means never', (await brief.runDue({ now: evening, cfg: { ...config, interviewBriefEnabled: false }, notify })).length, 0)
 
+  // ─── Automatic prep, scheduled when an interview reaches the calendar ─
+  const prep = service('interviewPrep')
+  const at = (d, h, m = 0) => `${local(d)} ${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`
+  const now = new Date(); now.setHours(12, 0, 0, 0)
+  const inDays = n => { const d = new Date(now); d.setDate(d.getDate() + n); return d }
+  check('prep runs 24 hours ahead', prep.runAtFor(at(inDays(3), 10), true, now).getTime(), new Date(inDays(2).setHours(10, 0, 0, 0)).getTime())
+  check('an interview under 24 hours away is prepped now', prep.runAtFor(at(inDays(0), 16), true, now).getTime(), now.getTime())
+  check('a date-only interview counts from 9am', prep.runAtFor(`${local(inDays(2))} 00:00:00`, false, now).getTime(), new Date(inDays(1).setHours(9, 0, 0, 0)).getTime())
+
+  const addInterview = (company, when) => {
+    db.insertApplication({ job_title: 'Engineer', company, platform: 'Seek', job_url: `https://jobs/${company}`, job_description: 'x', status: 'interview' })
+    const id = db.getApplications().find(a => a.company === company).id
+    db.addInterviewEvent({ applicationId: id, scheduledAt: when, hasTime: true, source: 'manual' })
+    return db.getInterviewEvents(id)[0]
+  }
+  const soon = addInterview('Soonco', at(inDays(0), 17))
+  const later = addInterview('Laterco', at(inDays(4), 10))
+  const built = []
+  const build = async (applicationId) => { built.push(applicationId) }
+
+  check('an interview this afternoon is due at once', prep.schedule(soon, { now }), { scheduled: true, due: true })
+  check('scheduling again is a no-op', prep.schedule(soon, { now }), { scheduled: false, due: false })
+  check('an interview in four days is scheduled, not due', prep.schedule(later, { now }), { scheduled: true, due: false })
+  check('a past interview is not scheduled', prep.schedule({ ...soon, id: 999, scheduled_at: at(inDays(-1), 10) }, { now }).scheduled, false)
+
+  await prep.runDue({ now, cfg: { ...config, aiProvider: '' }, build })
+  check('without an AI provider nothing is generated', built.length, 0)
+  check('and the job waits, saying why', /AI provider/.test(db.getInterviewPrepJob(soon.id, soon.scheduled_at).last_error), true)
+
+  db.recordAiUsage({ provider: 'test', model: 'x', operation: 'y', costUsd: 1 })
+  await prep.runDue({ now, cfg: { ...config, aiMonthlyBudgetUsd: 0.5 }, build })
+  check('a spent monthly budget holds it back', built.length, 0)
+
+  await prep.runDue({ now, cfg: { ...config, aiMonthlyBudgetUsd: 0 }, build })
+  await prep.runDue({ now, cfg: config, build })
+  const doneRow = db.getInterviewPrepJob(soon.id, soon.scheduled_at)
+  check('the due interview is prepped once, however often the tick runs', built, [soon.application_id])
+  check('and marked done', doneRow.status, 'done')
+  check('the later one is left for its day', db.getInterviewPrepJob(later.id, later.scheduled_at).status, 'pending')
+
+  // The daily cap: a second due interview the same day waits once it is hit.
+  const another = addInterview('Anotherco', at(inDays(0), 18))
+  prep.schedule(another, { now })
+  const capped = []
+  await prep.runDue({ now, cfg: { ...config, autoInterviewPrepDailyLimit: 1 }, build: async id => { capped.push(id) } })
+  check('the daily limit holds further runs back', capped.length, 0)
+  check('saying why', /limit/.test(db.getInterviewPrepJob(another.id, another.scheduled_at).last_error), true)
+  await prep.runDue({ now, cfg: { ...config, autoInterviewPrep: false }, build: async id => { capped.push(id) } })
+  check('switched off, nothing runs', capped.length, 0)
+
+  // A deleted interview retires its job instead of spending anything.
+  db.deleteInterviewEvent(another.id)
+  await prep.runDue({ now, cfg: config, build: async id => { capped.push(id) } })
+  check('a deleted interview is not prepped', [capped.length, db.getInterviewPrepJob(another.id, another.scheduled_at).status], [0, 'cancelled'])
+
+  // A run whose questions failed is a failed run, retried on the next tick —
+  // not "done" with an empty brief.
+  const flaky = addInterview('Flakyco', at(inDays(0), 19))
+  prep.schedule(flaky, { now })
+  let opts = null
+  await prep.runDue({ now, cfg: { ...config, autoInterviewPrepDailyLimit: 10 }, build: async (id, o) => { opts = o; throw new Error('No interview questions were generated.') } })
+  const flakyRow = db.getInterviewPrepJob(flaky.id, flaky.scheduled_at)
+  check('prep asks the brief to require its questions', opts?.requireQuestions, true)
+  check('a run without questions is left to retry', [flakyRow.status, /questions/.test(flakyRow.last_error)], ['pending', true])
+
   done()
 }
 

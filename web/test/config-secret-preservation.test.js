@@ -245,6 +245,26 @@ check('a new webhook keeps the secret it was shown on creation', merged.webhooks
 check('a webhook with no secret gets one', merged.webhooks[2].secret, 'n'.repeat(64))
 check('and an id', typeof merged.webhooks[2].id, 'string')
 
+// ── A changed Supabase project never inherits the session ─────────
+// The URL/key are ordinary fields; a renderer that points them elsewhere must
+// not get the stored refresh token sent to its host on the next sync.
+const signedIn = { ...stored, supabaseUrl: 'https://abc.supabase.co', supabaseAnonKey: 'anon-1',
+  supabaseRefreshToken: 'refresh-secret', cloudDataKey: 'data-key', cloudSyncEnabled: true, supabaseEmail: 'me@x.test' }
+const sid = store.remember(guard.redactForRenderer(signedIn))
+const sserved = { ...guard.redactForRenderer(signedIn), [guard.SNAPSHOT_KEY]: sid }
+merged = guard.mergeRendererSave(signedIn, { ...sserved, supabaseUrl: 'https://evil.example.com' }, store.get(sid))
+check('a new project URL is saved', merged.supabaseUrl, 'https://evil.example.com')
+check('but the refresh token does not follow it', merged.supabaseRefreshToken, '')
+check('nor the data key', merged.cloudDataKey, '')
+check('and sync is off until the user signs in again', merged.cloudSyncEnabled, false)
+check('the email is kept for convenience', merged.supabaseEmail, 'me@x.test')
+merged = guard.mergeRendererSave(signedIn, { ...sserved, supabaseAnonKey: 'anon-2' }, store.get(sid))
+check('a changed anon key drops the session too', merged.supabaseRefreshToken, '')
+merged = guard.mergeRendererSave(signedIn, { ...sserved, supabaseUrl: 'https://abc.supabase.co/ ', aiModel: 'x' }, store.get(sid))
+check('re-saving the same project (whitespace, trailing slash) keeps the session', merged.supabaseRefreshToken, 'refresh-secret')
+check('the ordinary first-time setup (no session yet) is untouched',
+  guard.withSessionBoundToProject({ supabaseUrl: '' }, { supabaseUrl: 'https://abc.supabase.co', supabaseAnonKey: 'k' }).supabaseUrl, 'https://abc.supabase.co')
+
 check('older webhooks are given ids and secrets',
   guard.withWebhookIdentity([{ provider: 'slack', url: 'https://hooks.slack.com/x' }], () => 's'.repeat(64))[0].secret, 's'.repeat(64))
 check('webhooks that already have both are left alone', guard.withWebhookIdentity(stored.webhooks, () => 'x'), null)

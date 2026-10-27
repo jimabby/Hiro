@@ -1,4 +1,5 @@
 import TaskInbox from '../components/TaskInbox'
+import { notifyTasksChanged, useTasksChanged } from '../taskEvents'
 import { useState, useEffect, useCallback, useMemo } from 'react'
 
 // The follow-up pipeline.
@@ -232,6 +233,9 @@ export default function Pipeline({ active, onOpenApplication, onNavigate, showTo
   // Statuses change on the Dashboard and from inbox checks, so a board that
   // loaded once would go stale in the background. Reload whenever it is shown.
   useEffect(() => { if (active !== false) load() }, [active, load])
+  // "Mark done" in the task inbox above clears the same follow-ups this board
+  // shows as overdue; each tells the other (taskEvents.js).
+  useTasksChanged(load, 'pipeline')
 
   const today = data?.today || todayISO()
 
@@ -252,11 +256,13 @@ export default function Pipeline({ active, onOpenApplication, onNavigate, showTo
     if (res?.success === false) { setError(res.reason); return }
     setEditingId(null)
     load()
+    notifyTasksChanged('pipeline')
   }
 
   const completeAction = async (item) => {
     await window.api.completeNextAction(item.id)
     load()
+    notifyTasksChanged('pipeline')
   }
 
   const openApplication = (item) => onOpenApplication?.(item.id)
@@ -283,6 +289,7 @@ export default function Pipeline({ active, onOpenApplication, onNavigate, showTo
       else setError(msg)
     }
     load()
+    notifyTasksChanged('pipeline')
   }
 
   const stageProps = (stage) => ({

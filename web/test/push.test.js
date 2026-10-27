@@ -369,6 +369,53 @@ async function main() {
   check('a small figure is not abbreviated', push.formatMoney(850, ''), '850')
   check('a non-number is passed through rather than guessed at', push.formatMoney('negotiable', ''), 'negotiable')
 
+  // ── Task inbox: checklist due dates ───────────────────────────
+  const tasky = addApplication({ status: 'applied', company: 'Checklist Co' })
+  db.updateChecklist(tasky, { title: 'Send references', due: localDate(0) })
+  db.updateChecklist(tasky, { title: 'Book flights', due: localDate(-2) })
+  db.updateChecklist(tasky, { title: 'Ancient task', due: localDate(-30) })
+  db.updateChecklist(tasky, { title: 'Future task', due: localDate(5) })
+  db.updateChecklist(tasky, { title: 'Done already', due: localDate(0), done: true })
+  sent.length = 0
+  await push.checkTaskInbox()
+  let taskMsgs = sent.flatMap(s => s.messages).filter(m => m.data?.kind === 'task-due')
+  check('a checklist task due today is announced', taskMsgs.some(m => /Send references/.test(m.body) && m.title === 'Task due today'), true)
+  check('a recently overdue one is announced as overdue', taskMsgs.some(m => /Book flights/.test(m.body) && m.title === 'Task overdue'), true)
+  check('a long-stale backlog is not delivered', taskMsgs.some(m => /Ancient task/.test(m.body)), false)
+  check('nor a future or completed task', taskMsgs.some(m => /Future task|Done already/.test(m.body)), false)
+  sent.length = 0
+  await push.checkTaskInbox()
+  check('a due task fires only once', sent.length, 0)
+  setConfig({ pushKinds: { taskDue: false } })
+  db.updateChecklist(tasky, { title: 'Muted task', due: localDate(0) })
+  sent.length = 0
+  await push.checkTaskInbox()
+  check('the task-due switch silences it', sent.length, 0)
+  setConfig({ pushKinds: {} })
+
+  // ── Task inbox: closing day, sharing the expiring key ─────────
+  // With the look-ahead off, the closing day is still announced — once — and a
+  // later look-ahead pass cannot announce the same deadline again.
+  setConfig({ closingSoonDays: 0 })
+  addApplication({ status: 'held', closing_date: localDate(0), company: 'Last Day Co' })
+  sent.length = 0
+  await push.checkTaskInbox()
+  check('a held row closing today is announced from the task inbox',
+    sent.flatMap(s => s.messages).filter(m => /Last Day Co/.test(m.body)).length, 1)
+  setConfig({ closingSoonDays: 3 })
+  sent.length = 0
+  await push.runDueChecks()
+  check('and the closing-soon check does not repeat it',
+    sent.flatMap(s => s.messages).filter(m => /Last Day Co/.test(m.body)).length, 0)
+
+  // ── Task inbox: offer due today shares the last-day offer key ──
+  const lastDay = addApplication({ company: 'Final Call Pty', status: 'offer' })
+  db.saveOffer(lastDay, { baseSalary: 90000, respondBy: localDate(0), decision: 'considering' })
+  sent.length = 0
+  await push.runDueChecks()
+  check('an offer expiring today is announced once across both checks',
+    sent.flatMap(s => s.messages).filter(m => /Final Call Pty/.test(m.title)).length, 1)
+
   // ── The test notification bypasses the ledger ─────────────────
   // Its whole purpose is to be sent again, on demand.
   sent.length = 0

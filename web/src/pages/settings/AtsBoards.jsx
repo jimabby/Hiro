@@ -61,6 +61,8 @@ export function AtsBoards({ form, set, showToast }) {
   const [slug, setSlug] = useState('')
   const [label, setLabel] = useState('')
   const [testing, setTesting] = useState(false)
+  const [discovering, setDiscovering] = useState(false)
+  const [discovered, setDiscovered] = useState(null) // { hits, probed, companies, stopped }
 
   const boards = Array.isArray(form.atsBoards) ? form.atsBoards : []
   const active = ATS_PROVIDERS.find(p => p.id === provider)
@@ -96,6 +98,36 @@ export function AtsBoards({ form, set, showToast }) {
       setTesting(false)
     }
   }
+
+  // Look for boards belonging to employers already in the history. Only when
+  // pressed, one probe at a time in the main process (services/atsDiscovery.js),
+  // and nothing is added: each hit is offered with its own Add button.
+  async function discover() {
+    setDiscovering(true)
+    try {
+      const res = await window.api.discoverAtsBoards?.(boards)
+      if (!res?.success) { showToast?.(res?.error || 'Could not search for boards', 'error'); return }
+      setDiscovered(res)
+    } catch (err) {
+      showToast?.(err.message, 'error')
+    } finally {
+      setDiscovering(false)
+    }
+  }
+
+  function addDiscovered(hit) {
+    if (boards.some(b => b.provider === hit.provider && b.slug.toLowerCase() === hit.slug.toLowerCase())) return
+    set('atsBoards', [...boards, {
+      id: Date.now().toString(36),
+      provider: hit.provider,
+      slug: hit.slug,
+      label: hit.company,
+    }])
+    showToast?.(`Added ${hit.company} — save Settings to keep it`, 'success')
+  }
+
+  const pendingHits = (discovered?.hits || []).filter(h =>
+    !boards.some(b => b.provider === h.provider && b.slug.toLowerCase() === h.slug.toLowerCase()))
 
   return (
     <div className="card" style={{ marginBottom: 16 }}>
@@ -171,6 +203,45 @@ export function AtsBoards({ form, set, showToast }) {
           : <>The slug is the company name in their careers URL — {active?.hint}. The board is checked
             before it&apos;s added.</>}
       </small>
+
+      <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <button className="btn btn-ghost" onClick={discover} disabled={discovering}>
+            {discovering ? 'Searching…' : 'Find boards for companies you’ve applied to'}
+          </button>
+          <small style={{ color: 'var(--text-muted)' }}>
+            Tries the obvious Greenhouse, Lever and Ashby names for up to ten recent employers, one at a time.
+            Nothing is added unless you choose it.
+          </small>
+        </div>
+        {discovered && (
+          <div style={{ marginTop: 10 }} aria-live="polite">
+            {discovered.stopped && <div role="alert" style={{ fontSize: 12, color: 'var(--yellow)', marginBottom: 6 }}>{discovered.stopped}</div>}
+            {pendingHits.length === 0
+              ? <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                {discovered.hits.length ? 'Every board found is already in the list.' : `No boards found for ${discovered.companies} compan${discovered.companies === 1 ? 'y' : 'ies'}.`}
+              </div>
+              : pendingHits.map(h => (
+                <div key={`${h.provider}:${h.slug}`} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+                  padding: '8px 12px', background: 'var(--surface2)', borderRadius: 8, marginBottom: 6,
+                }}>
+                  <div style={{ fontSize: 13, minWidth: 0 }}>
+                    {h.company}
+                    <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+                      {' '}· {ATS_PROVIDERS.find(p => p.id === h.provider)?.label || h.provider} / {h.slug} · {h.count} open role{h.count === 1 ? '' : 's'}
+                      {h.boardName && h.boardName.toLowerCase() !== h.company.toLowerCase() ? ` · board name “${h.boardName}”` : ''}
+                    </span>
+                    {h.sample?.length > 0 && (
+                      <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>e.g. {h.sample.join(', ')} — check this is the right company</div>
+                    )}
+                  </div>
+                  <button className="btn btn-ghost" style={{ fontSize: 12 }} aria-label={`Add ${h.company} board`} onClick={() => addDiscovered(h)}>Add</button>
+                </div>
+              ))}
+          </div>
+        )}
+      </div>
 
       <div className="form-group" style={{ marginTop: 16, marginBottom: 0, maxWidth: 200 }}>
         <label htmlFor="ats-daily-limit">Daily application limit</label>

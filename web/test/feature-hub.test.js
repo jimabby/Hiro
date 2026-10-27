@@ -24,6 +24,15 @@ check('an import refusal never throws', (() => {
 })(), true)
 hub.importJob({ url: 'https://jobs.example/1', title: 'Engineer', company: 'Example' })
 check('job import is honest about platform', imported.platform, 'Imported')
+check('an import without a closing date stores none', imported.closing_date, null)
+// The extension sends schema.org validThrough as closingDate; it is stored on
+// the column taskInbox reads, so the import shows up as a deadline task.
+hub.importJob({ url: 'https://jobs.example/2', salary: 'AUD $120,000 – $150,000 per year', closingDate: '2026-11-30T23:59:59+11:00' })
+check('an imported closing date is kept as the listing\'s date', imported.closing_date, '2026-11-30')
+check('an imported salary is passed to the store', imported.salary, 'AUD $120,000 – $150,000 per year')
+check('an impossible closing date is dropped', hub.importClosingDate('2026-02-30'), null)
+check('a non-date closing date is dropped', hub.importClosingDate('soon'), null)
+check('closing_date is accepted as well', hub.importJob({ url: 'https://jobs.example/3', closing_date: '2026-12-01' }) && imported.closing_date, '2026-12-01')
 
 // An id is an edit only when it names an existing campaign. Anything else gets
 // a fresh one, so a malformed request cannot claim an identifier it likes.

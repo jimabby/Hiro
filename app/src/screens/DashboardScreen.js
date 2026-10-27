@@ -14,6 +14,7 @@ import { slimDashboard, cachedLabel } from '../cacheModel'
 import { addInterviewToCalendar } from '../addToCalendar'
 import { importJobLink } from '../importJob'
 import { extractJobUrl } from '../importLink'
+import TodayScreen from './TodayScreen'
 
 // While showing cached figures, how often to try the source again.
 const CACHE_RETRY_MS = 30000
@@ -49,6 +50,9 @@ export default function DashboardScreen({ client, active = true, onOpenApplicati
   const [importMsg, setImportMsg] = useState('')
   // Interview id -> 'added' or the reason it was not, for this session.
   const [calendarDone, setCalendarDone] = useState({})
+  // The Today list, drawn in place of the dashboard while open — the same
+  // pattern the Applications tab uses for a detail page.
+  const [showToday, setShowToday] = useState(false)
 
   const load = useCallback(async () => {
     let s, pd
@@ -291,6 +295,22 @@ export default function DashboardScreen({ client, active = true, onOpenApplicati
     setRefreshing(false)
   }
 
+  if (showToday) {
+    return (
+      <TodayScreen client={client} onBack={() => setShowToday(false)} onNeedsPairing={onNeedsPairing}
+        onOpenApplication={onOpenApplication ? (id) => { setShowToday(false); onOpenApplication(id) } : undefined} />
+    )
+  }
+
+  // What the Today entry says before it is opened, from what this screen has
+  // already loaded — the full list (checklists, offers, closing dates) is only
+  // fetched when it is opened.
+  const interviewsToday = interviews.filter(iv => calendarDaysFrom(parseLocal(iv.scheduled_at)) === 0).length
+  const todayHint = [
+    dueActions.length ? `${dueActions.length} follow-up${dueActions.length === 1 ? '' : 's'} due` : '',
+    interviewsToday ? `${interviewsToday} interview${interviewsToday === 1 ? '' : 's'} today` : '',
+  ].filter(Boolean).join(' · ') || 'Follow-ups, tasks, interviews and deadlines'
+
   const maxPerDay = Math.max(1, ...perDay.map(d => d.count))
 
   return (
@@ -320,6 +340,17 @@ export default function DashboardScreen({ client, active = true, onOpenApplicati
       <ScanQueue client={client} refreshKey={pendingCount} onChanged={setPendingCount} onNeedsPairing={onNeedsPairing} />
       {!!error && <Text style={styles.error}>{error}</Text>}
       {!stats && !error && <ActivityIndicator style={{ marginVertical: 24 }} color={colors.accent} />}
+
+      {/* One answer to "what do I do today", across every kind of deadline. */}
+      <TouchableOpacity style={[styles.card, styles.attentionRow, { borderBottomWidth: 1, borderLeftWidth: 3, borderLeftColor: colors.accent }]}
+        onPress={() => setShowToday(true)}
+        accessibilityRole="button" accessibilityLabel={`Today: ${todayHint}`} accessibilityHint="Opens today’s task list">
+        <View style={{ flex: 1 }}>
+          <Text style={styles.attentionTitle}>Today</Text>
+          <Text style={styles.muted} numberOfLines={1}>{todayHint}</Text>
+        </View>
+        <Text style={styles.chevron} importantForAccessibility="no">›</Text>
+      </TouchableOpacity>
 
       {/* Trigger a scan on the desktop (LAN connection only) */}
       {client.canScan && (

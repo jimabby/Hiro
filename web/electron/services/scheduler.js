@@ -8,6 +8,7 @@ const cloudSync = require('./cloudSync')
 const push = require('./push')
 const calendarSync = require('./calendarSync')
 const logger = require('./logger')
+const commandOutcomes = require('./commandOutcomes')
 
 let scanTask = null
 let reportTask = null
@@ -211,6 +212,9 @@ function startTasks() {
     try {
       briefTask = cron.schedule('*/10 * * * *', () => {
         require('./interviewBrief').runDue({ notify: nativeNotify }).catch(err => log(`Interview brief: ${err.message}`))
+        // Prep queued by calendar sync for interviews a day out (or sooner).
+        // Same tick, so it needs no task of its own; see services/interviewPrep.js.
+        require('./interviewPrep').runDue({ log }).catch(err => log(`Interview prep: ${err.message}`))
       })
     } catch (err) {
       log(`Could not schedule interview briefs: ${err.message}`)
@@ -598,6 +602,12 @@ function drainQueue() {
   processQueue().catch(err => log(`Scan queue error: ${describeError(err)}`))
 }
 
+// Outcomes of cloud scans that finished but whose config write failed, keyed by
+// cloud command id. Consulted before the "restarted during scan" verdict and by
+// cloudCommandStatus, so a disk hiccup is not reported as an interruption.
+// Memory only: after a real restart the outcome genuinely is unknown.
+const finishedCloudScans = new Map()
+
 // Run queued scan requests one at a time until the queue is empty.
 async function processQueue() {
   // Bail early while a manual apply holds the applicator — runScan would
@@ -609,18 +619,27 @@ async function processQueue() {
 
   const req = pending.find(r => !r.cloudAccount || (cfg.cloudSyncEnabled && cfg.supabaseRefreshToken && r.cloudAccount === cfg.cloudIdentityAccount))
   if (!req) return
+  // A cloud scan still marked 'running' at the head of the queue is one this
+  // process did not finish — unless it did, and only the write recording that
+  // failed (finishedCloudScans holds those). The first is honestly uncertain;
+  // the second is a finished scan and must not be reported as interrupted.
+  // Either way the request is popped and the rest of the queue still drains:
+  // returning here used to strand every request behind it until the next tick.
   if (req.cloudCommandId && cfg.cloudScanResults?.[req.cloudCommandId]?.status === 'running') {
-    configService.update(c => ({ ...c, cloudScanResults: { ...c.cloudScanResults, [req.cloudCommandId]: { status: 'failed', error: 'Desktop restarted during scan. Review results before retrying.' } }, pendingScans: c.pendingScans.filter(r => r.id !== req.id) }))
-    return
+    const finished = finishedCloudScans.get(req.cloudCommandId)
+    const outcome = finished || { status: 'failed', error: 'Desktop restarted during scan. Review results before retrying.' }
+    configService.update(c => ({ ...c, cloudScanResults: commandOutcomes.record(c.cloudScanResults, req.cloudCommandId, outcome), pendingScans: (c.pendingScans || []).filter(r => r.id !== req.id) }))
+    finishedCloudScans.delete(req.cloudCommandId)
+    return processQueue()
   }
-  if (req.cloudCommandId) configService.update(c => ({ ...c, cloudScanResults: { ...c.cloudScanResults, [req.cloudCommandId]: { status: 'running', error: '' } } }))
+  if (req.cloudCommandId) configService.update(c => ({ ...c, cloudScanResults: commandOutcomes.record(c.cloudScanResults, req.cloudCommandId, { status: 'running', error: '' }) }))
   const result = await runScan({ ...req, fromQueue: true })
 
   // Only pop the request if the scan actually ran. If the desktop was busy or
   // setup isn't complete yet, the request stays queued and is retried after
   // the current scan finishes / setup completes (previously it was discarded).
   if (!result?.ran) {
-    if (req.cloudCommandId) configService.update(c => ({ ...c, cloudScanResults: { ...c.cloudScanResults, [req.cloudCommandId]: { status: 'accepted', error: result?.reason || '' } } }))
+    if (req.cloudCommandId) configService.update(c => ({ ...c, cloudScanResults: commandOutcomes.record(c.cloudScanResults, req.cloudCommandId, { status: 'accepted', error: result?.reason || '' }) }))
     return
   }
 
@@ -628,13 +647,19 @@ async function processQueue() {
   // request at the head of the queue to be re-run forever, nor propagate out of
   // a fire-and-forget caller. Report it and stop draining; the next tick
   // retries.
+  // The outcome is held in memory first: if the write fails, the request stays
+  // at the head of the queue still marked 'running', and without this the next
+  // drain would report a scan that finished as "Desktop restarted during scan".
+  const outcome = { status: result.ok ? 'completed' : 'failed', error: result.cancelled ? 'Scan cancelled.' : result.error || '' }
+  if (req.cloudCommandId) finishedCloudScans.set(req.cloudCommandId, outcome)
   let after
   try {
     after = configService.update(c => ({
       ...c,
       pendingScans: (c.pendingScans || []).filter(r => r.id !== req.id),
-      ...(req.cloudCommandId ? { cloudScanResults: { ...c.cloudScanResults, [req.cloudCommandId]: { status: result.ok ? 'completed' : 'failed', error: result.cancelled ? 'Scan cancelled.' : result.error || '' } } } : {}),
+      ...(req.cloudCommandId ? { cloudScanResults: commandOutcomes.record(c.cloudScanResults, req.cloudCommandId, outcome) } : {}),
     }))
+    if (req.cloudCommandId) finishedCloudScans.delete(req.cloudCommandId)
   } catch (err) {
     log(`Could not clear the finished scan request from the queue: ${describeError(err)}`)
     return
@@ -1147,7 +1172,7 @@ function getBatchSchedule() {
 
 function cloudCommandStatus(id) {
   const cfg = configService.load()
-  return cfg.cloudScanResults?.[id] || ((cfg.pendingScans || []).some(r => r.cloudCommandId === id) ? { status: 'accepted', error: '' } : null)
+  return finishedCloudScans.get(id) || cfg.cloudScanResults?.[id] || ((cfg.pendingScans || []).some(r => r.cloudCommandId === id) ? { status: 'accepted', error: '' } : null)
 }
 
 module.exports = { cloudCommandStatus, init, restart, stop, cancelScan, runNow, runDryRun, requestScan, processQueue, getScanInfo, getLastDryRun, runInboxCheck, runFollowUp, runStaleSweep, runContactReminders, runBackupDrill, runBackupDrillIfDue, getStatus, getBatchSchedule, runBatch,

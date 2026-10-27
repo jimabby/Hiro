@@ -12,6 +12,8 @@ let cloudScanResults = {}
 let applicatorBusy = false
 let applicatorRunCalls = 0
 let runImpl = async () => ({ dryRun: false, applied: 0 })
+// Makes the write that records a finished cloud scan fail (a full disk).
+let failFinishWrite = false
 
 stub({
   './config': {
@@ -19,6 +21,7 @@ stub({
     update: (patch) => {
       const cfg = { setupComplete: true, pendingScans: pending, cloudScanResults }
       const next = typeof patch === 'function' ? patch(cfg) : { ...cfg, ...patch }
+      if (failFinishWrite && next.cloudScanResults?.['u:disk']?.status === 'completed') throw new Error('ENOSPC')
       if (next.pendingScans) pending = next.pendingScans
       if (next.cloudScanResults) cloudScanResults = next.cloudScanResults
       return next
@@ -90,9 +93,35 @@ const { check, done } = createChecker()
   await scheduler.processQueue()
   check('interrupted scan is not silently repeated', applicatorRunCalls, callsBeforeCrash)
   check('interrupted scan has an actionable failure', scheduler.cloudCommandStatus('u:crashed').status, 'failed')
+
+  // A stale 'running' scan is failed, and the queue behind it still drains.
+  pending = [{ id: 'crashed2', cloudCommandId: 'u:crashed2' }, { id: 'behind', source: 'mobile' }]
+  cloudScanResults['u:crashed2'] = { status: 'running', error: '' }
+  await scheduler.processQueue()
+  check('the request behind a stale scan still runs', applicatorRunCalls, callsBeforeCrash + 1)
+  check('the queue is empty afterwards', pending.length, 0)
+
+  // The scan finished but recording it failed: still 'running' on disk, and
+  // still at the head of the queue. It must not later read as interrupted.
+  const callsBeforeDisk = applicatorRunCalls
+  pending = []
+  scheduler.requestScan({ source: 'cloud', cloudCommandId: 'u:disk' })
+  failFinishWrite = true
+  await tick(30)
+  check('the scan ran once', applicatorRunCalls, callsBeforeDisk + 1)
+  check('the failed write left it on disk as running', cloudScanResults['u:disk'].status, 'running')
+  check('its real outcome is still reported', scheduler.cloudCommandStatus('u:disk').status, 'completed')
+  failFinishWrite = false
+  await scheduler.processQueue()
+  check('the next drain records the real outcome, not "restarted"', [cloudScanResults['u:disk'].status, cloudScanResults['u:disk'].error], ['completed', ''])
+  check('and does not run it again', [applicatorRunCalls, pending.length], [callsBeforeDisk + 1, 0])
+
+  // Outcomes are stamped so they can be pruned.
+  check('outcomes carry a timestamp for pruning', typeof cloudScanResults['u:one'].at, 'string')
+  const callsBeforeOther = applicatorRunCalls
   pending = [{ id: 'other-account', cloudCommandId: 'other:one', cloudAccount: 'https://other:account' }]
   await scheduler.processQueue()
   check('signed-out or other-account cloud request is held', pending.length, 1)
-  check('other-account request is never executed', applicatorRunCalls, callsBeforeCrash)
+  check('other-account request is never executed', applicatorRunCalls, callsBeforeOther)
   done()
 })()

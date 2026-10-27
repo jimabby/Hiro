@@ -31,9 +31,20 @@ function shouldLock({ enabled, timeoutMinutes = DEFAULT_TIMEOUT_MINUTES, backgro
   return now - backgroundedAt >= timeoutMinutes * 60 * 1000
 }
 
+// Whether to draw the privacy cover over the app. iOS photographs the screen
+// for the app switcher the moment the app goes "inactive", and Android does it
+// on the way to the background — so with the lock on, both states cover the
+// content, even though neither re-locks by itself (see shouldLock). Not while a
+// Face ID / passcode prompt is up: that also makes the app inactive, and
+// blanking the screen behind the sheet would only flicker.
+function shouldObscure({ enabled, appState, prompting = false }) {
+  if (!enabled || prompting) return false
+  return appState === 'inactive' || appState === 'background'
+}
+
 function describeTimeout(minutes) {
   if (minutes === 0) return 'Immediately'
   return `After ${minutes} min`
 }
 
-module.exports = { SETTINGS_KEY, TIMEOUT_CHOICES, DEFAULT_TIMEOUT_MINUTES, parseLockSettings, shouldLock, describeTimeout }
+module.exports = { SETTINGS_KEY, TIMEOUT_CHOICES, DEFAULT_TIMEOUT_MINUTES, parseLockSettings, shouldLock, shouldObscure, describeTimeout }

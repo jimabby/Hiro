@@ -832,10 +832,13 @@ ipcMain.handle('indeed:logout', () => {
 
 // ─── IPC: Resume file import ────────────────────────────────────
 ipcMain.handle('resume:importFile', async () => {
+  const { stripUnprintable } = require('./services/textClean')
   const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
     title: 'Select File',
     filters: [
-      { name: 'Document Files', extensions: ['pdf', 'docx', 'doc', 'txt'] },
+      // Not .doc: mammoth reads only the OOXML .docx format, and the binary
+      // .doc is not a zip, so it could neither be imported nor tailored in place.
+      { name: 'Document Files', extensions: ['pdf', 'docx', 'txt'] },
     ],
     properties: ['openFile'],
   })
@@ -862,14 +865,16 @@ ipcMain.handle('resume:importFile', async () => {
       const parser = new PDFParse({ url: pathToFileURL(filePath).toString() })
       const result = await parser.getText()
       // PDF fonts often use non-standard encoding — strip same artifacts as DOCX
-      text = result.text
-        .replace(/\r\n/g, '\n')
-        .replace(/[^\x09\x0A\x20-\x7E\u2013\u2014\u2018\u2019\u201C\u201D\u2022\u2026]/g, '')
+      text = stripUnprintable(result.text.replace(/\r\n/g, '\n'))
         .replace(/•(?!\s)/g, '')
         .replace(/[ \t]{2,}/g, ' ')
         .replace(/\n{3,}/g, '\n\n')
         .trim()
-    } else if (ext === 'docx' || ext === 'doc') {
+      // Page footers out, lines the PDF wrapped at the margin joined back up.
+      text = require('./services/scraper/utils').unwrapExtractedLines(text.split('\n')).join('\n')
+    } else if (ext === 'doc') {
+      return { success: false, error: 'Older .doc files cannot be read. Open it in Word or Pages and save it as .docx, then import that.' }
+    } else if (ext === 'docx') {
       const mammoth = require('mammoth')
 
       // Extract hyperlinks from HTML representation (Portfolio, GitHub, LinkedIn, etc.)
@@ -890,12 +895,9 @@ ipcMain.handle('resume:importFile', async () => {
       const result = await mammoth.extractRawText({ path: filePath })
       // Some DOCX files use non-standard font encoding — mammoth extracts those as garbled
       // characters. Aggressively strip anything that isn't printable ASCII or common typographic symbols.
-      text = result.value
-        .replace(/\r\n/g, '\n')
+      text = stripUnprintable(result.value.replace(/\r\n/g, '\n'))
         // Remove bullet/symbol artifacts attached to words (e.g. "•7B", "•6W")
         .replace(/•(?=[A-Za-z0-9])/g, '')
-        // Strip non-ASCII except allowed typographic characters
-        .replace(/[^\x09\x0A\x20-\x7E\u2013\u2014\u2018\u2019\u201C\u201D\u2022\u2026]/g, '')
         // Clean up remaining isolated bullets with no content
         .replace(/•(?!\s)/g, '')
         .replace(/[ \t]{2,}/g, ' ')
@@ -932,7 +934,7 @@ ipcMain.handle('resume:importFile', async () => {
     //      rendered into a fresh styled PDF at submission time.
     let originalPath = null
     let originalExt = null
-    if (ext === 'pdf' || ext === 'docx' || ext === 'doc') {
+    if (ext === 'pdf' || ext === 'docx') {
       originalPath = pathMod.join(resumesDir, `${fileId}.${ext}`)
       try { fs.copyFileSync(filePath, originalPath) } catch { originalPath = null }
       if (originalPath) originalExt = ext
@@ -1182,6 +1184,15 @@ ipcMain.handle('availability:propose', async (_, applicationId) => {
   } catch (err) { return { success: false, error: err.message } }
 })
 
+// The times the inbox drafted on its own when an invitation arrived without one
+// (services/inbox.js → draftProposedTimes). Read-only: it is shown in the same
+// Propose Times dialog, and nothing is ever sent from here.
+ipcMain.handle('availability:draft', (_, applicationId) => {
+  try {
+    return { success: true, draft: require('./services/database').getTimeProposal(Number(applicationId)) }
+  } catch (err) { return { success: false, error: err.message } }
+})
+
 // Open a drafted email in the user's own mail app. mailto: only — the
 // navigation guard above refuses every non-http scheme, and this must not
 // become a way round it for anything else.
@@ -1194,10 +1205,27 @@ ipcMain.handle('shell:openMailDraft', (_, { to = '', subject = '', body = '' } =
 })
 
 // ─── IPC: Ask Hiro ───────────────────────────────────────────────
-ipcMain.handle('ask:question', async (_, question, history) => {
+// The second argument is a stored thread id (or null to start one). The page
+// used to send its in-memory history instead; an array is still accepted and
+// answered without being stored, so an older renderer keeps working.
+ipcMain.handle('ask:question', async (_, question, threadId) => {
+  const askHiro = require('./services/askHiro')
   try {
-    return { success: true, ...(await require('./services/askHiro').ask(question, history)) }
-  } catch (err) { return { success: false, error: err.message } }
+    if (Array.isArray(threadId)) return { success: true, ...(await askHiro.ask(question, threadId)) }
+    const id = Number(threadId)
+    return { success: true, ...(await askHiro.askInThread(question, Number.isInteger(id) && id > 0 ? id : null)) }
+  } catch (err) { return { success: false, error: err.message, threadId: err.threadId ?? null } }
+})
+ipcMain.handle('ask:threads', () => database.listAskThreads())
+ipcMain.handle('ask:thread', (_, id) => database.getAskThread(Number(id)))
+ipcMain.handle('ask:deleteThread', (_, id) => {
+  try { return database.deleteAskThread(Number(id)) } catch (err) { return { success: false, error: err.message } }
+})
+// A follow-up Ask Hiro suggested and the user confirmed (and may have edited).
+// The same write as pipeline:setNextAction, behind askHiro.applyFollowUp's
+// checks that the application exists and the date is a real, upcoming day.
+ipcMain.handle('ask:setFollowUp', (_, id, date, note) => {
+  try { return require('./services/askHiro').applyFollowUp(id, date, note) } catch (err) { return { success: false, error: err.message } }
 })
 // A scan Ask Hiro suggested and the user then pressed the button for. Queued
 // like a phone request, so it holds drafts for review rather than submitting.
@@ -1931,16 +1959,19 @@ ipcMain.handle('profile:completeness', () =>
 // rather than as an empty scan three days later.
 ipcMain.handle('ats:testBoard', async (_, provider, slug) => {
   try {
-    const ats = require('./services/scraper/ats')
-    // No keywords, so nothing is filtered out and the count is the board's real
-    // size. skipDetails matters for the providers whose descriptions need a
-    // request each: validating a board must not fire forty of them to answer
-    // "does this slug exist".
-    const jobs = await ats.scrape({
-      atsBoards: [{ provider, slug, label: slug }],
-      jobKeywords: '', jobLocation: '',
-    }, { skipDetails: true })
-    return { success: true, count: jobs.length, sample: jobs.slice(0, 3).map(j => j.job_title) }
+    // See ats.testBoard: no keyword filter, and no per-job detail requests.
+    return { success: true, ...(await require('./services/scraper/ats').testBoard(provider, slug)) }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+// Likely boards for employers already applied to or researched. Pressed by the
+// user, probed one request at a time, and only ever returned — adding a hit is
+// a second, explicit click in Settings. `existing` is the board list currently
+// in the form, so boards already watched are not probed again.
+ipcMain.handle('ats:discoverBoards', async (_, existing) => {
+  try {
+    return { success: true, ...(await require('./services/atsDiscovery').discover({ existing: Array.isArray(existing) ? existing : [] })) }
   } catch (err) {
     return { success: false, error: err.message }
   }

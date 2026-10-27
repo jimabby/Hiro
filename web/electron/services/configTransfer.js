@@ -13,6 +13,7 @@
 
 const crypto = require('crypto')
 const configService = require('./config')
+const { withSessionBoundToProject } = require('../ipc/configGuard')
 
 const MAGIC = 'hiro-config-backup'
 const FORMAT_VERSION = 1
@@ -184,7 +185,9 @@ function applyBundle(payload) {
         return hook && !hook.url && here?.url && here.provider === hook.provider ? { ...hook, url: here.url } : hook
       })
     }
-    return { ...cfg, ...patch }
+    // A bundle from another machine may name a different Supabase project; the
+    // session held here must not follow the URL there (see configGuard).
+    return withSessionBoundToProject(cfg, { ...cfg, ...patch })
   })
   return { success: true, applied: Object.keys(patch).length }
 }

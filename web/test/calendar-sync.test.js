@@ -138,6 +138,14 @@ async function main() {
   check('the first pass creates one event', result.created, 1)
   check('and the calendar has it', remote.size, 1)
 
+  // Putting the interview in the calendar schedules its prep for the day
+  // before. Without an AI provider configured it waits rather than running.
+  const prepJob = db.getInterviewPrepJob(interviewId, localSql(3))
+  check('creating the event schedules interview prep', prepJob?.status, 'pending')
+  check('prep is scheduled for 24 hours ahead of the interview', prepJob?.run_at, localSql(2))
+  await calendarSync.syncNow()
+  check('another pass does not schedule it twice', db.getDueInterviewPrepJobs('9999-12-31 00:00:00').filter(j => j.interview_id === interviewId).length, 1)
+
   const created = [...remote.values()][0]
   check('the summary names the role and company', created.summary, 'Interview: Role 1 at Acme')
   // A floating local time plus an explicit zone is what keeps a 2:30pm interview

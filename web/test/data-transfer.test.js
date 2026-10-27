@@ -50,6 +50,8 @@ experience expected, strong SQL, and the habit of writing things down properly.`
   db.saveCachedAnswer('Notice period?', 'Four weeks', 'user')
   db.suppressRole({ company: 'Ghost Co', jobTitle: 'Forever Open', reason: 'Reposted monthly' })
   db.saveContact({ name: 'Dana', email: 'dana@acme.test', company: 'Acme', relationship: 'recruiter' })
+  const thread = db.appendAskTurn(null, [{ role: 'user', content: 'Which offer pays more?' }, { role: 'assistant', content: 'Acme, at your rate.' }], { title: 'Offers' })
+  db.setExchangeRates({ base: 'AUD', rates: { EUR: 1.65 } })
 
   // ── Export ──────────────────────────────────────────────────────
   const plain = transfer.exportBundle('')
@@ -76,7 +78,9 @@ experience expected, strong SQL, and the habit of writing things down properly.`
   // Machine-local bookkeeping must not travel: it would re-suppress
   // notifications, point at calendar events that do not exist, or tell cloud
   // sync to delete rows.
-  for (const table of ['push_log', 'calendar_links', 'sync_conflicts', 'deleted_applications', 'automation_events', 'ai_usage']) {
+  check('the Ask Hiro threads, with their messages', bundle.data.ask_threads[0]?._messages?.length, 2)
+  check('the exchange rates the user typed', bundle.data.exchange_rates.length, 2)
+  for (const table of ['push_log', 'calendar_links', 'sync_conflicts', 'deleted_applications', 'automation_events', 'ai_usage', 'interview_prep_jobs', 'interview_time_proposals']) {
     check(`${table} is not exported`, bundle.data[table], undefined)
   }
   check('the header counts what is inside', plain.counts.applications, 1)
@@ -140,6 +144,18 @@ experience expected, strong SQL, and the habit of writing things down properly.`
   // A child whose parent was skipped as a duplicate must not be imported: those
   // rows are already here under the existing application.
   check('children of a skipped parent are skipped too', merged.skipped.status_history >= 1, true)
+
+  // ── Conversations and rates onto a machine without them ─────────
+  db.deleteAskThread(thread?.threadId ?? thread?.id ?? db.listAskThreads()[0].id)
+  db.setExchangeRates({ base: '', rates: {} })
+  const back = transfer.importBundle(plain.text, '')
+  check('a thread missing here is imported', back.added.ask_threads, 1)
+  check('with its messages', db.getAskThread(db.listAskThreads()[0].id)?.messages?.length, 2)
+  check('and the rates come back with their base', db.getExchangeRates().base, 'AUD')
+  db.setExchangeRates({ base: 'USD', rates: { GBP: 1.3 } })
+  const kept = transfer.importBundle(plain.text, '')
+  check('rates already set here are never merged with another base', kept.added.exchange_rates, undefined)
+  check('so the base stays the one chosen here', db.getExchangeRates().base, 'USD')
 
   done()
 })().catch(err => { console.error(err); process.exitCode = 1 })

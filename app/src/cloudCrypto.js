@@ -2,7 +2,7 @@
 // identical to web/electron/services/cloudCrypto.js — see that file for why the
 // password is split into two independent keys rather than used directly.
 import { sha256 } from '@noble/hashes/sha2.js'
-import { pbkdf2 } from '@noble/hashes/pbkdf2.js'
+import { pbkdf2, pbkdf2Async } from '@noble/hashes/pbkdf2.js'
 import { hkdf } from '@noble/hashes/hkdf.js'
 import { utf8ToBytes, bytesToHex } from '@noble/hashes/utils.js'
 import { AESEncryptionKey, AESSealedData, aesDecryptAsync, aesEncryptAsync } from 'expo-crypto'
@@ -28,12 +28,24 @@ function masterKey(email, password) {
 // Both keys from one stretch. PBKDF2 at 200k rounds is slow on a phone, and
 // deriving twice would double a delay the user feels at the sign-in button.
 export function deriveAccountKeys(email, password) {
-  const master = masterKey(email, password)
+  return keysFromMaster(email, masterKey(email, password))
+}
+
+function keysFromMaster(email, master) {
   const salt = utf8ToBytes(saltFor(email))
   return {
     dataKey: bytesToBase64(hkdf(sha256, master, salt, utf8ToBytes(INFO_DATA), 32)),
     authSecret: bytesToHex(hkdf(sha256, master, salt, utf8ToBytes(INFO_AUTH), 32)),
   }
+}
+
+// The same keys, without freezing the screen. pbkdf2Async hands the event
+// loop back every few milliseconds, so the sign-in button can render
+// "Signing in…" and the screen keeps responding while the 200k rounds run.
+// The output is identical to deriveAccountKeys — only the scheduling differs.
+export async function deriveAccountKeysAsync(email, password) {
+  const master = await pbkdf2Async(sha256, utf8ToBytes(password), utf8ToBytes(saltFor(email)), { c: PBKDF2_ROUNDS, dkLen: 32, asyncTick: 16 })
+  return keysFromMaster(email, master)
 }
 
 export async function loadCloudKey() { key64 = (await secureStore.getItem(KEY_NAME)) || ''; return key64 }

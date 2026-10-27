@@ -50,12 +50,16 @@ const CHILDREN = [
 ]
 
 // Deliberately NOT exported: push_log, calendar_links, sync_conflicts,
-// deleted_applications, automation_events and ai_usage. Every one of them is
+// deleted_applications, automation_events, ai_usage, interview_prep_jobs and
+// interview_time_proposals. Every one of them is
 // bookkeeping about THIS machine's runtime — notifications already sent from
 // this install, events in this user's calendar account, tombstones owed to a
 // cloud project, a health log about scrapes that happened here. Restoring them
 // elsewhere would re-suppress notifications that were never sent, point at
-// calendar events that do not exist, or tell cloud sync to delete rows.
+// calendar events that do not exist, or tell cloud sync to delete rows. The
+// last two are the same kind of thing: a prep schedule keyed to this
+// database's interview ids, and reply drafts built from this machine's
+// calendar at the moment an email arrived.
 
 function build({ query }) {
   const out = {}
@@ -74,6 +78,14 @@ function build({ query }) {
   }
 
   for (const { table } of STANDALONE) out[table] = query(`SELECT * FROM ${table}`)
+
+  // Ask Hiro conversations: each thread carries its messages, because the
+  // messages hang off a thread id that will not survive the trip either.
+  out.ask_threads = query('SELECT * FROM ask_threads ORDER BY id').map(t => ({
+    ...t, _messages: query('SELECT * FROM ask_messages WHERE thread_id = ? ORDER BY id', [t.id]),
+  }))
+  // Rates the user typed, relative to the base currency they chose.
+  out.exchange_rates = query('SELECT * FROM exchange_rates')
   return out
 }
 
@@ -249,7 +261,37 @@ function merge({ query, queryOne, run, transaction }, data, { dryRun = false } =
     }
   }
 
-  transaction(body, { rollback: dryRun })
+  // ── Ask Hiro threads, matched on title and start time ──────────
+  const threads = () => {
+    const seen = new Set(query('SELECT title, created_at FROM ask_threads').map(t => `${t.title}\u0000${t.created_at}`))
+    for (const thread of data.ask_threads || []) {
+      const identity = `${thread?.title}\u0000${thread?.created_at}`
+      if (!thread || seen.has(identity)) { bump(skipped, 'ask_threads'); continue }
+      insertRow(run, 'ask_threads', cleanRow(query, cache, 'ask_threads', thread, new Set(['id', '_messages']), unknown))
+      const threadId = queryOne('SELECT last_insert_rowid() as id')?.id
+      seen.add(identity)
+      bump(added, 'ask_threads')
+      for (const message of Array.isArray(thread._messages) ? thread._messages : []) {
+        insertRow(run, 'ask_messages', cleanRow(query, cache, 'ask_messages', { ...message, thread_id: threadId }, new Set(['id']), unknown))
+        bump(added, 'ask_messages')
+      }
+    }
+
+    // Rates are only meaningful against their own base currency, so they are
+    // taken all-or-nothing, and only when this machine has none: merging two
+    // sets would leave two bases and every converted figure wrong.
+    // The same rule setExchangeRates enforces: a three-letter code and a positive rate.
+    const rates = (Array.isArray(data.exchange_rates) ? data.exchange_rates : [])
+      .filter(r => /^[A-Z]{3}$/.test(r?.currency) && Number.isFinite(Number(r?.rate)) && Number(r.rate) > 0)
+    if (rates.length && !queryOne('SELECT COUNT(*) AS c FROM exchange_rates')?.c) {
+      for (const rate of rates) insertRow(run, 'exchange_rates', cleanRow(query, cache, 'exchange_rates', rate, new Set(), unknown))
+      bump(added, 'exchange_rates', rates.length)
+    } else if (rates.length) {
+      bump(skipped, 'exchange_rates', rates.length)
+    }
+  }
+
+  transaction(() => { body(); threads() }, { rollback: dryRun })
 
   const total = Object.values(added).reduce((n, v) => n + v, 0)
   const unknownColumns = Object.fromEntries(Object.entries(unknown).map(([t, set]) => [t, [...set].sort()]))

@@ -5,8 +5,8 @@
 // phone on a train still shows something true-as-of-then instead of an error.
 // What is not: anything that is a credential, and the long free text an
 // application carries (cover letter, résumé, job description, the user's own
-// notes). The cache is plain AsyncStorage, so it holds only what the list and
-// the tiles draw.
+// notes). The cache is encrypted at rest (see offlineCache.js), but it still
+// holds only what the list and the tiles draw — less kept is less to lose.
 
 const CACHE_VERSION = 1
 // Older than this, a cached view misleads more than it helps: statuses move,

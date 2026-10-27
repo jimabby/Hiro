@@ -243,7 +243,47 @@ ${jobDescription ? `${fence('JOB', jobDescription, 800)}\n\n` : ''}RESUME:
 ${String(masterResume || '').slice(0, 1500)}`
 }
 
+// ─── Tailoring a résumé ──────────────────────────────────────────────────
+//
+// A tailored résumé goes out over the candidate's name, and a recruiter who
+// reads a few hundred a week knows the model's voice on sight: "spearheaded",
+// "leveraged", "robust", a summary that has turned into a manifesto. A résumé
+// that reads as generated is read as not written by the candidate, which is
+// worse than one that was never tailored. So the edit is a light one, in the
+// candidate's voice, and it keeps the document's shape.
+//
+// Keeping the shape is not only cosmetic. A DOCX upload is tailored by writing
+// the new lines back into the candidate's own paragraphs (scraper/utils.js
+// tailorDocx), and every line that is added, dropped or merged is one that has
+// to be guessed into place instead of keeping its original formatting.
+const TAILOR_RESUME_RULES = `Keep it truthful — only rephrase and emphasise existing experience to match the job.
+Do NOT invent experience, employers, dates, numbers, tools or achievements.
+
+KEEP THE DOCUMENT'S SHAPE:
+- Preserve the EXACT section names, section order and structure. Do not add, remove or reorder sections.
+- Keep the same number of lines, in the same order: one output line for each line of the original.
+  Edit a line in place rather than splitting, merging, adding or deleting lines.
+- Copy the name, contact details, job titles, employers, locations, dates, education and
+  certifications exactly as written, character for character, including any tab characters.
+- Keep the same bullet character and the same "Label: value" layout in skill lines.
+  You may reorder items within a skills line to put the job's tools first.
+
+KEEP THE CANDIDATE'S VOICE — this must read as written by the candidate, not by an AI:
+- Change only what makes the résumé fit this job better. Most lines should stay as they are,
+  or change by a few words. A line that already fits is left exactly as it is.
+- Match the original's spelling convention (e.g. Australian/British "analysed", "optimise"),
+  tense, sentence length and plainness. Do not make bullets longer or grander.
+- Use plain verbs (built, led, developed, improved, worked with). Never use: spearheaded,
+  leveraged, orchestrated, utilised/utilized, harnessed, championed, pioneered, revolutionised,
+  synergy, seamless, robust, cutting-edge, innovative, dynamic, passionate, results-driven,
+  proven track record, fast-paced, delve, elevate, empower, "in today's" anything.
+- No em dashes in sentences, no exclamation marks, no buzzword lists, no keyword stuffing.
+  Use a job keyword only where the original experience genuinely supports it.
+
+Return ONLY the plain text resume. No commentary, no markdown, no asterisks, no pound signs.`
+
 module.exports = {
+  TAILOR_RESUME_RULES,
   interviewQuestionsPrompt, followUpEmailPrompt, FOLLOW_UP_STAGE_GUIDANCE,
   counterOfferPrompt, interviewAnswerPrompt,
 }

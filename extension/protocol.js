@@ -21,11 +21,44 @@
     combined.set(iv); combined.set(encrypted, iv.length)
     return { secure: 2, data: bytesToBase64(combined) }
   }
-  async function decrypt(token, envelope) {
+  // `aad`, when given, is the associated data the envelope must have been
+  // sealed with — see responseAad. Without it the envelope is opened as before.
+  async function decrypt(token, envelope, aad = null) {
     if (envelope?.secure !== 2) throw new Error('Desktop returned an unencrypted response. Re-pair the extension.')
     const combined = base64ToBytes(envelope.data), iv = combined.slice(0, 12), data = combined.slice(12)
-    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, await key(token, 'AES-GCM'), data)
+    const params = { name: 'AES-GCM', iv }
+    if (aad != null) params.additionalData = encoder.encode(aad)
+    const plain = await crypto.subtle.decrypt(params, await key(token, 'AES-GCM'), data)
     return JSON.parse(new TextDecoder().decode(plain))
+  }
+
+  // Response binding — the same scheme as the phone (app/src/responseBinding.js,
+  // web/electron/services/mobileApi.js responseAad). Requests and replies are
+  // sealed under the same token-derived key, so without this anyone on the LAN
+  // could hand the popup its own encrypted request back as the "reply", or an
+  // old reply to a different request, and both would decrypt. Sending the
+  // header makes the desktop seal the reply with the request's method, path and
+  // nonce as associated data, under a label requests never carry, and mark it
+  // `bound: 1`.
+  const BINDING_HEADER = 'X-Hiro-Response-Binding'
+  const BINDING_VERSION = '1'
+  function responseAad(method, path, nonce) {
+    return ['hiro-response-v1', String(method).toUpperCase(), String(path), String(nonce)].join('\n')
+  }
+
+  // Open a reply to the request signed with `signed`. An older desktop ignores
+  // the header and answers unbound; that is accepted only until this pairing has
+  // seen a bound reply (`pinned`), after which an unbound one is refused — the
+  // first bound reply is itself authenticated, so the upgrade cannot be faked,
+  // only suppressed on a pairing that never saw one. Returns { payload, bound }.
+  async function openReply(token, envelope, { method, path, nonce, pinned = false }) {
+    if (envelope?.secure !== 2) throw new Error('Desktop returned an unencrypted response. Re-pair the extension.')
+    if (envelope.bound === 1) return { payload: await decrypt(token, envelope, responseAad(method, path, nonce)), bound: true }
+    if (pinned) {
+      throw new Error('The desktop’s reply was not bound to this request, but this desktop has sent bound replies before. '
+        + 'Something on the network may be replaying replies — check you are on the right network.')
+    }
+    return { payload: await decrypt(token, envelope), bound: false }
   }
   async function signedHeaders(token, method, path, rawBody) {
     const timestamp = String(Date.now()), nonce = hex(crypto.getRandomValues(new Uint8Array(16)))
@@ -65,7 +98,10 @@
     }
   }
 
-  const protocol = { encrypt, decrypt, signedHeaders, parseDesktopAddress, fetchWithTimeout, REQUEST_TIMEOUT_MS }
+  const protocol = {
+    encrypt, decrypt, signedHeaders, parseDesktopAddress, fetchWithTimeout, REQUEST_TIMEOUT_MS,
+    BINDING_HEADER, BINDING_VERSION, responseAad, openReply,
+  }
   root.HiroProtocol = protocol
   if (typeof module !== 'undefined') module.exports = protocol
 })(globalThis)

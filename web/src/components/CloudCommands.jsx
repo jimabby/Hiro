@@ -1,5 +1,17 @@
 import { useEffect, useState } from 'react'
 
+// The phone can change or cancel a command until this desktop starts it, so
+// the state is spelled out: "waiting" may still change, "in progress" cannot,
+// and "cancelled" is a decision the desktop will never act on.
+const COMMAND_STATE = {
+  queued: 'Waiting — the phone can still change or cancel it',
+  accepted: 'Picked up by a desktop',
+  running: 'In progress',
+  completed: 'Done',
+  failed: 'Failed',
+  cancelled: 'Cancelled from the phone — not run',
+}
+
 export default function CloudCommands() {
   const [rows, setRows] = useState([]), [error, setError] = useState(''), [busy, setBusy] = useState(false)
   async function load() {
@@ -12,9 +24,9 @@ export default function CloudCommands() {
     {error && <p role="alert">{error}</p>}
     {!rows.length && !error && <p>No cloud commands yet.</p>}
     {rows.map(row => <div key={`${row.kind}:${row.id}`} style={{ padding: 8 }}>
-      <strong>{row.kind === 'scan' ? `Scan: ${row.keywords || 'Saved search'}` : `${row.action}: ${row.jobTitle || row.application_cloud_id} ${row.company || ''}`}</strong> · {row.status}
+      <strong>{row.kind === 'scan' ? `Scan: ${row.keywords || 'Saved search'}` : `${row.action}: ${row.jobTitle || row.application_cloud_id} ${row.company || ''}`}</strong> · <span data-status={row.status}>{COMMAND_STATE[row.status] || row.status}</span>
       <div>{new Date(row.created_at).toLocaleString()}{row.claimed_by ? ` · Desktop ${row.claimed_by.slice(0, 8)}` : ''}</div>
-      {row.error && <p>{row.error}</p>}
+      {row.error && row.status !== 'cancelled' && <p>{row.error}</p>}
       {row.status === 'failed' && <button className="btn btn-ghost" disabled={busy} onClick={async () => {
         if (row.kind === 'review' && !window.confirm('Check the employer site first. Only retry if this application was not already submitted. Continue?')) return
         setBusy(true)

@@ -54,6 +54,61 @@ check('no cleartext pairing body remains', /body: JSON\.stringify\(\{ code:/.tes
   const input = ['POST', '/api/import-job', headers['X-Hiro-Timestamp'], headers['X-Hiro-Nonce'], JSON.stringify(envelope)].join('\n')
   check('extension signature matches the desktop protocol', headers['X-Hiro-Signature'], crypto.createHmac('sha256', token).update(input).digest('hex'))
 
+  // ── Response binding ────────────────────────────────────────────
+  // Same scheme as the phone: the desktop seals the reply with the request's
+  // method, path and nonce as associated data. Built here the way
+  // mobileApi.encryptPayload does, so the two sides are pinned together.
+  const desktopSeal = (body, aad) => {
+    const iv = crypto.randomBytes(12)
+    const cipher = crypto.createCipheriv('aes-256-gcm', crypto.createHash('sha256').update(token).digest(), iv)
+    if (aad) cipher.setAAD(Buffer.from(aad, 'utf8'))
+    const data = Buffer.concat([iv, cipher.update(JSON.stringify(body), 'utf8'), cipher.final(), cipher.getAuthTag()]).toString('base64')
+    return aad ? { secure: 2, bound: 1, data } : { secure: 2, data }
+  }
+  const phoneBinding = require('../../app/src/responseBinding')
+  check('extension asks for bound replies with the phone\'s header', [protocol.BINDING_HEADER, protocol.BINDING_VERSION], [phoneBinding.BINDING_HEADER, phoneBinding.BINDING_VERSION])
+  check('extension associated data matches the phone\'s', protocol.responseAad('post', '/api/import-job', 'n1'), phoneBinding.responseAad('post', '/api/import-job', 'n1'))
+  check('the popup sends the binding header', popup.includes('[HiroProtocol.BINDING_HEADER]: HiroProtocol.BINDING_VERSION'), true)
+  check('the popup opens replies through openReply', popup.includes('HiroProtocol.openReply('), true)
+  const req = { method: 'POST', path: '/api/import-job', nonce: headers['X-Hiro-Nonce'] }
+  const boundReply = desktopSeal({ success: true }, protocol.responseAad(req.method, req.path, req.nonce))
+  check('a bound reply to this request opens', await protocol.openReply(token, boundReply, req), { payload: { success: true }, bound: true })
+  const refuse = async (envelope, opts) => { try { await protocol.openReply(token, envelope, opts); return false } catch { return true } }
+  check('a bound reply to another request is refused', await refuse(boundReply, { ...req, path: '/api/devices/self/revoke' }), true)
+  check('a bound reply to another nonce is refused', await refuse(boundReply, { ...req, nonce: 'other' }), true)
+  // The attack the binding exists for: the extension's own encrypted request
+  // echoed back as the "reply". It decrypts under the bare key, so it must be
+  // refused once this pairing has seen a bound reply…
+  check('a reflected request is refused once bound replies are pinned', await refuse(envelope, { ...req, pinned: true }), true)
+  check('a reflected request marked bound fails authentication', await refuse({ ...envelope, bound: 1 }, req), true)
+  // …while an older desktop that never binds keeps working.
+  check('an older desktop\'s unbound reply still opens before pinning', (await protocol.openReply(token, desktopSeal({ ok: 1 }), req)).bound, false)
+  check('the pairing remembers it has seen a bound reply', /responseBinding: true/.test(popup) && /pinned: !!connection\.responseBinding/.test(popup), true)
+
+  // ── Job extraction: salary and closing date ─────────────────────
+  // extractJob runs inside the page via executeScript, so it is pulled out of
+  // the popup source and run against a fake document here.
+  const extractSource = popup.slice(popup.indexOf('function extractJob()'), popup.indexOf('\n}\n', popup.indexOf('function extractJob()')) + 2)
+  const runExtract = (posting) => {
+    const doc = {
+      querySelectorAll: () => [{ textContent: JSON.stringify(posting) }],
+      querySelector: () => null,
+      title: 'Page',
+    }
+    return new Function('document', 'location', `${extractSource}; return extractJob()`)(doc, { href: 'https://jobs.example/1' })
+  }
+  const ranged = runExtract({ '@type': 'JobPosting', title: 'Engineer', validThrough: '2026-11-30T23:59:59+11:00',
+    baseSalary: { '@type': 'MonetaryAmount', currency: 'AUD', value: { '@type': 'QuantitativeValue', minValue: 120000, maxValue: 150000, unitText: 'YEAR' } } })
+  check('a salary range is captured as text the desktop parses', ranged.salary, 'AUD $120,000 – $150,000 per year')
+  check('validThrough is kept as the listing\'s own date', ranged.closingDate, '2026-11-30')
+  check('a single hourly value', runExtract({ '@type': 'JobPosting', baseSalary: { currency: 'USD', value: { value: 55, unitText: 'HOUR' } } }).salary, 'USD $55 per hour')
+  check('a bare amount on the MonetaryAmount', runExtract({ '@type': 'JobPosting', baseSalary: { '@type': 'MonetaryAmount', currency: 'GBP', value: 50000 } }).salary, 'GBP £50,000')
+  check('a plain string salary is passed through', runExtract({ '@type': 'JobPosting', baseSalary: '$90k–$100k' }).salary, '$90k–$100k')
+  check('no salary, no closing date: empty, not "undefined"', [runExtract({ '@type': 'JobPosting' }).salary, runExtract({ '@type': 'JobPosting' }).closingDate], ['', ''])
+  check('a malformed validThrough is dropped', runExtract({ '@type': 'JobPosting', validThrough: 'next Friday' }).closingDate, '')
+  check('the form has salary and closing-date fields', html.includes('id="salary"') && html.includes('id="closingDate"'), true)
+  check('import sends every form field', /FORM_FIELDS = \['title', 'company', 'salary', 'closingDate', 'description', 'url'\]/.test(popup), true)
+
   // ── Address parsing ─────────────────────────────────────────────
   // Splitting on ':' turned an IPv6 address into its first group.
   const parse = protocol.parseDesktopAddress

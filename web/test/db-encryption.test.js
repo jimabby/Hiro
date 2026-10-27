@@ -144,6 +144,19 @@ async function main() {
     db.getApplications({}).map(a => a.company).sort(), ['Encrypted Co', 'Plaintext Ltd'])
   check('the restored database is still encrypted', isPlain(DB_PATH), false)
 
+  // No snapshot, no restore: the pre-restore copy is the only way back, so a
+  // copy that fails (full disk, permissions) must abort, not proceed.
+  // Rolled back the same way afterwards, so later counts are unaffected.
+  add('Must Survive Ltd')
+  const realCopy = fs.copyFileSync
+  fs.copyFileSync = () => { const e = new Error('ENOSPC: no space left on device'); e.code = 'ENOSPC'; throw e }
+  let aborted
+  try { aborted = db.restoreBackup(backupName) } finally { fs.copyFileSync = realCopy }
+  check('a restore whose snapshot fails is refused', aborted.success, false)
+  check('with an error that says nothing changed', /Nothing was changed/.test(aborted.error || ''), true)
+  check('and the current data is untouched', db.getApplications({}).some(a => a.company === 'Must Survive Ltd'), true)
+  db.deleteApplication(db.getApplications({}).find(a => a.company === 'Must Survive Ltd').id)
+
   // ── Integrity ────────────────────────────────────────────────
   // A byte flipped in the ciphertext must fail the GCM tag, not decrypt to
   // garbage that sql.js then reports as a corrupt or empty database.

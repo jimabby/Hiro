@@ -33,6 +33,45 @@ const { check, done } = createChecker()
   check('checklist merge retains both tasks', db.getChecklist(a).length, 2)
   db.recordSyncConflict({ applicationId: a, field: 'comment', localValue: 'Old value', remoteValue: 'Phone value', resolvedAs: 'local-kept' })
   check('stale conflict cannot overwrite a newer edit', db.applyConflictResolution(db.getSyncConflicts()[0].id).success, false)
+  // ── One unreadable checklist does not empty the inbox ──────────
+  // Checklists arrive from the phone unvalidated (applyCloudEdit).
+  const broken = add('https://example.com/broken')
+  db.setNextAction(broken, { date: '2026-10-25', note: 'Chase broken' })
+  db.applyCloudEdit(broken, { checklist: '{not json' }, new Date().toISOString())
+  inbox = hub.taskInbox()
+  check('the inbox still loads around a corrupt checklist', inbox.some(t => t.kind === 'offer'), true)
+  check('the corrupt row reports itself', inbox.some(t => t.kind === 'checklist-error' && t.applicationId === broken), true)
+  check('and its other tasks still show', inbox.some(t => t.kind === 'follow-up' && t.applicationId === broken), true)
+  let threw = null
+  try { db.updateChecklist(broken, { title: 'x' }) } catch (err) { threw = err.message }
+  check('a write to it refuses rather than overwriting', /unreadable/.test(threw || ''), true)
+  db.applyCloudEdit(broken, { checklist: '[null, 3, {"id":"ok","title":"Kept","due":"bad-date"}]' }, new Date().toISOString())
+  const kept = hub.taskInbox().find(t => t.applicationId === broken && t.kind === 'checklist')
+  check('junk entries are dropped and a junk date is blanked', [kept?.title, kept?.due], ['Kept', ''])
+
+  // ── Closing dates belong to unsent rows ────────────────────────
+  const heldClosing = add('https://example.com/held-closing')
+  db.updateClosingDate(heldClosing, '2026-11-02')
+  const sentClosing = db.insertApplication({ job_title: 'Sent', company: 'Example', platform: 'Seek', job_url: 'https://example.com/sent', job_description: '', status: 'applied' }).id
+  db.updateClosingDate(sentClosing, '2026-11-02')
+  inbox = hub.taskInbox()
+  check('a held row\'s closing date is a task', inbox.some(t => t.kind === 'closing' && t.applicationId === heldClosing), true)
+  check('a sent row\'s is not', inbox.some(t => t.kind === 'closing' && t.applicationId === sentClosing), false)
+
+  // ── Drafted interview times are a task until dismissed ─────────
+  db.updateApplicationStatus(sentClosing, 'interview')
+  db.saveTimeProposal({ applicationId: sentClosing, slots: [{ label: 'Tue' }, { label: 'Wed' }], email: 'Hi', replyUid: 7 })
+  let propose = hub.taskInbox().find(t => t.kind === 'propose-times')
+  check('drafted times appear in the inbox', propose?.applicationId, sentClosing)
+  check('saying how many were drafted', /2 times drafted/.test(propose?.title || ''), true)
+  check('the draft is readable for the dialog', db.getTimeProposal(sentClosing).replyUid, 7)
+  hub.completeInboxTask(propose)
+  check('dismissing removes it', hub.taskInbox().some(t => t.kind === 'propose-times'), false)
+  db.saveTimeProposal({ applicationId: sentClosing, slots: [{ label: 'Thu' }], email: 'Hi again', replyUid: 9 })
+  check('a newer invitation re-opens it', hub.taskInbox().some(t => t.kind === 'propose-times'), true)
+  db.updateApplicationStatus(sentClosing, 'rejected')
+  check('and an application that moved on drops it', hub.taskInbox().some(t => t.kind === 'propose-times'), false)
+
   const rate = add('https://example.com/rate', '$60.50 per hour')
   db.backfillSalaryColumns()
   check('historical salary backfill keeps fractional rates', db.getApplication(rate).salary_min, 119548)

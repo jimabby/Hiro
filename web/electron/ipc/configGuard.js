@@ -149,7 +149,27 @@ function mergeRendererSave(current, submitted, snapshot, { newSecret = () => cry
     merged[key] = value
   }
   delete merged[SNAPSHOT_KEY]
-  return merged
+  return withSessionBoundToProject(current, merged)
+}
+
+// The stored Supabase session belongs to the project it was issued by. The URL
+// and anon key are ordinary Settings fields (setup has to be able to write
+// them), so a compromised renderer could point them at a host it controls —
+// and the next sync would rebuild the client for that host and hand it our
+// refresh token in restoreSession. So a change of project is never allowed to
+// inherit the session: the token, the derived data key and the enabled flag
+// are dropped in the same write that changes the URL/key, and the user signs in
+// again against the new project (which is what moving project means anyway).
+// The email stays — it is not a credential and saves retyping.
+function sameProject(a, b) {
+  const norm = v => String(v || '').trim().replace(/\/+$/, '')
+  return norm(a.supabaseUrl) === norm(b.supabaseUrl) && String(a.supabaseAnonKey || '').trim() === String(b.supabaseAnonKey || '').trim()
+}
+
+function withSessionBoundToProject(current, next) {
+  if (sameProject(current || {}, next || {})) return next
+  if (!current?.supabaseRefreshToken && !current?.cloudDataKey && !current?.cloudSyncEnabled) return next
+  return { ...next, supabaseRefreshToken: '', cloudDataKey: '', cloudSyncEnabled: false }
 }
 
 // What each renderer was given, by id. Bounded: an id that has aged out simply
@@ -184,5 +204,5 @@ function createSnapshotStore(limit = 25) {
 
 module.exports = {
   SECRET_PLACEHOLDER, SNAPSHOT_KEY, REDACTED_KEYS, SERVICE_OWNED_KEYS,
-  redactForRenderer, mergeRendererSave, resolveSecret, withWebhookIdentity, createSnapshotStore, urlHint,
+  redactForRenderer, mergeRendererSave, withSessionBoundToProject, resolveSecret, withWebhookIdentity, createSnapshotStore, urlHint,
 }

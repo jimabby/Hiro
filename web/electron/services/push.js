@@ -45,6 +45,7 @@ const KIND_SETTING = {
   // sent — which is exactly the "broken feature" the comment below warns about,
   // one level up. A new kind belongs in this map before anywhere else.
   'offer-deadline': 'offerDeadline',
+  'task-due': 'taskDue',
 }
 
 function isEnabled(kind) {
@@ -420,6 +421,74 @@ async function checkFollowUps() {
   }
 }
 
+// Everything the task inbox lists that has come due (featureHub.taskInbox), so
+// the phone hears about the same to-dos the desktop shows.
+//
+// Each task kind is sent under the SAME dedupe key as the dedicated check that
+// already covers it, so the two paths can never both fire for one event:
+//
+//   checklist  → new kind 'task-due', once per task per due date. Due today or
+//                overdue by at most a week — switching push on must not
+//                deliver a backlog of every stale task at once.
+//   offer      → the last-day window of checkOfferDeadlines ('offer:…:1d:…').
+//                Normally that check got there first and this is a no-op; it
+//                is what still fires if the 7/3-day windows were missed.
+//   closing /  → the checkExpiring key ('expiring:…:<date>'), on the closing
+//   attention    day itself. With closingSoonDays set the look-ahead already
+//                claimed it; with it at 0 this is the only notice, on the day.
+//   follow-up  → left to checkFollowUps, which reads sent rows only — the
+//                inbox also lists held rows, and a draft needs no chasing.
+const TASK_BACKLOG_DAYS = 7
+
+async function checkTaskInbox(now = new Date()) {
+  let tasks
+  try {
+    tasks = require('./featureHub').taskInbox()
+  } catch (err) {
+    logger.append(`[push] Could not read the task inbox: ${err.message}`)
+    return
+  }
+  const today = localDate(now)
+  const oldest = localDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - TASK_BACKLOG_DAYS))
+  const cloudId = (id) => (id ? database.getApplication(id)?.cloud_id || null : null)
+  for (const task of tasks) {
+    const due = String(task.due || '').slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(due) || due > today) continue
+    const where = `${task.jobTitle || 'Application'}${task.company ? ` at ${task.company}` : ''}`
+    if (task.kind === 'checklist') {
+      if (due < oldest || !task.taskId) continue
+      await send({
+        kind: 'task-due',
+        dedupeKey: `task:${task.applicationId}:${task.taskId}:${due}`,
+        title: due < today ? 'Task overdue' : 'Task due today',
+        body: `${String(task.title || 'Task').slice(0, 120)} — ${where}`,
+        data: { applicationId: cloudId(task.applicationId) },
+      })
+    } else if (task.kind === 'offer') {
+      if (due !== today) continue
+      await send({
+        kind: 'offer-deadline',
+        dedupeKey: `offer:${task.applicationId}:1d:${due}`,
+        title: `Offer from ${task.company || 'an employer'} expires today`,
+        body: `${task.jobTitle || 'Offer'} · respond by ${due}`,
+        data: { applicationId: cloudId(task.applicationId), tab: 'offers' },
+      })
+    } else if (task.kind === 'closing' || task.kind === 'attention') {
+      if (due !== today) continue
+      const source = task.kind === 'closing' ? 'application' : 'attention'
+      const id = source === 'application' ? task.applicationId : task.attentionId
+      if (id == null) continue
+      await send({
+        kind: 'expiring',
+        dedupeKey: `expiring:${source}:${id}:${due}`,
+        title: 'Application closes today',
+        body: `${where} closes today${source === 'attention' ? ' — still needs a manual application' : ' — still waiting for your approval'}`,
+        data: { applicationId: source === 'application' ? cloudId(id) : null, attentionId: source === 'attention' ? id : null },
+      })
+    }
+  }
+}
+
 // One pass over everything that is true because of the clock. Called from the
 // scheduler; safe to call as often as you like thanks to the dedupe ledger.
 async function runDueChecks() {
@@ -431,6 +500,9 @@ async function runDueChecks() {
     await checkExpiring(cfg)
     await checkReviewQueue(cfg)
     await checkFollowUps()
+    // Last, so the dedicated checks above claim their shared keys first and
+    // this one only fills the gaps (see checkTaskInbox).
+    await checkTaskInbox()
   } catch (err) {
     logger.append(`[push] Scheduled checks failed: ${err.message}`)
   }
@@ -469,5 +541,5 @@ module.exports = {
   send, sendTest, runDueChecks,
   notifyReply, notifyScanFailed, notifyNewDevice,
   // exported for tests
-  parseLocal, isEnabled, checkOfferDeadlines, formatMoney, OFFER_DEADLINE_WINDOWS,
+  parseLocal, isEnabled, checkOfferDeadlines, checkTaskInbox, formatMoney, OFFER_DEADLINE_WINDOWS,
 }

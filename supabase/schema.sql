@@ -451,8 +451,11 @@ update public.review_requests r set application_cloud_id = a.id
   from public.applications a
   where r.application_cloud_id is null and r.user_id = a.user_id
     and r.application_local_id = a.local_id;
-create unique index if not exists idx_review_requests_cloud_pending
-  on public.review_requests(user_id, application_cloud_id);
+-- The one-command-per-application index that used to be created here is now
+-- partial (idx_review_requests_cloud_active, below, once the status column
+-- exists). It must not be recreated here: once finished commands are kept as
+-- history, a full unique index would fail on every re-run of this file.
+drop index if exists public.idx_review_requests_cloud_pending;
 
 -- Mirrors belong to an installation. A second desktop must never delete the
 -- first desktop's interviews, offers, or attention queue during its own sync.
@@ -526,6 +529,157 @@ create trigger applications_touch_synced_at
 create index if not exists idx_apps_user_synced
   on public.applications (user_id, synced_at);
 
+-- ─── Desktop-only mirrors: the phone reads, it does not write ─────
+-- offers, interview_events, attention_jobs and push_log are written by the
+-- desktop alone; the phone only ever selects from them. Their policies were
+-- `for all`, so anything holding the phone's session could rewrite them — plant
+-- a fake offer deadline, delete an interview, forge the push ledger so a real
+-- reminder is never sent.
+--
+-- The limit, stated plainly: the desktop and the phone sign in as the SAME
+-- Supabase user with the same anon key, so their JWTs carry the same role and
+-- the same auth.uid(). Nothing in a policy can tell "the desktop" from "the
+-- phone" by identity. What does differ is the session: every sign-in gets its
+-- own `session_id` claim, which survives token refreshes. So:
+--
+--   1. The phone's devices row (kind = 'mobile') is stamped by the SERVER with
+--      the session_id of the JWT that wrote it — whatever the client sends is
+--      overwritten — on insert, and again whenever the phone itself heartbeats
+--      (last_seen_at changes; the desktop never writes that column on a phone's
+--      row, only revoked_at/push_token).
+--   2. A session stamped that way may read these four tables but not write
+--      them, and may not delete device rows (which would remove its own stamp).
+--      A phone row cannot be re-labelled as another kind.
+--
+-- What this does stop: the phone app, or a stolen phone refresh token, writing
+-- to these tables. What it does not: a session that never registered a phone
+-- row (a phone build older than device registration, or a token used before
+-- its first heartbeat), the gap after the desktop's "Remove from list" deletes
+-- a phone row and before the phone re-registers, and anyone with the account
+-- password, who can mint an unstamped session. Applications, scan_requests and
+-- review_requests are written by the phone by design and are unchanged here.
+-- Real separation would need the desktop to hold a different credential (its
+-- own Supabase user, or a service-side writer), which this design deliberately
+-- has no server for.
+alter table public.devices add column if not exists session_id text;
+
+create or replace function public.hiro_stamp_device_session()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if tg_op = 'UPDATE' and old.kind = 'mobile' and new.kind is distinct from 'mobile' then
+    raise exception 'A phone''s device row cannot be re-labelled as another kind.';
+  end if;
+  if new.kind is distinct from 'mobile' then
+    new.session_id := null;
+  elsif tg_op = 'INSERT' or new.last_seen_at is distinct from old.last_seen_at then
+    new.session_id := nullif(auth.jwt() ->> 'session_id', '');
+  else
+    -- Someone else's update (the desktop revoking the phone): keep the stamp.
+    new.session_id := old.session_id;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists devices_stamp_session on public.devices;
+create trigger devices_stamp_session
+  before insert or update on public.devices
+  for each row execute function public.hiro_stamp_device_session();
+
+-- Security definer so a policy can consult devices without going through
+-- devices' own policies; it only ever looks at the caller's rows.
+create or replace function public.hiro_is_phone_session()
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1 from public.devices d
+    where d.user_id = auth.uid()
+      and d.kind = 'mobile'
+      and d.session_id is not null
+      and d.session_id = (auth.jwt() ->> 'session_id')
+  )
+$$;
+
+revoke execute on function public.hiro_is_phone_session() from public;
+grant execute on function public.hiro_is_phone_session() to authenticated;
+
+-- Who last set an application's status. The desktop refuses 'held'/'skipped'
+-- from a phone (approving a sent application again would submit it twice), but
+-- the same values arriving from ANOTHER desktop are legitimate — an Undo on one
+-- desktop must not be pushed back over by the next. Set by the server from the
+-- session, never by the client, so a phone cannot label its own edit as a
+-- desktop's. A phone build that never registered a devices row is not
+-- recognised as a phone; see the limits above.
+alter table public.applications add column if not exists status_set_by text;
+
+-- An application's advertised closing date, for the phone's Today screen.
+alter table public.applications add column if not exists closing_date text;
+
+create or replace function public.hiro_stamp_status_setter()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if tg_op = 'INSERT' or new.status is distinct from old.status then
+    new.status_set_by := case when public.hiro_is_phone_session() then 'phone' else 'desktop' end;
+  else
+    new.status_set_by := old.status_set_by;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists applications_stamp_status_setter on public.applications;
+create trigger applications_stamp_status_setter
+  before insert or update on public.applications
+  for each row execute function public.hiro_stamp_status_setter();
+
+drop policy if exists "own devices" on public.devices;
+drop policy if exists "read own devices" on public.devices;
+drop policy if exists "add own devices" on public.devices;
+drop policy if exists "update own devices" on public.devices;
+drop policy if exists "remove own devices from a non-phone session" on public.devices;
+create policy "read own devices" on public.devices
+  for select using (auth.uid() = user_id);
+create policy "add own devices" on public.devices
+  for insert with check (auth.uid() = user_id);
+create policy "update own devices" on public.devices
+  for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "remove own devices from a non-phone session" on public.devices
+  for delete using (auth.uid() = user_id and not public.hiro_is_phone_session());
+
+do $$
+declare
+  t text;
+  old_policy text;
+begin
+  foreach t in array array['offers', 'interview_events', 'attention_jobs', 'push_log'] loop
+    old_policy := case t
+      when 'offers' then 'own offers'
+      when 'interview_events' then 'own interview events'
+      when 'attention_jobs' then 'own attention jobs'
+      when 'push_log' then 'own push log'
+    end;
+    execute format('drop policy if exists %I on public.%I', old_policy, t);
+    execute format('drop policy if exists %I on public.%I', 'read own ' || t, t);
+    execute format('drop policy if exists %I on public.%I', 'desktop inserts ' || t, t);
+    execute format('drop policy if exists %I on public.%I', 'desktop updates ' || t, t);
+    execute format('drop policy if exists %I on public.%I', 'desktop deletes ' || t, t);
+    execute format('create policy %I on public.%I for select using (auth.uid() = user_id)', 'read own ' || t, t);
+    execute format('create policy %I on public.%I for insert with check (auth.uid() = user_id and not public.hiro_is_phone_session())', 'desktop inserts ' || t, t);
+    execute format('create policy %I on public.%I for update using (auth.uid() = user_id and not public.hiro_is_phone_session()) with check (auth.uid() = user_id and not public.hiro_is_phone_session())', 'desktop updates ' || t, t);
+    execute format('create policy %I on public.%I for delete using (auth.uid() = user_id and not public.hiro_is_phone_session())', 'desktop deletes ' || t, t);
+  end loop;
+end $$;
+
 -- What this file installs, so a client can tell a project that missed an
 -- upgrade from one that is broken. The desktop calls this before it syncs and,
 -- when the number is behind what it needs, tells the user to re-run this file
@@ -545,15 +699,37 @@ alter table public.review_requests add column if not exists updated_at timestamp
 create index if not exists idx_scan_commands_status on public.scan_requests(user_id, status);
 create index if not exists idx_review_commands_status on public.review_requests(user_id, status);
 
+-- One decision the desktop may still act on per application, not one row ever.
+-- A full unique index kept a finished command forever and blocked every later
+-- decision on the same draft (reject → desktop Undo → the phone could never
+-- decide again). Finished rows stay as history; a new decision inserts a new
+-- row, and changing a still-waiting decision updates that row (with a new id)
+-- in place. 'cancelled' rows, set by the phone before the desktop starts one,
+-- are finished too. RLS is unchanged: "own review requests" scopes every row
+-- to auth.uid() = user_id for select, insert, update and delete.
+create unique index if not exists idx_review_requests_cloud_active
+  on public.review_requests(user_id, application_cloud_id)
+  where status in ('queued', 'accepted', 'running');
+do $$ begin
+  alter table public.review_requests add constraint review_requests_status_valid
+    check (status in ('queued', 'accepted', 'running', 'completed', 'failed', 'cancelled')) not valid;
+exception when duplicate_object then null; end $$;
+do $$ begin
+  alter table public.scan_requests add constraint scan_requests_status_valid
+    check (status in ('queued', 'accepted', 'running', 'completed', 'failed', 'cancelled')) not valid;
+exception when duplicate_object then null; end $$;
+
 alter table public.scan_requests add column if not exists request_key text;
 create unique index if not exists idx_scan_request_key on public.scan_requests(user_id, request_key);
 
+-- Version 4: phone commands can be changed or cancelled before the desktop starts
+-- them, and finished review commands no longer block a new decision.
 create or replace function public.hiro_schema_version()
 returns integer
 language sql
 immutable
 set search_path = ''
-as $$ select 3 $$;
+as $$ select 4 $$;
 
 revoke execute on function public.hiro_schema_version() from public;
 grant execute on function public.hiro_schema_version() to anon, authenticated;

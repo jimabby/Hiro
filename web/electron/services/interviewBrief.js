@@ -65,12 +65,22 @@ async function ensureQuestions(app, cfg) {
 // The brief for one application. `generate` allows the two paid lookups
 // (questions, news); without it only what is already cached is used — the
 // phone's read of a brief must never spend money.
-async function buildBrief(applicationId, { generate = true, refreshResearch = false, cfg = configService.load(), fetchImpl } = {}) {
+// `requireQuestions` is for the unattended prep run (interviewPrep.js): there a
+// brief without questions is a failed run to retry, not a partial success.
+async function buildBrief(applicationId, { generate = true, refreshResearch = false, requireQuestions = false, cfg = configService.load(), fetchImpl } = {}) {
   const app = database.getApplication(applicationId)
   if (!app) throw new Error('Application not found.')
 
   if (generate) {
-    try { await ensureQuestions(app, cfg) } catch { /* a brief without questions is still a brief */ }
+    try {
+      await ensureQuestions(app, cfg)
+    } catch (err) {
+      if (requireQuestions) throw err
+      /* a brief without questions is still a brief */
+    }
+    if (requireQuestions && !(database.getInterviewPrepWithAnswers(applicationId) || []).length) {
+      throw new Error('No interview questions were generated.')
+    }
   }
   const research = generate
     ? await companyResearch.research(app.company, { cfg, fetchImpl, refresh: refreshResearch })

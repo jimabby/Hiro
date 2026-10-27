@@ -6,6 +6,7 @@ const { CONFIG_DIR } = configService
 const { parseSalaryColumns, salaryCurrency, parseCompensation } = require('./salaryParser')
 const jobFingerprint = require('./jobFingerprint')
 const dataExport = require('./dataExport')
+const { remoteStatusRefusal } = require('./remoteStatus')
 
 const DB_PATH = path.join(CONFIG_DIR, 'autoapply.db')
 
@@ -83,6 +84,11 @@ function renameWithRetry(from, to, rename = fs.renameSync) {
   }
 }
 
+// True while changes made in memory have not reached the disk because the last
+// persist threw — from run(), batch(), transaction() or anywhere else. run()
+// reads it so a no-op statement after a failed write still flushes; see run().
+let persistFailed = false
+
 function persist() {
   if (!db || persistDepth > 0) return
   // Encryption rides on the existing atomic write rather than replacing it: the
@@ -101,7 +107,9 @@ function persist() {
     renameWithRetry(tmp, DB_PATH)
     try { fs.chmodSync(DB_PATH, 0o600) } catch { /* Windows ignores this */ }
     fsyncFile(CONFIG_DIR, 'r')
+    persistFailed = false
   } catch (err) {
+    persistFailed = true
     try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp) } catch { /* best-effort */ }
     throw err
   }
@@ -311,6 +319,24 @@ function createTables() {
       title TEXT,
       body TEXT,
       sent_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Interview times drafted automatically when the inbox reads an invitation
+    -- that names no time (services/availability.js). One per application: the
+    -- latest invitation is the one being answered. A DRAFT only — nothing here
+    -- is ever sent; the user opens it, checks it and sends it from their own
+    -- mail app. 'dismissed' once they have dealt with it, so the task inbox
+    -- stops listing it.
+    CREATE TABLE IF NOT EXISTS interview_time_proposals (
+      application_id INTEGER PRIMARY KEY,
+      slots TEXT NOT NULL DEFAULT '[]',
+      email TEXT,
+      subject TEXT,
+      recipient TEXT,
+      calendar_checked INTEGER DEFAULT 0,
+      reply_uid INTEGER,
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_at TEXT DEFAULT (datetime('now'))
     );
 
     -- Interviews mirrored into an external calendar, and what we last wrote
@@ -730,6 +756,59 @@ function migrate() {
     )`)
   } catch {}
   try { db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_sent_messages_mid ON sent_messages(message_id)') } catch {}
+
+  createAssistantTables()
+}
+
+// Ask Hiro threads, automatic interview prep, and the user's offer exchange
+// rates. New tables only, each CREATE … IF NOT EXISTS, so they cannot fail on a
+// database that already has them and need no version step of their own (and
+// cannot collide with a version number another change is adding). They live in
+// the database rather than config.json because the database file is the thing
+// encryption at rest covers (dbCrypto): a conversation about salaries and
+// employers is exactly as private as the applications it discusses.
+function createAssistantTables() {
+  db.run(`CREATE TABLE IF NOT EXISTS ask_threads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  )`)
+  // error = 1 marks a turn that is shown to the user (so reopening a thread
+  // still explains what went wrong) but never sent back to the model.
+  db.run(`CREATE TABLE IF NOT EXISTS ask_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    actions TEXT NOT NULL DEFAULT '[]',
+    error INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+  )`)
+  db.run('CREATE INDEX IF NOT EXISTS idx_ask_messages_thread ON ask_messages(thread_id, id)')
+  // One row per interview TIME: a reschedule is a new row and earns fresh prep,
+  // while a second sync pass over the same interview is an ignored insert.
+  db.run(`CREATE TABLE IF NOT EXISTS interview_prep_jobs (
+    interview_id INTEGER NOT NULL,
+    scheduled_at TEXT NOT NULL,
+    application_id INTEGER NOT NULL,
+    run_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT DEFAULT '',
+    done_at TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (interview_id, scheduled_at)
+  )`)
+  // `rate` is how many units of the base currency one unit of `currency` is
+  // worth, as the user typed it. Nothing here is ever fetched: a rate the user
+  // did not choose would quietly decide which offer looks bigger.
+  db.run(`CREATE TABLE IF NOT EXISTS exchange_rates (
+    currency TEXT PRIMARY KEY,
+    rate REAL NOT NULL,
+    is_base INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT DEFAULT (datetime('now'))
+  )`)
 }
 
 // SQLite's own "YYYY-MM-DD HH:MM:SS" in UTC, from whatever a cloud row or an
@@ -758,8 +837,20 @@ function toRows(result) {
   })
 }
 
+// A write statement that changed nothing — an UPDATE or DELETE whose WHERE
+// matched no row, an INSERT OR IGNORE that was ignored — leaves the database
+// byte-for-byte as it was, yet still paid for a full export, encrypt, fsync and
+// rename of the whole file. Several clock-driven sweeps (stale marking, prune
+// passes, completing an action that is already complete) do exactly that most
+// of the time they run. Only plain INSERT/UPDATE/DELETE/REPLACE are skipped:
+// sqlite3_changes() reports nothing meaningful for DDL or PRAGMAs, so anything
+// else still persists. A previous persist that threw leaves unflushed changes
+// in memory, and the next call writes them regardless.
+const DML = /^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b/i
+
 function run(sql, params = []) {
   db.run(sql, params)
+  if (!persistFailed && persistDepth === 0 && DML.test(sql) && db.getRowsModified() === 0) return
   persist()
 }
 
@@ -791,6 +882,24 @@ function getApplications(filters = {}) {
 // Same filters and sorting, minus the document columns.
 function getApplicationsList(filters = {}) {
   return runApplicationQuery(LIST_COLUMNS, filters)
+}
+
+// The newest `limit` applications with only the fields Ask Hiro shows the
+// model. It used to read every full row (SELECT *: every résumé, cover letter
+// and job description ever stored) on each question, sort them in JavaScript
+// and keep eighty — the documents were loaded only to be thrown away.
+function getApplicationsForAsk(limit = 80) {
+  return query(`
+    SELECT id, job_title, company, platform, status, match_score, salary, applied_at, updated_at,
+           next_action_at, next_action_note, resume_name, substr(comment, 1, 120) AS comment
+    FROM applications
+    ORDER BY applied_at DESC
+    LIMIT ?
+  `, [Math.max(1, Math.min(500, Number(limit) || 80))])
+}
+
+function applicationExists(id) {
+  return !!queryOne('SELECT 1 FROM applications WHERE id = ? LIMIT 1', [Number(id)])
 }
 
 function runApplicationQuery(columns, filters = {}) {
@@ -1140,6 +1249,13 @@ function applyConflictResolution(id, mode = 'restore') {
   if (conflict.resolved_as !== 'local-kept') return { success: false, reason: 'This conflict is already resolved.' }
   const exists = getApplication(conflict.application_id)
   if (!exists) return { success: false, reason: 'That application no longer exists' }
+  // The discarded value came from a phone, so restoring it is a phone edit
+  // applied late and passes the same gate (remoteStatus.js): re-applying a
+  // logged 'held' would otherwise re-arm a submission that already went out.
+  if (conflict.field === 'status') {
+    const refusal = remoteStatusRefusal(conflict.remote_value)
+    if (refusal) return { success: false, reason: refusal }
+  }
 
   let value = conflict.remote_value
   if (mode === 'merge') {
@@ -1489,6 +1605,7 @@ function deleteApplication(id) {
     run('DELETE FROM interview_events WHERE application_id = ?', [id])
     run('DELETE FROM recruiter_replies WHERE application_id = ?', [id])
     run('DELETE FROM offers WHERE application_id = ?', [id])
+    run('DELETE FROM interview_time_proposals WHERE application_id = ?', [id])
     run('DELETE FROM sent_messages WHERE application_id = ?', [id])
     // The frozen copies of what was sent. They used to be left behind, so a
     // deleted application kept every résumé and cover letter it ever had: the
@@ -1527,6 +1644,7 @@ function clearAllApplications({ keepAnswerBank = false } = {}) {
     run('DELETE FROM sync_conflicts')
     run('DELETE FROM recruiter_replies')
     run('DELETE FROM offers')
+    run('DELETE FROM interview_time_proposals')
   })
   return { success: true, undo }
 }
@@ -1544,6 +1662,7 @@ function pruneOrphanedRows() {
       // else's words about the user. An orphan is not just clutter here.
       run('DELETE FROM recruiter_replies WHERE application_id NOT IN (SELECT id FROM applications)')
       run('DELETE FROM offers WHERE application_id NOT IN (SELECT id FROM applications)')
+      run('DELETE FROM interview_time_proposals WHERE application_id NOT IN (SELECT id FROM applications)')
       // Snapshots hold whole documents, so an orphan here is both the biggest
       // waste of space and a résumé the user believes they deleted.
       run('DELETE FROM application_snapshots WHERE application_id NOT IN (SELECT id FROM applications)')
@@ -1944,12 +2063,46 @@ function getCloudTombstones() {
   return query('SELECT local_id, cloud_id FROM deleted_applications WHERE local_id NOT IN (SELECT id FROM applications)')
 }
 
+// Checklists arrive from the cloud (and from older builds) unvalidated, so the
+// stored text may not be JSON at all, or not an array. parseChecklist answers
+// null for that rather than throwing a bare SyntaxError: a reader that only
+// wants to LIST tasks (the task inbox, push) skips the one bad row, while a
+// writer (getChecklist → updateChecklist) still refuses, because rewriting an
+// unreadable checklist would replace whatever is there with one new item.
+function parseChecklist(raw) {
+  try {
+    const items = JSON.parse(raw || '[]')
+    return Array.isArray(items) ? items.filter(item => item && typeof item === 'object') : null
+  } catch {
+    return null
+  }
+}
+
 function getChecklist(id) {
-  const row = getApplication(id)
+  const row = queryOne('SELECT id, checklist FROM applications WHERE id = ?', [id])
   if (!row) throw new Error('Application not found.')
-  const items = JSON.parse(row.checklist || '[]')
-  if (!Array.isArray(items)) throw new Error('The checklist is unreadable. Restore it from a backup.')
+  const items = parseChecklist(row.checklist)
+  if (!items) throw new Error('The checklist is unreadable. Restore it from a backup.')
   return items
+}
+
+// What the task inbox needs and nothing else. getApplications() is SELECT *,
+// which drags every tailored résumé and cover letter through the IPC boundary
+// to read a date column — and the inbox then re-read each full row again per
+// checklist. One narrow read instead; settled rows never have open tasks.
+function getTaskInboxRows() {
+  return {
+    applications: query(`
+      SELECT id, job_title, company, status, checklist,
+             next_action_at, next_action_note, next_action_done_at, closing_date
+      FROM applications
+      WHERE status NOT IN ('rejected', 'withdrawn', 'skipped')
+    `),
+    attention: query(`
+      SELECT id, job_title, company, closing_date FROM attention_jobs
+      WHERE dismissed = 0 AND closing_date IS NOT NULL AND closing_date != ''
+    `),
+  }
 }
 
 function updateChecklist(id, input = {}) {
@@ -2061,10 +2214,28 @@ function markCloudSeen(id, cloudUpdatedAt) {
 
 // Apply a phone-side edit locally WITHOUT marking the row dirty, so the next
 // push doesn't echo it straight back with a new timestamp.
-function applyCloudEdit(id, changes, cloudUpdatedAt) {
-  const { status, comment } = changes
+function applyCloudEdit(id, changes, cloudUpdatedAt, { statusSetBy = null } = {}) {
+  const { comment } = changes
+  let { status } = changes
   const sets = ["updated_at = datetime('now')", 'cloud_updated_at = ?']
   const params = [cloudUpdatedAt]
+  // A status from the cloud passes the same gate as one from the LAN API
+  // (remoteStatus.js). Without it a client could move a sent application back
+  // to 'held', and approving it again submitted it twice. The refused status is
+  // dropped, not the whole edit, and the row is marked dirty so the next push
+  // overwrites the cloud copy with the desktop's own status — otherwise the
+  // phone would keep showing a status the desktop never accepted.
+  //
+  // Only a status a phone set is gated. The server stamps who set it
+  // (status_set_by in schema.sql); 'desktop' means another desktop on this
+  // account, whose Undo back to 'held' is legitimate and must not be pushed back
+  // over. An unstamped row (an older project) is gated, as before.
+  let statusRefused = null
+  if (status != null && statusSetBy !== 'desktop') {
+    statusRefused = remoteStatusRefusal(status)
+    if (statusRefused) status = null
+  }
+  if (statusRefused) sets.push('cloud_dirty = 1')
   if (status != null) { sets.push('status = ?'); params.push(status) }
   if (comment != null) { sets.push('comment = ?'); params.push(comment) }
   for (const field of ['next_action_at', 'next_action_note', 'next_action_done_at', 'checklist']) {
@@ -2076,6 +2247,7 @@ function applyCloudEdit(id, changes, cloudUpdatedAt) {
   params.push(id)
   run(`UPDATE applications SET ${sets.join(', ')} WHERE id = ?`, params)
   if (status != null) recordStatusChange(id, status) // phone edits show in the timeline too
+  return { statusRefused }
 }
 
 // Every interview joined to its application, for the cloud mirror. Unlike
@@ -2505,7 +2677,16 @@ function getApplicationsPerDay(days) {
 // and a later email actually scheduling an interview was never seen.
 // 'withdrawn' is deliberately absent: the user has left the process, so a later
 // email is not an outcome to re-open the row with.
-const OPEN_STATUSES = ['applied', 'pending', 'no_response']
+//
+// 'interview' is in scope too. Leaving it out froze every row the moment it
+// reached the interview stage, so the rejection or offer that follows an
+// interview — the outcome that matters most — never updated the status. It is
+// the only interview-stage status (statuses.js); 'offer', 'rejected',
+// 'skipped', 'held' and 'withdrawn' are settled and stay out. A row in
+// 'interview' may only move forward from an email (to offer or rejected): an
+// unclassifiable reply about logistics must not demote it to 'pending' — the
+// inbox enforces that (INTERVIEW_STAGE_STATUSES in services/inbox.js).
+const OPEN_STATUSES = ['applied', 'pending', 'no_response', 'interview']
 
 function getApplicationsAwaitingReply() {
   const list = OPEN_STATUSES.map(s => `'${s}'`).join(', ')
@@ -2866,6 +3047,50 @@ function getClosingSoon(days) {
       AND closing_date >= date('now','localtime') AND closing_date <= ${bound}
   `, [n])
   return [...held, ...attention].sort((a, b) => a.closing_date.localeCompare(b.closing_date))
+}
+
+// ─── Drafted interview times ─────────────────────────────────────
+// See the interview_time_proposals CREATE TABLE. A new invitation replaces the
+// previous draft and re-opens it; the user dismissing it is what closes it.
+function saveTimeProposal({ applicationId, slots = [], email = '', subject = '', recipient = '', calendarChecked = false, replyUid = null }) {
+  run(`INSERT INTO interview_time_proposals
+         (application_id, slots, email, subject, recipient, calendar_checked, reply_uid, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', datetime('now'))
+       ON CONFLICT(application_id) DO UPDATE SET slots = excluded.slots, email = excluded.email,
+         subject = excluded.subject, recipient = excluded.recipient,
+         calendar_checked = excluded.calendar_checked, reply_uid = excluded.reply_uid,
+         status = 'draft', created_at = excluded.created_at`,
+  [applicationId, JSON.stringify(Array.isArray(slots) ? slots : []), email, subject, recipient, calendarChecked ? 1 : 0, replyUid ?? null])
+  return { success: true }
+}
+
+function shapeTimeProposal(row) {
+  if (!row) return null
+  let slots = []
+  try { slots = JSON.parse(row.slots || '[]') } catch { /* show the email without the list */ }
+  return {
+    applicationId: row.application_id, slots: Array.isArray(slots) ? slots : [],
+    email: row.email || '', subject: row.subject || '', to: row.recipient || '',
+    calendarChecked: !!row.calendar_checked, status: row.status, createdAt: row.created_at, replyUid: row.reply_uid ?? null,
+    company: row.company, jobTitle: row.job_title,
+  }
+}
+
+function getTimeProposal(applicationId) {
+  return shapeTimeProposal(queryOne(`SELECT p.*, a.company, a.job_title FROM interview_time_proposals p
+    JOIN applications a ON a.id = p.application_id WHERE p.application_id = ?`, [applicationId]))
+}
+
+function getOpenTimeProposals() {
+  return query(`SELECT p.*, a.company, a.job_title FROM interview_time_proposals p
+    JOIN applications a ON a.id = p.application_id
+    WHERE p.status = 'draft' AND a.status = 'interview'
+    ORDER BY p.created_at ASC`).map(shapeTimeProposal)
+}
+
+function dismissTimeProposal(applicationId) {
+  run("UPDATE interview_time_proposals SET status = 'dismissed' WHERE application_id = ?", [applicationId])
+  return { success: true }
 }
 
 // ─── Push notification ledger ────────────────────────────────────
@@ -3496,6 +3721,22 @@ function saveCompanyResearch(companyKey, data) {
   [companyKey, JSON.stringify(data)])
 }
 
+// Employers worth looking for a careers board for: the ones actually applied
+// to (not merely scored and skipped) plus any researched for an interview,
+// most recent first. Names only — services/atsDiscovery.js derives the slugs.
+function getAtsDiscoveryCompanies(limit = 30) {
+  const names = query(`
+    SELECT company, MAX(applied_at) AS last_at FROM applications
+    WHERE company IS NOT NULL AND company <> '' AND status NOT IN ('skipped')
+    GROUP BY company COLLATE NOCASE ORDER BY last_at DESC LIMIT ?
+  `, [Number(limit)]).map(r => r.company)
+  for (const r of query('SELECT data FROM company_research ORDER BY fetched_at DESC LIMIT ?', [Number(limit)])) {
+    try { const c = JSON.parse(r.data)?.company; if (c) names.push(String(c)) } catch { /* skip a bad row */ }
+  }
+  const seen = new Set()
+  return names.filter(n => { const k = n.trim().toLowerCase(); if (!k || seen.has(k)) return false; seen.add(k); return true }).slice(0, Number(limit))
+}
+
 function getInterviewPrepWithAnswers(applicationId) {
   const questions = getInterviewPrep(applicationId)
   if (!Array.isArray(questions)) return questions
@@ -3549,6 +3790,20 @@ function getOffers() {
     }
   })
 
+  // The user's own exchange rates, when they have entered any. A figure in the
+  // base currency converts at 1; one in a currency with no rate stays
+  // unconverted (convertedComp null) rather than being guessed. The converted
+  // figure is carried beside the original, never instead of it, together with
+  // the rate used, so the page can say "converted at your rate of 1.65".
+  const fx = getExchangeRates()
+  const rateFor = (currency) => (!fx.base || !currency ? null : currency === fx.base ? 1 : fx.rates[currency] ?? null)
+  for (const o of offers) {
+    const rate = o.comparableComp == null ? null : rateFor(o.currency)
+    o.convertedComp = rate == null ? null : Math.round(o.comparableComp * rate)
+    o.convertedRate = rate
+    o.convertedCurrency = rate == null ? '' : fx.base
+  }
+
   const live = offers.filter(o => o.decision === 'considering')
   const currencies = [...new Set(live.filter(o => o.comparableComp != null).map(o => o.currency || ''))]
   const comparable = currencies.length === 1 && !!currencies[0]
@@ -3557,15 +3812,32 @@ function getOffers() {
     const values = live.filter(o => o.currency === currency).map(o => o.comparableComp).filter(v => v != null)
     return { currency, best: Math.max(...values), spread: values.length > 1 ? Math.max(...values) - Math.min(...values) : null }
   })
+  // Mixed currencies become comparable only when EVERY live figure can be
+  // converted. Comparing the two that have rates while silently leaving out a
+  // third would make "best" a claim about a subset the user did not choose.
+  const missingRates = comparable ? [] : currencies.filter(c => rateFor(c) == null).map(c => c || '(no currency)')
+  const convertible = !comparable && currencies.length > 1 && !!fx.base && missingRates.length === 0
+  const converted = convertible ? live.map(o => o.convertedComp).filter(v => v != null) : []
   return {
     offers,
     // The summary the page leads with: how many decisions are open, what is at
     // stake, and what expires first.
     live: live.length,
     comparisonCurrency: comparable ? currencies[0] : '', byCurrency,
-    comparisonNote: comparable ? '' : 'Choose a currency for each offer. Different currencies are shown separately; no exchange rate is assumed.',
+    comparisonNote: comparable || convertible ? '' : fx.base && currencies.length > 1
+      ? `Add a rate to ${fx.base} for ${missingRates.join(', ')} to compare these offers. Different currencies are shown separately until then.`
+      : 'Choose a currency for each offer. Different currencies are shown separately; no exchange rate is assumed — add your own rates below to compare them.',
     best: comps.length ? Math.max(...comps) : null,
     spread: comps.length >= 2 ? Math.max(...comps) - Math.min(...comps) : null,
+    exchangeRates: fx,
+    // Present only when the comparison above was made by conversion.
+    converted: convertible ? {
+      base: fx.base,
+      best: converted.length ? Math.max(...converted) : null,
+      spread: converted.length >= 2 ? Math.max(...converted) - Math.min(...converted) : null,
+      rates: Object.fromEntries(currencies.filter(c => c !== fx.base).map(c => [c, fx.rates[c]])),
+    } : null,
+    missingRates,
     nextDeadline: live
       .filter(o => o.respond_by)
       .sort((a, b) => String(a.respond_by).localeCompare(String(b.respond_by)))[0] || null,
@@ -4102,11 +4374,23 @@ function restoreBackup(name) {
   // Keep an escape hatch: snapshot the current database before replacing it.
   // Timestamped, so restoring twice doesn't destroy the first snapshot.
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  //
+  // The snapshot is the only way back, so failing to take it aborts the restore
+  // rather than proceeding without one (a full disk or a permissions problem
+  // used to be swallowed, and the current data was then overwritten with no
+  // copy anywhere). Flushed first so the copy holds what is in memory, not
+  // whatever was last written. A profile with no database file yet has nothing
+  // to lose and needs no snapshot.
   let snapshot = null
-  try {
+  try { persist() } catch { /* the copy below reports whether the file is usable */ }
+  if (fs.existsSync(DB_PATH)) {
     snapshot = `autoapply-pre-restore-${stamp}.db`
-    fs.copyFileSync(DB_PATH, path.join(BACKUP_DIR, snapshot))
-  } catch { snapshot = null }
+    try {
+      fs.copyFileSync(DB_PATH, path.join(BACKUP_DIR, snapshot))
+    } catch (err) {
+      return { success: false, error: `Restore cancelled: could not save a copy of your current data first (${err.message}). Nothing was changed.`, snapshot: null }
+    }
+  }
   // A backup made before encryption was turned on is plaintext, and one made
   // after is not — readFile accepts either, so a restore never depends on which
   // era the file came from. It can still fail (a backup from a profile whose key
@@ -4399,6 +4683,138 @@ function getOptimisationInsights() {
   return suggestions
 }
 
+// ─── Ask Hiro threads ────────────────────────────────────────────
+// Conversations used to live in the page's React state and vanished the
+// moment the user looked at anything else. Bounded on both axes so a habit of
+// asking does not grow the (whole-file-rewritten) database without limit.
+const ASK_MAX_THREADS = 100
+const ASK_MAX_MESSAGES = 200
+const ASK_ROLES = new Set(['user', 'assistant'])
+
+function parseJsonArray(raw) {
+  try { const v = JSON.parse(raw || '[]'); return Array.isArray(v) ? v : [] } catch { return [] }
+}
+
+function listAskThreads() {
+  return query(`
+    SELECT t.id, t.title, t.created_at, t.updated_at, COUNT(m.id) AS message_count
+    FROM ask_threads t LEFT JOIN ask_messages m ON m.thread_id = t.id
+    GROUP BY t.id ORDER BY t.updated_at DESC, t.id DESC
+  `)
+}
+
+function getAskThread(id) {
+  const thread = queryOne('SELECT id, title, created_at, updated_at FROM ask_threads WHERE id = ?', [Number(id)])
+  if (!thread) return null
+  const messages = query('SELECT id, role, content, actions, error, created_at FROM ask_messages WHERE thread_id = ? ORDER BY id ASC', [thread.id])
+    .map(m => ({ ...m, actions: parseJsonArray(m.actions), error: !!m.error }))
+  return { ...thread, messages }
+}
+
+// One turn's messages (the question and its answer, or its error) in a single
+// write. Creates the thread when `threadId` is empty or no longer exists, and
+// returns the id the turn was stored under.
+function appendAskTurn(threadId, messages = [], { title = '' } = {}) {
+  return batch(() => {
+    let id = threadId ? queryOne('SELECT id FROM ask_threads WHERE id = ?', [Number(threadId)])?.id : null
+    if (!id) {
+      db.run("INSERT INTO ask_threads (title) VALUES (?)", [String(title || 'New conversation').replace(/\s+/g, ' ').trim().slice(0, 80)])
+      id = queryOne('SELECT last_insert_rowid() AS id')?.id
+    }
+    for (const m of messages) {
+      if (!m || !ASK_ROLES.has(m.role)) continue
+      run('INSERT INTO ask_messages (thread_id, role, content, actions, error) VALUES (?, ?, ?, ?, ?)', [
+        id, m.role, String(m.content || '').slice(0, 8000),
+        JSON.stringify(Array.isArray(m.actions) ? m.actions.slice(0, 2) : []), m.error ? 1 : 0,
+      ])
+    }
+    run("UPDATE ask_threads SET updated_at = datetime('now') WHERE id = ?", [id])
+    run(`DELETE FROM ask_messages WHERE thread_id = ? AND id NOT IN (
+           SELECT id FROM ask_messages WHERE thread_id = ? ORDER BY id DESC LIMIT ?)`, [id, id, ASK_MAX_MESSAGES])
+    const stale = query('SELECT id FROM ask_threads ORDER BY updated_at DESC, id DESC LIMIT -1 OFFSET ?', [ASK_MAX_THREADS]).map(r => r.id)
+    for (const old of stale) deleteAskThread(old)
+    return id
+  })
+}
+
+function deleteAskThread(id) {
+  return batch(() => {
+    run('DELETE FROM ask_messages WHERE thread_id = ?', [Number(id)])
+    run('DELETE FROM ask_threads WHERE id = ?', [Number(id)])
+    return { success: true }
+  })
+}
+
+// ─── Automatic interview prep ────────────────────────────────────
+// See services/interviewPrep.js. Times are local "YYYY-MM-DD HH:MM:SS", the
+// same format interview_events.scheduled_at uses, so they compare as strings.
+
+// Returns { created } so the caller knows whether this was the first time the
+// interview was seen. changes() is read before persist(), which resets it.
+function scheduleInterviewPrep({ interviewId, applicationId, scheduledAt, runAt }) {
+  db.run(`INSERT OR IGNORE INTO interview_prep_jobs (interview_id, scheduled_at, application_id, run_at)
+          VALUES (?, ?, ?, ?)`, [Number(interviewId), String(scheduledAt), Number(applicationId), String(runAt)])
+  const created = db.getRowsModified() > 0
+  if (created) persist()
+  return { created }
+}
+
+function getInterviewPrepJob(interviewId, scheduledAt) {
+  return queryOne('SELECT * FROM interview_prep_jobs WHERE interview_id = ? AND scheduled_at = ?', [Number(interviewId), String(scheduledAt)])
+}
+
+function getDueInterviewPrepJobs(nowLocal, limit = 10) {
+  return query(`SELECT * FROM interview_prep_jobs WHERE status = 'pending' AND run_at <= ?
+                ORDER BY scheduled_at ASC LIMIT ?`, [String(nowLocal), Number(limit)])
+}
+
+function updateInterviewPrepJob(interviewId, scheduledAt, { status, attempts, lastError = '', done = false }) {
+  run(`UPDATE interview_prep_jobs SET status = ?, attempts = COALESCE(?, attempts), last_error = ?,
+         done_at = CASE WHEN ? THEN datetime('now', 'localtime') ELSE done_at END
+       WHERE interview_id = ? AND scheduled_at = ?`,
+  [String(status), attempts == null ? null : Number(attempts), String(lastError || '').slice(0, 300), done ? 1 : 0, Number(interviewId), String(scheduledAt)])
+}
+
+// How many automatic preps finished since `sinceLocal` — the daily cap.
+function countInterviewPrepDoneSince(sinceLocal) {
+  return queryOne("SELECT COUNT(*) AS c FROM interview_prep_jobs WHERE status = 'done' AND done_at >= ?", [String(sinceLocal)])?.c || 0
+}
+
+// ─── Offer exchange rates ────────────────────────────────────────
+const CURRENCY = /^[A-Z]{3}$/
+
+function getExchangeRates() {
+  const rows = query('SELECT currency, rate, is_base, updated_at FROM exchange_rates')
+  const base = rows.find(r => r.is_base)?.currency || ''
+  const rates = {}
+  for (const r of rows) if (!r.is_base && Number(r.rate) > 0) rates[r.currency] = Number(r.rate)
+  const updatedAt = rows.map(r => r.updated_at).filter(Boolean).sort().pop() || null
+  return { base, rates, updatedAt }
+}
+
+// Replaces the whole set. Anything malformed is refused rather than stored, so
+// a typo cannot turn into a comparison.
+function setExchangeRates({ base, rates } = {}) {
+  const b = String(base || '').trim().toUpperCase()
+  if (b && !CURRENCY.test(b)) return { success: false, reason: 'The base currency must be a three-letter code, e.g. AUD.' }
+  const clean = {}
+  for (const [code, value] of Object.entries(rates && typeof rates === 'object' ? rates : {})) {
+    const c = String(code).trim().toUpperCase()
+    if (!CURRENCY.test(c)) return { success: false, reason: `"${code}" is not a three-letter currency code.` }
+    if (c === b) continue
+    const n = Number(value)
+    if (!Number.isFinite(n) || n <= 0 || n > 1000000) return { success: false, reason: `The rate for ${c} must be a positive number.` }
+    clean[c] = n
+  }
+  if (Object.keys(clean).length > 50) return { success: false, reason: 'Too many currencies.' }
+  batch(() => {
+    run('DELETE FROM exchange_rates')
+    if (b) run('INSERT INTO exchange_rates (currency, rate, is_base) VALUES (?, 1, 1)', [b])
+    for (const [c, n] of Object.entries(clean)) run('INSERT INTO exchange_rates (currency, rate, is_base) VALUES (?, ?, 0)', [c, n])
+  })
+  return { success: true, ...getExchangeRates() }
+}
+
 // ─── Whole-database export / import ──────────────────────────────
 //
 // The rotating backups copy the SQLite file, which on an encrypted profile is
@@ -4469,6 +4885,9 @@ module.exports = {
   getApplicationsAwaitingReply, setLastReplyUid, markStaleApplications, OPEN_STATUSES,
   saveInterviewPrep, getInterviewPrep, deleteInterviewPrep, getInterviewPrepWithAnswers,
   getCompanyResearch, saveCompanyResearch,
+  getApplicationsForAsk, applicationExists, listAskThreads, getAskThread, appendAskTurn, deleteAskThread,
+  scheduleInterviewPrep, getInterviewPrepJob, getDueInterviewPrepJobs, updateInterviewPrepJob, countInterviewPrepDoneSince,
+  getExchangeRates, setExchangeRates, getAtsDiscoveryCompanies,
   getInterviewAnswer, listInterviewAnswers, saveInterviewAnswer, deleteInterviewAnswer,
   markInterviewAnswerUsed, answerKey,
   addInterviewEvent, upsertDetectedInterview, getInterviewEvents, getUpcomingInterviews, getInterviewEvent, deleteInterviewEvent,
@@ -4476,6 +4895,8 @@ module.exports = {
   updateClosingDate, getScoreBandConversion, getThresholdRecommendation,
   setNextAction, completeNextAction, getDueNextActions, getPipeline, getClosingSoon, PIPELINE_STAGES,
   claimPushKey, releasePushKey, getPushLog, prunePushLog,
+  saveTimeProposal, getTimeProposal, getOpenTimeProposals, dismissTimeProposal,
+  parseChecklist, getTaskInboxRows,
   getCalendarLink, getCalendarLinks, saveCalendarLink, deleteCalendarLink, getOrphanedCalendarLinks,
   getWeeklyReportData, getStorageInfo,
   getContacts, getDueContacts, saveContact, deleteContact, completeContactReminder, snoozeContactReminder,

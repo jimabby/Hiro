@@ -27,6 +27,9 @@ export default function ApplicationDetailScreen({ client, id, onBack, active = t
   const [savingComment, setSavingComment] = useState(false)
   const [savedComment, setSavedComment] = useState(false)
   const [reviewQueued, setReviewQueued] = useState('')
+  // The decision already waiting for the desktop ({ id, action, status }), so
+  // the card can offer to swap or cancel it rather than queue a second one.
+  const [pendingReview, setPendingReview] = useState(null)
   const [reviewBusy, setReviewBusy] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   // The note as last saved, so the button can say whether there is anything to
@@ -51,6 +54,12 @@ export default function ApplicationDetailScreen({ client, id, onBack, active = t
   }, [client, id])
 
   useEffect(() => { load() }, [load])
+
+  const loadPendingReview = useCallback(async () => {
+    if (!client.getPendingReview) return
+    try { setPendingReview(await client.getPendingReview(id)) } catch { /* the card still offers a fresh decision */ }
+  }, [client, id])
+  useEffect(() => { if (app?.status === 'held') loadPendingReview() }, [app?.status, loadPendingReview])
 
   async function setStatus(status) {
     if (status === app?.status) return
@@ -79,21 +88,45 @@ export default function ApplicationDetailScreen({ client, id, onBack, active = t
   // Approving or rejecting a held draft. Both used to be fire-and-forget: a
   // failure (no review_requests table, offline) threw into nowhere and the
   // button looked like it had done nothing, inviting a second tap.
+  //
+  // Changing a queued decision replaces it (the desktop never runs the old
+  // one). If the desktop has already started a different decision the client
+  // throws with that truth, and the card shows what is actually happening
+  // instead of claiming the new choice was queued.
   async function review(action) {
     setReviewBusy(true)
     setError('')
     try {
-      await client.requestReviewAction(id, action)
+      const res = await client.requestReviewAction(id, action)
       success()
       onChanged?.()
       setReviewQueued(action === 'approve'
-        ? 'Approval queued — the desktop submits it on its next sync.'
-        : 'Rejection queued — nothing will be sent.')
+        ? `${res?.replaced ? 'Changed to approval' : 'Approval queued'} — the desktop submits it on its next sync.`
+        : `${res?.replaced ? 'Changed to rejection' : 'Rejection queued'} — nothing will be sent.`)
+    } catch (err) {
+      failure()
+      setError(err.message)
+      if (err.tooLate) setReviewQueued('')
+    } finally {
+      setReviewBusy(false)
+      loadPendingReview()
+    }
+  }
+
+  async function cancelReview() {
+    if (!pendingReview) return
+    setReviewBusy(true)
+    setError('')
+    try {
+      await client.cancelCloudCommand('review', pendingReview.id)
+      success()
+      setReviewQueued('Decision cancelled — the draft stays held.')
     } catch (err) {
       failure()
       setError(err.message)
     } finally {
       setReviewBusy(false)
+      loadPendingReview()
     }
   }
 
@@ -199,20 +232,42 @@ export default function ApplicationDetailScreen({ client, id, onBack, active = t
             <View style={styles.card}>
               <Text style={styles.cardTitle}>Waiting for review</Text>
               <Text style={styles.body}>Queue a decision for the desktop. Approval submits only when its browser session is available.</Text>
-              <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
-                <TouchableOpacity style={[styles.saveBtn, { flex: 1 }, (reviewBusy || !!reviewQueued) && styles.btnDisabled]}
-                  disabled={reviewBusy || !!reviewQueued}
-                  accessibilityRole="button" accessibilityLabel="Approve this draft on the desktop"
-                  accessibilityHint="Queues the approval; the desktop submits it when its browser session is available"
-                  accessibilityState={{ disabled: reviewBusy || !!reviewQueued, busy: reviewBusy }}
-                  onPress={() => review('approve')}><Text style={styles.saveBtnText}>Approve</Text></TouchableOpacity>
-                <TouchableOpacity style={[styles.saveBtn, { flex: 1, backgroundColor: colors.red }, (reviewBusy || !!reviewQueued) && styles.btnDisabled]}
-                  disabled={reviewBusy || !!reviewQueued}
-                  accessibilityRole="button" accessibilityLabel="Reject this draft"
-                  accessibilityHint="Nothing is sent and the job is filed as skipped"
-                  accessibilityState={{ disabled: reviewBusy || !!reviewQueued, busy: reviewBusy }}
-                  onPress={confirmReject}><Text style={styles.saveBtnText}>Reject</Text></TouchableOpacity>
-              </View>
+              {!!pendingReview && (
+                <Text style={[styles.body, { marginTop: 6 }]} accessibilityLiveRegion="polite">
+                  {pendingReview.status === 'running'
+                    ? `The desktop is processing the ${pendingReview.action === 'approve' ? 'approval' : 'rejection'} now — it can no longer be changed.`
+                    : `${pendingReview.action === 'approve' ? 'Approval' : 'Rejection'} waiting for the desktop. You can still change or cancel it.`}
+                </Text>
+              )}
+              {(() => {
+                // While a decision waits, the matching button is redundant and
+                // the other one becomes "switch"; once the desktop is running
+                // it, nothing here can change it, so no button pretends to.
+                const running = pendingReview?.status === 'running'
+                const disabled = reviewBusy || running
+                const showApprove = pendingReview?.action !== 'approve'
+                const showReject = pendingReview?.action !== 'reject'
+                return <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                  {showApprove && <TouchableOpacity style={[styles.saveBtn, { flex: 1 }, disabled && styles.btnDisabled]}
+                    disabled={disabled}
+                    accessibilityRole="button" accessibilityLabel={pendingReview ? 'Switch to approving this draft' : 'Approve this draft on the desktop'}
+                    accessibilityHint="Queues the approval; the desktop submits it when its browser session is available"
+                    accessibilityState={{ disabled, busy: reviewBusy }}
+                    onPress={() => review('approve')}><Text style={styles.saveBtnText}>{pendingReview ? 'Switch to approve' : 'Approve'}</Text></TouchableOpacity>}
+                  {showReject && <TouchableOpacity style={[styles.saveBtn, { flex: 1, backgroundColor: colors.red }, disabled && styles.btnDisabled]}
+                    disabled={disabled}
+                    accessibilityRole="button" accessibilityLabel={pendingReview ? 'Switch to rejecting this draft' : 'Reject this draft'}
+                    accessibilityHint="Nothing is sent and the job is filed as skipped"
+                    accessibilityState={{ disabled, busy: reviewBusy }}
+                    onPress={confirmReject}><Text style={styles.saveBtnText}>{pendingReview ? 'Switch to reject' : 'Reject'}</Text></TouchableOpacity>}
+                  {!!pendingReview && !running && client.cancelCloudCommand && <TouchableOpacity style={[styles.saveBtn, { flex: 1, backgroundColor: colors.textMuted }, disabled && styles.btnDisabled]}
+                    disabled={disabled}
+                    accessibilityRole="button" accessibilityLabel="Cancel the queued decision"
+                    accessibilityHint="The desktop will not act on it; the draft stays held"
+                    accessibilityState={{ disabled, busy: reviewBusy }}
+                    onPress={cancelReview}><Text style={styles.saveBtnText}>Cancel decision</Text></TouchableOpacity>}
+                </View>
+              })()}
               {!!reviewQueued && <Text style={[styles.muted, { marginTop: 8 }]} accessibilityLiveRegion="polite">{reviewQueued}</Text>}
             </View>
           )}

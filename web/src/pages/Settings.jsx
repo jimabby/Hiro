@@ -796,6 +796,7 @@ export default function Settings({ showToast, active, focusTab, onFocusTabHandle
                 ['expiring', 'Application closing soon', 'Only for jobs still waiting on you.'],
                 ['followUp', 'A follow-up is due', 'From the next-action dates on the Pipeline board.'],
                 ['offerDeadline', 'An offer is about to expire', 'Seven days out, then three, then the last day.'],
+                ['taskDue', 'A checklist task is due', 'From the task inbox on the Pipeline page, once per task.'],
                 ['review', 'Drafts waiting for review', 'At most one reminder a day.'],
                 ['scanFailed', 'A scan failed or was blocked', 'The one scan outcome you have to act on.'],
                 ['newDevice', 'A new device signed in', 'A security event, not a status update.'],

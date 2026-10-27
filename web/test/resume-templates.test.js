@@ -10,7 +10,7 @@ const RESUME = 'Jane Doe\njane_doe@mail.com | +61 412 345 678\n\nEXPERIENCE\nAcm
 const STANDARD = /^(Helvetica|Times|Courier)/
 
 async function main() {
-  check('four layouts are offered', Object.keys(RESUME_TEMPLATES), ['classic', 'modern', 'compact', 'traditional'])
+  check('five layouts are offered', Object.keys(RESUME_TEMPLATES), ['classic', 'modern', 'compact', 'traditional', 'minimal'])
   check('every layout uses standard fonts only', Object.values(RESUME_TEMPLATES).every(t => Object.values(t.fonts).every(f => STANDARD.test(f))), true)
 
   const fontsIn = async (id) => {

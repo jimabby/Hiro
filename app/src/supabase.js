@@ -50,6 +50,7 @@ export async function deleteAccount() {
 import { deriveStats, derivePerDay, isUnsent } from './stats'
 import { isDueOrOverdue, todayLocal, daysBetweenDates } from './dates'
 import { randomUUID } from 'expo-crypto'
+import * as cloudCommands from './cloudCommands'
 import { decryptCloudPayload, encryptCloudPayload, rowContext } from './cloudCrypto'
 
 const VALID_STATUSES = ['applied', 'interview', 'offer', 'rejected', 'pending', 'no_response', 'skipped', 'held', 'withdrawn']
@@ -73,7 +74,10 @@ const SLIM_COLUMNS = `${BASE_COLUMNS}, ${PIPELINE_COLUMNS}`
 // Widest first, then drop one late addition at a time. Each tier is tried once
 // and the working one is remembered, so a project on an older schema pays for
 // the discovery a single time rather than on every refresh.
-const COLUMN_TIERS = [SLIM_COLUMNS, BASE_COLUMNS, `${LEGACY_COLUMNS}, encrypted_meta`, LEGACY_COLUMNS]
+// closing_date arrived with the Today screen (schema v4); a project without it
+// falls through to the tier below and Today simply shows no closing dates.
+const TODAY_COLUMNS = `${SLIM_COLUMNS}, closing_date`
+const COLUMN_TIERS = [TODAY_COLUMNS, SLIM_COLUMNS, BASE_COLUMNS, `${LEGACY_COLUMNS}, encrypted_meta`, LEGACY_COLUMNS]
 const CLOUD_PAGE_SIZE = 500
 
 async function selectAll(buildQuery, pageSize = CLOUD_PAGE_SIZE) {
@@ -146,7 +150,7 @@ export class CloudClient {
     // tiers until one works, then remember it.
     const isMissingColumn = (err) => !!err && (
       err.code === 'PGRST204' || err.code === '42703'
-      || /next_action|encrypted_meta/.test(err.message || '')
+      || /next_action|encrypted_meta|closing_date/.test(err.message || '')
     )
 
     let data, error
@@ -224,6 +228,30 @@ export class CloudClient {
     if (!row) throw new Error('Application not found.')
     const value = row.encrypted_checklist ? await decryptCloudPayload(row.encrypted_checklist, rowContext('applications', row.id, 'encrypted_checklist')) : null
     return JSON.parse(value?.checklist || '[]')
+  }
+
+  // Every application's checklist in one query, for the Today screen. Going
+  // through getChecklist would fetch each full row (documents included) one
+  // application at a time. Returns { [applicationId]: items }; an application
+  // whose checklist cannot be opened on this device is left out rather than
+  // failing the rest.
+  async getChecklists() {
+    const { data, error } = await selectAll(() => supabase
+      .from('applications')
+      .select('id, local_id, encrypted_checklist')
+      .eq('user_id', this.userId)
+      .not('encrypted_checklist', 'is', null)
+      .order('id', { ascending: true }))
+    if (error) throw new Error(error.message)
+    const out = {}
+    await Promise.all((data || []).map(async row => {
+      try {
+        const value = await decryptCloudPayload(row.encrypted_checklist, rowContext('applications', row.id, 'encrypted_checklist'))
+        const items = JSON.parse(value?.checklist || '[]')
+        if (Array.isArray(items)) out[row.id ?? row.local_id] = items
+      } catch { /* unreadable here: no tasks from it, the rest still show */ }
+    }))
+    return out
   }
 
   async updateChecklist(id, change) {
@@ -534,37 +562,40 @@ export class CloudClient {
     if (!table) throw new Error('Invalid command kind.')
     const { data, error } = await supabase.from(table).update({ id: randomUUID(), status: 'queued', claimed_by: null, error: '', updated_at: new Date().toISOString() })
       .eq('user_id', this.userId).eq('id', id).eq('status', 'failed').select('id')
-    if (error) throw new Error(error.message)
+    // With history kept, a retry can collide with a newer decision already
+    // queued for the same draft (one active command per application).
+    if (error) throw new Error(error.code === '23505' ? 'A newer command for this draft is already queued. Refresh command history.' : error.message)
     if (!data?.length) throw new Error('Only failed commands can be retried. Refresh command history.')
     return { success: true }
   }
 
-  // Batch approval over the cloud: one queued request per draft, processed by
-  // the desktop on its next sync. The desktop applies the same rules as on the
-  // local network and drops any it will not submit.
-  async approveDrafts(ids) {
-    const accepted = []
-    for (const id of ids) {
-      await this.requestReviewAction(id, 'approve')
-      accepted.push(id)
-    }
-    return { started: true, queued: true, accepted, refused: [] }
+  // Cancel a phone command the desktop has not started (see cloudCommands.js).
+  cancelCloudCommand(kind, id) {
+    return cloudCommands.cancelCommand(supabase, this.userId, kind, id)
   }
 
-  async requestReviewAction(id, action) {
-    if (!['approve', 'reject'].includes(action)) throw new Error('Invalid review action.')
-    const { data: existing, error: readError } = await supabase.from('review_requests').select('id, status')
-      .eq('user_id', this.userId).eq('application_cloud_id', id).maybeSingle()
-    if (readError) throw new Error(readError.message)
-    if (existing) {
-      if (['queued', 'accepted', 'running'].includes(existing.status)) return { success: true, queued: true }
-      throw new Error('A previous command exists. Check command history and retry there if needed.')
+  // The decision for this draft the desktop may still act on, or null.
+  getPendingReview(id) {
+    return cloudCommands.activeReview(supabase, this.userId, id)
+  }
+
+  // Batch approval over the cloud: one queued request per draft, processed by
+  // the desktop on its next sync. The desktop applies the same rules as on the
+  // local network and drops any it will not submit. Every id is attempted and
+  // reported, named, so one failure doesn't hide how many were queued.
+  async approveDrafts(ids) {
+    const apps = await this._all()
+    const describe = id => {
+      const a = apps.find(x => x.id === id)
+      return a ? [a.job_title, a.company].filter(Boolean).join(' at ') : ''
     }
-    const { error } = await supabase.from('review_requests').insert({
-      user_id: this.userId, application_cloud_id: id, action,
-    })
-    if (error) throw new Error(/review_requests/.test(error.message)
-      ? 'Remote review needs the review_requests table — re-run supabase/schema.sql.' : error.message)
-    return { success: true, queued: true }
+    return cloudCommands.approveDrafts((id, action) => this.requestReviewAction(id, action), ids, describe)
+  }
+
+  // Queue a decision, or swap the one still waiting (approve ↔ reject). Throws
+  // with a truthful message when the desktop has already started a different
+  // one — see cloudCommands.requestReviewAction.
+  requestReviewAction(id, action) {
+    return cloudCommands.requestReviewAction(supabase, this.userId, id, action, randomUUID)
   }
 }

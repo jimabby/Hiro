@@ -34,7 +34,9 @@ async function securePost(path, body) {
   const raw = JSON.stringify(await HiroProtocol.encrypt(connection.token, body))
   const signed = await HiroProtocol.signedHeaders(connection.token, 'POST', path, raw)
   const res = await HiroProtocol.fetchWithTimeout(`${baseUrl(connection)}${path}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', ...signed }, body: raw,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...signed, [HiroProtocol.BINDING_HEADER]: HiroProtocol.BINDING_VERSION },
+    body: raw,
   })
   const envelope = await res.json()
   // Anything the desktop refuses before verifying the signature (403 non-local
@@ -46,7 +48,16 @@ async function securePost(path, body) {
       ? 'The desktop no longer accepts this extension — pair it again.'
       : `Desktop returned ${res.status}`))
   }
-  const payload = await HiroProtocol.decrypt(connection.token, envelope)
+  // The reply must answer THIS request — see openReply in protocol.js. Once a
+  // bound reply has been seen, the pairing remembers it, so a later unbound
+  // one (a reflected request, a replayed reply) is refused.
+  const { payload, bound } = await HiroProtocol.openReply(connection.token, envelope, {
+    method: 'POST', path, nonce: signed['X-Hiro-Nonce'], pinned: !!connection.responseBinding,
+  })
+  if (bound && !connection.responseBinding) {
+    connection = { ...connection, responseBinding: true }
+    await saveConnection(connection).catch(() => {})
+  }
   if (!res.ok) throw new Error(payload.error || payload.reason || `Desktop returned ${res.status}`)
   return payload
 }
@@ -61,14 +72,65 @@ function extractJob() {
   const company = clean(jsonLd.hiringOrganization?.name || meta('og:site_name') || '')
   const root = document.querySelector('[class*="description" i],[id*="description" i],main,article')
   const description = clean(jsonLd.description || meta('description', 'og:description') || root?.innerText).slice(0, 50000)
-  return { title: title.slice(0, 200), company: company.slice(0, 200), description, url: location.href }
+
+  // Pay, from schema.org baseSalary. It comes in several shapes:
+  //   { "@type": "MonetaryAmount", currency, value: 120000 }
+  //   { "@type": "MonetaryAmount", currency, value: { "@type": "QuantitativeValue",
+  //       minValue, maxValue, unitText: "YEAR" } }
+  //   a bare number or string, or an array of any of these (the first is used).
+  // It is written out as the text the desktop's salary parser already reads —
+  // "AUD $120,000 – $150,000 per year" — so the desktop derives the annual
+  // min/max itself, including for hourly and daily rates.
+  // Self-contained, like the rest of this function: it runs inside the page
+  // (chrome.scripting.executeScript), where nothing from popup.js exists.
+  function salaryText(raw) {
+    const amount = Array.isArray(raw) ? raw[0] : raw
+    if (amount == null || amount === '') return ''
+    if (typeof amount !== 'object') return clean(amount).slice(0, 120)
+    const currency = clean(amount.currency || amount.value?.currency).toUpperCase().slice(0, 3)
+    const value = amount.value ?? amount
+    const num = v => {
+      const n = typeof v === 'number' ? v : Number(String(v ?? '').replace(/[^0-9.]/g, ''))
+      return Number.isFinite(n) && n > 0 ? n : null
+    }
+    let min, max
+    if (value && typeof value === 'object') {
+      min = num(value.minValue); max = num(value.maxValue)
+      if (min == null && max == null) min = max = num(value.value)
+    } else {
+      min = max = num(value)
+    }
+    if (min == null && max == null) return ''
+    const symbol = { USD: '$', AUD: '$', CAD: '$', NZD: '$', SGD: '$', HKD: '$', GBP: '£', EUR: '€', JPY: '¥', INR: '₹' }[currency] || ''
+    const fmt = n => `${symbol}${Math.round(n).toLocaleString('en-US')}`
+    const range = min != null && max != null && min !== max ? `${fmt(min)} – ${fmt(max)}` : fmt(min ?? max)
+    const unit = { HOUR: 'hour', DAY: 'day', WEEK: 'week', MONTH: 'month', YEAR: 'year' }[clean(value?.unitText || amount.unitText).toUpperCase()]
+    return [currency, range, unit ? `per ${unit}` : ''].filter(Boolean).join(' ').slice(0, 120)
+  }
+
+  // Closing date, from validThrough — kept as the YYYY-MM-DD the listing
+  // states (the employer's own date), not converted through this browser's
+  // time zone, which could move a deadline by a day.
+  function closingDate(raw) {
+    const m = /^(\d{4}-\d{2}-\d{2})/.exec(clean(raw))
+    return m ? m[1] : ''
+  }
+
+  return {
+    title: title.slice(0, 200), company: company.slice(0, 200), description, url: location.href,
+    salary: salaryText(jsonLd.baseSalary || jsonLd.estimatedSalary), closingDate: closingDate(jsonLd.validThrough),
+  }
 }
+
+// The import form's inputs, by id — also the keys extractJob returns and the
+// field names the desktop's importJob reads.
+const FORM_FIELDS = ['title', 'company', 'salary', 'closingDate', 'description', 'url']
 
 async function fillCurrentJob() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
   if (!tab?.id || !/^https?:/.test(tab.url || '')) throw new Error('Open a web job listing first.')
   const [{ result }] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: extractJob })
-  for (const key of ['title', 'company', 'description', 'url']) $(key).value = result[key] || ''
+  for (const key of FORM_FIELDS) $(key).value = result[key] || ''
 }
 
 // Ask for access to exactly the desktop's address. Parsed with URL, so an IPv6
@@ -152,7 +214,7 @@ $('pair').addEventListener('click', async () => {
 $('import').addEventListener('click', async () => {
   $('import').disabled = true; message('Importing…')
   try {
-    await securePost('/api/import-job', { title: $('title').value, company: $('company').value, description: $('description').value, url: $('url').value })
+    await securePost('/api/import-job', Object.fromEntries(FORM_FIELDS.map(key => [key, $(key).value])))
     message('Added to Needs Attention.', 'success')
   } catch (err) { message(err.message, 'error') } finally { $('import').disabled = false }
 })

@@ -149,6 +149,16 @@ async function signInWithDerivedSecret(c, email, password) {
   const upgraded = await c.auth.signInWithPassword({ email, password: authSecret })
   if (!upgraded.error) return { session: upgraded.data, dataKey, migrated: false }
 
+  // Only a "wrong credentials" reply can mean "legacy account". A rate limit,
+  // an outage or no network says nothing about which password is set, and
+  // retrying with the raw one then sends it to the server for nothing. Same
+  // rule as the phone's app/src/legacySignIn.js.
+  const err = upgraded.error
+  const invalidCredentials = err.code
+    ? err.code === 'invalid_credentials'
+    : Number(err.status) === 400 && /invalid login credentials/i.test(String(err.message || ''))
+  if (!invalidCredentials) throw new Error(err.message)
+
   const legacy = await c.auth.signInWithPassword({ email, password })
   if (legacy.error) {
     // Report the derived-secret failure, not the legacy one: for the ordinary
@@ -351,6 +361,9 @@ function localToCloud(a) {
     next_action_at: a.next_action_at || null,
     next_action_note: a.next_action_note || '',
     next_action_done_at: a.next_action_done_at || null,
+    // A date, not an identifier: in clear like attention_jobs.closing_date, so
+    // the phone's Today screen can list closing dates without decrypting.
+    closing_date: a.closing_date || null,
     status: a.status || 'applied',
     // Which resume was sent, and whether review mode is still holding this
     // back — the phone needs both to label the row honestly.
@@ -625,7 +638,8 @@ async function pullChanges(c, { incremental = false } = {}) {
         if (Object.hasOwn(remote, field) && remote[field] !== local[field]) changes[field] = remote[field]
       }
       if (Object.keys(changes).length > 0) {
-        database.applyCloudEdit(local.id, changes, remote.updated_at)
+        const applied = database.applyCloudEdit(local.id, changes, remote.updated_at, { statusSetBy: remote.status_set_by || null })
+        if (applied?.statusRefused) logger.append(`Cloud sync: ignored status "${changes.status}" on application ${local.id} — ${applied.statusRefused}`)
       } else {
         database.markCloudSeen(local.id, remote.updated_at)
       }
@@ -1027,7 +1041,7 @@ async function updateScanStatus(running) {
 // last installed. The desktop checks it once per session before reading or
 // writing anything, and a project that is behind gets a sentence saying what to
 // do. Bump REQUIRED_CLOUD_SCHEMA together with the function in schema.sql.
-const REQUIRED_CLOUD_SCHEMA = 3
+const REQUIRED_CLOUD_SCHEMA = 4
 let verifiedSchemaFor = null
 
 function staleSchemaError(found) {

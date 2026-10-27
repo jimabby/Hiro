@@ -702,6 +702,23 @@ async function scrape(cfg, { log, skipDetails = false, onBoard } = {}) {
   return jobs
 }
 
+// Whether one board exists and how many roles it lists right now. What
+// Settings runs before saving a board (ats:testBoard), and what board
+// discovery runs on each candidate slug. No keywords, so nothing is filtered
+// out and the count is the board's real size; skipDetails, so validating a
+// board never fires a description request per job. An empty label lets the
+// provider's own company name through (Greenhouse, Ashby), which is how a
+// discovered board shows WHICH "Acme" it belongs to.
+async function testBoard(provider, slug) {
+  if (!PROVIDERS[provider]) throw new Error(`Unknown board provider: ${provider}`)
+  const jobs = await scrape({
+    atsBoards: [{ provider, slug, label: '' }],
+    jobKeywords: '', jobLocation: '',
+  }, { skipDetails: true })
+  const named = jobs.map(j => j.company).find(c => c && c !== slug)
+  return { count: jobs.length, sample: jobs.slice(0, 3).map(j => j.job_title), boardName: named || '' }
+}
+
 // The list endpoint already returned the full description, so this is a lookup
 // rather than a second network round trip.
 const descriptionCache = new Map()
@@ -732,7 +749,7 @@ async function apply() {
 }
 
 module.exports = {
-  scrape, getJobDescription, apply, primeDescriptions, supportsAutoApply,
+  scrape, testBoard, getJobDescription, apply, primeDescriptions, supportsAutoApply,
   // exported for tests
   PROVIDERS, matchesKeywords, matchesLocation, stripTags, decodeHtml, MAX_DETAIL_FETCHES,
   parseWorkday, bareSlug, icimsHost, parseIcims, parseIcimsDetail,

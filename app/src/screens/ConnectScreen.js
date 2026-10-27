@@ -7,7 +7,22 @@ import { HiroClient, pairWithDesktop } from '../api'
 import QrPairScanner from './QrPairScanner'
 import { supabase, isConfigured } from '../supabase'
 import { radius, useTheme } from '../theme'
-import { deriveAccountKeys, setCloudKey } from '../cloudCrypto'
+import AsyncStorage from '@react-native-async-storage/async-storage'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js'
+import { deriveAccountKeysAsync, setCloudKey } from '../cloudCrypto'
+import { shouldTryLegacyPassword } from '../legacySignIn'
+
+// "This account has signed in here with the derived secret", per account. Not a
+// secret (the key is a hash of the address, the value is '1'); it only stops a
+// later wrong-password reply from ever triggering the raw-password retry.
+const upgradedKey = address => `hiro.cloud-upgraded.${bytesToHex(sha256(utf8ToBytes(address.toLowerCase()))).slice(0, 32)}`
+async function isKnownUpgraded(address) {
+  try { return (await AsyncStorage.getItem(upgradedKey(address))) === '1' } catch { return false }
+}
+function markUpgraded(address) {
+  return AsyncStorage.setItem(upgradedKey(address), '1').catch(() => {})
+}
 
 export default function ConnectScreen({ onConnected }) {
   // Palette and stylesheet follow the phone's appearance setting. Named
@@ -100,21 +115,35 @@ export default function ConnectScreen({ onConnected }) {
     setError('')
     try {
       const address = email.trim()
+      // Let "Signing in…" paint before the key stretch starts. setBusy only
+      // schedules a render; without a frame in between, the derivation below
+      // would run first and the button would sit unchanged until it finished.
+      await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)))
       // The password is never sent as-is: Supabase gets a derived secret, and
       // the key that decrypts the documents is derived separately and stays on
       // this phone. See cloudCrypto for why the two must not be the same value.
-      const { dataKey, authSecret } = deriveAccountKeys(address, password)
+      const { dataKey, authSecret } = await deriveAccountKeysAsync(address, password)
       let { data, error: err } = await supabase.auth.signInWithPassword({
         email: address,
         password: authSecret,
       })
-      if (err) {
+      if (!err) markUpgraded(address)
+      else {
         // An account the desktop has not upgraded yet is still on the raw
-        // password. Sign in with it so the phone works today; the desktop
-        // performs the one-time rotation on its next sign-in.
+        // password. Retry with it only when Supabase actually said "wrong
+        // credentials" and this phone has never seen the account upgraded — a
+        // rate limit, an outage or no signal must not send the raw password
+        // (see legacySignIn).
+        if (!shouldTryLegacyPassword(err, { knownUpgraded: await isKnownUpgraded(address) })) throw new Error(err.message)
         const legacy = await supabase.auth.signInWithPassword({ email: address, password })
         if (legacy.error) throw new Error(err.message)
         data = legacy.data
+        // Close the window now rather than waiting for the desktop: rotate the
+        // account to the derived secret, which the desktop tries first anyway.
+        // Best-effort — if it fails, the desktop still rotates on its next
+        // sign-in, and the phone is no worse off than before.
+        const { error: rotateError } = await supabase.auth.updateUser({ password: authSecret })
+        if (!rotateError) markUpgraded(address)
       }
       await setCloudKey(dataKey)
       await onConnected({ mode: 'cloud', userId: data.user.id, email: data.user.email })

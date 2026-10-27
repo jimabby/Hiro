@@ -40,6 +40,9 @@ module.exports = function registerFeatureHandlers({ ipcMain, scheduler, getWindo
   ipcMain.handle('features:offers', () => featureHub.offers())
   ipcMain.handle('features:saveOffer', (_, id, data) => featureHub.saveOffer(id, data))
   ipcMain.handle('features:deleteOffer', (_, id) => featureHub.deleteOffer(id))
+  // The user's own exchange rates for comparing offers in different currencies.
+  // Typed in, never fetched; validated in database.setExchangeRates.
+  ipcMain.handle('features:setExchangeRates', (_, fx) => database.setExchangeRates(fx || {}))
 
   // What the employer wrote back, shown alongside interview prep.
   ipcMain.handle('features:replies', (_, id) => featureHub.replies(id))

@@ -187,6 +187,7 @@ async function captureProof(page) {
 // One implementation, shared with the AI adapters — see ai/markdown.js for why
 // it must never touch the candidate's own text.
 const { stripMarkdown } = require('../ai/markdown')
+const { stripUnprintable, toWinAnsi } = require('../textClean')
 
 // Résumé layouts. "classic" is the original Hiro layout, unchanged; the others
 // vary type, colour and alignment over the same parsing of the text, so every
@@ -222,6 +223,55 @@ const RESUME_TEMPLATES = {
     margin: 56, nameSize: 22, headingSize: 11, bodySize: 10.5,
     align: 'center', headingAlign: 'left', topRule: 0.8, headingRule: 0.5,
   },
+  // What most people's own résumé looks like out of a word processor: black,
+  // left-aligned, headings as written rather than shouted in capitals, no
+  // coloured rules. The coloured, centred layouts are recognisably "a template";
+  // this one reads as a document the candidate wrote.
+  minimal: {
+    label: 'Minimal — black and white, left-aligned, no colour',
+    fonts: { regular: 'Helvetica', bold: 'Helvetica-Bold', italic: 'Helvetica-Oblique' },
+    colors: { name: '#000000', heading: '#000000', rule: '#000000', body: '#111111', muted: '#444444', faint: '#444444' },
+    margin: 50, nameSize: 22, headingSize: 11.5, bodySize: 10,
+    align: 'left', headingAlign: 'left', topRule: 0, headingRule: 0,
+    headingsAsWritten: true, skillBullets: false, separator: '  |  ', underlineLinks: true,
+  },
+}
+
+// Page furniture a PDF text extractor reads as content: "-- 1 of 2 --",
+// "Page 2", or a running footer like "Jane Doe | 1". Left in, the footer on
+// page one became the candidate's name at the top of every generated résumé.
+const PAGE_MARKER_RE = /^(?:-+\s*)?(?:page\s*)?\d{1,2}(?:\s*(?:of|\/)\s*\d{1,2})?(?:\s*-+)?$|^[^|]{1,40}\|\s*\d{1,2}$/i
+
+// A role and its dates on one line, however they are separated: "Developer
+// Mar 2026 - Present" as a PDF extracts it, with a tab from a DOCX, or padded.
+const MONTH = String.raw`(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?`
+const DATE_RANGE = String.raw`(?:${MONTH}\s+)?(?:19|20)\d{2}\s*(?:[-–—]|to)\s*(?:(?:${MONTH}\s+)?(?:19|20)\d{2}|present|current|now)`
+const TRAILING_RANGE_RE = new RegExp(String.raw`^(.+?)\s+(${DATE_RANGE})$`, 'i')
+const DATE_ONLY_RE = new RegExp(String.raw`^\(?${DATE_RANGE}\)?$`, 'i')
+
+// Lines a PDF extractor split at the page's wrap points, joined back. A line
+// continues the one before when that one is a bullet (or prose that ran to the
+// margin) without closing punctuation, and this one does not start something
+// of its own: a bullet, a "Label: value" line, a dated role, or a heading.
+function unwrapExtractedLines(lines) {
+  const out = []
+  let inBullet = false
+  for (const raw of lines) {
+    const t = raw.trim()
+    if (PAGE_MARKER_RE.test(t)) continue
+    const prev = out.length ? out[out.length - 1] : ''
+    const startsOwn = !t || /^[-•*]\s/.test(t) || /^[A-Z][\w &/+.-]{1,30}:\s/.test(t)
+      || TRAILING_RANGE_RE.test(t) || /^[A-Z][A-Z\s/&-]{2,}$/.test(t)
+      || /^[A-Z][a-z]+(?:\s+(?:[A-Z][a-z]+|and|of|&)){0,3}$/.test(t)   // "Professional Experience"
+    const prevOpen = prev && !/[.!?:;]$/.test(prev.trim()) && !/\b(19|20)\d{2}$/.test(prev.trim())
+    if (!startsOwn && prevOpen && (inBullet || prev.trim().length >= 80)) {
+      out[out.length - 1] = `${prev.replace(/\s+$/, '')} ${t}`
+      continue
+    }
+    if (t) inBullet = /^[-•*]\s/.test(t)
+    out.push(raw)
+  }
+  return out
 }
 
 function resumeTemplate(id) {
@@ -237,14 +287,13 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks, temp
 
   const safeName = (candidateName || 'Resume').replace(/[^a-zA-Z0-9 _-]/g, '').trim()
   const tempPath = uniqueTempPath(`Resume - ${safeName}.pdf`)
-  const text = stripMarkdown(tailoredResume || '')
+  const text = toWinAnsi(stripUnprintable(stripMarkdown(tailoredResume || '')))
     // Clean font-encoding artifacts from old DOCX imports
     .replace(/•(?=[A-Za-z0-9])/g, '')
-    .replace(/[^\x09\x0A\x20-\x7E\u2013\u2014\u2018\u2019\u201C\u201D\u2022\u2026]/g, '')
     .replace(/•(?!\s)/g, '')
     .replace(/[ \t]{2,}/g, ' ')
   // Remove trailing blank / bullet-only lines so they don't trigger an extra empty page
-  const lines = text.split('\n')
+  const lines = unwrapExtractedLines(text.split('\n'))
   while (lines.length) {
     const last = lines[lines.length - 1].trim()
     if (!last || /^[-•*]\s*$/.test(last)) lines.pop()
@@ -252,28 +301,33 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks, temp
   }
 
   const ML = T.margin, MR = T.margin, CW = 595 - ML - MR  // A4 width 595pt
+  const SEP = T.separator || '   |   '
   const { name: NAVY, rule: BLUE, body: BODY, muted: GREY, faint: LGREY } = T.colors
 
   const KNOWN_SECTIONS = /^(summary|experience|professional experience|work experience|education|skills|technical skills|certifications|qualifications|awards|achievements|languages|interests|reference|references|honors|publications|volunteer|activities|projects|training|courses|objective|profile)$/i
 
   function isSectionHeader(t) {
     if (t.length >= 3 && /^[A-Z][A-Z\s/&-]{2,}$/.test(t)) return true
-    if (KNOWN_SECTIONS.test(t.trim())) return true
+    if (KNOWN_SECTIONS.test(t.trim().replace(/\s*\(?continued\)?$/i, ''))) return true
     return false
   }
 
-  // Detect "Company/Role   Date Range" lines — require 2+ spaces before date
+  // Detect "Company/Role   Date Range" lines. Runs of spaces were collapsed
+  // above, so a padded or single-spaced line is matched by its trailing range.
   function splitDateLine(t) {
-    const m = t.match(/^(.+?)\s{2,}(.+)$/)
+    const m = t.match(/^(.+?)(?:\t|\s{2,})(.+)$/)
     if (m && /\b(19|20)\d{2}\b|present|current/i.test(m[2])) {
       return { left: m[1].trim(), right: m[2].trim() }
     }
-    return null
+    const r = t.match(TRAILING_RANGE_RE)
+    return r && !/^[-•*]\s/.test(t) ? { left: r[1].trim(), right: r[2].trim() } : null
   }
 
   // Detect standalone date lines like "March 2026 – Present", "September 2024 – December 2024"
+  // A date range and nothing else — "Software Developer / Test Engineer Sep
+  // 2024 - Feb 2025" is a role line with its dates, not a date line.
   function isDateOnlyLine(t) {
-    return t.length < 55 && /\b(19|20)\d{2}\b/.test(t) && /[-–—]|\bto\b/i.test(t) && !/^[-•*]\s/.test(t)
+    return DATE_ONLY_RE.test(t)
   }
 
   return new Promise((resolve, reject) => {
@@ -297,6 +351,19 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks, temp
     // or a line that looks like a job title (after at least one item collected).
     const JOB_TITLE_RE = /\b(engineer|developer|analyst|designer|manager|architect|consultant|programmer|director|specialist|coordinator|officer|scientist)\b/i
     const contactParts = []
+    // A title straight under the name ("Full Stack Software Engineer") is a
+    // subtitle, not the first piece of contact information.
+    const renderSubtitle = () => {
+      while (idx < lines.length && !lines[idx].trim()) idx++
+      const l = idx < lines.length ? lines[idx].trim() : ''
+      if (l && !isSectionHeader(l) && JOB_TITLE_RE.test(l) && l.length < 60 && !/[@|]|\d{3}/.test(l)) {
+        doc.fontSize(T.bodySize + 1).font(F.regular).fillColor(BODY)
+          .text(l, ML, doc.y, { align: T.align, width: CW })
+        doc.moveDown(0.2)
+        idx++
+      }
+    }
+    renderSubtitle()
     while (idx < lines.length) {
       const l = lines[idx].trim()
       if (!l) { idx++; continue }
@@ -341,7 +408,7 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks, temp
         // Strip {{url}} markers from display text
         const displayText = item.replace(URL_EMBED_RE, '').trim()
         segments.push({ text: displayText, url })
-        if (i < items.length - 1) segments.push({ text: '   |   ', url: null })
+        if (i < items.length - 1) segments.push({ text: SEP, url: null })
       }
 
       const hasLinks = segments.some(s => s.url)
@@ -353,29 +420,20 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks, temp
           const s = segments[i], last = i === segments.length - 1
           doc.fillColor(s.url ? BLUE : GREY)
           const opts = last ? {} : { continued: true }
-          if (s.url) opts.link = s.url
+          if (s.url) { opts.link = s.url; opts.underline = !!T.underlineLinks }
+          else if (T.underlineLinks) opts.underline = false
           if (i === 0) doc.text(s.text, sx, doc.y, opts)
           else doc.text(s.text, opts)
         }
       } else {
         doc.fontSize(T.bodySize - 0.5).font(F.regular).fillColor(GREY)
-          .text(items.join('   |   '), ML, doc.y, { align: T.align, width: CW })
+          .text(items.join(SEP), ML, doc.y, { align: T.align, width: CW })
       }
       doc.moveDown(0.3)
     }
 
-    // ── Job title subtitle (e.g. "Full-Stack Software Engineer") ──────
-    // If the next non-blank line looks like a job title, render it as a subtitle
-    while (idx < lines.length && !lines[idx].trim()) idx++
-    if (idx < lines.length) {
-      const nextLine = lines[idx].trim()
-      if (!isSectionHeader(nextLine) && JOB_TITLE_RE.test(nextLine) && nextLine.length < 60) {
-        doc.fontSize(T.bodySize + 1).font(F.regular).fillColor(BODY)
-          .text(nextLine, ML, doc.y, { align: T.align, width: CW })
-        doc.moveDown(0.2)
-        idx++
-      }
-    }
+    // ── Job title subtitle after the contact lines, where some résumés put it ──
+    renderSubtitle()
 
     // ── Full-width divider ────────────────────────────────────────────
     if (T.topRule) doc.moveTo(ML, doc.y).lineTo(ML + CW, doc.y).strokeColor(BLUE).lineWidth(T.topRule).stroke()
@@ -383,7 +441,7 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks, temp
 
     // ── Body ──────────────────────────────────────────────────────────
     // Every line in these sections gets a bullet
-    const AUTO_BULLET_RE  = /^(SKILL|CERTIF|QUALIF|AWARD|ACHIEVEMENT|LANGUAGE|INTEREST|REFERENCE|HONOR|PUBLICAT|VOLUNTEER|ACTIVIT)/i
+    const AUTO_BULLET_RE  = /^(?:TECHNICAL\s+|KEY\s+|CORE\s+)?(SKILL|CERTIF|QUALIF|AWARD|ACHIEVEMENT|LANGUAGE|INTEREST|REFERENCE|HONOR|PUBLICAT|VOLUNTEER|ACTIVIT)/i
     // Only the FIRST line of each entry (school name) gets a bullet; rest are indented sub-lines
     const ENTRY_BULLET_RE = /^(EDUCAT|TRAINING|COURSE)/i
     let autoBullet  = false
@@ -411,7 +469,7 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks, temp
 
       // Section header
       if (isSectionHeader(t)) {
-        const headerText = t.toUpperCase()
+        const headerText = T.headingsAsWritten ? t : t.toUpperCase()
         autoBullet  = AUTO_BULLET_RE.test(t)
         entryBullet = ENTRY_BULLET_RE.test(t)
         entryStart  = entryBullet
@@ -471,10 +529,11 @@ async function buildResumePDF(tailoredResume, candidateName, personalLinks, temp
         if (autoBullet && colonIdx > 0 && colonIdx < 45) {
           const label = bt.slice(0, colonIdx)
           const rest = bt.slice(colonIdx)
+          const x = T.skillBullets === false ? ML : ML + 8
           doc.fontSize(T.bodySize).font(F.bold).fillColor(BODY)
-            .text(`•   ${label}`, ML + 8, doc.y, { width: CW - 8, continued: true })
+            .text(T.skillBullets === false ? label : `•   ${label}`, x, doc.y, { width: ML + CW - x, continued: true })
           doc.font(F.regular)
-            .text(rest, { width: CW - 8, lineGap: 1.5 })
+            .text(rest, { width: ML + CW - x, lineGap: 1.5 })
         } else {
           doc.fontSize(T.bodySize).font(F.regular).fillColor(BODY)
             .text(`•   ${bt}`, ML + 8, doc.y, { width: CW - 8, lineGap: 1.5 })
@@ -537,7 +596,7 @@ async function buildCoverLetterPDF(text) {
   const tempPath = uniqueTempPath('cover-letter.pdf')
 
   // Split on blank lines so paragraph spacing is controlled, not inflated by paragraphGap
-  const paragraphs = (text || '').trim().split(/\n{2,}/).map(p => p.trim()).filter(Boolean)
+  const paragraphs = toWinAnsi(stripUnprintable(text || '')).trim().split(/\n{2,}/).map(p => p.trim()).filter(Boolean)
 
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'A4', margins: { top: 65, bottom: 65, left: 72, right: 72 } })
@@ -558,9 +617,8 @@ async function buildResumeDocx(text) {
   const { Document, Packer, Paragraph, TextRun, AlignmentType, BorderStyle,
     TabStopType, TabStopLeader } = require('docx')
 
-  const lines = stripMarkdown(text || '')
+  const lines = stripUnprintable(stripMarkdown(text || ''))
     .replace(/•(?=[A-Za-z0-9])/g, '')
-    .replace(/[^\x09\x0A\x20-\x7E\u2013\u2014\u2018\u2019\u201C\u201D\u2022\u2026]/g, '')
     .replace(/•(?!\s)/g, '')
     .replace(/[ \t]{2,}/g, ' ')
     .split('\n')
@@ -692,53 +750,14 @@ async function buildResumeDocx(text) {
 
 async function tailorDocx(originalPath, tailoredText, candidateName) {
   const AdmZip = require('adm-zip')
+  const { applyTailoring } = require('../docxTailor')
 
   const zip = new AdmZip(originalPath)
   const xmlEntry = zip.getEntry('word/document.xml')
   if (!xmlEntry) throw new Error('Invalid DOCX: no document.xml')
 
-  let xml = xmlEntry.getData().toString('utf8')
-
-  // Prepare tailored lines (plain text, XML-escaped, stripped of markdown and URL markers)
   const escXml = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-  const cleanedText = stripMarkdown(tailoredText).replace(/\s*\{\{https?:\/\/[^}]+\}\}/g, '')
-  const tailoredLines = cleanedText.split('\n').filter(l => l.trim()).map(escXml)
-
-  // Collect original paragraphs with text content
-  const paraRegex = /(<w:p[ >])([\s\S]*?)(<\/w:p>)/g
-  const origParas = []
-  let m
-  while ((m = paraRegex.exec(xml)) !== null) {
-    const content = m[2]
-    const paraText = (content.match(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g) || [])
-      .map(t => t.replace(/<[^>]+>/g, '')).join('').trim()
-    if (paraText) origParas.push({ full: m[0], open: m[1], content, close: m[3], text: paraText })
-  }
-
-  // Map tailored lines to original paragraphs (1:1 for matching count, extras go to last paragraph)
-  let lineIdx = 0
-  for (const para of origParas) {
-    if (lineIdx >= tailoredLines.length) break
-    const newText = tailoredLines[lineIdx++]
-
-    // Find the first <w:r> with a <w:t> and replace text there, keep all run properties
-    let firstDone = false
-    const newContent = para.content.replace(/<w:r>([\s\S]*?)<\/w:r>|<w:r [\s\S]*?>([\s\S]*?)<\/w:r>/g, (runMatch) => {
-      if (!/<w:t/.test(runMatch)) return runMatch  // no text in this run (e.g. field codes) — keep
-      if (!firstDone) {
-        firstDone = true
-        // Replace text content in this run only, preserve run properties
-        return runMatch.replace(/(<w:t)([^>]*)(>)([\s\S]*?)(<\/w:t>)/, (_, tag, attrs, gt, _oldText, closeTag) => {
-          const hasSpace = /xml:space/.test(attrs)
-          return `${tag}${attrs}${hasSpace ? '' : ' xml:space="preserve"'}${gt}${newText}${closeTag}`
-        })
-      }
-      // Clear text from subsequent runs but keep the run structure
-      return runMatch.replace(/(<w:t[^>]*>)([\s\S]*?)(<\/w:t>)/, '$1$3')
-    })
-
-    xml = xml.replace(para.full, para.open + newContent + para.close)
-  }
+  const xml = applyTailoring(xmlEntry.getData().toString('utf8'), tailoredText)
 
   const safeName = (candidateName || 'Resume').replace(/[^a-zA-Z0-9 _-]/g, '').trim() || 'Resume'
   const tempPath = uniqueTempPath(`Resume - ${safeName}.docx`)
@@ -771,7 +790,7 @@ async function buildResumeFile(tailoredResume, cfg) {
 
   if (originalPath) {
     const fs = require('fs')
-    if (fs.existsSync(originalPath) && (originalExt === 'docx' || originalExt === 'doc')) {
+    if (fs.existsSync(originalPath) && originalExt === 'docx') {
       try {
         return await tailorDocx(originalPath, tailoredResume, candidateName)
       } catch { /* fall through to generated PDF */ }
@@ -980,4 +999,4 @@ function safeConfig() {
   try { return require('../config').load() } catch { return null }
 }
 
-module.exports = { RESUME_TEMPLATES, randomUserAgent, randomDelay, humanType, stripMarkdown, verifySubmission, captureProof, openPage, confirmSubmission, detectBlock, blockReason, BlockedError, gotoResultsPage, buildResumePDF, buildResumeDocx, buildCoverLetterPDF, buildAnalyticsReportPDF, tailorDocx, buildResumeFile, createSelectorProbe, launchOptions, proxyFor }
+module.exports = { RESUME_TEMPLATES, unwrapExtractedLines, randomUserAgent, randomDelay, humanType, stripMarkdown, verifySubmission, captureProof, openPage, confirmSubmission, detectBlock, blockReason, BlockedError, gotoResultsPage, buildResumePDF, buildResumeDocx, buildCoverLetterPDF, buildAnalyticsReportPDF, tailorDocx, buildResumeFile, createSelectorProbe, launchOptions, proxyFor }

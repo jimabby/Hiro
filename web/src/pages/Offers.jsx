@@ -258,6 +258,90 @@ function NegotiationPanel({ offer, showToast, onSaved }) {
   )
 }
 
+// The user's own exchange rates, for comparing offers in different currencies.
+//
+// Deliberately typed in rather than fetched. The rate decides which offer looks
+// bigger, so it should be the one the user would actually use — the rate their
+// bank gives, or the one they agreed with the employer — and every converted
+// figure on the page says it was converted at that rate.
+function ExchangeRates({ fx, currencies, onSaved, showToast }) {
+  const [open, setOpen] = useState(false)
+  const [base, setBase] = useState(fx?.base || '')
+  const [rates, setRates] = useState(() => ({ ...(fx?.rates || {}) }))
+  const [extra, setExtra] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => { setBase(fx?.base || ''); setRates({ ...(fx?.rates || {}) }) }, [fx])
+
+  const b = base.trim().toUpperCase()
+  const codes = [...new Set([...currencies, ...Object.keys(rates)])].filter(c => c && c !== b).sort()
+
+  async function save() {
+    setSaving(true)
+    try {
+      const clean = Object.fromEntries(codes.filter(c => String(rates[c] ?? '').trim() !== '').map(c => [c, Number(rates[c])]))
+      const res = await window.api.setOfferExchangeRates?.({ base: b, rates: clean })
+      if (res?.success === false) { showToast?.(res.reason || 'Could not save those rates', 'error'); return }
+      showToast?.('Exchange rates saved')
+      onSaved?.()
+    } catch (err) {
+      showToast?.(err.message, 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!open) {
+    return (
+      <button className="btn btn-ghost btn-sm" style={{ marginBottom: 12 }} onClick={() => setOpen(true)}>
+        {fx?.base ? `Exchange rates (base ${fx.base})` : 'Set exchange rates'}
+      </button>
+    )
+  }
+  return (
+    <div className="card" style={{ marginBottom: 16 }} role="group" aria-label="Exchange rates">
+      <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>Exchange rates</div>
+      <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
+        Your own rates — Hiro never looks them up. Offers are compared in the base currency, and every
+        converted figure is labelled as converted at your rate.
+      </p>
+      <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 8 }}>
+        Base currency
+        <input className="input" aria-label="Base currency" value={base} maxLength={3} placeholder="AUD"
+          style={{ width: 90, marginLeft: 8 }} onChange={e => setBase(e.target.value.toUpperCase())} />
+      </label>
+      {b && codes.map(c => (
+        <label key={c} style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          1 {c} =
+          <input className="input" type="number" min="0" step="any" aria-label={`Rate for ${c}`} style={{ width: 120 }}
+            value={rates[c] ?? ''} onChange={e => setRates({ ...rates, [c]: e.target.value })} />
+          {b}
+        </label>
+      ))}
+      {b && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+          <input className="input" aria-label="Add a currency" placeholder="EUR" maxLength={3} style={{ width: 90 }}
+            value={extra} onChange={e => setExtra(e.target.value.toUpperCase())} />
+          <button className="btn btn-ghost btn-sm" disabled={!/^[A-Z]{3}$/.test(extra)} onClick={() => {
+            setRates({ ...rates, [extra]: rates[extra] ?? '' }); setExtra('')
+          }}>Add currency</button>
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button className="btn btn-primary btn-sm" disabled={saving || (b !== '' && !/^[A-Z]{3}$/.test(b))} onClick={save}>{saving ? 'Saving…' : 'Save rates'}</button>
+        <button className="btn btn-ghost btn-sm" onClick={() => setOpen(false)}>Close</button>
+      </div>
+    </div>
+  )
+}
+
+// "≈ AUD 165,000 — converted at your rate, 1 EUR = 1.65 AUD". Shown only for an
+// offer that is not already in the base currency.
+function convertedLabel(o) {
+  if (o.convertedComp == null || !o.convertedCurrency || o.currency === o.convertedCurrency) return null
+  return `≈ ${money(o.convertedComp, o.convertedCurrency)} — converted at your rate, 1 ${o.currency} = ${o.convertedRate} ${o.convertedCurrency}`
+}
+
 function OfferForm({ form, setForm, onSave, onCancel, saving }) {
   const field = (key, props = {}) => (
     <input
@@ -375,6 +459,8 @@ export default function Offers({ active, showToast, onOpenApplication }) {
 
   const offers = data.offers || []
   const live = offers.filter(o => o.decision === 'considering')
+  const offerCurrencies = [...new Set(offers.map(o => o.currency).filter(Boolean))]
+  const conv = data.converted
 
   return (
     <div>
@@ -400,6 +486,10 @@ export default function Offers({ active, showToast, onOpenApplication }) {
       <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 20 }}>
         What is on the table, side by side, with the deadline that expires first at the top.
       </p>
+
+      {(offerCurrencies.length > 1 || data.exchangeRates?.base) && (
+        <ExchangeRates fx={data.exchangeRates} currencies={offerCurrencies} onSaved={load} showToast={showToast} />
+      )}
 
       {adding && (
         <div className="card" style={{ marginBottom: 16 }}>
@@ -429,14 +519,21 @@ export default function Offers({ active, showToast, onOpenApplication }) {
             <div style={{ fontSize: 22, fontWeight: 700 }}>{data.live}</div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>open decision{data.live === 1 ? '' : 's'}</div>
           </div>
-          <div className="card">
-            <div style={{ fontSize: 22, fontWeight: 700 }}>{money(data.best, data.comparisonCurrency)}</div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>best in comparison currency</div>
-          </div>
-          {data.spread != null && (
+          {conv ? (
             <div className="card">
-              <div style={{ fontSize: 22, fontWeight: 700 }}>{money(data.spread, data.comparisonCurrency)}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>between highest and lowest</div>
+              <div style={{ fontSize: 22, fontWeight: 700 }}>{money(conv.best, conv.base)}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>best, converted to {conv.base} at your rates</div>
+            </div>
+          ) : (
+            <div className="card">
+              <div style={{ fontSize: 22, fontWeight: 700 }}>{money(data.best, data.comparisonCurrency)}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>best in comparison currency</div>
+            </div>
+          )}
+          {(conv ? conv.spread : data.spread) != null && (
+            <div className="card">
+              <div style={{ fontSize: 22, fontWeight: 700 }}>{conv ? money(conv.spread, conv.base) : money(data.spread, data.comparisonCurrency)}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>between highest and lowest{conv ? ', converted at your rates' : ''}</div>
             </div>
           )}
           {data.nextDeadline && (
@@ -475,6 +572,9 @@ export default function Offers({ active, showToast, onOpenApplication }) {
                     ? `${money(o.base_salary, o.currency)} base + ${money(o.bonus, o.currency)} bonus`
                     : 'base salary'}
               </div>
+              {convertedLabel(o) && (
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>{convertedLabel(o)}</div>
+              )}
             </div>
           </div>
 

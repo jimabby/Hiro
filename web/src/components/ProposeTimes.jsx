@@ -10,15 +10,34 @@ export default function ProposeTimes({ applicationId, onClose, showToast }) {
   const [to, setTo] = useState('')
   const [error, setError] = useState(null)
 
+  // When the inbox read an invitation that named no time, it already drafted
+  // times (services/inbox.js). Show that draft first — it is what the task
+  // inbox promised — and let the user re-check it against the calendar now,
+  // since the slots were free when the email arrived, not necessarily today.
+  const [drafted, setDrafted] = useState(null)
+  const [nonce, setNonce] = useState(0)
+
   useEffect(() => {
     let live = true
-    window.api.proposeInterviewTimes(applicationId).then(res => {
+    const fresh = () => window.api.proposeInterviewTimes(applicationId).then(res => {
       if (!live) return
       if (!res?.success) { setError(res?.error || 'Could not find free times'); return }
-      setResult(res); setEmail(res.email); setTo(res.to || '')
+      setDrafted(null); setResult(res); setEmail(res.email); setTo(res.to || '')
+    })
+    const saved = nonce === 0 && window.api.getProposedTimesDraft
+      ? window.api.getProposedTimesDraft(applicationId).catch(() => null)
+      : Promise.resolve(null)
+    saved.then(res => {
+      if (!live) return
+      const d = res?.success ? res.draft : null
+      if (d && d.status === 'draft' && d.slots?.length) {
+        setDrafted(d.createdAt || ''); setResult(d); setEmail(d.email); setTo(d.to || '')
+        return
+      }
+      return fresh()
     }).catch(err => live && setError(err.message))
     return () => { live = false }
-  }, [applicationId])
+  }, [applicationId, nonce])
 
   async function copy() {
     try { await navigator.clipboard.writeText(email); showToast?.('Reply copied', 'success') } catch { showToast?.('Could not copy', 'error') }
@@ -46,6 +65,12 @@ export default function ProposeTimes({ applicationId, onClose, showToast }) {
 
         {result && (
           <>
+            {drafted !== null && (
+              <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>
+                Hiro drafted these when the invitation arrived{drafted ? ` (${drafted.slice(0, 16)} UTC)` : ''}. Nothing has been sent.{' '}
+                <button className="btn btn-ghost btn-sm" onClick={() => { setResult(null); setNonce(n => n + 1) }}>Re-check my calendar</button>
+              </p>
+            )}
             <p style={{ fontSize: 12, color: result.calendarChecked ? 'var(--text-muted)' : 'var(--amber, var(--red))', marginBottom: 10 }}>
               {result.calendarChecked
                 ? 'Checked against your calendar and every interview in Hiro.'

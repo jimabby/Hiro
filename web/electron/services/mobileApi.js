@@ -17,17 +17,9 @@ const mobileActivity = require('./mobileActivity')
 
 let server = null
 
-// Must cover every status the desktop can write, or the phone can see a status
-// it isn't allowed to set back. 'pending' comes from the inbox classifier and
-// 'no_response' from the stale sweep; both were missing here.
-const VALID_STATUSES = ['applied', 'interview', 'rejected', 'offer', 'pending', 'no_response', 'skipped', 'held', 'withdrawn']
-
-// Statuses the phone can show but never set. Both are states the desktop
-// reaches by its own decision, and both are a loaded gun: approving a 'held'
-// row submits it, and "apply anyway" on a 'skipped' one tailors and submits it.
-// Moving an application that was already sent into either would re-arm a
-// submission to an employer who has the application already.
-const DESKTOP_ONLY_STATUSES = new Set(['held', 'skipped'])
+// Which statuses a phone may set lives in remoteStatus.js, shared with the
+// cloud path (database.applyCloudEdit) so the two can never drift apart.
+const { remoteStatusRefusal } = require('./remoteStatus')
 
 // The token is read on every single request. Reading it from disk each time
 // also meant an OS-keychain decrypt per request, so cache it in memory and
@@ -772,12 +764,8 @@ async function route(req, res) {
     const statusMatch = path.match(/^\/api\/applications\/(\d+)\/status$/)
     if (req.method === 'POST' && statusMatch) {
       const body = await readBody(req)
-      if (!VALID_STATUSES.includes(body.status)) {
-        return json(res, 400, { error: `status must be one of: ${VALID_STATUSES.join(', ')}` })
-      }
-      if (DESKTOP_ONLY_STATUSES.has(body.status)) {
-        return json(res, 400, { error: `'${body.status}' is set by the desktop only.` })
-      }
+      const refusal = remoteStatusRefusal(body.status)
+      if (refusal) return json(res, 400, { error: refusal })
       database.updateApplicationStatus(Number(statusMatch[1]), body.status)
       return json(res, 200, { success: true })
     }
@@ -820,6 +808,14 @@ async function route(req, res) {
 
     if (req.method === 'GET' && path === '/api/next-actions') {
       return json(res, 200, database.getDueNextActions())
+    }
+
+    // The desktop's task inbox, for the phone's Today screen — one read instead
+    // of a checklist request per application. Read scope (a GET; see
+    // requiredScope). A phone talking to an older desktop gets a 404 and builds
+    // the list itself (app/src/todayLoader.js).
+    if (req.method === 'GET' && path === '/api/tasks') {
+      return json(res, 200, featureHub.taskInbox())
     }
 
     // Queue a scan to run on the desktop. Runs immediately if idle, otherwise
