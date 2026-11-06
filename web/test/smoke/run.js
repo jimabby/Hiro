@@ -359,8 +359,10 @@ async function main() {
     // The board re-reads from the main process after saving, so seeing the note
     // means the whole round trip worked, not just that local state changed.
     await page.waitForSelector('[data-testid="pipeline"] >> text=Chase the recruiter', { timeout: 15_000 })
+    // Counted on the board column only: the task inbox at the top of the same
+    // page lists the follow-up too, so the whole page shows it twice.
     check('the follow-up shows on the card',
-      await page.locator('[data-testid="pipeline"]').getByText('Chase the recruiter').count(), 1)
+      await page.locator('[data-testid="pipeline-stage-applied"]').getByText('Chase the recruiter').count(), 1)
 
     // And it is genuinely persisted, as a local YYYY-MM-DD a week out.
     const stored = await page.evaluate(async () => {
