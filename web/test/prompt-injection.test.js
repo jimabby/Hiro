@@ -36,6 +36,8 @@ stub({
   '@anthropic-ai/sdk': FakeAnthropic,
   openai: FakeOpenAI,
   '@google/generative-ai': { GoogleGenerativeAI: FakeGemini },
+  // A blank Gemini model is looked up from the provider; never over the network here.
+  './modelList': { listModels: async () => [{ id: 'gemini-9-flash' }], pickGeminiDefault: () => 'gemini-9-flash' },
   './usage': { withUsage: async (_op, _p, fn) => (await fn()).value },
   '../config': { load: () => ({}) },
 })

@@ -34,7 +34,7 @@ const { resolveAnswer } = require('../screeningAnswers')
 const { contactFor } = require('../contactDetails')
 const { inspectTailoring, inspectCoverLetter, describeFlags } = require('../fabricationGuard')
 const { detectInjection, describeInjection } = require('../ai/untrusted')
-const { writingModel } = require('../ai/models')
+const { writingModel, writingProvider } = require('../ai/models')
 const { isAiConfigured } = require('../ai/configured')
 const { classifyField, pickOption, looksSubmitted, detectAts, formUrlFor } = require('./classify')
 
@@ -307,7 +307,7 @@ function recordApplied(source, job, cfg, docs, qa) {
     tailored_resume: docs.tailoredResume, cover_letter: docs.coverLetter,
     screening_qa: qa, status: 'applied', closing_date: job.closing_date || null,
     base_resume: cfg.masterResume || '', resume_id: cfg.activeResumeId, resume_name: cfg.activeResumeName,
-    provider: cfg.aiProvider || '', model: writingModel(cfg),
+    provider: writingProvider(cfg), model: writingModel(cfg),
     campaign_id: job.campaign_id, campaign_name: job.campaign_name,
   })
   database.dismissAttentionJob(job.id)

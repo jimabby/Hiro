@@ -14,15 +14,48 @@ function getModel(apiKey, modelName) {
 // dozen call sites. `request` is whatever generateContent accepts — a bare
 // prompt string or a full contents object.
 async function complete(operation, apiKey, modelName, request) {
+  const name = await resolveModelName(apiKey, modelName)
   return withUsage(operation, 'gemini', async () => {
-    const model = getModel(apiKey, modelName)
+    const model = getModel(apiKey, name)
     const result = await model.generateContent(request)
     return {
       value: result.response.text(),
-      model: modelName,
+      model: name,
       usage: result.response.usageMetadata,
     }
   })
+}
+
+// Gemini is the one provider with no model Hiro names: the setting was free
+// text, and left blank every call asked for model "" and failed. Blank now
+// means the newest stable Flash model this key can use, looked up once per key
+// per session (listing is free) rather than hard-coded, because Google retires
+// model names faster than Hiro ships releases.
+const autoModels = new Map() // apiKey -> Promise<model id>
+const autoModelIds = new Map() // apiKey -> model id, once looked up
+
+// The model a blank setting resolved to for this key, for the application
+// record (models.writingModel). '' until the first call has looked it up.
+function autoModelFor(apiKey) {
+  return autoModelIds.get(apiKey) || ''
+}
+
+async function resolveModelName(apiKey, modelName) {
+  const chosen = String(modelName || '').trim()
+  if (chosen) return chosen
+  if (!autoModels.has(apiKey)) {
+    const { listModels, pickGeminiDefault } = require('./modelList')
+    const lookup = listModels('gemini', apiKey).then((models) => {
+      const id = pickGeminiDefault(models)
+      if (!id) throw new Error('No Gemini model is available to this key. Enter a model name in Settings.')
+      autoModelIds.set(apiKey, id)
+      return id
+    })
+    // A failed lookup (offline, bad key) is not remembered: the next call retries.
+    lookup.catch(() => autoModels.delete(apiKey))
+    autoModels.set(apiKey, lookup)
+  }
+  return autoModels.get(apiKey)
 }
 
 async function testConnection(apiKey, modelName) {
@@ -245,4 +278,4 @@ async function chat({ operation = 'chat', system = '', messages = [], maxTokens 
   })
 }
 
-module.exports = { chat, testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply, generateCounterOffer, draftInterviewAnswer }
+module.exports = { autoModelFor, chat, testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply, generateCounterOffer, draftInterviewAnswer }

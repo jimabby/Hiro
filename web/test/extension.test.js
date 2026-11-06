@@ -5,7 +5,9 @@ const { createChecker } = require('./helpers')
 
 const root = path.join(__dirname, '..', '..', 'extension')
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'))
-const popup = fs.readFileSync(path.join(root, 'popup.js'), 'utf8')
+// Normalised to LF: a Windows checkout (core.autocrlf) has CRLF, and the
+// extractJob slice below looks for "\n}\n".
+const popup = fs.readFileSync(path.join(root, 'popup.js'), 'utf8').replace(/\r\n/g, '\n')
 const protocolSource = fs.readFileSync(path.join(root, 'protocol.js'), 'utf8')
 const protocol = require(path.join(root, 'protocol.js'))
 const pairSource = fs.readFileSync(path.join(root, 'pairChannel.js'), 'utf8')

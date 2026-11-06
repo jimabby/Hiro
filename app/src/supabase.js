@@ -52,6 +52,7 @@ import { isDueOrOverdue, todayLocal, daysBetweenDates } from './dates'
 import { randomUUID } from 'expo-crypto'
 import * as cloudCommands from './cloudCommands'
 import { decryptCloudPayload, encryptCloudPayload, rowContext } from './cloudCrypto'
+import { checkCloudSchema } from './cloudSchema'
 
 const VALID_STATUSES = ['applied', 'interview', 'offer', 'rejected', 'pending', 'no_response', 'skipped', 'held', 'withdrawn']
 
@@ -369,6 +370,15 @@ export class CloudClient {
     } catch {
       return null
     }
+  }
+
+  // A notice when this project's database predates what the app needs, or null.
+  // Asked once per client (one sign-in); see src/cloudSchema.js.
+  async getSchemaNotice() {
+    if (this._schemaNotice === undefined) {
+      this._schemaNotice = checkCloudSchema((name) => supabase.rpc(name)).catch(() => null)
+    }
+    return this._schemaNotice
   }
 
   // Stats and per-day are derived client-side from the application list, by the

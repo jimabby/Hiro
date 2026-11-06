@@ -622,12 +622,34 @@ ipcMain.handle('ai:modelChoices', () => {
   return { choices: MODEL_CHOICES, defaults: DEFAULT_MODELS }
 })
 
+// The models a key can use, from the provider itself, for the model menus in
+// Settings. `apiKey` may be the placeholder for the key saved for `provider`.
+ipcMain.handle('ai:listModels', async (_, provider, apiKey, overrides) => {
+  try {
+    const saved = configService.load()
+    const key = configGuard.resolveSecret(apiKey, configGuard.keyFor(saved, provider))
+    // The local server address on screen, which may not be saved yet.
+    const localAiBaseUrl = typeof overrides?.localAiBaseUrl === 'string' && overrides.localAiBaseUrl.trim()
+      ? overrides.localAiBaseUrl : saved.localAiBaseUrl
+    const models = await require('./services/ai/modelList').listModels(provider, key, { ...saved, localAiBaseUrl })
+    return { success: true, models }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+// "Sign in with OpenRouter": the browser does the sign-in, and the key it
+// issues is stored as the OpenRouter key without the renderer ever seeing it.
+ipcMain.handle('openrouter:signIn', () => require('./services/openrouterAuth').signIn())
+ipcMain.handle('openrouter:cancel', () => { require('./services/openrouterAuth').cancel(); return { success: true } })
+
 // `model` is the model on screen for the chosen provider — the Gemini name, the
 // local server's model, or the writing model picked for Claude/ChatGPT/DeepSeek.
 ipcMain.handle('ai:test', async (_, provider, apiKey, model) => {
   try {
-    // The form holds a placeholder for a key that is already saved.
-    await aiAdapter.testConnection(provider, configGuard.resolveSecret(apiKey, configService.load().aiApiKey), model)
+    // The form holds a placeholder for a key that is already saved — the key
+    // saved for THIS provider, which need not be the active one.
+    await aiAdapter.testConnection(provider, configGuard.resolveSecret(apiKey, configGuard.keyFor(configService.load(), provider)), model)
     return { success: true }
   } catch (err) {
     return { success: false, error: err.message }

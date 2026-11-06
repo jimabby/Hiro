@@ -5,7 +5,7 @@ const ats = require('./scraper/ats')
 const aiAdapter = require('./ai/index')
 const database = require('./database')
 const { randomDelay, stripMarkdown } = require('./scraper/utils')
-const { writingModel } = require('./ai/models')
+const { writingModel, writingProvider } = require('./ai/models')
 const jobAlerts = require('./jobAlerts')
 const { parseClosingDate } = require('./dateParser')
 const automationHealth = require('./automationHealth')
@@ -647,7 +647,7 @@ async function doRun(cfg, { log, notifyAttention }) {
           salary: job.salary || '', job_url: job.job_url,
           job_description: jobDescription, match_score: matchScore,
           match_explanation: `${matchExplanation || ''}${matchExplanation ? '\n\n' : ''}Held for review: ${detail}`,
-          base_resume: jobCfg.masterResume || '', provider: jobCfg.aiProvider || '',
+          base_resume: jobCfg.masterResume || '', provider: writingProvider(jobCfg),
           model: writingModel(jobCfg), tailored_resume: tailoredResume,
           cover_letter: coverLetter, screening_qa: [], status: 'held',
           closing_date: job.closing_date, resume_id: jobCfg.activeResumeId, experiment_arm: jobCfg.activeExperimentArm || null,
@@ -705,7 +705,7 @@ async function doRun(cfg, { log, notifyAttention }) {
           base_resume: jobCfg.masterResume || '',
           // Which model produced these documents, so two versions of the same
           // job can be judged against each other rather than just compared.
-          provider: jobCfg.aiProvider || '',
+          provider: writingProvider(jobCfg),
           model: writingModel(jobCfg),
           tailored_resume: tailoredResume,
           cover_letter: coverLetter,
@@ -765,7 +765,7 @@ async function doRun(cfg, { log, notifyAttention }) {
           base_resume: jobCfg.masterResume || '',
           // Which model produced these documents, so two versions of the same
           // job can be judged against each other rather than just compared.
-          provider: jobCfg.aiProvider || '',
+          provider: writingProvider(jobCfg),
           model: writingModel(jobCfg),
           tailored_resume: tailoredResume,
           cover_letter: coverLetter,
@@ -958,7 +958,7 @@ async function doApplyAttentionJob(jobId, cfg, log) {
       ...job, base_resume: cfg.masterResume || '', tailored_resume: result.tailoredResume,
       cover_letter: result.coverLetter, screening_qa: [], status: 'held',
       resume_id: cfg.activeResumeId, resume_name: cfg.activeResumeName, experiment_arm: cfg.activeExperimentArm || null,
-      provider: cfg.aiProvider || '', model: writingModel(cfg),
+      provider: writingProvider(cfg), model: writingModel(cfg),
       fabrication_flags: result.fabricationFlags,
       match_explanation: `${job.match_explanation || ''}${job.match_explanation ? '\n\n' : ''}Fabrication guard: ${describeFlags(result.fabricationFlags)}`,
     })
@@ -985,7 +985,7 @@ async function doApplyAttentionJob(jobId, cfg, log) {
       base_resume: cfg.masterResume || '',
       resume_id: cfg.activeResumeId, experiment_arm: cfg.activeExperimentArm || null,
       resume_name: cfg.activeResumeName,
-      provider: cfg.aiProvider || '',
+      provider: writingProvider(cfg),
       model: writingModel(cfg),
       campaign_id: job.campaign_id, campaign_name: job.campaign_name,
     })
@@ -1025,7 +1025,7 @@ async function doApplySkippedJob(jobId, cfg, log) {
     database.holdApplicationDraft(jobId, {
       baseResume: cfg.masterResume || '', tailoredResume: result.tailoredResume,
       coverLetter: result.coverLetter, resumeId: cfg.activeResumeId,
-      resumeName: cfg.activeResumeName, provider: cfg.aiProvider || '',
+      resumeName: cfg.activeResumeName, provider: writingProvider(cfg),
       model: writingModel(cfg), flags: result.fabricationFlags,
     })
     log('Moved to Review; nothing was submitted.')

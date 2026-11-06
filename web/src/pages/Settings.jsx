@@ -1,6 +1,9 @@
 import SyncHealth from '../components/SyncHealth'
 import { useState, useEffect, useRef } from 'react'
 import HiroLogo from '../components/HiroLogo'
+import ApiKeyHelp, { SAVED_KEY } from '../components/ApiKeyHelp'
+import ModelPicker from '../components/ModelPicker'
+import { AI_PROVIDERS } from '../aiProviders'
 import { exportCsv } from '../exportCsv'
 import { answerAgeDays } from './settings/answerAge'
 import { MailServers } from './settings/MailServers'
@@ -193,6 +196,23 @@ export default function Settings({ showToast, active, focusTab, onFocusTabHandle
     setForm(f => ({ ...f, [key]: val }))
   }
 
+  // Each provider keeps its own saved key. Switching shows the key saved for
+  // the new provider (as the placeholder) or an empty box — never the last
+  // provider's key, which would only fail its test.
+  const chooseProvider = (provider) => {
+    set('aiProvider', provider)
+    set('aiApiKey', form.aiApiKeys?.[provider] || '')
+    setAiResult(null)
+  }
+
+  // The main process stored the key and switched provider; reflect that.
+  const afterOpenRouterSignIn = () => {
+    set('aiProvider', 'openrouter')
+    set('aiApiKey', SAVED_KEY)
+    setForm(f => ({ ...f, aiApiKeys: { ...(f.aiApiKeys || {}), openrouter: SAVED_KEY } }))
+    setAiResult(null)
+  }
+
   async function viewPDF(text, title, originalPath, originalExt) {
     setPdfLoading(title)
     try {
@@ -372,12 +392,8 @@ export default function Settings({ showToast, active, focusTab, onFocusTabHandle
         <h3 style={{ marginBottom: 16, fontSize: 15 }}>AI Provider</h3>
         <div className="form-group">
           <label htmlFor="set-f5">Provider</label>
-          <select id="set-f5" value={form.aiProvider} onChange={e => set('aiProvider', e.target.value)}>
-            <option value="claude">Claude (Anthropic)</option>
-            <option value="chatgpt">ChatGPT (OpenAI)</option>
-            <option value="deepseek">DeepSeek</option>
-            <option value="gemini">Gemini (Google)</option>
-            <option value="local">Local model (Ollama / LM Studio)</option>
+          <select id="set-f5" value={form.aiProvider} onChange={e => chooseProvider(e.target.value)}>
+            {AI_PROVIDERS.map(([value, name]) => <option key={value} value={value}>{name}</option>)}
           </select>
         </div>
         {form.aiProvider === 'local' ? (
@@ -395,6 +411,7 @@ export default function Settings({ showToast, active, focusTab, onFocusTabHandle
             <input id="set-f6" type="password" value={form.aiApiKey} onChange={e => set('aiApiKey', e.target.value)} />
           </div>
         )}
+        <ApiKeyHelp provider={form.aiProvider} apiKey={form.aiApiKey} onSignedIn={afterOpenRouterSignIn} />
         {form.aiProvider === 'local' && (
           <>
             <div className="form-group">
@@ -409,52 +426,56 @@ export default function Settings({ showToast, active, focusTab, onFocusTabHandle
                 {' '}<code>http://localhost:1234/v1</code>. The endpoint must be OpenAI-compatible.
               </span>
             </div>
-            <div className="form-group">
-              <label htmlFor="set-f8">Model</label>
-              <input id="set-f8"
-                value={form.localAiModel || ''}
-                onChange={e => set('localAiModel', e.target.value)}
-                placeholder="e.g. llama3.1:8b"
-              />
-              <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                Must already be pulled on the server — <code>ollama list</code> shows what is available.
-              </span>
-            </div>
+            <ModelPicker id="set-f8" label="Model"
+              value={form.localAiModel}
+              onChange={v => set('localAiModel', v)}
+              provider="local" apiKey="" overrides={{ localAiBaseUrl: form.localAiBaseUrl }}
+              placeholder="e.g. llama3.1:8b"
+              help={<>Must already be pulled on the server — <code>ollama list</code> shows what is available.</>}
+            />
           </>
         )}
-        {['claude', 'chatgpt', 'deepseek'].includes(form.aiProvider) && (
-          <div className="form-group">
-            <label htmlFor="set-writing-model">Writing model</label>
-            <input id="set-writing-model" list="set-writing-model-options"
-              value={form.aiWritingModel?.[form.aiProvider] || ''}
-              onChange={e => set('aiWritingModel', { ...(form.aiWritingModel || {}), [form.aiProvider]: e.target.value.trim() })}
-              placeholder={modelMenu?.defaults?.[form.aiProvider]?.smart || 'Default'}
-            />
-            <datalist id="set-writing-model-options">
-              {(modelMenu?.choices?.[form.aiProvider] || []).map(c => (
-                <option key={c.id} value={c.id}>{c.label}</option>
-              ))}
-            </datalist>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-              Writes your résumés and cover letters. Leave blank for the default. Scoring and
-              classification stay on the provider's cheaper model. Analytics compares documents
-              by the model that wrote them, so a change here starts a fresh comparison.
-            </span>
-          </div>
+        {['claude', 'chatgpt', 'deepseek', 'openrouter'].includes(form.aiProvider) && (
+          <ModelPicker id="set-writing-model" label="Writing model"
+            value={form.aiWritingModel?.[form.aiProvider]}
+            onChange={v => set('aiWritingModel', { ...(form.aiWritingModel || {}), [form.aiProvider]: v.trim() })}
+            provider={form.aiProvider} apiKey={form.aiApiKey}
+            choices={modelMenu?.choices?.[form.aiProvider] || []}
+            placeholder={modelMenu?.defaults?.[form.aiProvider]?.smart || 'Default'}
+            help={'Writes your résumés and cover letters. Leave blank for the default. Scoring and '
+              + 'classification stay on the provider\'s cheaper model. Analytics compares documents '
+              + 'by the model that wrote them, so a change here starts a fresh comparison.'}
+          />
         )}
         {form.aiProvider === 'gemini' && (
-          <div className="form-group">
-            <label htmlFor="set-f9">Gemini Model Name</label>
-            <input id="set-f9"
-              value={form.geminiModel || ''}
-              onChange={e => set('geminiModel', e.target.value)}
-              placeholder="e.g. gemini-2.5-flash"
-            />
-            <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-              Find your available models at aistudio.google.com
-            </span>
-          </div>
+          <ModelPicker id="set-f9" label="Gemini model"
+            value={form.geminiModel}
+            onChange={v => set('geminiModel', v)}
+            provider="gemini" apiKey={form.aiApiKey}
+            placeholder="Automatic — the newest Flash model"
+            help="Leave blank to use the newest Flash model your key can use, or load the list to pick one."
+          />
         )}
+        <div className="form-group">
+          <label htmlFor="set-ai-backup">Backup provider</label>
+          <select id="set-ai-backup" value={form.aiFallbackProvider || ''} onChange={e => set('aiFallbackProvider', e.target.value)}>
+            <option value="">None</option>
+            {AI_PROVIDERS.filter(([value]) => value !== form.aiProvider).map(([value, name]) => (
+              <option key={value} value={value}>{name}{value !== 'local' && !form.aiApiKeys?.[value] ? ' — no key saved' : ''}</option>
+            ))}
+          </select>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+            Used when the main provider fails, for example when credit runs out or it has an outage.
+            Hiro then uses the backup for 10 minutes before trying the main one again. The monthly
+            spend cap covers both.
+          </span>
+          {form.aiFallbackProvider && form.aiFallbackProvider !== 'local' && !form.aiApiKeys?.[form.aiFallbackProvider] && (
+            <span role="alert" style={{ fontSize: 11, color: 'var(--yellow, var(--red))', marginTop: 4 }}>
+              No key is saved for this provider yet, so it won&apos;t be used. Select it as the provider
+              above, paste its key, save, then switch back.
+            </span>
+          )}
+        </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {/* A local server takes no key, so requiring one would leave the only
               button that proves the endpoint works permanently disabled. */}

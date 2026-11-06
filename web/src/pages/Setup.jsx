@@ -1,5 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
 import HiroLogo from '../components/HiroLogo'
+import ApiKeyHelp, { SAVED_KEY } from '../components/ApiKeyHelp'
+import ModelPicker from '../components/ModelPicker'
+import { AI_PROVIDERS } from '../aiProviders'
 
 const STEPS = ['AI Provider', 'Email', 'Job Criteria', 'Resume', 'Review']
 
@@ -52,8 +55,7 @@ export default function Setup({ onComplete }) {
         if (!String(form.localAiModel || '').trim()) errors.push('A model name is required for a local model.')
       } else if (!form.aiApiKey.trim()) {
         errors.push('API key is required to use AI features.')
-      }
-    }
+      }    }
     if (stepNum === 2) {
       if (!form.jobKeywords.trim()) errors.push('At least one job keyword is required.')
       if (!form.enableSeek && !form.enableIndeed && !form.enableLinkedIn) errors.push('Enable at least one platform.')
@@ -187,11 +189,7 @@ export default function Setup({ onComplete }) {
               <div className="form-group">
                 <label htmlFor="sup-f0">AI Provider</label>
                 <select id="sup-f0" value={form.aiProvider} onChange={e => set('aiProvider', e.target.value)}>
-                  <option value="claude">Claude (Anthropic)</option>
-                  <option value="chatgpt">ChatGPT (OpenAI)</option>
-                  <option value="deepseek">DeepSeek</option>
-                  <option value="gemini">Gemini (Google)</option>
-                  <option value="local">Local model (Ollama / LM Studio)</option>
+                  {AI_PROVIDERS.map(([value, name]) => <option key={value} value={value}>{name}</option>)}
                 </select>
               </div>
               {form.aiProvider === 'local' ? (
@@ -215,14 +213,12 @@ export default function Setup({ onComplete }) {
                       Ollama: http://localhost:11434/v1 · LM Studio: http://localhost:1234/v1
                     </span>
                   </div>
-                  <div className="form-group">
-                    <label htmlFor="sup-f2">Model</label>
-                    <input id="sup-f2"
-                      value={form.localAiModel || ''}
-                      onChange={e => set('localAiModel', e.target.value)}
-                      placeholder="e.g. llama3.1:8b"
-                    />
-                  </div>
+                  <ModelPicker id="sup-f2" label="Model"
+                    value={form.localAiModel}
+                    onChange={v => set('localAiModel', v)}
+                    provider="local" apiKey="" overrides={{ localAiBaseUrl: form.localAiBaseUrl }}
+                    placeholder="e.g. llama3.1:8b"
+                  />
                 </>
               ) : (
                 <div className="form-group">
@@ -234,18 +230,16 @@ export default function Setup({ onComplete }) {
                   />
                 </div>
               )}
+              <ApiKeyHelp provider={form.aiProvider} apiKey={form.aiApiKey}
+                onSignedIn={() => setForm(f => ({ ...f, aiProvider: 'openrouter', aiApiKey: SAVED_KEY }))} />
               {form.aiProvider === 'gemini' && (
-                <div className="form-group">
-                  <label htmlFor="sup-f4">Gemini Model Name</label>
-                  <input id="sup-f4"
-                    value={form.geminiModel}
-                    onChange={e => set('geminiModel', e.target.value)}
-                    placeholder="e.g. gemini-2.5-flash"
-                  />
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                    Find available models at aistudio.google.com or run: curl "https://generativelanguage.googleapis.com/v1beta/models?key=YOUR_KEY"
-                  </span>
-                </div>
+                <ModelPicker id="sup-f4" label="Gemini model"
+                  value={form.geminiModel}
+                  onChange={v => set('geminiModel', v)}
+                  provider="gemini" apiKey={form.aiApiKey}
+                  placeholder="Automatic — the newest Flash model"
+                  help="Leave blank to use the newest Flash model your key can use, or load the list to pick one."
+                />
               )}
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
                 <button className="btn btn-ghost" onClick={testAI} disabled={!aiConfigured || testing}>
@@ -394,7 +388,7 @@ export default function Setup({ onComplete }) {
                   ? [['Server', form.localAiBaseUrl || 'Not set', !!form.localAiBaseUrl],
                      ['Model', form.localAiModel || 'Not set', !!form.localAiModel]]
                   : [['API Key', form.aiApiKey ? '••••••••' : 'Not set', !!form.aiApiKey]]),
-                ...(form.aiProvider === 'gemini' ? [['Gemini Model', form.geminiModel || 'Not set', !!form.geminiModel]] : []),
+                ...(form.aiProvider === 'gemini' ? [['Gemini Model', form.geminiModel || 'Automatic (newest Flash)', true]] : []),
                 ['Email', form.gmailAddress || 'Skipped (optional)', !!form.gmailAddress],
                 ['Keywords', form.jobKeywords || 'Not set', !!form.jobKeywords],
                 ['Location', form.jobLocation || 'Not set', !!form.jobLocation],

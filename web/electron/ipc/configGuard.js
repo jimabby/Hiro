@@ -93,11 +93,42 @@ function redactWebhook(wh) {
   return { ...rest, url: wh.url ? SECRET_PLACEHOLDER : '', urlHint: urlHint(wh.url), hasSecret: !!secret }
 }
 
+// ─── One AI key per provider ─────────────────────────────────────
+// There used to be a single key slot, so switching from Claude to Gemini and
+// back lost the Claude key. Keys now live in `aiApiKeys` by provider, and
+// `aiApiKey` stays the ACTIVE provider's key, so the dozens of call sites that
+// read it are unchanged. The map is never taken from the renderer as-is: the
+// form only ever edits the key for the provider it has selected.
+
+const { providerKeys, keyFor } = require('../services/ai/configured')
+
+function withProviderKeys(current, merged, submitted, snapshot) {
+  const keys = providerKeys(current)
+  const provider = merged.aiProvider
+  if (submitted && Object.prototype.hasOwnProperty.call(submitted, 'aiApiKey')) {
+    const value = submitted.aiApiKey
+    const untouched = value === SECRET_PLACEHOLDER
+      || (snapshot && Object.prototype.hasOwnProperty.call(snapshot, 'aiApiKey') && value === snapshot.aiApiKey
+        && (snapshot.aiProvider === undefined || snapshot.aiProvider === provider))
+    if (!untouched) {
+      const key = String(value || '').trim()
+      // No provider chosen yet: there is nothing to file the key under, so it
+      // is kept as the active key alone.
+      if (!provider) return { ...merged, aiApiKeys: keys, aiApiKey: key }
+      if (key) keys[provider] = key
+      else delete keys[provider]
+    }
+  }
+  return { ...merged, aiApiKeys: keys, aiApiKey: provider ? keys[provider] || '' : merged.aiApiKey }
+}
+
 function redactForRenderer(cfg) {
   const out = { ...cfg }
   for (const key of REDACTED_KEYS) {
     if (key in out) out[key] = out[key] ? SECRET_PLACEHOLDER : ''
   }
+  // Which providers have a key, never the keys themselves.
+  out.aiApiKeys = Object.fromEntries(Object.keys(providerKeys(cfg)).map(k => [k, SECRET_PLACEHOLDER]))
   if (Array.isArray(out.webhooks)) out.webhooks = out.webhooks.map(redactWebhook)
   return out
 }
@@ -139,6 +170,8 @@ function mergeRendererSave(current, submitted, snapshot, { newSecret = () => cry
   for (const [key, value] of Object.entries(submitted || {})) {
     if (key === SNAPSHOT_KEY) continue
     if (SERVICE_OWNED.has(key)) continue
+    // Derived below from aiApiKey and aiProvider; never written from the form.
+    if (key === 'aiApiKeys' || key === 'aiApiKey') continue
     if (key === 'webhooks') {
       merged.webhooks = mergeWebhooks(current.webhooks, value, snapshot ? snapshot.webhooks : undefined, newSecret)
       continue
@@ -149,7 +182,7 @@ function mergeRendererSave(current, submitted, snapshot, { newSecret = () => cry
     merged[key] = value
   }
   delete merged[SNAPSHOT_KEY]
-  return withSessionBoundToProject(current, merged)
+  return withSessionBoundToProject(current, withProviderKeys(current, merged, submitted, snapshot))
 }
 
 // The stored Supabase session belongs to the project it was issued by. The URL
@@ -204,5 +237,5 @@ function createSnapshotStore(limit = 25) {
 
 module.exports = {
   SECRET_PLACEHOLDER, SNAPSHOT_KEY, REDACTED_KEYS, SERVICE_OWNED_KEYS,
-  redactForRenderer, mergeRendererSave, withSessionBoundToProject, resolveSecret, withWebhookIdentity, createSnapshotStore, urlHint,
+  redactForRenderer, mergeRendererSave, providerKeys, keyFor, withSessionBoundToProject, resolveSecret, withWebhookIdentity, createSnapshotStore, urlHint,
 }

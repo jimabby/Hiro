@@ -41,8 +41,16 @@ const PRICING = {
   'gemini-1.5-pro': { input: 1.25, output: 5 },
 }
 
+// OpenRouter names models "vendor/model", and writes Anthropic's version with
+// a dot: "anthropic/claude-sonnet-5.5" is priced as "claude-sonnet-5-5".
+function normaliseModelName(model) {
+  let name = String(model || '').toLowerCase().replace(/^[a-z0-9-]+\//, '').replace(/:[a-z]+$/, '')
+  if (name.startsWith('claude-')) name = name.replace(/(\d)\.(\d)/g, '$1-$2')
+  return name
+}
+
 function priceFor(model) {
-  const name = String(model || '').toLowerCase()
+  const name = normaliseModelName(model)
   if (PRICING[name]) return PRICING[name]
   // Gemini model ids carry suffixes ("gemini-2.5-flash-preview-05-20"). The
   // LONGEST matching prefix wins: "claude-sonnet-5-5-x" must not be priced as

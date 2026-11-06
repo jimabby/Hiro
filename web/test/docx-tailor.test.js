@@ -83,4 +83,63 @@ check('XML special characters are escaped', /R&amp;D/.test(applyTailoring(XML, B
   check('an accented name in the DOCX is matched, not rewritten', /José Núñez/.test(out) && /Built it well/.test(out), true)
 }
 
+// ── Text boxes ───────────────────────────────────────────────────
+// A two-column template's sidebar is a text box: paragraphs INSIDE a paragraph,
+// stored twice (mc:Choice for Word, mc:Fallback for older readers and for
+// mammoth, the importer). The paragraph regex could not nest, so dropping the
+// line holding the box left a dangling </w:p> — a file Word will not open,
+// uploaded to the employer.
+{
+  const box = lines => `<w:txbxContent>${lines.map(l => para(run(l))).join('')}</w:txbxContent>`
+  const boxed = (sidebar) => doc([
+    `<w:p>${run('Jane Doe')}<w:r><mc:AlternateContent><mc:Choice Requires="wps"><w:drawing><wps:txbx>${box(sidebar)}</wps:txbx></w:drawing></mc:Choice>`
+      + `<mc:Fallback><w:pict><v:textbox>${box(sidebar)}</v:textbox></w:pict></mc:Fallback></mc:AlternateContent></w:r></w:p>`,
+    para(run('Experience')),
+    para(run('Did things')),
+  ])
+  const SIDEBAR = ['Skills', 'Python', 'SQL']
+  const XMLB = boxed(SIDEBAR)
+  // The importer's reading: the paragraph, then its text box, the legacy copy skipped.
+  const BASEB = 'Jane Doe\nSkills\nPython\nSQL\nExperience\nDid things'
+  const balanced = x => (x.match(/<w:p(?=[\s>])/g) || []).length === (x.match(/<\/w:p>/g) || []).length
+  const boxes = x => [...x.matchAll(/<w:txbxContent>([\s\S]*?)<\/w:txbxContent>/g)].map(m => paras(m[1]).map(textOf))
+
+  check('a résumé with a text box is left byte-for-byte when nothing changed', applyTailoring(XMLB, BASEB), XMLB)
+
+  let out = applyTailoring(XMLB, BASEB.replace('Python', 'Python, dbt'))
+  check('a sidebar line is edited in place', boxes(out)[0], ['Skills', 'Python, dbt', 'SQL'])
+  check('and the legacy copy matches it', boxes(out)[1], boxes(out)[0])
+  check('the paragraphs still balance', balanced(out), true)
+
+  out = applyTailoring(XMLB, BASEB.replace('Jane Doe\n', ''))
+  check('dropping the line that holds the box keeps the box', boxes(out)[0], SIDEBAR)
+  check('and leaves a file Word can open', balanced(out), true)
+
+  out = applyTailoring(XMLB, 'Jane Doe\nExperience\nDid things')
+  check('a text box emptied by the model keeps one paragraph', boxes(out)[0].length, 1)
+  check('with no text in it', boxes(out)[0][0], '')
+
+  out = applyTailoring(XMLB, BASEB.replace('SQL', 'SQL\nAirflow'))
+  check('a line added to the sidebar goes inside the text box', boxes(out)[0], ['Skills', 'Python', 'SQL', 'Airflow'])
+  check('and into the legacy copy', boxes(out)[1], ['Skills', 'Python', 'SQL', 'Airflow'])
+  check('not into the body', paras(out.replace(/<w:txbxContent>[\s\S]*?<\/w:txbxContent>/g, '')).map(textOf).includes('Airflow'), false)
+}
+
+// ── Table cells ──────────────────────────────────────────────────
+// A cell must hold at least one paragraph, or Word reports the file corrupt.
+{
+  const cell = text => `<w:tc>${para(run(text))}</w:tc>`
+  const XMLT = doc([`<w:tbl><w:tr>${cell('Engineer')}${cell('2020')}</w:tr></w:tbl>`, para(run('Built it'))])
+  const out = applyTailoring(XMLT, 'Engineer\nBuilt it')
+  check('a dropped line in a one-paragraph cell empties the cell rather than deleting it', /<w:tc><w:p/.test(out.split('</w:tc>')[1] + '</w:tc>'), true)
+  check('every cell still has a paragraph', (out.match(/<w:tc>/g) || []).length, (out.match(/<w:tc><w:p/g) || []).length)
+}
+
+// A file the regexes misread must never be written.
+{
+  let threw = false
+  try { applyTailoring('<w:document><w:body><w:p>' + run('A') + '</w:body></w:document>', 'B') } catch { threw = true }
+  check('an unbalanced document is refused, so the PDF fallback is used', threw, true)
+}
+
 done()

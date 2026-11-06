@@ -38,8 +38,13 @@ function parseJSON(text) {
   return JSON.parse(cleaned)
 }
 
+// OpenRouter attributes requests to an app by these headers; without them its
+// activity page lists every call under an unnamed app.
+const OPENROUTER_HEADERS = { 'X-Title': 'Hiro' }
+
 function getClient(apiKey, baseURL) {
-  return new OpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) })
+  const headers = baseURL && /openrouter\.ai/.test(baseURL) ? { defaultHeaders: OPENROUTER_HEADERS } : {}
+  return new OpenAI({ apiKey, ...(baseURL ? { baseURL } : {}), ...headers })
 }
 
 // Single entry point for every request, so retry/backoff, the monthly budget

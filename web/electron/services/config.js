@@ -34,6 +34,10 @@ const SECRET_KEYS = [
 // credential: the token is in the path, and anyone holding it can post to the
 // channel as the integration. They were stored and exported in the clear.
 const NESTED_SECRET_FIELDS = { webhooks: 'url' }
+// Secrets held in a map of name -> secret: one AI key per provider, so
+// switching provider in Settings no longer throws away the last one's key.
+const MAP_SECRET_KEYS = ['aiApiKeys']
+const isMap = v => !!v && typeof v === 'object' && !Array.isArray(v)
 const nestedKey = (key, index) => `${key}[${index}]`
 const ENC_PREFIX = 'enc:v1:'
 
@@ -134,6 +138,21 @@ function decryptForLoad(config) {
       }
     })
   }
+  for (const key of MAP_SECRET_KEYS) {
+    if (!isMap(out[key])) continue
+    const map = {}
+    for (const [name, value] of Object.entries(out[key])) {
+      try {
+        map[name] = decryptValue(value)
+      } catch (err) {
+        preservedSecrets.set(`${key}.${name}`, value)
+        unreadable.push(`${key} ${name}`)
+        if (!reason) reason = err.message
+        map[name] = ''
+      }
+    }
+    out[key] = map
+  }
   secretError = unreadable.length
     ? `${unreadable.length} saved secret${unreadable.length === 1 ? '' : 's'} (${unreadable.join(', ')}) could not be decrypted because ${reason}. `
       + 'They have been left untouched on disk and will work again once the keychain is available. '
@@ -165,12 +184,29 @@ function encryptForSave(config) {
       return { ...item, [field]: encryptValue(item[field]) }
     })
   }
+  for (const key of MAP_SECRET_KEYS) {
+    if (!isMap(out[key])) continue
+    const map = {}
+    for (const [name, value] of Object.entries(out[key])) {
+      const preserved = preservedSecrets.get(`${key}.${name}`)
+      map[name] = !value && preserved ? preserved : encryptValue(value)
+    }
+    out[key] = map
+  }
   return out
 }
 
 const DEFAULTS = {
   aiProvider: '',
+  // The ACTIVE provider's key — the one every AI call site reads. Keys for
+  // every provider the user has set up live in aiApiKeys; configGuard keeps the
+  // two in step when the provider changes (see withProviderKeys).
   aiApiKey: '',
+  aiApiKeys: {},
+  // A second provider to use while the first is failing (bad key, no credit,
+  // outage). '' = none. Its key comes from aiApiKeys. See ai/index.js.
+  aiFallbackProvider: '',
+  // Blank = the newest Flash model the key can use (see ai/gemini.js).
   geminiModel: '',
   // The model that writes résumés and cover letters, per provider, for the
   // providers Hiro names models for (Claude, ChatGPT, DeepSeek). Blank means

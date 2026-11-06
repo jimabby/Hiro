@@ -53,6 +53,14 @@ export default function DashboardScreen({ client, active = true, onOpenApplicati
   // The Today list, drawn in place of the dashboard while open — the same
   // pattern the Applications tab uses for a detail page.
   const [showToday, setShowToday] = useState(false)
+  // Cloud only: set when the Supabase project needs schema.sql re-run.
+  const [schemaNotice, setSchemaNotice] = useState(null)
+  useEffect(() => {
+    let live = true
+    setSchemaNotice(null)
+    client?.getSchemaNotice?.().then((n) => { if (live) setSchemaNotice(n || null) }).catch(() => {})
+    return () => { live = false }
+  }, [client])
 
   const load = useCallback(async () => {
     let s, pd
@@ -338,6 +346,7 @@ export default function DashboardScreen({ client, active = true, onOpenApplicati
         </Text>
       )}
       <ScanQueue client={client} refreshKey={pendingCount} onChanged={setPendingCount} onNeedsPairing={onNeedsPairing} />
+      {!!schemaNotice && <Text style={styles.error} accessibilityRole="alert">{schemaNotice}</Text>}
       {!!error && <Text style={styles.error}>{error}</Text>}
       {!stats && !error && <ActivityIndicator style={{ marginVertical: 24 }} color={colors.accent} />}
 

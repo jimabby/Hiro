@@ -48,7 +48,7 @@ const RUNTIME_KEYS = new Set([
 // Credentials. Excluded unless the user explicitly opts in, so the default
 // export is safe to keep around as a settings backup.
 const SECRET_KEYS = new Set([
-  'aiApiKey', 'gmailAppPassword', 'calendarRefreshToken', 'calendarClientSecret',
+  'aiApiKey', 'aiApiKeys', 'gmailAppPassword', 'calendarRefreshToken', 'calendarClientSecret',
   'cloudDataKey',
   // Also in RUNTIME_KEYS above, and listed here for the same reason cloudDataKey
   // is in both: if the runtime exclusion is ever relaxed, this must not become

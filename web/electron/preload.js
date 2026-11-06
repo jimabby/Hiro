@@ -25,6 +25,9 @@ contextBridge.exposeInMainWorld('api', {
   saveConfig: (config) => ipcRenderer.invoke('config:save', config),
   testAiConnection: (provider, apiKey, model) => ipcRenderer.invoke('ai:test', provider, apiKey, model),
   getModelChoices: () => ipcRenderer.invoke('ai:modelChoices'),
+  listAiModels: (provider, apiKey, overrides) => ipcRenderer.invoke('ai:listModels', provider, apiKey, overrides),
+  openRouterSignIn: () => ipcRenderer.invoke('openrouter:signIn'),
+  openRouterCancel: () => ipcRenderer.invoke('openrouter:cancel'),
   // Night-before interview brief, and recent news about an employer.
   getInterviewBrief: (applicationId, opts) => ipcRenderer.invoke('interview:brief', applicationId, opts),
   getInterviewBriefText: (applicationId) => ipcRenderer.invoke('interview:briefText', applicationId),

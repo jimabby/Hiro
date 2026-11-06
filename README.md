@@ -163,9 +163,9 @@ pipeline was for, and the one the rest of the app had nothing to say about.
 - **Timeline page** — collapsible day-by-day history of all applications grouped by platform. Days are local calendar days: the "Today" / "Yesterday" labels compare dates rather than dividing hours, so they read correctly in the morning, and both ways of expanding a day (one at a time, or Expand All) convert local midnight to UTC before querying, so they show the same jobs
 
 ### Settings
-- **Writing model** — choose the model that writes résumés and cover letters for Claude, ChatGPT or DeepSeek (Claude Sonnet 5.5 by default; Opus 5.5 for stronger writing, Haiku 5.5 for the lowest cost), or type a newer model's id. Scoring and classification stay on the provider's cheap model. The connection test checks the model you picked, and the model recorded against each application is the one that actually wrote it — so "which version won" compares like with like
+- **Writing model** — choose the model that writes résumés and cover letters for Claude, ChatGPT, OpenRouter or DeepSeek (Claude Sonnet 5.5 by default; Opus 5.5 for stronger writing, Haiku 5.5 for the lowest cost), or type a newer model's id. Scoring and classification stay on the provider's cheap model. The connection test checks the model you picked, and the model recorded against each application is the one that actually wrote it — so "which version won" compares like with like
 - **Résumé layout** — Classic, Modern, Compact, Traditional or Minimal (black and white, left-aligned — the closest to a résumé you wrote yourself) for every résumé PDF Hiro builds, with a preview using your own résumé. All use the PDF standard fonts that applicant tracking systems read reliably
-- **Your own résumé, tailored in place** — import a .docx and tailored versions are written back into *your* document: unchanged lines are left exactly as they were, a reworded line keeps its bold labels, links and right-aligned dates, and an added bullet copies its neighbour's style. Only a PDF import is redrawn in a layout. The tailoring prompt keeps the edit light and in your voice: same lines, same spelling convention, no "spearheaded" or "leveraged"
+- **Your own résumé, tailored in place** — import a .docx and tailored versions are written back into *your* document: unchanged lines are left exactly as they were, a reworded line keeps its bold labels, links and right-aligned dates, and an added bullet copies its neighbour's style. Two-column templates work too: sidebar text boxes are edited in place, and a table cell or text box is never left empty (Word would refuse the file). If a document still can't be edited safely, Hiro sends its own PDF rather than a broken file. Only a PDF import is redrawn in a layout. The tailoring prompt keeps the edit light and in your voice: same lines, same spelling convention, no "spearheaded" or "leveraged"
 - **Contact details** — name, email, phone and location for career-site forms; blank fields are read off your résumé
 - **Interview availability** — working hours, slot length and how far ahead Propose Times looks
 - **Cover letter tone** — Professional, Casual & Warm, or Confident & Direct
@@ -244,14 +244,14 @@ Hiro/
 | Scraping | Playwright + playwright-extra + stealth plugin (Chromium) |
 | Scheduling | node-cron |
 | Email | Nodemailer (SMTP) and ImapFlow (IMAP) — any provider |
-| AI | Claude / ChatGPT / DeepSeek / Gemini (user's choice) |
+| AI | Claude / ChatGPT / OpenRouter / DeepSeek / Gemini / local (user's choice) |
 
 ---
 
 ## Prerequisites
 
 - **Node.js** v22.12+ (the version required by the current Electron toolchain)
-- A supported AI provider API key (Claude, OpenAI, DeepSeek, or Gemini)
+- A supported AI provider API key (Claude, OpenAI, DeepSeek or Gemini), an OpenRouter account, or a local model server
 - A **Gmail App Password** for notifications (myaccount.google.com → Security → App Passwords)
 
 ---
@@ -366,11 +366,18 @@ Sessions are stored at `~/.hiro/` and reused automatically.
 |---|---|
 | Claude (Anthropic) | Recommended. Best at resume tailoring and cover letters. Sonnet 5.5 writes, Haiku 5.5 scores; Opus 5.5 can be chosen as the writing model |
 | ChatGPT (OpenAI) | GPT-4o by default; GPT-4.1 and the GPT-5 reasoning models can be chosen as the writing model |
+| OpenRouter | One account for Claude, GPT, Gemini, DeepSeek and more. **Sign in with OpenRouter** in Setup or Settings instead of pasting a key: Hiro receives a key billed to your own OpenRouter account. Claude Sonnet 5.5 writes and Haiku 5.5 scores by default |
 | DeepSeek | Cost-effective option |
-| Gemini (Google) | Enter your model name (e.g. `gemini-2.5-flash`) — check [aistudio.google.com](https://aistudio.google.com) for available models |
+| Gemini (Google) | Leave the model blank to use the newest Flash model your key can use, or choose **Load models** to pick one |
 | Local model | Any OpenAI-compatible server on your machine — Ollama, LM Studio, llama.cpp. No API key, no bill, nothing leaves the device |
 
 All AI features (match scoring, resume tailoring, cover letter, interview questions, keyword gap, follow-up email) work with any supported provider.
+
+- **Getting a key** — next to the key field, Setup and Settings link to each provider's key page with the steps to create one (including the billing step that makes a new key fail its test), and warn when a key looks like it belongs to a different provider.
+- **One key per provider** — each provider keeps its own saved key, so switching from Claude to Gemini and back no longer loses the Claude key.
+- **Load models** — fills the model menus from the provider itself, so you pick from the models your key can actually use.
+- **Backup provider** — Settings → AI → Backup provider. If the main provider fails (no credit, revoked key, outage), the call is re-run on the backup, and the backup is used for the next 10 minutes before the main provider is tried again. Each switch is written to the activity log. The monthly spend cap covers both. Documents the backup writes are recorded under the backup and its model, so Analytics compares like with like.
+- **Why not "log in with Claude / ChatGPT"?** Anthropic does not allow third-party apps to use Claude.ai subscriptions, and OpenAI's "Sign in with ChatGPT" is limited to partners it approves. OpenRouter's sign-in is the supported way to use your own AI account.
 
 ### Running the model locally
 
