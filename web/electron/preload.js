@@ -310,6 +310,10 @@ contextBridge.exposeInMainWorld('api', {
   deleteView: (id) => ipcRenderer.invoke('features:deleteView', id),
   getTaskInbox: () => ipcRenderer.invoke('features:taskInbox'),
   completeInboxTask: (task) => ipcRenderer.invoke('features:completeInboxTask', task),
+  draftThankYou: (interviewId) => ipcRenderer.invoke('features:thankYouDraft', interviewId),
+  getWeeklyGoals: () => ipcRenderer.invoke('features:weeklyGoals'),
+  saveWeeklyGoals: (targets) => ipcRenderer.invoke('features:saveWeeklyGoals', targets),
+  getSkillsGap: (opts) => ipcRenderer.invoke('features:skillsGap', opts),
   getChecklist: (id) => ipcRenderer.invoke('features:checklist', id),
   updateChecklist: (id, change) => ipcRenderer.invoke('features:updateChecklist', id, change),
 

@@ -38,6 +38,9 @@ stub({
       }],
       live: 1, best: 200000, spread: null, nextDeadline: null,
     }),
+    getWeeklyActivity: () => ({ applications: 3, followUps: 0, contacts: 1 }),
+    // Ids 1–99 exist; anything else is a deleted row.
+    applicationExists: (id) => Number(id) >= 1 && Number(id) < 100,
     updateApplicationStatus: (id, status) => { statusWrites.push({ id, status }); return { success: true } },
     // Review mode: the phone may look at what is held back and reject a bad
     // draft, but approving means submitting, which needs the desktop's browser.
@@ -182,6 +185,14 @@ const post = async (path, body) => {
   check('unknown status rejected', (await post('/api/applications/1/status', { status: 'maybe' })).status, 400)
   check('missing status rejected', (await post('/api/applications/1/status', {})).status, 400)
   check('only accepted statuses reached the database', statusWrites.length, 7)
+  check('a status change for a deleted application is a 404',
+    (await post('/api/applications/404/status', { status: 'interview' })).status, 404)
+  check('and writes nothing', statusWrites.length, 7)
+  cfg.weeklyGoals = { applications: 10, contacts: 1 }
+  const week = await get('/api/goals')
+  check('weekly goals are served to the phone', [week.status, week.body?.goals?.map(g => [g.key, g.done])], [200, [['applications', 3], ['contacts', 1]]])
+  check('a comment on a deleted application is a 404',
+    (await post('/api/applications/404/comment', { comment: 'hi' })).status, 404)
 
   // ── Review queue over the LAN ───────────────────────────────────
   const heldRes = await get('/api/held')

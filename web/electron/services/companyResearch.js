@@ -33,6 +33,10 @@ const EDITIONS = {
 }
 
 // Legal suffixes say nothing about which company is meant and cost matches.
+// The calendar day the headline appeared on HERE. The UTC date put a story
+// published at 9 am in Sydney on the previous day.
+const localDay = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
 function companyKey(company) {
   return String(company || '').toLowerCase()
     .replace(/\b(pty|ltd|limited|inc|llc|plc|gmbh|corp|corporation|co|company|group|holdings)\b\.?/g, ' ')
@@ -61,7 +65,7 @@ function parseNewsRss(xml, { now = Date.now() } = {}) {
     const date = new Date(pick('pubDate'))
     if (!title || isNaN(date.getTime())) continue
     if (now - date.getTime() > NEWS_WINDOW_DAYS * 86400000) continue
-    items.push({ title, source, url: pick('link'), date: date.toISOString().slice(0, 10) })
+    items.push({ title, source, url: pick('link'), date: localDay(date) })
   }
   items.sort((a, b) => b.date.localeCompare(a.date))
   return items.slice(0, MAX_HEADLINES)

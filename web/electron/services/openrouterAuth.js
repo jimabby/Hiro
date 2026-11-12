@@ -62,8 +62,19 @@ async function startListener(expectedState, timeoutMs) {
     try { url = new URL(req.url, 'http://localhost') } catch { res.writeHead(400).end(); return }
     if (url.pathname !== '/callback') { res.writeHead(404).end('Not found'); return }
     const html = { 'Content-Type': 'text/html' }
-    // Checked first and only refused: anything on this machine can reach the
-    // port, and must not be able to cancel a sign-in halfway through.
+    // A denial. OpenRouter sends the user back WITHOUT the state when they
+    // press Deny (it returns state only after authorising), so the mismatch
+    // check below used to answer "did not match" and leave Hiro waiting out its
+    // five-minute timeout. A callback carrying neither a code nor a state can
+    // only end the sign-in, never complete one: the worst anything else on this
+    // machine can do with it is cancel a sign-in, which the user can restart.
+    if (!url.searchParams.has('state') && !url.searchParams.get('code')) {
+      res.writeHead(200, html).end(resultPage('Not signed in', 'OpenRouter sign-in was cancelled. You can close this tab.'))
+      finish(settle.reject, new Error('OpenRouter sign-in was cancelled — no key was issued. Nothing was changed.'))
+      return
+    }
+    // Checked next and only refused: anything on this machine can reach the
+    // port, and must not be able to complete a sign-in with a code of its own.
     if (url.searchParams.get('state') !== expectedState) {
       res.writeHead(400, html).end(resultPage('Not signed in', 'The response did not match the request. Please try again from Hiro.'))
       return

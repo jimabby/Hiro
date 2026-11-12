@@ -1770,6 +1770,56 @@ export default function Settings({ showToast, active, focusTab, onFocusTabHandle
             </div>
           </div>
         </div>
+        <fieldset className="form-group" style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px' }}>
+          <legend style={{ fontSize: 13, fontWeight: 600, padding: '0 4px' }}>Eligibility</legend>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input type="checkbox" checked={!!form.eligibility?.enabled}
+              onChange={e => set('eligibility', { ...(form.eligibility || {}), enabled: e.target.checked })} />
+            Skip ads that rule me out before paying to score them
+          </label>
+          {form.eligibility?.enabled && <div className="form-row" style={{ marginTop: 8 }}>
+            <div className="form-group">
+              <label htmlFor="set-elig-status">Work status</label>
+              <select id="set-elig-status" value={form.eligibility?.workStatus || ''}
+                onChange={e => set('eligibility', { ...form.eligibility, workStatus: e.target.value })}>
+                <option value="">Not stated</option>
+                <option value="citizen">Citizen</option>
+                <option value="permanent">Permanent resident</option>
+                <option value="visa">On a visa</option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label htmlFor="set-elig-sponsor">Need visa sponsorship?</label>
+              <select id="set-elig-sponsor" value={form.eligibility?.needsSponsorship ? 'yes' : 'no'}
+                onChange={e => set('eligibility', { ...form.eligibility, needsSponsorship: e.target.value === 'yes' })}>
+                <option value="no">No</option>
+                <option value="yes">Yes</option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label htmlFor="set-elig-clearance">Hold a security clearance?</label>
+              <select id="set-elig-clearance"
+                value={form.eligibility?.holdsClearance === true ? 'yes' : form.eligibility?.holdsClearance === false ? 'no' : ''}
+                onChange={e => set('eligibility', { ...form.eligibility, holdsClearance: e.target.value === '' ? null : e.target.value === 'yes' })}>
+                <option value="">Not stated</option>
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
+              </select>
+            </div>
+          </div>}
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+            Only ads that plainly state a requirement you do not meet are skipped — &ldquo;citizens only&rdquo;,
+            &ldquo;no sponsorship&rdquo;, &ldquo;must hold a current clearance&rdquo;. The activity log quotes the line each time.
+          </div>
+        </fieldset>
+        <div className="form-group">
+          <label htmlFor="set-skill-terms">Extra skills to track in Analytics → Skills employers ask for</label>
+          <input id="set-skill-terms" placeholder="e.g. Kafka Streams, Workday, IFRS"
+            value={form.skillTerms || ''} onChange={e => set('skillTerms', e.target.value)} />
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+            Comma-separated. Added to the built-in list of common skills.
+          </div>
+        </div>
         <div className="form-group">
           <label htmlFor="set-f38">Match Threshold: {form.matchThreshold}%</label>
           <input id="set-f38" type="range" min={50} max={100} value={form.matchThreshold}

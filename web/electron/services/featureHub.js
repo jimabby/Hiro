@@ -173,13 +173,31 @@ function taskInbox() {
       jobTitle: p.jobTitle, kind: 'propose-times', due: String(p.createdAt || '').slice(0, 10),
       title: `Reply with your availability (${p.slots.length} time${p.slots.length === 1 ? '' : 's'} drafted)` })
   }
+  // A thank-you note after an interview. Due the day after it: a note sent
+  // within a day reads as interest, one sent a week later as an afterthought.
+  // Listed for a few days (database.getThankYouDue), then it drops away by
+  // itself — an old reminder for a moment that has passed is only noise.
+  for (const iv of database.getThankYouDue()) {
+    tasks.push({ id: `thank-you:${iv.id}`, applicationId: iv.application_id, interviewId: iv.id,
+      company: iv.company, jobTitle: iv.job_title, kind: 'thank-you', due: dayAfter(iv.scheduled_at),
+      title: 'Send a thank-you note' })
+  }
   return tasks.sort((a, b) => (a.due || '9999').localeCompare(b.due || '9999') || a.id.localeCompare(b.id))
+}
+
+function dayAfter(scheduledAt) {
+  const day = String(scheduledAt || '').slice(0, 10)
+  if (!DATE_RE.test(day)) return ''
+  const d = new Date(`${day}T12:00:00`)
+  d.setDate(d.getDate() + 1)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 function completeInboxTask(task = {}) {
   if (task.kind === 'checklist') { database.updateChecklist(Number(task.applicationId), { id: task.taskId, done: true }); return { success: true } }
   if (task.kind === 'follow-up') return database.completeNextAction(Number(task.applicationId))
   if (task.kind === 'propose-times') return database.dismissTimeProposal(Number(task.applicationId))
+  if (task.kind === 'thank-you') return database.completeThankYou(Number(task.interviewId))
   throw new Error('Open this application to complete the action.')
 }
 

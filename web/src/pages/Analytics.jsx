@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import SkillsGap from '../components/SkillsGap'
 
 const PLATFORM_COLORS = { Seek: 'var(--accent)', LinkedIn: 'var(--green)', Indeed: 'var(--yellow)' }
 const STATUS_COLORS = {
@@ -708,6 +709,8 @@ export default function Analytics({ active }) {
           </ChartFrame>
         </div>
       </div>
+
+      <SkillsGap active={active} />
 
       {/* Match score distribution vs apply threshold */}
       <div className="card" style={{ marginBottom: 24 }}>

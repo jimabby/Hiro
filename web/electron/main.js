@@ -1155,7 +1155,7 @@ ipcMain.handle('db:exportCSV', async (_, filters) => {
   const csv = [header.join(','), ...rows].join('\n')
   const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
     title: 'Export Applications',
-    defaultPath: `hiro-applications-${new Date().toISOString().split('T')[0]}.csv`,
+    defaultPath: `hiro-applications-${database.localDateString()}.csv`,
     filters: [{ name: 'CSV', extensions: ['csv'] }],
   })
   if (canceled || !filePath) return { canceled: true }
@@ -1286,8 +1286,10 @@ ipcMain.handle('ai:keywordGap', async (_, jobDescription, resumeText) => {
 
 // The renderer sends a company name, but nothing guarantees one — a row with
 // no company, or a hand-edited config holding a number — and `.toLowerCase()`
-// on either threw out of the handler.
-const companyKey = (c) => String(c ?? '').trim().toLowerCase()
+// on either threw out of the handler. The same key the scan matches the block
+// list with (jobFilters.companyKey), so "Acme Pty Ltd" is not added beside
+// "Acme", and unblocking either removes both.
+const { companyKey } = require('./services/jobFilters')
 
 ipcMain.handle('config:blacklistCompany', async (_, company) => {
   const name = String(company ?? '').trim()
@@ -1371,7 +1373,7 @@ ipcMain.handle('calendar:exportICS', async (_, eventId) => {
     const slug = (s) => String(s || '').replace(/[^\w-]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'interview'
     const defaultPath = single
       ? `hiro-interview-${slug(single.company)}.ics`
-      : `hiro-interviews-${new Date().toISOString().slice(0, 10)}.ics`
+      : `hiro-interviews-${database.localDateString()}.ics`
 
     const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
       title: 'Export Interviews',
@@ -1454,7 +1456,7 @@ ipcMain.handle('config:export', async (_, passphrase, includeSecrets) => {
     const bundle = configTransfer.exportBundle(passphrase, { includeSecrets: !!includeSecrets })
     const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
       title: 'Export Hiro Settings',
-      defaultPath: `hiro-settings-${new Date().toISOString().slice(0, 10)}.hirocfg`,
+      defaultPath: `hiro-settings-${database.localDateString()}.hirocfg`,
       filters: [{ name: 'Hiro Config Backup', extensions: ['hirocfg'] }],
     })
     if (canceled || !filePath) return { canceled: true }
@@ -1506,7 +1508,7 @@ ipcMain.handle('data:export', async (_, passphrase) => {
     const bundle = dataTransfer.exportBundle(passphrase || '')
     const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
       title: 'Export Hiro Data',
-      defaultPath: `hiro-data-${new Date().toISOString().slice(0, 10)}.${bundle.encrypted ? 'hirodata' : 'json'}`,
+      defaultPath: `hiro-data-${database.localDateString()}.${bundle.encrypted ? 'hirodata' : 'json'}`,
       filters: bundle.encrypted
         ? [{ name: 'Hiro Data Export', extensions: ['hirodata'] }]
         : [{ name: 'JSON', extensions: ['json'] }],
@@ -1701,7 +1703,7 @@ ipcMain.handle('analytics:exportPDF', async () => {
     const data = database.getWeeklyReportData()
     const tmpPath = await buildAnalyticsReportPDF(data)
     const { filePath } = await dialog.showSaveDialog(mainWindow, {
-      defaultPath: `hiro-analytics-${new Date().toISOString().slice(0, 10)}.pdf`,
+      defaultPath: `hiro-analytics-${database.localDateString()}.pdf`,
       filters: [{ name: 'PDF', extensions: ['pdf'] }],
     })
     if (!filePath) return { success: false, reason: 'cancelled' }

@@ -20,6 +20,7 @@ let calendarTask = null
 let pushTask = null
 let briefTask = null
 let contactTask = null
+let goalTask = null
 let backupDrillTask = null
 let campaignTasks = []
 let batchTimeouts = []
@@ -227,6 +228,15 @@ function startTasks() {
     } catch (err) {
       log(`Could not schedule contact reminders: ${err.message}`)
     }
+  }
+
+  // Weekly goals (services/weeklyGoals.js): a nudge at 5pm Wednesday to
+  // Friday when a goal is behind pace. Not earlier in the week — on a Monday
+  // everything is "behind" — and nothing at all when no goal is set.
+  try {
+    goalTask = cron.schedule('0 17 * * 3-5', () => { runGoalNudge() })
+  } catch (err) {
+    log(`Could not schedule weekly goal reminders: ${err.message}`)
   }
 
   if (cfg.enableBackupDrills !== false) {
@@ -511,6 +521,7 @@ function stop({ abortRun = true } = {}) {
   pushTask = disposeTask(pushTask)
   briefTask = disposeTask(briefTask)
   contactTask = disposeTask(contactTask)
+  goalTask = disposeTask(goalTask)
   backupDrillTask = disposeTask(backupDrillTask)
   campaignTasks.forEach(disposeTask)
   campaignTasks = []
@@ -1102,6 +1113,23 @@ function runContactReminders() {
   }
 }
 
+function runGoalNudge({ now = new Date() } = {}) {
+  try {
+    const goals = require('./weeklyGoals')
+    const p = goals.progress({ now })
+    const text = goals.nudgeText(p)
+    if (!text) return { success: true, nudged: false }
+    const key = `goals:${p.weekStart}:${localDate(now)}`
+    if (!database.claimPushKey(key, 'weekly-goals', 'Weekly goals', text)) return { success: true, nudged: false }
+    notify({ type: 'weekly-goals', progress: p })
+    nativeNotify('Weekly goals', text)
+    return { success: true, nudged: true }
+  } catch (err) {
+    log(`Weekly goal check failed: ${describeError(err)}`)
+    return { success: false, error: describeError(err) }
+  }
+}
+
 function runBackupDrill() {
   try {
     database.maybeBackup()
@@ -1175,6 +1203,6 @@ function cloudCommandStatus(id) {
   return finishedCloudScans.get(id) || cfg.cloudScanResults?.[id] || ((cfg.pendingScans || []).some(r => r.cloudCommandId === id) ? { status: 'accepted', error: '' } : null)
 }
 
-module.exports = { cloudCommandStatus, init, restart, stop, cancelScan, runNow, runDryRun, requestScan, processQueue, getScanInfo, getLastDryRun, runInboxCheck, runFollowUp, runStaleSweep, runContactReminders, runBackupDrill, runBackupDrillIfDue, getStatus, getBatchSchedule, runBatch,
+module.exports = { cloudCommandStatus, init, restart, stop, cancelScan, runNow, runDryRun, requestScan, processQueue, getScanInfo, getLastDryRun, runInboxCheck, runFollowUp, runStaleSweep, runContactReminders, runGoalNudge, runBackupDrill, runBackupDrillIfDue, getStatus, getBatchSchedule, runBatch,
   // exported for tests
   evenHourInterval, seededJitter, _markBatchRun: markBatchRun }

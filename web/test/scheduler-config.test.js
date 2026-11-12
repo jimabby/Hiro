@@ -42,9 +42,11 @@ cfg = { ...cfg, scheduledScanTime: 'not-a-time', dailyReportTime: '25:99' }
 let threw = null
 try { scheduler.restart(null) } catch (e) { threw = e.message }
 check('garbage times do not throw', threw, null)
-// Five: scan, daily report, contact reminders, backup drill, and the
-// night-before interview brief (on by default — services/interviewBrief.js).
-check('core and safety tasks still scheduled', scheduled.length, 5)
+// Six: scan, daily report, contact reminders, backup drill, the night-before
+// interview brief (on by default — services/interviewBrief.js), and the weekly
+// goal check (services/weeklyGoals.js), which does nothing when no goal is set.
+check('core and safety tasks still scheduled', scheduled.length, 6)
+check('the weekly goal check runs late Wednesday to Friday', scheduled.includes('0 17 * * 3-5'), true)
 check('the interview brief check is among them', scheduled.filter(e => e === '*/10 * * * *').length >= 1, true)
 check('contact reminders are scheduled daily', scheduled.includes('0 9 * * *'), true)
 check('backup recovery drill is scheduled weekly', scheduled.includes('15 4 * * 0'), true)

@@ -262,6 +262,16 @@ const DEFAULTS = {
   // 'any' | 'remote' | 'flexible' (remote or hybrid). Listings that never say
   // are kept. See services/jobFilters.js.
   workArrangement: 'any',
+  // Facts an ad can rule the user out on, checked before any model call (see
+  // jobFilters.eligibilityBlock). Off until the user turns it on. workStatus is
+  // 'citizen' | 'permanent' | 'visa' | ''; holdsClearance is true, false, or
+  // null for "not stated" (never filters).
+  eligibility: { enabled: false, workStatus: '', needsSponsorship: false, holdsClearance: null },
+  // Weekly targets (services/weeklyGoals.js). 0 = no goal for that count.
+  weeklyGoals: { applications: 0, followUps: 0, contacts: 0 },
+  // Extra skills for the skills-gap report (services/skillsGap.js), on top of
+  // its built-in vocabulary. Comma-separated, matched literally.
+  skillTerms: '',
   // Which country's Indeed to search — see scraper/indeedRegion.js.
   indeedRegion: 'au',
   masterResume: '',

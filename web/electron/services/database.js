@@ -607,6 +607,14 @@ function migrateBaseline() {
   ensureColumn('interview_events', 'source_zone', 'TEXT')
   ensureColumn('interview_events', 'source_local', 'TEXT')
 
+  // When the user sent (or decided against) the thank-you note after this
+  // interview. NULL keeps the task in the inbox for a few days after it.
+  ensureColumn('interview_events', 'thank_you_done_at', 'TEXT')
+
+  // When the user last reached out to a contact — stamped by "Done" on a
+  // contact reminder. Counts toward the weekly networking goal.
+  ensureColumn('contacts', 'last_contacted_at', 'TEXT')
+
   // Indexes for frequent queries
   db.run('CREATE INDEX IF NOT EXISTS idx_apps_applied_at ON applications(applied_at DESC)')
   db.run('CREATE INDEX IF NOT EXISTS idx_apps_job_url ON applications(job_url)')
@@ -2898,6 +2906,34 @@ function getUpcomingInterviews(limit = 25) {
   `, [limit])
 }
 
+// Interviews that have happened in the last few days and still want a
+// thank-you note. A timed interview qualifies once its start time has passed; a
+// date-only one once its day is over, since "sometime today" may not have
+// happened yet. Closed applications are left out — there is no one to thank
+// after a withdrawal, and a rejection that arrived first makes the note moot.
+const THANK_YOU_WINDOW_DAYS = 3
+
+function getThankYouDue(windowDays = THANK_YOU_WINDOW_DAYS) {
+  return query(`
+    SELECT e.id, e.application_id, e.scheduled_at, e.has_time, e.note,
+           a.job_title, a.company, a.recruiter_email
+    FROM interview_events e
+    JOIN applications a ON a.id = e.application_id
+    WHERE e.thank_you_done_at IS NULL
+      AND a.status NOT IN ('rejected', 'withdrawn', 'skipped')
+      AND date(e.scheduled_at) >= date('now', 'localtime', ?)
+      AND ((e.has_time = 1 AND e.scheduled_at <= datetime('now', 'localtime'))
+        OR (e.has_time = 0 AND date(e.scheduled_at) < date('now', 'localtime')))
+    ORDER BY e.scheduled_at ASC
+  `, [`-${Math.max(0, Number(windowDays) || 0)} days`])
+}
+
+function completeThankYou(interviewId) {
+  if (!getInterviewEvent(interviewId)) throw new Error('That interview no longer exists. Refresh the task list.')
+  run("UPDATE interview_events SET thank_you_done_at = datetime('now') WHERE id = ?", [Number(interviewId)])
+  return { success: true }
+}
+
 function deleteInterviewEvent(id) {
   run('DELETE FROM interview_events WHERE id = ?', [id])
   return { success: true }
@@ -4577,8 +4613,54 @@ function saveContact(input = {}) {
 function deleteContact(id) { run('DELETE FROM contacts WHERE id = ?', [Number(id)]); return { success: true } }
 
 function completeContactReminder(id) {
-  run("UPDATE contacts SET next_action_at = NULL, updated_at = datetime('now') WHERE id = ?", [Number(id)])
+  run("UPDATE contacts SET next_action_at = NULL, last_contacted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?", [Number(id)])
   return { success: true }
+}
+
+// What the user got done since `sinceUtc` (a SQLite UTC timestamp — the caller
+// converts the local start of its week), for the weekly goals.
+//
+//   applications — actually sent: drafts held for review and skipped jobs are
+//                  not applications yet.
+//   followUps    — follow-ups marked done on the board, plus follow-up emails
+//                  Hiro sent on the user's behalf.
+//   contacts     — contact reminders completed (someone reached out to).
+function getWeeklyActivity(sinceUtc) {
+  const since = String(sinceUtc || '')
+  const n = (sql) => queryOne(sql, [since])?.c || 0
+  return {
+    applications: n("SELECT COUNT(*) AS c FROM applications WHERE status NOT IN ('held', 'skipped') AND applied_at >= ?"),
+    followUps: n('SELECT COUNT(*) AS c FROM applications WHERE next_action_done_at >= ?')
+      + n('SELECT COUNT(*) AS c FROM applications WHERE last_follow_up_at >= ?'),
+    contacts: n('SELECT COUNT(*) AS c FROM contacts WHERE last_contacted_at >= ?'),
+  }
+}
+
+// Job descriptions seen recently, for the skills-gap report: everything Hiro
+// applied to or drafted, and what it routed to Needs Attention. One row per
+// advert — a repost is the same demand, not twice as much of it.
+function getRecentJobDescriptions(days = 90, limit = 400) {
+  const window = `-${Math.max(1, Number(days) || 90)} days`
+  const rows = query(`
+    SELECT job_title, company, job_description, description_hash, match_score, applied_at AS seen_at
+    FROM applications
+    WHERE job_description IS NOT NULL AND length(job_description) > 200 AND applied_at >= datetime('now', ?)
+    UNION ALL
+    SELECT job_title, company, job_description, description_hash, match_score, found_at AS seen_at
+    FROM attention_jobs
+    WHERE job_description IS NOT NULL AND length(job_description) > 200 AND found_at >= datetime('now', ?)
+    ORDER BY seen_at DESC
+  `, [window, window])
+  const seen = new Set()
+  const out = []
+  for (const r of rows) {
+    const key = r.description_hash || `${String(r.company || '').toLowerCase()}|${String(r.job_title || '').toLowerCase()}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(r)
+    if (out.length >= limit) break
+  }
+  return out
 }
 
 function snoozeContactReminder(id, date) {
@@ -4885,7 +4967,7 @@ module.exports = {
   getApplicationsAwaitingReply, setLastReplyUid, markStaleApplications, OPEN_STATUSES,
   saveInterviewPrep, getInterviewPrep, deleteInterviewPrep, getInterviewPrepWithAnswers,
   getCompanyResearch, saveCompanyResearch,
-  getApplicationsForAsk, applicationExists, listAskThreads, getAskThread, appendAskTurn, deleteAskThread,
+  localDateString, getWeeklyActivity, getRecentJobDescriptions, getThankYouDue, completeThankYou, getApplicationsForAsk, applicationExists, listAskThreads, getAskThread, appendAskTurn, deleteAskThread,
   scheduleInterviewPrep, getInterviewPrepJob, getDueInterviewPrepJobs, updateInterviewPrepJob, countInterviewPrepDoneSince,
   getExchangeRates, setExchangeRates, getAtsDiscoveryCompanies,
   getInterviewAnswer, listInterviewAnswers, saveInterviewAnswer, deleteInterviewAnswer,

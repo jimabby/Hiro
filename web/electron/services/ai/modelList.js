@@ -81,11 +81,20 @@ async function listModels(provider, apiKey, cfg = {}, { fetchImpl } = {}) {
 // scan that makes several calls per job. Previews, -lite and dated variants
 // are passed over for the plain release name.
 function pickGeminiDefault(models) {
-  const version = id => (id.match(/^gemini-(\d+(?:\.\d+)?)/) || [])[1]
-  const stable = models.map(m => m.id).filter(id => /^gemini-\d+(\.\d+)?-flash$/.test(id))
+  // Compared part by part: as a decimal, "3.10" is 3.1 and lost to "3.8".
+  const version = id => ((id.match(/^gemini-(\d+(?:\.\d+)*)/) || [])[1] || '0').split('.').map(Number)
+  const newer = (a, b) => {
+    const va = version(a), vb = version(b)
+    for (let i = 0; i < Math.max(va.length, vb.length); i++) {
+      const d = (vb[i] || 0) - (va[i] || 0)
+      if (d) return d
+    }
+    return 0
+  }
+  const stable = models.map(m => m.id).filter(id => /^gemini-\d+(\.\d+)*-flash$/.test(id))
   const pool = stable.length ? stable : models.map(m => m.id).filter(id => /flash/.test(id) && !/(lite|preview|exp|thinking|live)/.test(id))
   if (!pool.length) return models[0]?.id || ''
-  return pool.sort((a, b) => Number(version(b) || 0) - Number(version(a) || 0))[0]
+  return pool.sort(newer)[0]
 }
 
 module.exports = { listModels, pickGeminiDefault, NOT_TEXT }

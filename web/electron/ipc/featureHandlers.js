@@ -4,6 +4,21 @@ const featureHub = require('../services/featureHub')
 module.exports = function registerFeatureHandlers({ ipcMain, scheduler, getWindow }) {
   ipcMain.handle('features:taskInbox', () => featureHub.taskInbox())
   ipcMain.handle('features:completeInboxTask', (_, task) => featureHub.completeInboxTask(task))
+
+  // A thank-you note after an interview: drafted here, edited and sent by the
+  // user from their own mail app (shell:openMailDraft). Nothing is sent.
+  ipcMain.handle('features:thankYouDraft', async (_, interviewId) => {
+    try { return await require('../services/thankYouNote').draft(interviewId) }
+    catch (err) { return { success: false, error: err.message } }
+  })
+
+  // Weekly goals and the skills-gap report.
+  ipcMain.handle('features:weeklyGoals', () => require('../services/weeklyGoals').progress())
+  ipcMain.handle('features:saveWeeklyGoals', (_, targets) => require('../services/weeklyGoals').saveTargets(targets))
+  ipcMain.handle('features:skillsGap', (_, opts) => {
+    const days = [30, 60, 90, 180].includes(Number(opts?.days)) ? Number(opts.days) : 90
+    return require('../services/skillsGap').analyse({ days })
+  })
   ipcMain.handle('features:views', () => featureHub.savedViews())
   ipcMain.handle('features:saveView', (_, view) => featureHub.saveView(view))
   ipcMain.handle('features:deleteView', (_, id) => featureHub.deleteView(id))

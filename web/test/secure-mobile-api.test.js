@@ -23,6 +23,8 @@ stub({
   },
   './database': {
     getStats: () => ({ totalAllTime: 17 }),
+    // Ids 1–99 exist; anything else is a deleted row.
+    applicationExists: (id) => Number(id) >= 1 && Number(id) < 100,
     updateApplicationStatus: (id, status) => { statusWrite = { id, status }; return { success: true } },
     insertAttentionJob: value => { imported = value; return { success: true, id: 22 } },
   },

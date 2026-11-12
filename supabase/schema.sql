@@ -295,10 +295,6 @@ create policy "own review requests" on public.review_requests for all
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create index if not exists idx_review_requests_user_created
   on public.review_requests (user_id, created_at);
--- One application has one pending decision. Upserting a changed decision from
--- the phone replaces the previous choice instead of executing both.
-create unique index if not exists idx_review_requests_one_pending
-  on public.review_requests (user_id, application_local_id);
 
 -- Enforce the same invariants at the cloud boundary that both clients enforce
 -- in their UI. Constraints are NOT VALID first so an older project can re-run
@@ -456,6 +452,11 @@ update public.review_requests r set application_cloud_id = a.id
 -- exists). It must not be recreated here: once finished commands are kept as
 -- history, a full unique index would fail on every re-run of this file.
 drop index if exists public.idx_review_requests_cloud_pending;
+-- Older copies of this file also created a full unique index on
+-- (user_id, application_local_id) here. It predates finished commands being
+-- kept as history, and would block a second decision on a draft for any client
+-- that still sends the numeric id, so it goes too.
+drop index if exists public.idx_review_requests_one_pending;
 
 -- Mirrors belong to an installation. A second desktop must never delete the
 -- first desktop's interviews, offers, or attention queue during its own sync.

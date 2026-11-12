@@ -234,6 +234,10 @@ export default function App() {
       if (data.type === 'contact-reminder') {
         showToast(`Follow up with ${data.contact?.name || data.contact?.email || 'contact'} — due ${data.contact?.next_action_at}`, 'info')
       }
+      if (data.type === 'weekly-goals') {
+        const behind = (data.progress?.goals || []).filter(g => g.state === 'behind')
+        if (behind.length) showToast(`Weekly goals: ${behind.map(g => `${g.done}/${g.target} ${g.label.toLowerCase()}`).join(', ')} — a little behind pace`, 'info')
+      }
       if (data.type === 'backup-drill' && data.report?.success === false) {
         showToast(data.report.error || `${data.report.failed} backup recovery check(s) failed`, 'error')
       }

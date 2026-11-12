@@ -12,7 +12,7 @@ const automationHealth = require('./automationHealth')
 const resumeExperiment = require('./resumeExperiment')
 const { inspectTailoring, inspectCoverLetter, describeFlags } = require('./fabricationGuard')
 const { detectInjection, describeInjection } = require('./ai/untrusted')
-const { excludedKeyword, matchesWorkPreference } = require('./jobFilters')
+const { excludedKeyword, matchesWorkPreference, blockedCompany, eligibilityBlock } = require('./jobFilters')
 
 // Pick the resume to use for a given job. A rule matches when any of its
 // comma-separated keywords appears in the job title or description; the first
@@ -89,6 +89,8 @@ let cancelled = false
 // to the database — they were never scored, and a preference changed later
 // should see them again — but held here so each scan does not re-fetch them.
 const rejectedByPreference = new Set()
+// The same, for listings the eligibility filter turned away (jobFilters.js).
+const rejectedByEligibility = new Set()
 
 // Only one apply flow (scheduled scan, batch, or manual apply) may run at a
 // time: they share the screening-question prompt and browser resources, and a
@@ -217,6 +219,8 @@ async function doRun(cfg, { log, notifyAttention }) {
   // quietly achieved nothing because the API was down doesn't look like a scan
   // that found nothing worth applying to.
   let scoringFailures = 0
+  // Listings skipped because the ad rules the user out (eligibility filter).
+  let ineligibleCount = 0
   let budgetStopped = false
   const batchLimit = cfg.batchLimit || Infinity // smart scheduling passes a finite limit
   // Per-platform ceiling on drafts held for review in a day. 0 disables it,
@@ -230,8 +234,8 @@ async function doRun(cfg, { log, notifyAttention }) {
   // just stopped. Read at the moment the summary is built, so a cancel that
   // lands mid-unwind is still reflected.
   const summary = () => (cfg.dryRun
-    ? { dryRun: true, cancelled, scores: dryScores, wouldApply: dryWouldApply, threshold: cfg.matchThreshold, blocked, paused, scoringFailures, budgetStopped }
-    : { dryRun: false, cancelled, found: foundCount, applied: batchCount, held: heldCount, blocked, paused, scoringFailures, budgetStopped })
+    ? { dryRun: true, cancelled, scores: dryScores, wouldApply: dryWouldApply, threshold: cfg.matchThreshold, blocked, paused, scoringFailures, budgetStopped, ineligible: ineligibleCount }
+    : { dryRun: false, cancelled, found: foundCount, applied: batchCount, held: heldCount, blocked, paused, scoringFailures, budgetStopped, ineligible: ineligibleCount })
 
   // Listings from the boards' own alert emails (services/jobAlerts.js), sorted
   // by board. They join that board's scraped results below. A mailbox that
@@ -341,11 +345,12 @@ async function doRun(cfg, { log, notifyAttention }) {
       log(`${name}: ${added.length} more from your job-alert emails`)
     }
 
-    const blacklist = (cfg.blacklistedCompanies || []).map(c => String(c).toLowerCase())
     // Defensive on both sides: a listing with no company name (a malformed card,
     // or a career board that omits it) used to throw here and take the whole
-    // platform's results down with it.
-    const filtered = jobs.filter(j => j?.job_url && !blacklist.includes(String(j.company || '').toLowerCase()))
+    // platform's results down with it. Names are compared without legal and
+    // regional suffixes, so blocking "Acme" also blocks "Acme Pty Ltd" — see
+    // jobFilters.companyKey.
+    const filtered = jobs.filter(j => j?.job_url && !blockedCompany(j.company, cfg.blacklistedCompanies))
 
     // Excluded keywords: the user's own "never" list, checked against the
     // title and company before anything is fetched or scored. See jobFilters.js
@@ -390,6 +395,7 @@ async function doRun(cfg, { log, notifyAttention }) {
       // it, and added another duplicate Needs Attention entry each time.
       if (database.hasSeenJobUrl(job.job_url)) continue
       if (cfg.workArrangement && cfg.workArrangement !== 'any' && rejectedByPreference.has(job.job_url)) continue
+      if (rejectedByEligibility.has(job.job_url) && cfg.eligibility?.enabled) continue
 
       // Skip companies applied to inside the cooldown window. This is a
       // rate-limit on spamming one employer, not a permanent ban — see
@@ -436,6 +442,18 @@ async function doRun(cfg, { log, notifyAttention }) {
       if (!where.ok) {
         rejectedByPreference.add(job.job_url)
         log(`  Skipping "${job.job_title}" — listed as ${where.arrangement}, and you asked for ${cfg.workArrangement === 'remote' ? 'remote only' : 'remote or hybrid'}`)
+        continue
+      }
+
+      // An ad the user cannot apply to: citizens only, no sponsorship, a
+      // clearance already held. Same place and same reasoning as the work
+      // preference above — after the description, before any model call — and
+      // remembered for the session for the same reason.
+      const ineligible = eligibilityBlock(cfg, job, jobDescription)
+      if (ineligible) {
+        rejectedByEligibility.add(job.job_url)
+        ineligibleCount++
+        log(`  Skipping "${job.job_title}" at ${job.company} — ${ineligible.reason}: "${ineligible.quote}"`)
         continue
       }
 

@@ -87,7 +87,7 @@ function interviewTasks(interviews = []) {
 
 // Order within a day: what has a clock time first (an interview at 10:00),
 // then the kinds in rough order of cost-of-missing.
-const KIND_RANK = { interview: 0, offer: 1, closing: 2, attention: 2, 'follow-up': 3, checklist: 4 }
+const KIND_RANK = { interview: 0, offer: 1, closing: 2, attention: 2, 'thank-you': 3, 'follow-up': 3, checklist: 4 }
 
 function sortTasks(a, b) {
   return a.due.localeCompare(b.due)

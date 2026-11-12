@@ -1,4 +1,5 @@
 import SavedViews from '../components/SavedViews'
+import WeeklyGoals from '../components/WeeklyGoals'
 import ApplicationChecklist from '../components/ApplicationChecklist'
 import { useState, useEffect, useRef, useMemo, memo } from 'react'
 // One description of the status vocabulary, shared with Timeline — see
@@ -862,6 +863,8 @@ export default memo(function Dashboard({ active = true, scanRunning, onScanStart
           </button>
         </div>
       </div>
+
+      <WeeklyGoals active={active} showToast={showToast} />
 
       {/* Automation health. Only shown when something is wrong: a permanent
           green panel is furniture people stop reading, and the whole point is

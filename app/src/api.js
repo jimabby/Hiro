@@ -307,6 +307,13 @@ export class HiroClient {
   // checklist items, offer and closing deadlines in one read. Null from a
   // desktop too old to have the route, so the Today screen builds the list
   // itself instead (see src/todayLoader.js).
+  // This week's goals and progress (desktop services/weeklyGoals.js). Null
+  // from a desktop too old to have the route, and the Today screen then
+  // simply has no goals card.
+  async getWeeklyGoals() {
+    return orEmptyOn404(this.request('/api/goals'), null)
+  }
+
   async getTaskInbox() {
     const tasks = await orEmptyOn404(this.request('/api/tasks'), null)
     return Array.isArray(tasks) ? tasks : null

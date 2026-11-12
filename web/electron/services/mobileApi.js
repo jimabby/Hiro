@@ -766,6 +766,10 @@ async function route(req, res) {
       const body = await readBody(req)
       const refusal = remoteStatusRefusal(body.status)
       if (refusal) return json(res, 400, { error: refusal })
+      // An id that does not exist was reported as a success, so a phone holding
+      // a stale list (the row was deleted on the desktop) believed its edit had
+      // landed.
+      if (!database.applicationExists(Number(statusMatch[1]))) return json(res, 404, { error: 'Not found' })
       database.updateApplicationStatus(Number(statusMatch[1]), body.status)
       return json(res, 200, { success: true })
     }
@@ -773,6 +777,7 @@ async function route(req, res) {
     const commentMatch = path.match(/^\/api\/applications\/(\d+)\/comment$/)
     if (req.method === 'POST' && commentMatch) {
       const body = await readBody(req)
+      if (!database.applicationExists(Number(commentMatch[1]))) return json(res, 404, { error: 'Not found' })
       database.updateApplicationComment(Number(commentMatch[1]), String(body.comment || '').slice(0, 5000))
       return json(res, 200, { success: true })
     }
@@ -816,6 +821,11 @@ async function route(req, res) {
     // the list itself (app/src/todayLoader.js).
     if (req.method === 'GET' && path === '/api/tasks') {
       return json(res, 200, featureHub.taskInbox())
+    }
+
+    // This week's goals and progress, for the phone's Today screen. Read scope.
+    if (req.method === 'GET' && path === '/api/goals') {
+      return json(res, 200, require('./weeklyGoals').progress())
     }
 
     // Queue a scan to run on the desktop. Runs immediately if idle, otherwise

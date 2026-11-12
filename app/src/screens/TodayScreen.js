@@ -13,12 +13,15 @@ import { classifyError, messageFor } from '../requestErrors'
 const KIND_LABEL = {
   interview: 'Interview', offer: 'Offer', closing: 'Closes', attention: 'Closes',
   'follow-up': 'Follow-up', checklist: 'Task', 'checklist-error': 'Task', 'propose-times': 'Reply',
+  'thank-you': 'Thank-you',
 }
 
 export default function TodayScreen({ client, onBack, onOpenApplication, onNeedsPairing }) {
   const colors = useTheme()
   const styles = useMemo(() => makeStyles(colors), [colors])
   const [result, setResult] = useState(null)
+  // This week's goals, from a desktop that has them (LAN only — see api.js).
+  const [goals, setGoals] = useState(null)
   const [error, setError] = useState('')
   const [refreshing, setRefreshing] = useState(false)
   // Only the newest load may draw, so a slow first load cannot overwrite a
@@ -28,8 +31,12 @@ export default function TodayScreen({ client, onBack, onOpenApplication, onNeeds
   const load = useCallback(async () => {
     const ticket = ++seq.current
     try {
-      const res = await loadTodayTasks(client)
+      const [res, week] = await Promise.all([
+        loadTodayTasks(client),
+        typeof client.getWeeklyGoals === 'function' ? client.getWeeklyGoals().catch(() => null) : Promise.resolve(null),
+      ])
       if (ticket !== seq.current) return
+      setGoals(week?.goals?.length ? week : null)
       setResult({ ...res, today: todayLocal() })
       setError('')
     } catch (err) {
@@ -100,6 +107,26 @@ export default function TodayScreen({ client, onBack, onOpenApplication, onNeeds
       {!!error && <Text style={styles.error}>{error}</Text>}
       {!result && !error && <ActivityIndicator style={{ marginVertical: 24 }} color={colors.accent} />}
 
+      {!!goals && (
+        <View style={styles.card} accessible accessibilityLabel={`This week: ${goals.goals.map(g => `${g.done} of ${g.target} ${g.label.toLowerCase()}`).join(', ')}`}>
+          <Text style={styles.cardTitle} accessibilityRole="header">This week</Text>
+          {goals.goals.map(g => {
+            const tone = g.state === 'done' ? colors.green : g.state === 'behind' ? (colors.yellow || colors.red) : colors.accent
+            return (
+              <View key={g.key} style={{ marginBottom: 8 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                  <Text style={styles.muted}>{g.label}</Text>
+                  <Text style={[styles.muted, { color: tone, fontWeight: '700' }]}>{g.done} / {g.target}</Text>
+                </View>
+                <View style={styles.goalTrack}>
+                  <View style={[styles.goalFill, { width: `${Math.min(100, Math.round((g.done / g.target) * 100))}%`, backgroundColor: tone }]} />
+                </View>
+              </View>
+            )
+          })}
+        </View>
+      )}
+
       {view && (
         <>
           {section('Overdue', view.overdue, colors.red)}
@@ -148,4 +175,6 @@ const makeStyles = (c) => StyleSheet.create({
   due: { fontSize: 12, fontWeight: '700', maxWidth: 120, textAlign: 'right' },
   chevron: { color: c.textFaint, fontSize: 20, marginLeft: -2 },
   note: { color: c.textMuted, fontSize: 12, marginTop: 14, lineHeight: 17 },
+  goalTrack: { height: 6, backgroundColor: c.border, borderRadius: 3, overflow: 'hidden', marginTop: 4 },
+  goalFill: { height: 6 },
 })

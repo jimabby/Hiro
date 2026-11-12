@@ -73,8 +73,38 @@ function backupFor(provider, cfg) {
   return { provider: backup, apiKey: keyFor(cfg, backup), geminiModel: cfg.geminiModel }
 }
 
-function mayFallBack(err) {
-  return err?.name !== 'BudgetExceededError'
+// What a failed call says about the provider, which decides what the backup
+// is for.
+//
+//   'outage'  — the provider cannot serve anyone right now: network, rate
+//               limit, a 5xx, a refused key, no credit, a model that does not
+//               exist. The backup takes over and the main provider sits out
+//               the cool-down.
+//   'request' — the provider is up but did not deliver THIS answer: the model
+//               declined, or its reply could not be read. Worth one try on the
+//               backup, but no reason to move every later call — résumé
+//               writing included — onto it for ten minutes.
+//   'none'    — the backup would fail the same way, or must not be used: the
+//               spend cap, a request the provider rejected as malformed (it is
+//               the same request on the backup, and it would only hand the
+//               job and the résumé to a second company for nothing), or a bug
+//               in Hiro's own code.
+const { isRetryable } = require('./usage')
+
+function failureKind(err) {
+  if (!err || err.name === 'BudgetExceededError') return 'none'
+  if (isRetryable(err)) return 'outage'
+  const status = err.status ?? err.statusCode ?? err.response?.status
+  if (status === 400 || status === 413 || status === 422) return 'none'
+  if (status === 401 || status === 402 || status === 403 || status === 404) return 'outage'
+  if (err.refusal || err.name === 'RefusalError' || err instanceof SyntaxError) return 'request'
+  const msg = String(err.message || '').toLowerCase()
+  if (/credit|quota|billing|insufficient|balance|invalid[_ ]api[_ ]key|incorrect api key|unauthori[sz]ed|authentication|permission denied|model not found|connection error|econn/.test(msg)) return 'outage'
+  // A fault in Hiro, not the provider.
+  if (err instanceof TypeError || err instanceof ReferenceError || err instanceof RangeError) return 'none'
+  // Anything else the SDKs raise without a status (an unexpected response
+  // shape, a dropped stream) is treated as the provider being unwell, as before.
+  return 'outage'
 }
 
 // `invoke(adapter, apiKey, model)` makes one call against one provider.
@@ -91,9 +121,15 @@ async function call(provider, apiKey, geminiModel, invoke, { loadCfg = loadConfi
     primaryDownUntil.delete(provider)
     return value
   } catch (err) {
-    if (!mayFallBack(err)) throw err
-    primaryDownUntil.set(provider, now() + PRIMARY_COOLDOWN_MS)
-    log(`AI: ${provider} failed (${String(err.message || err).slice(0, 200)}). Using the backup provider, ${backup.provider}, for the next ${PRIMARY_COOLDOWN_MS / 60000} minutes.`)
+    const kind = failureKind(err)
+    if (kind === 'none') throw err
+    const detail = String(err.message || err).slice(0, 200)
+    if (kind === 'outage') {
+      primaryDownUntil.set(provider, now() + PRIMARY_COOLDOWN_MS)
+      log(`AI: ${provider} failed (${detail}). Using the backup provider, ${backup.provider}, for the next ${PRIMARY_COOLDOWN_MS / 60000} minutes.`)
+    } else {
+      log(`AI: ${provider} could not answer this request (${detail}). Trying it once on the backup provider, ${backup.provider}.`)
+    }
     try {
       return await runBackup()
     } catch (backupErr) {
@@ -204,5 +240,5 @@ module.exports = {
   chat, testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation,
   improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap,
   generateFollowUpEmail, classifyReply, generateCounterOffer, draftInterviewAnswer,
-  servingProvider, _call: call, _resetBackupState,
+  servingProvider, _call: call, _resetBackupState, _failureKind: failureKind,
 }
