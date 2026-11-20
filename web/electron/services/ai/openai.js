@@ -61,11 +61,30 @@ function adaptForModel(provider, params) {
   return { ...rest, max_completion_tokens: (max_tokens || 1000) + 4000, reasoning_effort: 'low' }
 }
 
-async function complete(operation, flavour, apiKey, params) {
+//
+// `stream` ({ onText, signal }) is used by chat() only — see claude.js.
+async function complete(operation, flavour, apiKey, params, { onText, signal } = {}) {
   const f = resolve(flavour)
+  const requestOptions = signal ? { signal } : undefined
   return withUsage(operation, f.provider, async () => {
     const client = getClient(apiKey, f.baseURL)
-    const response = await client.chat.completions.create(adaptForModel(f.provider, params))
+    if (onText) {
+      // Usage arrives in a final chunk when asked for. Local servers are not
+      // all sure of stream_options, and they are free, so they are not asked.
+      const stream = await client.chat.completions.create({
+        ...adaptForModel(f.provider, params), stream: true,
+        ...(f.provider === 'local' ? {} : { stream_options: { include_usage: true } }),
+      }, requestOptions)
+      let text = ''
+      let usage
+      for await (const chunk of stream) {
+        const delta = chunk.choices?.[0]?.delta?.content
+        if (delta) { text += delta; onText(text) }
+        if (chunk.usage) usage = chunk.usage
+      }
+      return { value: text, model: params.model, usage }
+    }
+    const response = await client.chat.completions.create(adaptForModel(f.provider, params), requestOptions)
     return {
       value: response.choices?.[0]?.message?.content ?? '',
       model: params.model,
@@ -362,7 +381,7 @@ ${fence('BODY', body, 1500)}` }],
 
 // See claude.js chat(). The system prompt travels as the first message, which
 // every OpenAI-compatible server (DeepSeek, Ollama, LM Studio) accepts.
-async function chat({ operation = 'chat', system = '', messages = [], maxTokens = 1200, tier = 'smart' }, apiKey, flavour) {
+async function chat({ operation = 'chat', system = '', messages = [], maxTokens = 1200, tier = 'smart', onText, signal }, apiKey, flavour) {
   const f = resolve(flavour)
   return complete(operation, flavour, apiKey, {
     model: tier === 'fast' ? f.fast : f.smart,
@@ -371,7 +390,7 @@ async function chat({ operation = 'chat', system = '', messages = [], maxTokens 
       ...(system ? [{ role: 'system', content: system }] : []),
       ...messages.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content || '') })),
     ],
-  })
+  }, { onText, signal })
 }
 
 module.exports = { chat, adaptForModel, resolve, testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply, generateCounterOffer, draftInterviewAnswer }

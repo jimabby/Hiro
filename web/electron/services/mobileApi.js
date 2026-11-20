@@ -922,6 +922,19 @@ async function route(req, res) {
       return json(res, 200, database.getOffers())
     }
 
+    // ── Ask Hiro from the phone ────────────────────────────────
+    // The same assistant as the desktop page, over the same stored threads.
+    // Unlike everything else the phone can read, a question spends money on
+    // the desktop's AI key, so it is limited to paired phones — never the
+    // browser extension or the old shared token — and every question is
+    // written to the activity log. The monthly spend cap applies as usual.
+    if (path === '/api/ask' || path.startsWith('/api/ask/')) {
+      if (!phoneReview.deviceMayApprove(check.device)) {
+        return json(res, 403, { error: 'Only a paired phone can use Ask Hiro. Re-pair this phone if it was set up before pairing existed.' })
+      }
+      return handleAsk(req, res, path, check.device)
+    }
+
     if (req.method === 'GET' && path === '/api/perday') {
       const days = Math.min(90, Math.max(1, Number(url.searchParams.get('days')) || 7))
       return json(res, 200, database.getApplicationsPerDay(days))
@@ -937,6 +950,74 @@ async function route(req, res) {
     logger.append(`Mobile API: ${req.method} ${path} failed — ${err?.stack || err?.message || String(err)}`)
     return json(res, 500, { error: 'The desktop hit an error handling that request. See the activity log for details.' })
   }
+}
+
+// What the phone sees of a conversation. The résumé travels as its name and
+// size only: the phone chose it from a list, and has no need for the text back.
+function phoneThread(thread) {
+  if (!thread) return null
+  const docs = thread.documents || {}
+  return {
+    id: thread.id, title: thread.title, updated_at: thread.updated_at,
+    documents: { resumeName: docs.resumeName || '', hasResume: !!docs.resumeText, resumeWords: wordsIn(docs.resumeText), jobText: docs.jobText || '' },
+    messages: (thread.messages || []).map(m => ({ id: m.id, role: m.role, content: m.content, actions: m.actions, error: m.error })),
+  }
+}
+
+function wordsIn(text) {
+  return (String(text || '').match(/\S+/g) || []).length
+}
+
+async function handleAsk(req, res, path, device) {
+  const askHiro = require('./askHiro')
+  if (req.method === 'GET' && path === '/api/ask/threads') {
+    return json(res, 200, database.listAskThreads().slice(0, 50))
+  }
+  if (req.method === 'GET' && path === '/api/ask/resumes') {
+    const resumes = configService.load().resumes || []
+    return json(res, 200, resumes.filter(r => r?.text).map(r => ({ id: r.id, name: r.name, words: wordsIn(r.text) })))
+  }
+  const threadMatch = path.match(/^\/api\/ask\/threads\/(\d+)$/)
+  if (req.method === 'GET' && threadMatch) {
+    const thread = database.getAskThread(Number(threadMatch[1]))
+    return thread ? json(res, 200, phoneThread(thread)) : json(res, 404, { error: 'That conversation no longer exists.' })
+  }
+  const deleteMatch = path.match(/^\/api\/ask\/threads\/(\d+)\/delete$/)
+  if (req.method === 'POST' && deleteMatch) {
+    return json(res, 200, database.deleteAskThread(Number(deleteMatch[1])))
+  }
+  if (req.method === 'POST' && path === '/api/ask') {
+    const body = await readBody(req)
+    const question = String(body?.question || '').trim()
+    if (!question) return json(res, 400, { error: 'Ask a question first.' })
+    const threadId = Number.isInteger(Number(body?.threadId)) && Number(body.threadId) > 0 ? Number(body.threadId) : null
+    // Documents change only when the phone says so: `resumeId` ('' for none)
+    // and/or `jobText`. Left out, the thread keeps what it is about.
+    const opts = {}
+    if (body?.resumeId !== undefined || body?.jobText !== undefined) {
+      const current = threadId ? database.getAskThread(threadId)?.documents || {} : {}
+      let resumeName = current.resumeName || ''
+      let resumeText = current.resumeText || ''
+      if (body.resumeId !== undefined) {
+        const chosen = body.resumeId ? (configService.load().resumes || []).find(r => r.id === String(body.resumeId)) : null
+        if (body.resumeId && !chosen) return json(res, 400, { error: 'That résumé is no longer saved on the desktop.' })
+        resumeName = chosen?.name || ''
+        resumeText = chosen?.text || ''
+      }
+      const jobText = body.jobText !== undefined ? String(body.jobText || '').slice(0, 40000) : (current.jobText || '')
+      opts.documents = { resumeName, resumeText, jobText }
+    }
+    logger.append(`Mobile API: "${device.name}" asked Hiro a question`)
+    try {
+      const result = await askHiro.askInThread(question.slice(0, 20000), threadId, opts)
+      return json(res, 200, { reply: result.reply, actions: result.actions, threadId: result.threadId })
+    } catch (err) {
+      // These are the assistant's own explanations ("Set up an AI provider…",
+      // the spend cap, a provider outage), written for the user to read.
+      return json(res, 422, { error: err.message, threadId: err.threadId ?? null })
+    }
+  }
+  return json(res, 404, { error: 'Not found' })
 }
 
 // Resolves once the server is actually listening (or failed), so callers and

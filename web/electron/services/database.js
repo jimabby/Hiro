@@ -794,6 +794,12 @@ function createAssistantTables() {
     created_at TEXT DEFAULT (datetime('now'))
   )`)
   db.run('CREATE INDEX IF NOT EXISTS idx_ask_messages_thread ON ask_messages(thread_id, id)')
+  // The résumé and job ad a conversation is about (Ask Hiro's résumé coach).
+  // Kept on the thread, not on each message, so a reopened conversation still
+  // has them, and so they travel with the thread in a data export.
+  ensureColumn('ask_threads', 'resume_name', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn('ask_threads', 'resume_text', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn('ask_threads', 'job_text', "TEXT NOT NULL DEFAULT ''")
   // One row per interview TIME: a reschedule is a new row and earns fresh prep,
   // while a second sync pass over the same interview is an ignored insert.
   db.run(`CREATE TABLE IF NOT EXISTS interview_prep_jobs (
@@ -4779,24 +4785,45 @@ function parseJsonArray(raw) {
 
 function listAskThreads() {
   return query(`
-    SELECT t.id, t.title, t.created_at, t.updated_at, COUNT(m.id) AS message_count
+    SELECT t.id, t.title, t.created_at, t.updated_at, COUNT(m.id) AS message_count,
+      (t.resume_text != '') AS has_resume, (t.job_text != '') AS has_job
     FROM ask_threads t LEFT JOIN ask_messages m ON m.thread_id = t.id
     GROUP BY t.id ORDER BY t.updated_at DESC, t.id DESC
   `)
 }
 
 function getAskThread(id) {
-  const thread = queryOne('SELECT id, title, created_at, updated_at FROM ask_threads WHERE id = ?', [Number(id)])
-  if (!thread) return null
+  const row = queryOne('SELECT id, title, created_at, updated_at, resume_name, resume_text, job_text FROM ask_threads WHERE id = ?', [Number(id)])
+  if (!row) return null
+  const { resume_name: resumeName, resume_text: resumeText, job_text: jobText, ...thread } = row
   const messages = query('SELECT id, role, content, actions, error, created_at FROM ask_messages WHERE thread_id = ? ORDER BY id ASC', [thread.id])
     .map(m => ({ ...m, actions: parseJsonArray(m.actions), error: !!m.error }))
-  return { ...thread, messages }
+  return { ...thread, documents: { resumeName: resumeName || '', resumeText: resumeText || '', jobText: jobText || '' }, messages }
+}
+
+// Bounds for what a conversation may carry. A résumé is a few thousand
+// characters; these leave room for a long CV without letting a pasted book
+// ride along with every question.
+const ASK_DOCUMENT_LIMIT = 40000
+const ASK_MESSAGE_LIMIT = 24000
+
+function cleanAskDocuments(documents) {
+  if (!documents || typeof documents !== 'object') return null
+  return {
+    resumeName: String(documents.resumeName || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+    resumeText: String(documents.resumeText || '').slice(0, ASK_DOCUMENT_LIMIT),
+    jobText: String(documents.jobText || '').slice(0, ASK_DOCUMENT_LIMIT),
+  }
 }
 
 // One turn's messages (the question and its answer, or its error) in a single
 // write. Creates the thread when `threadId` is empty or no longer exists, and
 // returns the id the turn was stored under.
-function appendAskTurn(threadId, messages = [], { title = '' } = {}) {
+//
+// `documents` ({ resumeName, resumeText, jobText }) replaces what the thread is
+// about when given; left out, the thread keeps what it had.
+function appendAskTurn(threadId, messages = [], { title = '', documents } = {}) {
+  const docs = cleanAskDocuments(documents)
   return batch(() => {
     let id = threadId ? queryOne('SELECT id FROM ask_threads WHERE id = ?', [Number(threadId)])?.id : null
     if (!id) {
@@ -4806,9 +4833,14 @@ function appendAskTurn(threadId, messages = [], { title = '' } = {}) {
     for (const m of messages) {
       if (!m || !ASK_ROLES.has(m.role)) continue
       run('INSERT INTO ask_messages (thread_id, role, content, actions, error) VALUES (?, ?, ?, ?, ?)', [
-        id, m.role, String(m.content || '').slice(0, 8000),
-        JSON.stringify(Array.isArray(m.actions) ? m.actions.slice(0, 2) : []), m.error ? 1 : 0,
+        id, m.role, String(m.content || '').slice(0, ASK_MESSAGE_LIMIT),
+        // Up to two suggested actions, plus one check per drafted document.
+        JSON.stringify(Array.isArray(m.actions) ? m.actions.slice(0, 6) : []), m.error ? 1 : 0,
       ])
+    }
+    if (docs) {
+      run('UPDATE ask_threads SET resume_name = ?, resume_text = ?, job_text = ? WHERE id = ?',
+        [docs.resumeName, docs.resumeText, docs.jobText, id])
     }
     run("UPDATE ask_threads SET updated_at = datetime('now') WHERE id = ?", [id])
     run(`DELETE FROM ask_messages WHERE thread_id = ? AND id NOT IN (

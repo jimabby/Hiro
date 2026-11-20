@@ -24,6 +24,7 @@ import ConnectScreen from './src/screens/ConnectScreen'
 import DashboardScreen from './src/screens/DashboardScreen'
 import ApplicationsScreen from './src/screens/ApplicationsScreen'
 import OffersScreen from './src/screens/OffersScreen'
+import AskScreen from './src/screens/AskScreen'
 import SettingsScreen from './src/screens/SettingsScreen'
 import { useBadges } from './src/useBadges'
 import { badgeText } from './src/listing'
@@ -52,6 +53,8 @@ const TABS = [
   // table or an older desktop to an empty board, and the empty state says what
   // would fill it, which a tab that appears and disappears never could.
   { id: 'offers', label: 'Offers', icon: `★${TEXT_STYLE}` },
+  // The desktop's assistant: questions about the search, and résumé help.
+  { id: 'ask', label: 'Ask', icon: '✦' },
   { id: 'settings', label: 'Settings', icon: `⚙${TEXT_STYLE}` },
 ]
 
@@ -373,6 +376,11 @@ function AppContent() {
                 resetSignal={applicationsReset}
                 onChanged={refreshBadges}
               />
+            </View>
+          )}
+          {visited.has('ask') && (
+            <View style={[styles.content, tab !== 'ask' && styles.hidden]}>
+              <AskScreen client={client} active={tab === 'ask'} />
             </View>
           )}
           {visited.has('offers') && (

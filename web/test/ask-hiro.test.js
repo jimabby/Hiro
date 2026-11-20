@@ -152,6 +152,101 @@ async function main() {
   check('threads can be deleted', db.deleteAskThread(first.threadId).success && db.getAskThread(first.threadId), null)
   check('deleting leaves no messages behind', db.listAskThreads().length, 0)
 
+  // ─── Résumé coach: documents the assistant wrote ───────────────
+  check('a closed résumé block is extracted',
+    askHiro.extractDrafts('Here you go.\n<<<RESUME>>>\nJane Doe\nEXPERIENCE\n<<<END>>>\nWant changes?'),
+    [{ kind: 'resume', text: 'Jane Doe\nEXPERIENCE' }])
+  check('a résumé and a letter come back in order',
+    askHiro.extractDrafts('<<<RESUME>>>\nA\n<<<END>>>\n<<<COVER_LETTER>>>\nDear Sam\n<<<END>>>').map(d => d.kind), ['resume', 'coverLetter'])
+  check('a block the model never closed runs to the end', askHiro.extractDrafts('<<<COVER_LETTER>>>\nDear Sam,\nThanks'), [{ kind: 'coverLetter', text: 'Dear Sam,\nThanks' }])
+  check('markers mid-line are not blocks', askHiro.extractDrafts('I will wrap it in <<<RESUME>>> markers'), [])
+  check('documents are bounded and trimmed',
+    askHiro.normalizeDocuments({ resumeName: '  My   CV ', resumeText: ' x '.repeat(30000), jobText: '' }).resumeText.length, 40000)
+  check('no résumé and no job ad is no documents', askHiro.normalizeDocuments({ resumeName: 'x', resumeText: ' ', jobText: '' }), null)
+
+  const BASE = 'Jane Doe\nEXPERIENCE\nData Engineer at Acme 2020 - 2024\n• Built pipelines in Python'
+  ai.chat = async (_p, _k, input) => {
+    sent = input
+    return 'Tightened two bullets.\n<<<RESUME>>>\nJane Doe\nEXPERIENCE\nData Engineer at Acme 2020 - 2024\n• Built Python pipelines\n• Holds a PhD in Statistics\n<<<END>>>'
+  }
+  const coached = await askHiro.ask('Rewrite my résumé', [], { documents: { resumeName: 'Jane CV', resumeText: BASE, jobText: 'Senior Data Engineer at Globex. Requires Spark.' } })
+  const first0 = sent.messages[0].content
+  check('the résumé travels fenced as untrusted', /MY RÉSUMÉ \(Jane CV\) \(untrusted input/.test(first0) && first0.includes('Built pipelines in Python'), true)
+  check('the job ad travels fenced as untrusted', /JOB AD I AM LOOKING AT \(untrusted input/.test(first0) && first0.includes('Requires Spark'), true)
+  check('there is room for a whole résumé in the reply', sent.maxTokens >= 3000, true)
+  check('the system prompt forbids inventing facts', /NEVER invent experience/.test(sent.system), true)
+  check('the system prompt carries the tailoring rules', sent.system.includes('KEEP THE DOCUMENT\'S SHAPE'), true)
+  check('the reply keeps the draft for display', coached.reply.includes('<<<RESUME>>>'), true)
+  const draftCheck = coached.actions.find(a => a.type === 'draft')
+  check('every draft is checked against the résumé', [draftCheck?.kind, draftCheck?.checked], ['resume', true])
+  check('an invented qualification is named', draftCheck.flags.some(f => f.kind === 'credential' && /PhD/i.test(f.value)), true)
+
+  ai.chat = async () => '<<<COVER_LETTER>>>\nDear Globex,\nI built pipelines in Python at Acme.\n<<<END>>>'
+  const letter = await askHiro.ask('Write a cover letter', [], { documents: { resumeText: BASE } })
+  check('a letter made only of résumé facts is clean', letter.actions.find(a => a.type === 'draft'), { type: 'draft', kind: 'coverLetter', checked: true, flags: [] })
+
+  ai.chat = async () => '<<<RESUME>>>\nJohn\n<<<END>>>'
+  const unchecked = await askHiro.ask('Write me a résumé', [])
+  check('with nothing to check against, a draft says it was not checked', unchecked.actions, [{ type: 'draft', kind: 'resume', checked: false, flags: [] }])
+  const pasted = await askHiro.ask(`Improve this:\n${BASE}\n${'• Worked on data quality and reporting for the analytics team\n'.repeat(8)}`, [])
+  check('a résumé pasted into the message is the reference instead', pasted.actions[0].checked, true)
+
+  let tooLong = ''
+  try { await askHiro.ask('x'.repeat(20001), []) } catch (err) { tooLong = err.message }
+  check('a pasted message can be long, but not unbounded', /too long/.test(tooLong), true)
+  ai.chat = async () => 'ok'
+  check('a pasted résumé-length message is accepted', (await askHiro.ask('x'.repeat(5000), [])).reply, 'ok')
+
+  // ─── Documents live on the thread ──────────────────────────────
+  ai.chat = async (_p, _k, input) => { sent = input; return 'Noted.' }
+  const docThread = await askHiro.askInThread('Review my résumé', null, { documents: { resumeName: 'Jane CV', resumeText: BASE, jobText: '' } })
+  check('the thread stores what it is about', db.getAskThread(docThread.threadId).documents, { resumeName: 'Jane CV', resumeText: BASE, jobText: '' })
+  check('the list says which threads have a résumé', !!db.listAskThreads().find(t => t.id === docThread.threadId)?.has_resume, true)
+  await askHiro.askInThread('And the summary?', docThread.threadId)
+  check('a later question without documents still uses the stored résumé', sent.messages[0].content.includes('Built pipelines in Python'), true)
+  await askHiro.askInThread('Forget it', docThread.threadId, { documents: {} })
+  check('sending empty documents clears them', db.getAskThread(docThread.threadId).documents.resumeText, '')
+  check('and the next question goes without', sent.messages[0].content.includes('MY RÉSUMÉ'), false)
+  const big = 'y'.repeat(9000)
+  ai.chat = async () => `<<<RESUME>>>\n${big}\n<<<END>>>`
+  await askHiro.askInThread('Long one', docThread.threadId)
+  const storedLong = db.getAskThread(docThread.threadId).messages.at(-1).content
+  check('a long drafted résumé is stored whole', storedLong.includes(big) && storedLong.endsWith('<<<END>>>'), true)
+  db.deleteAskThread(docThread.threadId)
+
+  // ─── Streaming and Stop ────────────────────────────────────────
+  const shown = []
+  ai.chat = async (_p, _k, input) => { input.onText('Hello **there**'); input.onText('Hello **there**, Jane'); return 'Hello **there**, Jane' }
+  const streamedReply = await askHiro.ask('Hi', [], { onText: t => shown.push(t) })
+  check('the reply streams with formatting already stripped', shown, ['Hello there', 'Hello there, Jane'])
+  check('and the finished reply is the same', streamedReply.reply, 'Hello there, Jane')
+
+  // Stop mid-reply: what was written is kept, and a half-written ACTIONS line is not.
+  let controller = new AbortController()
+  ai.chat = (_p, _k, input) => new Promise(() => {
+    input.onText('<<<COVER_LETTER>>>\nDear Sam,\nI built pipelines\nACTIONS: [{"type":"op')
+    setTimeout(() => controller.abort(), 5)
+  })
+  const stoppedReply = await askHiro.ask('Letter', [], { signal: controller.signal, onText: () => {}, documents: { resumeText: BASE } })
+  check('a stopped reply keeps what was written, even from a provider that ignores the signal', stoppedReply.stopped && stoppedReply.reply.includes('I built pipelines'), true)
+  check('a half-written suggestion is dropped', [stoppedReply.reply.includes('ACTIONS'), stoppedReply.actions.filter(a => a.type !== 'draft')], [false, []])
+  check('a stopped draft is still checked', stoppedReply.actions.find(a => a.type === 'draft')?.kind, 'coverLetter')
+
+  controller = new AbortController()
+  ai.chat = () => new Promise(() => { setTimeout(() => controller.abort(), 5) })
+  let stoppedEarly = null
+  try { await askHiro.askInThread('Too slow', null, { signal: controller.signal, onText: () => {} }) } catch (err) { stoppedEarly = err }
+  check('stopped before any text is an error marked as stopped', [stoppedEarly?.stopped, /Stopped before/.test(stoppedEarly?.message)], [true, true])
+  const earlyThread = db.getAskThread(stoppedEarly.threadId)
+  check('and it is kept like an error, never sent back to the model', earlyThread.messages.at(-1).error, true)
+  db.deleteAskThread(earlyThread.id)
+
+  controller = new AbortController()
+  ai.chat = (_p, _k, input) => new Promise(() => { input.onText('Partial answer'); setTimeout(() => controller.abort(), 5) })
+  const partialTurn = await askHiro.askInThread('Go', null, { signal: controller.signal, onText: () => {} })
+  check('a stopped partial reply is stored as the answer', db.getAskThread(partialTurn.threadId).messages.at(-1).content, 'Partial answer')
+  db.deleteAskThread(partialTurn.threadId)
+
   done()
 }
 

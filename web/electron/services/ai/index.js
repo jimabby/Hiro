@@ -89,10 +89,13 @@ function backupFor(provider, cfg) {
 //               the same request on the backup, and it would only hand the
 //               job and the résumé to a second company for nothing), or a bug
 //               in Hiro's own code.
-const { isRetryable } = require('./usage')
+const { isRetryable, isAbort } = require('./usage')
 
 function failureKind(err) {
   if (!err || err.name === 'BudgetExceededError') return 'none'
+  // The user stopped it. Sending the same question to a second company would
+  // be the opposite of what they asked for.
+  if (isAbort(err)) return 'none'
   if (isRetryable(err)) return 'outage'
   const status = err.status ?? err.statusCode ?? err.response?.status
   if (status === 400 || status === 413 || status === 422) return 'none'
@@ -232,6 +235,11 @@ async function draftInterviewAnswer(provider, apiKey, input, geminiModel) {
 
 // A free-form exchange — see claude.js chat(). The reply is returned as the
 // model wrote it; callers that send it anywhere strip formatting themselves.
+//
+// `input.onText(textSoFar)` streams the reply as it is written, and
+// `input.signal` (an AbortSignal) stops it. onText always receives the WHOLE
+// text so far, not a fragment: a retried attempt, or the backup provider taking
+// over, starts again from nothing and the caller simply shows the new text.
 async function chat(provider, apiKey, input, geminiModel) {
   return call(provider, apiKey, geminiModel, (a, key, model) => a.chat(input, key, model))
 }

@@ -34,6 +34,10 @@ const DATE_RE = /\b(?:19|20)\d{2}\b|\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|a
 const CREDENTIAL_RE = /\b(?:bachelor(?:'s)?|master(?:'s)?|ph\.?d\.?|mba|bsc|msc|degree|diploma|certificate|certified|certification|licen[cs](?:e|ed)|clearance|cleared|accredit(?:ed|ation)|cpa|cfa|pmp|aws certified|security\+|cissp)\b/gi
 const TITLE_RE = /\b(?:engineer|developer|architect|analyst|consultant|manager|director|officer|specialist|designer|administrator|coordinator|lead|head|president|founder|scientist|accountant|recruiter)\b/i
 const EMPLOYMENT_RE = /^\s*(.{2,80}?)\s+(?:at|@|—|–|\|)\s+(.{2,80}?)\s*$/
+// The employer is captured to the end of the line, so "…pipelines at Acme."
+// carried the sentence's full stop, and "acme." is not in a résumé that says
+// "Acme" — every cover letter ending a sentence on an employer was flagged.
+const employerOf = (captured) => captured.trim().replace(/[.,;:!?)\]]+$/, '')
 
 // A non-global twin of CREDENTIAL_RE, for `.test()`. A /g regex carries
 // lastIndex between calls, so testing one repeatedly returns alternating
@@ -65,7 +69,7 @@ function inspectTailoring(baseResume, tailoredResume) {
     const employment = EMPLOYMENT_RE.exec(line)
     if (employment) {
       const left = employment[1].trim()
-      const right = employment[2].trim()
+      const right = employerOf(employment[2])
       if (TITLE_RE.test(left) && !base.includes(normalize(left))) flags.push({ kind: 'job-title', value: left, line })
       if (!base.includes(normalize(right))) flags.push({ kind: 'employer', value: right, line })
     }
@@ -121,7 +125,7 @@ function inspectClaims(baseResume, text, { allow = [] } = {}) {
     const employment = EMPLOYMENT_RE.exec(trimmed)
     if (employment && !ASPIRATIONAL_RE.test(trimmed)) {
       const left = employment[1].trim()
-      const right = employment[2].trim()
+      const right = employerOf(employment[2])
       if (TITLE_RE.test(left) && !supported(left)) flags.push({ kind: 'job-title', value: left, line: trimmed })
       if (!supported(right)) flags.push({ kind: 'employer', value: right, line: trimmed })
     }

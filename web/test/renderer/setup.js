@@ -24,6 +24,7 @@ export const EVENT_CHANNELS = {
   onGmailStatusUpdate: 'gmail:status-update',
   onSeekStatusUpdate: 'seek:status-update',
   onIndeedStatusUpdate: 'indeed:status-update',
+  onAskHiroStream: 'ask:stream',
 }
 
 export function makeApi(overrides = {}) {

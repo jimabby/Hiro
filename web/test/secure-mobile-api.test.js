@@ -13,7 +13,18 @@ const PORT = 48232
 const cfg = { mobileApiEnabled: true, mobileApiPort: PORT, mobileApiToken: 'l'.repeat(32), mobileDevices: [] }
 let statusWrite = null
 let imported = null
+// Ask Hiro, as the phone reaches it.
+const askCalls = []
+const askThreads = new Map([[5, { id: 5, title: 'CV review', updated_at: 'x', documents: { resumeName: 'Data CV', resumeText: 'Jane Doe EXPERIENCE Acme', jobText: 'Spark role' }, messages: [{ id: 1, role: 'user', content: 'Review it', actions: [], error: false }] }]])
+cfg.resumes = [{ id: 'r1', name: 'Data CV', text: 'Jane Doe EXPERIENCE Acme' }, { id: 'r2', name: 'Empty', text: '' }]
 stub({
+  './askHiro': {
+    askInThread: async (question, threadId, opts) => {
+      askCalls.push({ question, threadId, opts })
+      if (question === 'fail') throw Object.assign(new Error('Set up an AI provider in Settings to use Ask Hiro.'), { threadId: 9 })
+      return { reply: 'Here you go.', actions: [{ type: 'draft', kind: 'resume', checked: true, flags: [] }], threadId: threadId || 6 }
+    },
+  },
   './config': {
     load: () => cfg,
     update: patch => Object.assign(cfg, typeof patch === 'function' ? patch(cfg) : patch),
@@ -22,6 +33,9 @@ stub({
     CONFIG_DIR: '/tmp/hiro-secure-test',
   },
   './database': {
+    listAskThreads: () => [...askThreads.values()].map(t => ({ id: t.id, title: t.title })),
+    getAskThread: (id) => askThreads.get(Number(id)) || null,
+    deleteAskThread: (id) => { askThreads.delete(Number(id)); return { success: true } },
     getStats: () => ({ totalAllTime: 17 }),
     // Ids 1–99 exist; anything else is a deleted row.
     applicationExists: (id) => Number(id) >= 1 && Number(id) < 100,
@@ -159,12 +173,12 @@ function headers(token, method, path, raw, timestamp = String(Date.now()), nonce
       activity.every(a => !a.path.includes('?')), true)
 
     // ── Scopes, chosen on the desktop when the code is generated ────
-    async function pairDevice(scopes, name) {
+    async function pairDevice(scopes, name, platform = 'test') {
       const session = api.startPairing({ scopes })
       const hi = await (await fetch(`http://127.0.0.1:${PORT}/api/pair/hello`)).json()
       const ch = await pairChannel.openChannel(hi, session.code)
       // A device asking for more than it was granted is ignored.
-      const body = JSON.stringify(await pairChannel.sealRequest(ch, { code: session.code, deviceName: name, platform: 'test', scopes: ['read', 'write', 'scan'] }))
+      const body = JSON.stringify(await pairChannel.sealRequest(ch, { code: session.code, deviceName: name, platform, scopes: ['read', 'write', 'scan'] }))
       const res = await fetch(`http://127.0.0.1:${PORT}/api/pair`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
       return pairChannel.openResponse(ch, await res.json())
     }
@@ -211,6 +225,42 @@ function headers(token, method, path, raw, timestamp = String(Date.now()), nonce
       method: 'POST', headers: { Authorization: `Bearer ${rotated.body.token}` },
     })
     check('rotation over the unsigned bearer path is refused', bearerRotate.status, 400)
+
+    // ── Ask Hiro from the phone ─────────────────────────────────────
+    const phone = await pairDevice(['read', 'write'], 'Pixel', 'android')
+    api._resetThrottle()
+    check('a paired phone lists conversations', (await signedCall(phone.token, 'GET', '/api/ask/threads')).body, [{ id: 5, title: 'CV review' }])
+    const opened = (await signedCall(phone.token, 'GET', '/api/ask/threads/5')).body
+    check('a conversation names its résumé without sending the text back',
+      [opened.documents.resumeName, opened.documents.hasResume, opened.documents.resumeWords, 'resumeText' in opened.documents], ['Data CV', true, 4, false])
+    check('saved résumés are offered by name, and empty ones are not', (await signedCall(phone.token, 'GET', '/api/ask/resumes')).body, [{ id: 'r1', name: 'Data CV', words: 4 }])
+
+    const asked = await signedCall(phone.token, 'POST', '/api/ask', { question: 'Tailor it', threadId: 5 })
+    check('a question is answered', [asked.status, asked.body.reply, asked.body.threadId], [200, 'Here you go.', 5])
+    check('drafts come back with their checks', asked.body.actions[0].type, 'draft')
+    check('without a choice, the thread keeps what it is about', askCalls.at(-1).opts, {})
+
+    await signedCall(phone.token, 'POST', '/api/ask', { question: 'Now this job', threadId: 5, jobText: 'Rust role' })
+    check('a new job ad keeps the thread\'s résumé', askCalls.at(-1).opts.documents, { resumeName: 'Data CV', resumeText: 'Jane Doe EXPERIENCE Acme', jobText: 'Rust role' })
+    await signedCall(phone.token, 'POST', '/api/ask', { question: 'Start over', resumeId: 'r1' })
+    check('a saved résumé is looked up on the desktop by id', askCalls.at(-1).opts.documents, { resumeName: 'Data CV', resumeText: 'Jane Doe EXPERIENCE Acme', jobText: '' })
+    await signedCall(phone.token, 'POST', '/api/ask', { question: 'No résumé', threadId: 5, resumeId: '' })
+    check('an empty id removes the résumé', askCalls.at(-1).opts.documents.resumeText, '')
+    check('an unknown résumé is refused', (await signedCall(phone.token, 'POST', '/api/ask', { question: 'x', resumeId: 'gone' })).status, 400)
+    check('an empty question is refused', (await signedCall(phone.token, 'POST', '/api/ask', { question: '  ' })).status, 400)
+    const failedAsk = await signedCall(phone.token, 'POST', '/api/ask', { question: 'fail' })
+    check('the assistant\'s own explanation reaches the phone', [failedAsk.status, /AI provider/.test(failedAsk.body.error), failedAsk.body.threadId], [422, true, 9])
+    check('a conversation can be deleted from the phone', [(await signedCall(phone.token, 'POST', '/api/ask/threads/5/delete', {})).body.success, askThreads.has(5)], [true, false])
+
+    const callsBefore = askCalls.length
+    const extension = await pairDevice(['read', 'write'], 'Browser extension')
+    api._resetThrottle()
+    const notPhone = await signedCall(extension.token, 'POST', '/api/ask', { question: 'Spend money' })
+    check('a device that is not a phone cannot ask (it spends on the desktop\'s AI key)', notPhone.status, 403)
+    check('and nothing was asked', askCalls.length, callsBefore)
+    const readOnlyPhone = await pairDevice(['read'], 'Read-only Pixel', 'android')
+    api._resetThrottle()
+    check('a read-only phone cannot ask', (await signedCall(readOnlyPhone.token, 'POST', '/api/ask', { question: 'x' })).status, 403)
 
     // ── A device can revoke itself ──────────────────────────────────
     const revoked = await signedCall(rotated.body.token, 'POST', '/api/devices/self/revoke', {})

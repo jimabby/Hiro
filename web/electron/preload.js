@@ -38,7 +38,18 @@ contextBridge.exposeInMainWorld('api', {
   openMailDraft: (draft) => ipcRenderer.invoke('shell:openMailDraft', draft),
   // Ask Hiro: questions about your own job search; suggested scans run only
   // when the user presses the button.
-  askHiro: (question, threadId) => ipcRenderer.invoke('ask:question', question, threadId),
+  askHiro: (question, threadId, documents, requestId) => ipcRenderer.invoke('ask:question', question, threadId, documents, requestId),
+  // The reply as it is written ({ requestId, text } — the whole text so far),
+  // and stopping it.
+  onAskHiroStream: (cb) => subscribe('ask:stream', cb),
+  askHiroStop: (requestId) => ipcRenderer.invoke('ask:stop', requestId),
+  // A job ad from a link, and the ATS readability check on an attached file.
+  askHiroReadJobLink: (url) => ipcRenderer.invoke('ask:readJobLink', url),
+  askHiroCheckAttachment: (name, bytes) => ipcRenderer.invoke('ask:checkAttachment', name, bytes),
+  // A résumé or job ad attached to the chat (sent as bytes, never a path), and
+  // keeping a résumé from the chat in Settings → Resumes.
+  askHiroReadAttachment: (name, bytes) => ipcRenderer.invoke('ask:readAttachment', name, bytes),
+  askHiroSaveResume: (payload) => ipcRenderer.invoke('ask:saveResume', payload),
   askHiroRunScan: (keywords) => ipcRenderer.invoke('ask:runScan', keywords),
   // Stored conversations, and the confirm-to-apply follow-up action.
   askHiroThreads: () => ipcRenderer.invoke('ask:threads'),

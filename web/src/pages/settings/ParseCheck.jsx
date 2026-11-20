@@ -8,7 +8,9 @@
 
 import { useState } from 'react'
 
-export function ParseCheck({ resume }) {
+// `runCheck` replaces the stored-file check (Ask Hiro checks a file attached to
+// the chat, from its bytes); `onResult` hears each result.
+export function ParseCheck({ resume, runCheck, onResult }) {
   const [result, setResult] = useState(null)
   const [checking, setChecking] = useState(false)
   const [showExtract, setShowExtract] = useState(false)
@@ -16,8 +18,11 @@ export function ParseCheck({ resume }) {
   async function run() {
     setChecking(true)
     try {
-      const res = await window.api.checkResumeParseable?.(resume.originalPath || null, resume.originalExt || null)
+      const res = runCheck
+        ? await runCheck()
+        : await window.api.checkResumeParseable?.(resume.originalPath || null, resume.originalExt || null)
       setResult(res || null)
+      onResult?.(res || null)
     } finally {
       setChecking(false)
     }

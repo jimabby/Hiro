@@ -13,11 +13,24 @@ function getModel(apiKey, modelName) {
 // cap and cost accounting apply uniformly rather than being remembered at a
 // dozen call sites. `request` is whatever generateContent accepts — a bare
 // prompt string or a full contents object.
-async function complete(operation, apiKey, modelName, request) {
+//
+// `stream` ({ onText, signal }) is used by chat() only — see claude.js.
+async function complete(operation, apiKey, modelName, request, { onText, signal } = {}) {
   const name = await resolveModelName(apiKey, modelName)
+  const requestOptions = signal ? { signal } : undefined
   return withUsage(operation, 'gemini', async () => {
     const model = getModel(apiKey, name)
-    const result = await model.generateContent(request)
+    if (onText) {
+      const result = await model.generateContentStream(request, requestOptions)
+      let text = ''
+      for await (const chunk of result.stream) {
+        const delta = chunk.text()
+        if (delta) { text += delta; onText(text) }
+      }
+      const response = await result.response
+      return { value: text, model: name, usage: response.usageMetadata }
+    }
+    const result = await model.generateContent(request, requestOptions)
     return {
       value: result.response.text(),
       model: name,
@@ -270,12 +283,12 @@ ${fence('BODY', body, 1500)}`)
 
 // See claude.js chat(). Gemini names the assistant role 'model'; the system
 // prompt is sent as systemInstruction.
-async function chat({ operation = 'chat', system = '', messages = [], maxTokens = 1200 }, apiKey, modelName) {
+async function chat({ operation = 'chat', system = '', messages = [], maxTokens = 1200, onText, signal }, apiKey, modelName) {
   return complete(operation, apiKey, modelName, {
     ...(system ? { systemInstruction: { role: 'system', parts: [{ text: system }] } } : {}),
     contents: messages.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: String(m.content || '') }] })),
     generationConfig: { maxOutputTokens: maxTokens },
-  })
+  }, { onText, signal })
 }
 
 module.exports = { autoModelFor, chat, testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply, generateCounterOffer, draftInterviewAnswer }

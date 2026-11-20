@@ -88,14 +88,27 @@ function resumeSystem(masterResume) {
 // Single entry point for every request. Routing all of them through withUsage
 // means retry/backoff, the monthly budget cap and cost accounting are applied
 // uniformly instead of being remembered at thirteen call sites.
-async function complete(operation, apiKey, shapedParams) {
+//
+// `stream` ({ onText, signal }) is used by chat() only: with onText the reply
+// is streamed and onText receives the whole text so far after every fragment.
+async function complete(operation, apiKey, shapedParams, { onText, signal } = {}) {
   const { thinkingHeadroom = 0, ...params } = shapedParams
   if (thinkingHeadroom) params.max_tokens = (params.max_tokens || 0) + thinkingHeadroom
+  const requestOptions = signal ? { signal } : undefined
   return withUsage(operation, 'claude', async () => {
     const client = new Anthropic({ apiKey })
-    const response = supportsServerFallback(params.model)
-      ? await client.beta.messages.create({ ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' })
-      : await client.messages.create(params)
+    const fallback = supportsServerFallback(params.model)
+    const api = fallback ? client.beta.messages : client.messages
+    const body = fallback ? { ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' } : params
+    let response
+    if (onText) {
+      const stream = api.stream(body, requestOptions)
+      let text = ''
+      stream.on('text', (delta) => { text += delta; onText(text) })
+      response = await stream.finalMessage()
+    } else {
+      response = await api.create(body, requestOptions)
+    }
     // A decline is an HTTP 200 with stop_reason 'refusal' — check before
     // reading content, or a refusal reads as an empty answer.
     if (response.stop_reason === 'refusal') throw new RefusalError(response.stop_details?.category)
@@ -361,13 +374,13 @@ ${fence('BODY', body, 1500)}` }],
 // A free-form exchange for features that compose their own prompt (Ask Hiro,
 // company research, scheduling replies). `messages` alternate user/assistant;
 // `tier` picks the cheap model or the writing model.
-async function chat({ operation = 'chat', system = '', messages = [], maxTokens = 1200, tier = 'smart' }, apiKey) {
+async function chat({ operation = 'chat', system = '', messages = [], maxTokens = 1200, tier = 'smart', onText, signal }, apiKey) {
   return complete(operation, apiKey, {
     ...(tier === 'fast' ? fast() : smart()),
     max_tokens: maxTokens,
     ...(system ? { system } : {}),
     messages: messages.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content || '') })),
-  })
+  }, { onText, signal })
 }
 
 module.exports = { chat, RefusalError, requestShape, resumeSystem, testConnection, tailorResume, answerScreeningQuestion, generateTalkingPoints, scoreMatch, scoreMatchWithExplanation, improveResume, generateCoverLetter, generateInterviewQuestions, generateFollowUpQuestion, analyzeKeywordGap, generateFollowUpEmail, classifyReply, generateCounterOffer, draftInterviewAnswer }

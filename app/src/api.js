@@ -8,6 +8,9 @@ import { openChannel, sealRequest, openResponse } from './pairProtocol'
 import { BINDING_HEADER, BINDING_VERSION, responseMode } from './responseBinding'
 
 const TIMEOUT_MS = 8000
+// An Ask Hiro answer is written by the desktop's AI provider, and a full
+// résumé can take a minute or more. Only those requests wait this long.
+const ASK_TIMEOUT_MS = 180000
 // Pairing stretches the code with 200k rounds of PBKDF2 in JavaScript, which on
 // an older phone is a second or two on top of two network round trips. The
 // ordinary 8s budget is too tight for that.
@@ -103,11 +106,13 @@ export class HiroClient {
     this.onResponseBinding = onResponseBinding
     this.canScan = true // LAN client can reach the desktop to trigger scans
     this.canImport = true // and to import a shared job link
+    this.canAsk = true // and to use Ask Hiro (paired phones only; see the desktop's mobileApi.js)
   }
 
-  async request(path, options = {}) {
+  async request(path, requestOptions = {}) {
+    const { timeoutMs = TIMEOUT_MS, ...options } = requestOptions
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
     try {
       const method = options.method || 'GET'
       const plainBody = options.body ? JSON.parse(options.body) : null
@@ -350,4 +355,20 @@ export class HiroClient {
   // Recent desktop activity-log lines (oldest → newest) — powers the live
   // scan feed on the Dashboard. LAN only; CloudClient has no equivalent.
   getLogs(limit = 40) { return this.request(`/api/logs?limit=${limit}`) }
+
+  // Ask Hiro: the desktop's assistant and its stored conversations. A desktop
+  // too old to have it answers 404, which the screen explains.
+  getAskThreads() { return this.request('/api/ask/threads') }
+  getAskThread(id) { return this.request(`/api/ask/threads/${id}`) }
+  deleteAskThread(id) { return this.request(`/api/ask/threads/${id}/delete`, { method: 'POST', body: '{}' }) }
+  getAskResumes() { return this.request('/api/ask/resumes') }
+  // `resumeId` ('' for none) and `jobText` change what the conversation is
+  // about; leave them out to keep what it had.
+  ask({ question, threadId = null, resumeId, jobText } = {}) {
+    return this.request('/api/ask', {
+      method: 'POST',
+      body: JSON.stringify({ question, threadId, ...(resumeId !== undefined ? { resumeId } : {}), ...(jobText !== undefined ? { jobText } : {}) }),
+      timeoutMs: ASK_TIMEOUT_MS,
+    })
+  }
 }

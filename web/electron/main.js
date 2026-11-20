@@ -854,13 +854,12 @@ ipcMain.handle('indeed:logout', () => {
 
 // ─── IPC: Resume file import ────────────────────────────────────
 ipcMain.handle('resume:importFile', async () => {
-  const { stripUnprintable } = require('./services/textClean')
   const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
     title: 'Select File',
     filters: [
       // Not .doc: mammoth reads only the OOXML .docx format, and the binary
       // .doc is not a zip, so it could neither be imported nor tailored in place.
-      { name: 'Document Files', extensions: ['pdf', 'docx', 'txt'] },
+      { name: 'Document Files', extensions: ['pdf', 'docx', 'txt', 'md'] },
     ],
     properties: ['openFile'],
   })
@@ -878,54 +877,12 @@ ipcMain.handle('resume:importFile', async () => {
   const fileId = Date.now().toString()
 
   try {
-    let text = ''
-    if (ext === 'txt') {
-      text = fs.readFileSync(filePath, 'utf8')
-    } else if (ext === 'pdf') {
-      const { PDFParse } = require('pdf-parse')
-      const { pathToFileURL } = require('url')
-      const parser = new PDFParse({ url: pathToFileURL(filePath).toString() })
-      const result = await parser.getText()
-      // PDF fonts often use non-standard encoding — strip same artifacts as DOCX
-      text = stripUnprintable(result.text.replace(/\r\n/g, '\n'))
-        .replace(/•(?!\s)/g, '')
-        .replace(/[ \t]{2,}/g, ' ')
-        .replace(/\n{3,}/g, '\n\n')
-        .trim()
-      // Page footers out, lines the PDF wrapped at the margin joined back up.
-      text = require('./services/scraper/utils').unwrapExtractedLines(text.split('\n')).join('\n')
-    } else if (ext === 'doc') {
-      return { success: false, error: 'Older .doc files cannot be read. Open it in Word or Pages and save it as .docx, then import that.' }
-    } else if (ext === 'docx') {
-      const mammoth = require('mammoth')
+    const { extractResumeText } = require('./services/resumeExtract')
+    const extracted = await extractResumeText(fs.readFileSync(filePath), ext)
+    let text = extracted.text
+    const linkMap = extracted.links
 
-      // Extract hyperlinks from HTML representation (Portfolio, GitHub, LinkedIn, etc.)
-      const linkMap = new Map()
-      try {
-        const htmlResult = await mammoth.convertToHtml({ path: filePath })
-        const linkRegex = /<a\s+[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi
-        let lm
-        while ((lm = linkRegex.exec(htmlResult.value)) !== null) {
-          const url = lm[1]
-          const linkText = lm[2].replace(/<[^>]+>/g, '').trim()
-          if (linkText && url && /^https?:\/\//.test(url)) {
-            linkMap.set(linkText, url)
-          }
-        }
-      } catch { /* link extraction is non-critical */ }
-
-      const result = await mammoth.extractRawText({ path: filePath })
-      // Some DOCX files use non-standard font encoding — mammoth extracts those as garbled
-      // characters. Aggressively strip anything that isn't printable ASCII or common typographic symbols.
-      text = stripUnprintable(result.value.replace(/\r\n/g, '\n'))
-        // Remove bullet/symbol artifacts attached to words (e.g. "•7B", "•6W")
-        .replace(/•(?=[A-Za-z0-9])/g, '')
-        // Clean up remaining isolated bullets with no content
-        .replace(/•(?!\s)/g, '')
-        .replace(/[ \t]{2,}/g, ' ')
-        .replace(/\n{3,}/g, '\n\n')
-        .trim()
-
+    if (ext === 'docx') {
       // Embed extracted URLs so PDF builder can create clickable links
       for (const [linkText, url] of linkMap) {
         // A replacer function, not a string: a `$&` or `$'` inside a URL is
@@ -1230,13 +1187,160 @@ ipcMain.handle('shell:openMailDraft', (_, { to = '', subject = '', body = '' } =
 // The second argument is a stored thread id (or null to start one). The page
 // used to send its in-memory history instead; an array is still accepted and
 // answered without being stored, so an older renderer keeps working.
-ipcMain.handle('ask:question', async (_, question, threadId) => {
+//
+// The third argument is what the conversation is about — { resumeName,
+// resumeText, jobText } — and replaces what the thread had stored. Left out,
+// the thread keeps its own.
+//
+// The fourth is a request id chosen by the page. With one, the reply streams to
+// the page as it is written (`ask:stream` events carrying the whole text so
+// far), and `ask:stop` with the same id stops it.
+const askRequests = new Map() // requestId -> AbortController
+const STREAM_INTERVAL_MS = 60
+ipcMain.handle('ask:question', async (event, question, threadId, documents, requestId) => {
   const askHiro = require('./services/askHiro')
+  const rid = typeof requestId === 'string' && /^[\w-]{1,64}$/.test(requestId) ? requestId : null
+  const controller = rid ? new AbortController() : null
+  if (rid) askRequests.set(rid, controller)
+  // At most one event per interval: a fast model emits hundreds of fragments a
+  // second, and each would otherwise be a re-render of the whole conversation.
+  let pending = null
+  let timer = null
+  const flush = () => {
+    timer = null
+    if (pending == null) return
+    try { if (!event.sender.isDestroyed()) event.sender.send('ask:stream', { requestId: rid, text: pending }) } catch { /* window gone */ }
+    pending = null
+  }
+  const onText = rid ? (text) => { pending = text; if (!timer) timer = setTimeout(flush, STREAM_INTERVAL_MS) } : null
+  const stream = rid ? { onText, signal: controller.signal } : {}
   try {
-    if (Array.isArray(threadId)) return { success: true, ...(await askHiro.ask(question, threadId)) }
+    if (Array.isArray(threadId)) return { success: true, ...(await askHiro.ask(question, threadId, { documents, ...stream })) }
     const id = Number(threadId)
-    return { success: true, ...(await askHiro.askInThread(question, Number.isInteger(id) && id > 0 ? id : null)) }
-  } catch (err) { return { success: false, error: err.message, threadId: err.threadId ?? null } }
+    const opts = { ...(documents && typeof documents === 'object' ? { documents } : {}), ...stream }
+    return { success: true, ...(await askHiro.askInThread(question, Number.isInteger(id) && id > 0 ? id : null, opts)) }
+  } catch (err) {
+    return { success: false, error: err.message, stopped: !!err.stopped, threadId: err.threadId ?? null }
+  } finally {
+    if (timer) clearTimeout(timer)
+    if (rid) askRequests.delete(rid)
+  }
+})
+ipcMain.handle('ask:stop', (_, requestId) => {
+  const controller = askRequests.get(String(requestId))
+  if (!controller) return { success: false }
+  controller.abort()
+  return { success: true }
+})
+// A job ad read from a link. The desktop fetches it, so jobPage refuses
+// anything on this computer or the private network, at every redirect.
+ipcMain.handle('ask:readJobLink', async (_, url) => {
+  try {
+    const job = await require('./services/jobPage').readJobLink(String(url || '').slice(0, 2000))
+    const { wordCount } = require('./services/resumeExtract')
+    return { success: true, text: job.text.slice(0, 40000), title: job.title, company: job.company, structured: job.structured, words: wordCount(job.description) }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+// Will an applicant tracking system read the résumé attached to the chat? The
+// same check as Settings → Resumes, run on a private temporary copy of the
+// attached bytes that is deleted straight after.
+ipcMain.handle('ask:checkAttachment', async (_, name, bytes) => {
+  const fs = require('fs')
+  const os = require('os')
+  const pathMod = require('path')
+  const { extensionOf, MAX_BYTES } = require('./services/resumeExtract')
+  const parseCheck = require('./services/resumeParseCheck')
+  const ext = extensionOf(name)
+  if (!['pdf', 'docx'].includes(ext)) {
+    return { ok: false, unavailable: true, reason: 'Only a PDF or Word file can be checked: plain text has no layout for a parser to misread.', findings: [] }
+  }
+  if (!ArrayBuffer.isView(bytes) || !bytes.byteLength || bytes.byteLength > MAX_BYTES) {
+    return { ok: false, unavailable: true, reason: 'Attach the file again to check it.', findings: [] }
+  }
+  let dir = null
+  try {
+    dir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'hiro-ats-'))
+    const file = pathMod.join(dir, `resume.${ext}`)
+    fs.writeFileSync(file, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength), { mode: 0o600 })
+    return await parseCheck.inspect(file, ext)
+  } catch (err) {
+    return { ok: false, unavailable: true, reason: err.message, findings: [] }
+  } finally {
+    if (dir) try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* the OS clears its temp folder */ }
+  }
+})
+// A file attached to (or dropped on) the chat. The page sends the file's BYTES,
+// never a path: a path from the renderer would make this a way to read any file
+// on disk, while the bytes are exactly what the user chose to share.
+ipcMain.handle('ask:readAttachment', async (_, name, bytes) => {
+  const { extractResumeText, extensionOf, wordCount, SUPPORTED, MAX_BYTES } = require('./services/resumeExtract')
+  try {
+    const ext = extensionOf(name)
+    if (ext === 'doc') return { success: false, error: 'Older .doc files cannot be read. Save it as .docx in Word or Pages, then attach that.' }
+    if (!SUPPORTED.includes(ext)) return { success: false, error: 'Attach a PDF, Word (.docx) or plain-text file.' }
+    if (!(ArrayBuffer.isView(bytes)) || !bytes.byteLength) return { success: false, error: 'That file is empty.' }
+    if (bytes.byteLength > MAX_BYTES) return { success: false, error: 'That file is larger than 10 MB, which is far bigger than a résumé should be.' }
+    const { text } = await extractResumeText(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength), ext)
+    if (!text.trim()) {
+      return { success: false, error: ext === 'pdf'
+        ? 'No text could be read from that PDF. It is probably a scanned image, which an applicant tracking system cannot read either. Export it from the original document instead.'
+        : 'No text could be read from that file.' }
+    }
+    const base = require('path').basename(String(name || ''))
+    return { success: true, name: base.replace(/\.[^.]+$/, '').slice(0, 120) || 'Résumé', ext, text: text.slice(0, 40000), words: wordCount(text), truncated: text.length > 40000 }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+// Keep a résumé from the chat: the one the user attached, or one the assistant
+// drafted. Added to Settings → Resumes like any other; it becomes the default
+// only when there was none. `bytes` (the attached file, while the page still
+// has it) keeps the original DOCX so tailoring can write into the user's own
+// layout; `sourceResumeId` carries the original over from a saved résumé that
+// this draft was written from, as Settings → Improve does.
+ipcMain.handle('ask:saveResume', async (_, payload = {}) => {
+  try {
+    const fs = require('fs')
+    const pathMod = require('path')
+    const { extensionOf, MAX_BYTES } = require('./services/resumeExtract')
+    const text = String(payload?.text || '').trim()
+    if (!text) return { success: false, error: 'There is no résumé text to save.' }
+    if (text.length > 40000) return { success: false, error: 'That résumé is too long to save.' }
+    const name = String(payload?.name || '').replace(/\s+/g, ' ').trim().slice(0, 80) || 'Résumé from Ask Hiro'
+    const cfg = configService.load()
+    const resumes = Array.isArray(cfg.resumes) ? cfg.resumes : []
+    if (resumes.length >= 5) return { success: false, error: 'You already have 5 résumés. Remove one in Settings → Resumes first.' }
+
+    let originalPath = null
+    let originalExt = null
+    const ext = extensionOf(payload?.fileName)
+    const bytes = payload?.bytes
+    if ((ext === 'docx' || ext === 'pdf') && ArrayBuffer.isView(bytes) && bytes.byteLength > 0 && bytes.byteLength <= MAX_BYTES) {
+      const resumesDir = pathMod.join(configService.CONFIG_DIR, 'resumes')
+      fs.mkdirSync(resumesDir, { recursive: true })
+      originalPath = pathMod.join(resumesDir, `${Date.now()}.${ext}`)
+      fs.writeFileSync(originalPath, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength))
+      originalExt = ext
+    } else if (payload?.sourceResumeId) {
+      const source = resumes.find(r => r.id === String(payload.sourceResumeId))
+      if (source?.originalPath && resolveResumeOriginal(source.originalPath, ['docx', 'pdf'])) {
+        originalPath = source.originalPath
+        originalExt = source.originalExt || null
+      }
+    }
+
+    const id = Date.now().toString()
+    configService.update(c => ({
+      ...c,
+      resumes: [...(Array.isArray(c.resumes) ? c.resumes : []), { id, name, text, originalPath, originalExt }],
+      defaultResumeId: c.defaultResumeId || id,
+    }))
+    return { success: true, id, name }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
 })
 ipcMain.handle('ask:threads', () => database.listAskThreads())
 ipcMain.handle('ask:thread', (_, id) => database.getAskThread(Number(id)))

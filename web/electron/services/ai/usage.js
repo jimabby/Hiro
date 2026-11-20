@@ -124,6 +124,15 @@ class BudgetExceededError extends Error {
   }
 }
 
+// The user pressed Stop. Not a failure of the provider: never retried, never
+// a reason to switch to the backup provider. The SDKs name it differently
+// (APIUserAbortError, AbortError); the signal's own reason may also arrive.
+function isAbort(err) {
+  if (!err) return false
+  if (err.aborted || err.name === 'AbortError' || err.name === 'APIUserAbortError') return true
+  return /request was aborted|operation was aborted|this operation was aborted/i.test(String(err.message || ''))
+}
+
 // A failure that retrying cannot fix (bad key, malformed request). Retrying
 // these just delays the error and burns the user's rate limit.
 function isPermanent(err) {
@@ -137,7 +146,7 @@ function isPermanent(err) {
 }
 
 function isRetryable(err) {
-  if (isPermanent(err)) return false
+  if (isAbort(err) || isPermanent(err)) return false
   const status = err?.status ?? err?.statusCode ?? err?.response?.status
   if (status === 429) return true
   if (status >= 500 && status < 600) return true
@@ -312,6 +321,6 @@ async function withUsage(operation, provider, fn) {
 }
 
 module.exports = {
-  withUsage, resetRetryBudget, withRetryBudget, retryBudgetStatus, estimateCost, priceFor, fallbackPriceFor, isRetryable, isPermanent, readUsage,
+  withUsage, resetRetryBudget, withRetryBudget, retryBudgetStatus, estimateCost, priceFor, fallbackPriceFor, isRetryable, isPermanent, isAbort, readUsage,
   BudgetExceededError, PRICING, _setConfigReader,
 }

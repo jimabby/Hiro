@@ -25,4 +25,11 @@ check('a newly invented employer is blocked', employment.flags.some(f => f.kind 
 check('facts already present in the base are not flagged', guard.inspectTailoring(base, `${base}\nSoftware Engineer at Acme Pty Ltd`).safe, true)
 check('empty inputs are safe', guard.inspectTailoring('', '').safe, true)
 
+// A sentence ending on the employer carries its full stop into the capture.
+const letterBase = ['Software Engineer', 'Acme Pty Ltd 2019'].join(String.fromCharCode(10))
+check('a sentence-final full stop does not make a known employer unknown',
+  guard.inspectCoverLetter(letterBase, 'I built the billing service at Acme Pty Ltd.').safe, true)
+check('an unknown employer is still flagged with its full stop',
+  guard.inspectCoverLetter(letterBase, 'I built the billing service at Globex.').flags.map(f => f.value), ['Globex'])
+
 done()
