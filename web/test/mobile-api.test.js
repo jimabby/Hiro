@@ -4,6 +4,7 @@
 
 const { stub, service, createChecker } = require('./helpers')
 
+const practiceCalls = []
 const statusWrites = []
 const rejects = []
 const nextActions = []
@@ -62,6 +63,17 @@ stub({
     getDueNextActions: () => [{ id: 1, job_title: 'Dev', company: 'Acme', next_action_at: '2026-08-01', next_action_note: 'Chase the recruiter' }],
   },
   './scheduler': { getScanInfo: () => ({ running: false }), requestScan: () => ({ id: 'x' }), cancelScan: () => {} },
+  // Practice: the routes are thin, so the service is a recorder here; its own
+  // rules are covered by practice.test.js.
+  './practice': {
+    forPhone: (opts = {}) => ({ day: '2026-11-21', cards: [], queue: [], fromMore: Boolean(opts.day) }),
+    rate: (cardId, rating) => {
+      if (rating !== 'good') return { success: false, error: 'Unknown rating.' }
+      practiceCalls.push(['rate', cardId, rating]); return { success: true, state: { dueOn: '2026-11-22' } }
+    },
+    more: ({ count }) => { practiceCalls.push(['more', count]); return {} },
+    flag: (cardId, reason, note) => { practiceCalls.push(['flag', cardId, reason, note]); return { success: true } },
+  },
   './logger': { append: () => {}, tail: () => [] },
   // The real pairing module, with the expensive call counted. deviceSecrets is
   // what unwraps every registered device token through the OS keychain, so it
@@ -193,6 +205,22 @@ const post = async (path, body) => {
   check('weekly goals are served to the phone', [week.status, week.body?.goals?.map(g => [g.key, g.done])], [200, [['applications', 3], ['contacts', 1]]])
   check('a comment on a deleted application is a 404',
     (await post('/api/applications/404/comment', { comment: 'hi' })).status, 404)
+
+  // ── Practice over the LAN ───────────────────────────────────────
+  check('today\'s practice is served', (await get('/api/practice')).body?.day, '2026-11-21')
+  const rated = await post('/api/practice/rate', { cardId: 'node-001', rating: 'good' })
+  check('a rating is saved and the refreshed day comes back', [rated.status, rated.body?.state?.dueOn, rated.body?.practice?.day], [200, '2026-11-22', '2026-11-21'])
+  check('a bad rating is a 400', (await post('/api/practice/rate', { cardId: 'node-001', rating: 'meh' })).status, 400)
+  const rateTwice = async () => (await fetch(`http://127.0.0.1:${PORT}/api/practice/rate`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${cfg.mobileApiToken}`, 'Content-Type': 'application/json', 'Idempotency-Key': 'rate-once-1' },
+    body: JSON.stringify({ cardId: 'node-002', rating: 'good' }),
+  })).status
+  await rateTwice(); await rateTwice()
+  check('a retried rating counts once', practiceCalls.filter(c => c[0] === 'rate' && c[1] === 'node-002').length, 1)
+  check('more cards', (await post('/api/practice/more', { count: 5 })).body?.fromMore, true)
+  check('reporting a card', (await post('/api/practice/flag', { cardId: 'node-001', reason: 'wrong', note: 'old' })).status, 200)
+  check('the routes passed the phone\'s values through', practiceCalls.filter(c => c[0] !== 'rate'), [['more', 5], ['flag', 'node-001', 'wrong', 'old']])
 
   // ── Review queue over the LAN ───────────────────────────────────
   const heldRes = await get('/api/held')

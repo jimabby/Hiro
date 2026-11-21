@@ -766,6 +766,46 @@ function migrate() {
   try { db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_sent_messages_mid ON sent_messages(message_id)') } catch {}
 
   createAssistantTables()
+  createPracticeTables()
+}
+
+// Practice flashcards (services/practice.js). The questions themselves are not
+// here — they ship as data (electron/data/questions.json) or come from
+// interview_prep — only what the user did with them:
+//   practice_cards   — SM-2 state per card id
+//   practice_reviews — one row per rating, for streaks and "days this week"
+//   practice_days    — the set chosen for each day, so it stays put all day
+//   practice_flags   — cards the user reported as outdated or wrong
+function createPracticeTables() {
+  db.run(`CREATE TABLE IF NOT EXISTS practice_cards (
+    card_id TEXT PRIMARY KEY,
+    ease REAL NOT NULL DEFAULT 2.5,
+    interval_days INTEGER NOT NULL DEFAULT 0,
+    reps INTEGER NOT NULL DEFAULT 0,
+    lapses INTEGER NOT NULL DEFAULT 0,
+    due_on TEXT NOT NULL,
+    last_rating TEXT,
+    last_reviewed_at TEXT
+  )`)
+  db.run(`CREATE TABLE IF NOT EXISTS practice_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    card_id TEXT NOT NULL,
+    rating TEXT NOT NULL,
+    reviewed_on TEXT NOT NULL,
+    reviewed_at TEXT DEFAULT (datetime('now'))
+  )`)
+  db.run('CREATE INDEX IF NOT EXISTS idx_practice_reviews_day ON practice_reviews(reviewed_on)')
+  db.run(`CREATE TABLE IF NOT EXISTS practice_days (
+    day TEXT PRIMARY KEY,
+    card_ids TEXT NOT NULL DEFAULT '[]',
+    filter_key TEXT NOT NULL DEFAULT ''
+  )`)
+  db.run(`CREATE TABLE IF NOT EXISTS practice_flags (
+    card_id TEXT PRIMARY KEY,
+    reason TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    flagged_at TEXT DEFAULT (datetime('now'))
+  )`)
 }
 
 // Ask Hiro threads, automatic interview prep, and the user's offer exchange
@@ -2856,6 +2896,64 @@ function getInterviewPrep(applicationId) {
 function deleteInterviewPrep(applicationId) {
   run('DELETE FROM interview_prep WHERE application_id = ?', [applicationId])
   persist()
+}
+
+// ─── Practice ────────────────────────────────────────────────────
+// See createPracticeTables. The rules live in services/practice.js.
+function getPracticeStates() {
+  return query('SELECT * FROM practice_cards')
+}
+
+// The new schedule and the review that produced it, written together.
+function savePracticeReview({ cardId, state, rating, day }) {
+  batch(() => {
+    run(`INSERT OR REPLACE INTO practice_cards
+           (card_id, ease, interval_days, reps, lapses, due_on, last_rating, last_reviewed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+    [cardId, state.ease, state.interval_days, state.reps, state.lapses, state.due_on, rating])
+    run('INSERT INTO practice_reviews (card_id, rating, reviewed_on) VALUES (?, ?, ?)', [cardId, rating, day])
+  })
+}
+
+function getPracticeDay(day) {
+  const row = queryOne('SELECT * FROM practice_days WHERE day = ?', [day])
+  if (!row) return null
+  let cardIds = []
+  try { cardIds = JSON.parse(row.card_ids) } catch { /* rebuilt by the caller */ }
+  return { day: row.day, cardIds: Array.isArray(cardIds) ? cardIds.filter(id => typeof id === 'string') : [], filterKey: row.filter_key }
+}
+
+function savePracticeDay(day, cardIds, filterKey) {
+  run('INSERT OR REPLACE INTO practice_days (day, card_ids, filter_key) VALUES (?, ?, ?)', [day, JSON.stringify(cardIds), filterKey])
+  // Old days are only needed for the day itself; reviews keep the history.
+  run('DELETE FROM practice_days WHERE day < date(?, \'-14 days\')', [day])
+}
+
+function getPracticeReviewedOn(day) {
+  return query('SELECT DISTINCT card_id FROM practice_reviews WHERE reviewed_on = ?', [day]).map(r => r.card_id)
+}
+
+function getPracticeReviewDays(sinceDay) {
+  return query('SELECT DISTINCT reviewed_on FROM practice_reviews WHERE reviewed_on >= ? ORDER BY reviewed_on', [sinceDay]).map(r => r.reviewed_on)
+}
+
+function getPracticeFlags() {
+  return query('SELECT card_id, reason, note, flagged_at FROM practice_flags ORDER BY flagged_at DESC')
+}
+
+function setPracticeFlag(cardId, reason, note) {
+  run('INSERT OR REPLACE INTO practice_flags (card_id, reason, note) VALUES (?, ?, ?)', [cardId, reason, note])
+}
+
+function clearPracticeFlag(cardId) {
+  run('DELETE FROM practice_flags WHERE card_id = ?', [cardId])
+}
+
+// Applications with generated interview questions: the source of job decks.
+function getPracticeJobApplications() {
+  return query(`SELECT a.id, a.job_title, a.company, a.status
+                FROM interview_prep p JOIN applications a ON a.id = p.application_id
+                ORDER BY a.id DESC`)
 }
 
 // ─── Interview Schedule ──────────────────────────────────────────
@@ -4998,6 +5096,8 @@ module.exports = {
   stopFollowUps, resumeFollowUps,
   getApplicationsAwaitingReply, setLastReplyUid, markStaleApplications, OPEN_STATUSES,
   saveInterviewPrep, getInterviewPrep, deleteInterviewPrep, getInterviewPrepWithAnswers,
+  getPracticeStates, savePracticeReview, getPracticeDay, savePracticeDay, getPracticeReviewedOn,
+  getPracticeReviewDays, getPracticeFlags, setPracticeFlag, clearPracticeFlag, getPracticeJobApplications,
   getCompanyResearch, saveCompanyResearch,
   localDateString, getWeeklyActivity, getRecentJobDescriptions, getThankYouDue, completeThankYou, getApplicationsForAsk, applicationExists, listAskThreads, getAskThread, appendAskTurn, deleteAskThread,
   scheduleInterviewPrep, getInterviewPrepJob, getDueInterviewPrepJobs, updateInterviewPrepJob, countInterviewPrepDoneSince,

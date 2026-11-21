@@ -25,6 +25,7 @@ import DashboardScreen from './src/screens/DashboardScreen'
 import ApplicationsScreen from './src/screens/ApplicationsScreen'
 import OffersScreen from './src/screens/OffersScreen'
 import AskScreen from './src/screens/AskScreen'
+import PracticeScreen from './src/screens/PracticeScreen'
 import SettingsScreen from './src/screens/SettingsScreen'
 import { useBadges } from './src/useBadges'
 import { badgeText } from './src/listing'
@@ -55,6 +56,8 @@ const TABS = [
   { id: 'offers', label: 'Offers', icon: `★${TEXT_STYLE}` },
   // The desktop's assistant: questions about the search, and résumé help.
   { id: 'ask', label: 'Ask', icon: '✦' },
+  // Interview flashcards, from the desktop's Practice page.
+  { id: 'practice', label: 'Practice', icon: '❖' },
   { id: 'settings', label: 'Settings', icon: `⚙${TEXT_STYLE}` },
 ]
 
@@ -383,6 +386,11 @@ function AppContent() {
               <AskScreen client={client} active={tab === 'ask'} />
             </View>
           )}
+          {visited.has('practice') && (
+            <View style={[styles.content, tab !== 'practice' && styles.hidden]}>
+              <PracticeScreen client={client} active={tab === 'practice'} />
+            </View>
+          )}
           {visited.has('offers') && (
             <View style={[styles.content, tab !== 'offers' && styles.hidden]}>
               <OffersScreen client={client} active={tab === 'offers'} />
@@ -420,8 +428,12 @@ function AppContent() {
                   </View>
                 )}
               </View>
+              {/* Six tabs on a narrow phone: one line, shrunk rather than wrapped. */}
               <Text
                 style={[styles.tabLabel, tab === t.id && styles.tabActive]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.8}
                 importantForAccessibility="no"
                 accessibilityElementsHidden
               >{t.label}</Text>

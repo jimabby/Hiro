@@ -35,6 +35,7 @@ const Analytics = memoPage(() => import('./pages/Analytics'))
 const Workbench = memoPage(() => import('./pages/Workbench'))
 const Offers = memoPage(() => import('./pages/Offers'))
 const AskHiro = memoPage(() => import('./pages/AskHiro'))
+const Practice = memoPage(() => import('./pages/Practice'))
 import useModalFocus from './hooks/useModalFocus'
 import ErrorBoundary from './components/ErrorBoundary'
 import ShortcutHelp from './components/ShortcutHelp'
@@ -65,6 +66,9 @@ const NAV = [
   { id: 'analytics', label: 'Analytics', icon: '◔', shortcut: '7' },
   { id: 'settings', label: 'Settings', icon: '⚙', shortcut: '8' },
   { id: 'workbench', label: 'Workbench', icon: '+', shortcut: '9' },
+  // Interview flashcards. No number: the digits are spoken for, and the page
+  // uses 1–4 itself to rate a card.
+  { id: 'practice', label: 'Practice', icon: '❖' },
   // Last, and without a number: the digits are spoken for, in sidebar order.
   { id: 'ask', label: 'Ask Hiro', icon: '✦' },
 ]
@@ -380,6 +384,9 @@ export default function App() {
 
       // Matched on each entry's own key, so an entry without one is never
       // reachable by a digit that happens to equal its position.
+      // A page that used the key itself (Practice rates a card with 1–4)
+      // marks it handled; switching pages under it would lose the rating.
+      if (e.defaultPrevented) return
       const target = NAV.find(n => n.shortcut && n.shortcut === e.key)
       if (target) setPage(target.id)
     }
@@ -469,6 +476,7 @@ export default function App() {
     offers: <Offers active={page === 'offers'} showToast={showToast} onOpenApplication={openApplication} />,
     workbench: <Workbench active={page === 'workbench'} showToast={showToast} />,
     settings: <Settings active={page === 'settings'} showToast={showToast} focusTab={focusSettingsTab} onFocusTabHandled={clearFocusSettingsTab} />,
+    practice: <Practice active={page === 'practice'} showToast={showToast} />,
     ask: <AskHiro showToast={showToast} onNavigate={setPage} onOpenApplication={openApplication} />,
   }), [page, scanRunning, startRealScan, startDryScan, handleClearLogs, showToast, focusApp, clearFocusApp, openApplication, focusSettingsTab, clearFocusSettingsTab])
 

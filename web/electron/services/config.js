@@ -269,6 +269,9 @@ const DEFAULTS = {
   eligibility: { enabled: false, workStatus: '', needsSponsorship: false, holdsClearance: null },
   // Weekly targets (services/weeklyGoals.js). 0 = no goal for that count.
   weeklyGoals: { applications: 0, followUps: 0, contacts: 0 },
+  // Practice flashcards (services/practice.js). topics: [] means every topic;
+  // dailyCount is the size of each day's set.
+  practice: { topics: [], dailyCount: 8 },
   // Extra skills for the skills-gap report (services/skillsGap.js), on top of
   // its built-in vocabulary. Comma-separated, matched literally.
   skillTerms: '',

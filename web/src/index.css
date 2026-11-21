@@ -777,3 +777,19 @@ input[type="checkbox"] {
   :root { --glass: #1a1d28; --glass-raised: #222634; --glass-thick: #1c1f2b; }
   [data-theme="light"] { --glass: #ffffff; --glass-raised: #ffffff; --glass-thick: #ffffff; }
 }
+
+/* Practice answers (components/SafeAnswer.jsx): the HTML subset the question
+   bank is written in. */
+.practice-answer { font-size: 14px; line-height: 1.6; }
+.practice-answer p, .practice-answer ul, .practice-answer ol, .practice-answer pre { margin: 0 0 10px; }
+.practice-answer ul, .practice-answer ol { padding-left: 20px; }
+.practice-answer li { margin-bottom: 4px; }
+.practice-answer code {
+  font-family: var(--font-mono); font-size: 12.5px;
+  background: var(--surface2); border-radius: 4px; padding: 1px 4px;
+}
+.practice-answer pre {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px 12px; overflow-x: auto;
+}
+.practice-answer pre code { background: none; padding: 0; font-size: 12.5px; }

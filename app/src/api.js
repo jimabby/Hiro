@@ -107,6 +107,7 @@ export class HiroClient {
     this.canScan = true // LAN client can reach the desktop to trigger scans
     this.canImport = true // and to import a shared job link
     this.canAsk = true // and to use Ask Hiro (paired phones only; see the desktop's mobileApi.js)
+    this.canPractice = true // and to practise interview flashcards (the schedule lives on the desktop)
   }
 
   async request(path, requestOptions = {}) {
@@ -348,6 +349,28 @@ export class HiroClient {
       body: JSON.stringify(job),
       headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
     })
+  }
+  // Practice flashcards (the desktop's services/practice.js). LAN only: the
+  // schedule lives in the desktop's database. Each write answers with the
+  // refreshed day ({ practice }), so the screen moves on in one round trip. A
+  // rating carries an Idempotency-Key, so a retry cannot count it twice.
+  getPractice() { return this.request('/api/practice') }
+  ratePracticeCard(cardId, rating, { idempotencyKey } = {}) {
+    return this.request('/api/practice/rate', {
+      method: 'POST',
+      body: JSON.stringify({ cardId, rating }),
+      headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+    })
+  }
+  practiceMore(count, { idempotencyKey } = {}) {
+    return this.request('/api/practice/more', {
+      method: 'POST',
+      body: JSON.stringify({ count }),
+      headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+    })
+  }
+  flagPracticeCard(cardId, reason, note = '') {
+    return this.request('/api/practice/flag', { method: 'POST', body: JSON.stringify({ cardId, reason, note }) })
   }
   getScanStatus() { return this.request('/api/scan/status') }
   cancelScan() { return this.request('/api/scan/cancel', { method: 'POST' }) }

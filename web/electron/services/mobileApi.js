@@ -828,6 +828,38 @@ async function route(req, res) {
       return json(res, 200, require('./weeklyGoals').progress())
     }
 
+    // Practice flashcards (services/practice.js), for the phone's Practice tab.
+    // The read is read scope; rating, adding cards and reporting change the
+    // user's practice record and so need write scope like any other POST. Each
+    // write answers with the refreshed day, so the phone moves on in one round
+    // trip. A rating carries an Idempotency-Key: a retried request must not
+    // count the same answer twice and push the card further out.
+    if (req.method === 'GET' && path === '/api/practice') {
+      return json(res, 200, require('./practice').forPhone())
+    }
+    if (req.method === 'POST' && path === '/api/practice/rate') {
+      const body = await readBody(req)
+      return respondOnce(res, idempotencySlot(req, check.device), async () => {
+        const practice = require('./practice')
+        const result = practice.rate(String(body.cardId || '').slice(0, 80), String(body.rating || ''))
+        if (!result.success) return { status: 400, body: result }
+        return { status: 200, body: { ...result, practice: practice.forPhone() } }
+      })
+    }
+    if (req.method === 'POST' && path === '/api/practice/more') {
+      const body = await readBody(req)
+      return respondOnce(res, idempotencySlot(req, check.device), async () => {
+        const practice = require('./practice')
+        return { status: 200, body: practice.forPhone({ day: practice.more({ count: body.count }) }) }
+      })
+    }
+    if (req.method === 'POST' && path === '/api/practice/flag') {
+      const body = await readBody(req)
+      const practice = require('./practice')
+      const result = practice.flag(String(body.cardId || '').slice(0, 80), String(body.reason || ''), typeof body.note === 'string' ? body.note : '')
+      return json(res, result.success ? 200 : 400, result.success ? { ...result, practice: practice.forPhone() } : result)
+    }
+
     // Queue a scan to run on the desktop. Runs immediately if idle, otherwise
     // as soon as the desktop is free (or on next launch if it's restarted).
     if (req.method === 'POST' && path === '/api/scan') {

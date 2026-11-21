@@ -19,6 +19,17 @@ module.exports = function registerFeatureHandlers({ ipcMain, scheduler, getWindo
     const days = [30, 60, 90, 180].includes(Number(opts?.days)) ? Number(opts.days) : 90
     return require('../services/skillsGap').analyse({ days })
   })
+  // Practice flashcards. Arguments are checked again in the service; nothing
+  // here reaches a model or the network.
+  const practice = () => require('../services/practice')
+  ipcMain.handle('practice:today', () => practice().today())
+  ipcMain.handle('practice:more', (_, count) => practice().more({ count }))
+  ipcMain.handle('practice:rate', (_, cardId, rating) => practice().rate(cardId, rating))
+  ipcMain.handle('practice:bank', () => practice().bank())
+  ipcMain.handle('practice:stats', () => practice().stats())
+  ipcMain.handle('practice:flag', (_, cardId, reason, note) => practice().flag(cardId, reason, note))
+  ipcMain.handle('practice:unflag', (_, cardId) => practice().unflag(cardId))
+  ipcMain.handle('practice:saveSettings', (_, settings) => practice().saveSettings(settings))
   ipcMain.handle('features:views', () => featureHub.savedViews())
   ipcMain.handle('features:saveView', (_, view) => featureHub.saveView(view))
   ipcMain.handle('features:deleteView', (_, id) => featureHub.deleteView(id))

@@ -1,0 +1,1967 @@
+{
+  "schema": 1,
+  "updatedAt": "2026-11-21",
+  "questions": [
+    {
+      "id": "java-001",
+      "topic": "Java",
+      "question": "What is an exception in Java?",
+      "answer": "<p>An event that disrupts the normal flow of a program, such as dividing by zero, reading a missing file or calling a method on <code>null</code>. It's handled with <code>try</code> / <code>catch</code> / <code>finally</code>.</p><ul><li><b>Checked</b> (e.g. <code>IOException</code>, <code>SQLException</code>): checked at compile time, so you must catch them or declare them with <code>throws</code>.</li><li><b>Unchecked</b> (subclasses of <code>RuntimeException</code>, e.g. <code>NullPointerException</code>, <code>IllegalArgumentException</code>): usually programming errors, and they don't need declaring.</li><li><b>Error</b> (e.g. <code>OutOfMemoryError</code>): serious JVM problems the app usually shouldn't handle.</li></ul>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-002",
+      "topic": "Java",
+      "question": "What's the difference between throw and throws?",
+      "answer": "<p><code>throw</code> actually throws an exception. <code>throws</code> declares in a method signature that the method might throw one.</p><pre><code>public void read(String p) throws IOException {\n  if (p == null) throw new IllegalArgumentException(\"null path\");\n}</code></pre>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-003",
+      "topic": "Java",
+      "question": "What is try-with-resources?",
+      "answer": "<p>A <code>try</code> block (Java 7+) that automatically closes resources implementing <code>AutoCloseable</code>, like files, streams and database connections, even if an exception happens.</p><pre><code>try (var r = new BufferedReader(new FileReader(\"a.txt\"))) {\n  r.readLine();\n}</code></pre>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [
+        "Java 7"
+      ],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-004",
+      "topic": "Java",
+      "question": "What are good practices for exception handling?",
+      "answer": "<ul><li>Catch specific exceptions, not a broad <code>Exception</code>.</li><li>Never swallow exceptions with an empty catch block. At least log them.</li><li>Use <code>finally</code> or try-with-resources for cleanup.</li><li>Create custom exceptions for business errors, e.g. <code>InvalidQuoteException</code>.</li><li>Don't use exceptions for normal control flow.</li></ul>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-005",
+      "topic": "Java",
+      "question": "Does Java have structs?",
+      "answer": "<p>No. You group data with a <b>class</b> or, since Java 16, a <b>record</b>. A record is immutable and auto-generates the constructor, getters, <code>equals</code>, <code>hashCode</code> and <code>toString</code>, so it's the closest thing to a struct.</p><pre><code>public record Policy(String id, double premium) {}</code></pre>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [
+        "Java 16"
+      ],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-006",
+      "topic": "Java",
+      "question": "What are the main Java collections?",
+      "answer": "<ul><li><b>List</b> (<code>ArrayList</code>, <code>LinkedList</code>): ordered, allows duplicates.</li><li><b>Set</b> (<code>HashSet</code>, <code>TreeSet</code>): no duplicates.</li><li><b>Map</b> (<code>HashMap</code>, <code>TreeMap</code>): key–value pairs.</li><li><b>Queue / Deque</b> (<code>ArrayDeque</code>, <code>PriorityQueue</code>): FIFO, stack or priority ordering.</li></ul>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-007",
+      "topic": "Java",
+      "question": "What are Java's primitive types?",
+      "answer": "<p>Eight: <code>byte</code>, <code>short</code>, <code>int</code>, <code>long</code>, <code>float</code>, <code>double</code>, <code>char</code>, <code>boolean</code>. Everything else, including <code>String</code>, arrays and collections, is an object (reference type). Each primitive has a wrapper class, like <code>Integer</code> for <code>int</code>.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-008",
+      "topic": "Java",
+      "question": "What's the difference between == and .equals() in Java?",
+      "answer": "<p><code>==</code> compares references (whether it's the same object in memory), or values for primitives. <code>.equals()</code> compares content. Always use <code>.equals()</code> for Strings: <code>\"a\".equals(s)</code>.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-009",
+      "topic": "Java",
+      "question": "What's the difference between an abstract class and an interface?",
+      "answer": "<ul><li><b>Abstract class</b>: can have state (fields), constructors and both implemented and abstract methods. A class can extend only one.</li><li><b>Interface</b>: a contract of methods, which can include <code>default</code> methods but no instance state. A class can implement many.</li></ul><p>Use an interface for \"can do\" capabilities and an abstract class for shared base behaviour.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-010",
+      "topic": "Java",
+      "question": "What does final mean in Java?",
+      "answer": "<ul><li><b>final variable</b>: can't be reassigned.</li><li><b>final method</b>: can't be overridden.</li><li><b>final class</b>: can't be extended (e.g. <code>String</code>).</li></ul>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "kotlin-001",
+      "topic": "Kotlin",
+      "question": "What's the difference between Kotlin and Java?",
+      "answer": "<p>Both run on the JVM and interoperate, so a project can mix the two and share libraries. Kotlin is more modern and concise:</p><ul><li><b>Null safety</b> in the type system (<code>String</code> vs <code>String?</code>), so many null bugs are caught at compile time.</li><li><b>Data classes</b> remove boilerplate.</li><li><b>Type inference</b> with <code>val</code> / <code>var</code>, and no semicolons.</li><li><b>Coroutines</b> for simpler async code.</li><li>No checked exceptions.</li></ul>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "kotlin-002",
+      "topic": "Kotlin",
+      "question": "What's the difference between val and var in Kotlin?",
+      "answer": "<p><code>val</code> is read-only: it can't be reassigned, like Java's <code>final</code>. <code>var</code> is mutable. Prefer <code>val</code> by default.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "kotlin-003",
+      "topic": "Kotlin",
+      "question": "How does null safety work in Kotlin?",
+      "answer": "<p>Types are non-null by default. Add <code>?</code> to allow null. Then use:</p><ul><li><code>?.</code> safe call: <code>name?.length</code></li><li><code>?:</code> Elvis operator: <code>name ?: \"Unknown\"</code></li><li><code>!!</code> asserts non-null (throws if null, so avoid it)</li></ul>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "kotlin-004",
+      "topic": "Kotlin",
+      "question": "What is a data class in Kotlin?",
+      "answer": "<p>A class for holding data that auto-generates <code>equals</code>, <code>hashCode</code>, <code>toString</code>, <code>copy</code> and destructuring.</p><pre><code>data class User(val name: String, val age: Int)</code></pre>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "kotlin-005",
+      "topic": "Kotlin",
+      "question": "What is Quarkus?",
+      "answer": "<p>A Java/Kotlin framework for building cloud-native microservices. It's known for fast startup and low memory use, works well in containers and Kubernetes, and supports REST APIs, dependency injection and Kafka. It's similar in purpose to Spring Boot.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-001",
+      "topic": "JS / TS",
+      "question": "What's the difference between JavaScript and TypeScript?",
+      "answer": "<p>TypeScript is a superset of JavaScript that adds <b>static typing</b>. JS checks types only at runtime. TS catches type errors at compile time, in the editor. TS adds interfaces, generics and enums, gives better autocomplete and refactoring, and compiles to plain JS. It's especially valuable on large codebases and teams.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-002",
+      "topic": "JS / TS",
+      "question": "What's any vs unknown in TypeScript?",
+      "answer": "<p><code>any</code> turns off type checking, so avoid it. <code>unknown</code> means \"type not known yet\", and TS forces you to check it (e.g. <code>typeof x === \"string\"</code>) before using it. That makes it the safer choice.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-003",
+      "topic": "JS / TS",
+      "question": "What's the difference between interface and type in TypeScript?",
+      "answer": "<p>Both describe object shapes. Interfaces can be extended and merged. <code>type</code> is more flexible: it can express unions (<code>'draft' | 'bound'</code>), primitives and tuples. In practice they're often interchangeable.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-004",
+      "topic": "JS / TS",
+      "question": "Do TypeScript types exist at runtime?",
+      "answer": "<p>No. They're erased when TS compiles to JS. So data from APIs or user input still needs runtime validation (e.g. with Zod or manual checks).</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-005",
+      "topic": "JS / TS",
+      "question": "What's the difference between == and === in JavaScript?",
+      "answer": "<p><code>==</code> compares after type coercion, so <code>'5' == 5</code> is true. <code>===</code> compares value <i>and</i> type, so <code>'5' === 5</code> is false. Use <code>===</code>.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-006",
+      "topic": "JS / TS",
+      "question": "What's the difference between let, const and var?",
+      "answer": "<ul><li><code>var</code>: function-scoped and hoisted. Avoid it.</li><li><code>let</code>: block-scoped, can be reassigned.</li><li><code>const</code>: block-scoped, can't be reassigned (an object's contents can still change).</li></ul>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-007",
+      "topic": "JS / TS",
+      "question": "What is a Promise, and what does async/await do?",
+      "answer": "<p>A Promise represents a value that will be available later: pending, then fulfilled or rejected. <code>async/await</code> is a cleaner syntax for working with Promises, so async code reads like sync code. Use <code>try/catch</code> for errors.</p><pre><code>async function load() {\n  try { const res = await fetch(\"/api\"); return await res.json(); }\n  catch (e) { console.error(e); }\n}</code></pre>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-008",
+      "topic": "JS / TS",
+      "question": "What is Vue.js, and what does v-model do?",
+      "answer": "<p>Vue is a progressive JavaScript framework for building UIs from reusable components with reactive data. <code>v-model</code> creates two-way binding between a form input and component state, so typing updates the data and changing the data updates the input.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "html-001",
+      "topic": "HTML / Web",
+      "question": "How do you create a form in HTML?",
+      "answer": "<p>Use <code>&lt;form&gt;</code> with an <code>action</code> (where data goes) and a <code>method</code> (usually POST). Inside it, add <code>&lt;input&gt;</code>, <code>&lt;select&gt;</code>, <code>&lt;textarea&gt;</code> and a submit button.</p><ul><li>Each field needs a <code>name</code> or its value isn't sent.</li><li>Link <code>&lt;label for&gt;</code> to the input's <code>id</code> for accessibility.</li><li>Built-in validation: <code>required</code>, <code>type=\"email\"</code>, <code>min</code>, <code>pattern</code>.</li><li>In apps, handle submit in JS with <code>preventDefault()</code> and <code>fetch</code>.</li></ul>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "html-002",
+      "topic": "HTML / Web",
+      "question": "What's the difference between GET and POST?",
+      "answer": "<p><b>GET</b> retrieves data, sends parameters in the URL, should have no side effects, and can be cached and bookmarked. <b>POST</b> sends data in the request body to create or submit something, like a form.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "html-003",
+      "topic": "HTML / Web",
+      "question": "What is a REST API?",
+      "answer": "<p>An API that uses HTTP methods on resources: GET (read), POST (create), PUT/PATCH (update), DELETE (remove). It usually returns JSON and is stateless.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "html-004",
+      "topic": "HTML / Web",
+      "question": "What do common HTTP status codes mean?",
+      "answer": "<ul><li><b>200</b> OK · <b>201</b> Created · <b>204</b> No Content</li><li><b>400</b> Bad Request · <b>401</b> Unauthorized (not logged in) · <b>403</b> Forbidden (no permission) · <b>404</b> Not Found</li><li><b>500</b> Internal Server Error · <b>503</b> Service Unavailable</li></ul>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "html-005",
+      "topic": "HTML / Web",
+      "question": "What are some secure coding practices for web apps?",
+      "answer": "<ul><li>Validate and sanitise all input on the server. Never trust the client.</li><li>Use parameterised queries to prevent SQL injection.</li><li>Escape output to prevent XSS.</li><li>Use HTTPS, and hash passwords (bcrypt).</li><li>Least privilege, and keep secrets out of code.</li><li>Keep dependencies updated.</li></ul>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "sql-001",
+      "topic": "SQL",
+      "question": "What's the difference between a primary key and a foreign key?",
+      "answer": "<p>A <b>primary key</b> uniquely identifies each row in a table. A <b>foreign key</b> is a column referencing another table's primary key, which links the tables, e.g. <code>policies.customer_id</code> → <code>customers.id</code>.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "sql-002",
+      "topic": "SQL",
+      "question": "What's the difference between INNER JOIN and LEFT JOIN?",
+      "answer": "<p><b>INNER JOIN</b> returns only rows that match in both tables. <b>LEFT JOIN</b> returns every row from the left table, plus matches from the right, with NULL where there's no match.</p><pre><code>SELECT c.name, p.id FROM customers c\nLEFT JOIN policies p ON p.customer_id = c.id;</code></pre>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "sql-003",
+      "topic": "SQL",
+      "question": "What's the difference between WHERE and HAVING?",
+      "answer": "<p><code>WHERE</code> filters rows <i>before</i> grouping. <code>HAVING</code> filters groups <i>after</i> <code>GROUP BY</code>, so it can use aggregates like <code>COUNT(*) &gt; 5</code>.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "sql-004",
+      "topic": "SQL",
+      "question": "What is an index, and what's the trade-off?",
+      "answer": "<p>A data structure (usually a B-tree) that speeds up lookups on a column, like a book's index. The trade-off: more storage, and slower INSERT/UPDATE because the index has to be maintained too.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "sql-005",
+      "topic": "SQL",
+      "question": "What is a transaction (ACID)?",
+      "answer": "<p>A group of operations that succeed or fail together.</p><ul><li><b>Atomicity</b>: all or nothing</li><li><b>Consistency</b>: rules stay valid</li><li><b>Isolation</b>: concurrent transactions don't interfere</li><li><b>Durability</b>: committed data survives crashes</li></ul><p>Example: binding a policy and recording a payment should be one transaction.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "oop-001",
+      "topic": "OOP",
+      "question": "What are the four principles of OOP?",
+      "answer": "<ul><li><b>Encapsulation</b>: hide internal state behind methods.</li><li><b>Inheritance</b>: reuse behaviour from a parent class.</li><li><b>Polymorphism</b>: one interface, different implementations.</li><li><b>Abstraction</b>: expose only what's needed and hide complexity.</li></ul>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "oop-002",
+      "topic": "OOP",
+      "question": "What is SOLID?",
+      "answer": "<ul><li><b>S</b>ingle responsibility: one reason to change.</li><li><b>O</b>pen/closed: open for extension, closed for modification.</li><li><b>L</b>iskov substitution: subclasses can replace their parents.</li><li><b>I</b>nterface segregation: small, focused interfaces.</li><li><b>D</b>ependency inversion: depend on abstractions, not concrete classes.</li></ul>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "oop-003",
+      "topic": "OOP",
+      "question": "What's the difference between overloading and overriding?",
+      "answer": "<p><b>Overloading</b>: same method name, different parameters, in the same class (resolved at compile time). <b>Overriding</b>: a subclass provides its own implementation of a parent method with the same signature (resolved at runtime).</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "tools-001",
+      "topic": "Tools & Process",
+      "question": "What is Docker?",
+      "answer": "<p>A tool that packages an app and its dependencies into a <b>container</b>, so it runs the same way everywhere, from a laptop to production. An <b>image</b> is the blueprint (built from a Dockerfile). A <b>container</b> is a running instance of an image.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "tools-002",
+      "topic": "Tools & Process",
+      "question": "What is Kubernetes?",
+      "answer": "<p>A platform that orchestrates containers: it deploys, scales, restarts failed containers, load-balances and rolls out updates across a cluster of machines.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "tools-003",
+      "topic": "Tools & Process",
+      "question": "What is CI/CD?",
+      "answer": "<p><b>Continuous Integration</b>: every change is automatically built and tested when it's pushed. <b>Continuous Delivery/Deployment</b>: changes that pass are automatically released to staging or production. It catches bugs early and makes releases small and frequent.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "tools-004",
+      "topic": "Tools & Process",
+      "question": "What's the difference between git merge and git rebase?",
+      "answer": "<p><b>Merge</b> combines branches with a merge commit and keeps the history as it happened. <b>Rebase</b> replays your commits on top of another branch for a linear history. Don't rebase shared branches others are working on.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "tools-005",
+      "topic": "Tools & Process",
+      "question": "What are unit, integration and end-to-end tests?",
+      "answer": "<ul><li><b>Unit</b>: tests one function or class in isolation. Fast, and the most numerous.</li><li><b>Integration</b>: tests components working together, e.g. an API plus the database.</li><li><b>E2E</b>: tests the whole app the way a user would, e.g. completing a quote in the browser.</li></ul>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "tools-006",
+      "topic": "Tools & Process",
+      "question": "What is Agile / Scrum?",
+      "answer": "<p>Agile is an iterative way of working: small increments, frequent feedback, adapting to change. Scrum is a framework for it, with sprints (usually 2 weeks), daily stand-ups, sprint planning, review and a retrospective. Roles: Product Owner, Scrum Master and the dev team.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "tools-007",
+      "topic": "Tools & Process",
+      "question": "What is Kafka?",
+      "answer": "<p>A distributed event-streaming platform. Producers publish messages to <b>topics</b>, and consumers read them. Services can communicate asynchronously and reliably, e.g. a \"policy bound\" event triggering emails, invoicing and reporting.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "tools-008",
+      "topic": "Tools & Process",
+      "question": "What are microservices?",
+      "answer": "<p>An architecture where an app is split into small, independently deployable services, each owning one business capability and talking over APIs or events. Pros: independent scaling and deployment. Cons: more operational complexity, network calls and harder debugging.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dsa-001",
+      "topic": "DSA",
+      "question": "What is Big O notation?",
+      "answer": "<p>A way to describe how an algorithm's time or memory grows as the input grows, focusing on the worst case.</p><ul><li><b>O(1)</b>: constant, e.g. a hash map lookup</li><li><b>O(log n)</b>: binary search</li><li><b>O(n)</b>: looping through a list</li><li><b>O(n log n)</b>: efficient sorts (merge sort)</li><li><b>O(n²)</b>: nested loops</li></ul>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dsa-002",
+      "topic": "DSA",
+      "question": "What's the difference between an array and a linked list?",
+      "answer": "<ul><li><b>Array</b>: contiguous memory, O(1) access by index, but inserting or deleting in the middle is O(n) because elements shift.</li><li><b>Linked list</b>: nodes point to the next node, O(1) insert/delete once you're at the node, but O(n) access because you walk the list.</li></ul>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dsa-003",
+      "topic": "DSA",
+      "question": "What's the difference between a stack and a queue?",
+      "answer": "<p><b>Stack</b>: LIFO (last in, first out), like a pile of plates. Push and pop. Used for undo and the call stack. <b>Queue</b>: FIFO (first in, first out), like a line. Enqueue and dequeue. Used for job processing and BFS.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dsa-004",
+      "topic": "DSA",
+      "question": "How does a hash map work?",
+      "answer": "<p>It runs the key through a <b>hash function</b> to get a bucket index, then stores the key–value pair there. Lookup, insert and delete are O(1) on average. A <b>collision</b> happens when two keys land in the same bucket, and it's handled with a list or tree in that bucket. In Java, keys need correct <code>equals()</code> and <code>hashCode()</code>.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dsa-005",
+      "topic": "DSA",
+      "question": "What is recursion?",
+      "answer": "<p>A function that calls itself to solve smaller versions of the same problem. It needs a <b>base case</b> to stop, otherwise you get a stack overflow.</p><pre><code>int factorial(int n) {\n  if (n &lt;= 1) return 1;      // base case\n  return n * factorial(n - 1);\n}</code></pre>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dsa-006",
+      "topic": "DSA",
+      "question": "How does binary search work?",
+      "answer": "<p>On a <b>sorted</b> array, check the middle element. If the target is smaller, search the left half; if larger, the right half. Repeat. Time is O(log n).</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dsa-007",
+      "topic": "DSA",
+      "question": "Name some common sorting algorithms and their complexity.",
+      "answer": "<ul><li><b>Bubble / insertion sort</b>: O(n²), simple but slow.</li><li><b>Merge sort</b>: O(n log n), stable, uses extra memory.</li><li><b>Quick sort</b>: O(n log n) on average, O(n²) worst case, sorts in place.</li></ul><p>In practice you use the built-in sort, e.g. <code>Collections.sort()</code> or <code>Array.prototype.sort()</code>.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dsa-008",
+      "topic": "DSA",
+      "question": "How would you find duplicates in an array efficiently?",
+      "answer": "<p>Loop through once with a <b>HashSet</b>. If an element is already in the set, it's a duplicate. That's O(n) time and O(n) space, compared with O(n²) for nested loops.</p><pre><code>const seen = new Set();\nfor (const x of arr) { if (seen.has(x)) return x; seen.add(x); }</code></pre>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-009",
+      "topic": "JS / TS",
+      "question": "What is a closure in JavaScript?",
+      "answer": "<p>A function that remembers the variables from the scope where it was created, even after that outer function has finished running.</p><pre><code>function counter() {\n  let count = 0;\n  return () => ++count;\n}\nconst next = counter();\nnext(); // 1\nnext(); // 2</code></pre><p>Used for private state, callbacks and factories.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-010",
+      "topic": "JS / TS",
+      "question": "What is the event loop?",
+      "answer": "<p>JavaScript runs on a single thread. Async work (timers, fetch) is handed off, and its callbacks wait in a queue. The event loop pushes them onto the call stack when the stack is empty. <b>Microtasks</b> (Promises) run before <b>macrotasks</b> (<code>setTimeout</code>).</p><pre><code>console.log(1);\nsetTimeout(() => console.log(2));\nPromise.resolve().then(() => console.log(3));\nconsole.log(4);\n// 1, 4, 3, 2</code></pre>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-011",
+      "topic": "JS / TS",
+      "question": "How does this work in JavaScript?",
+      "answer": "<p><code>this</code> depends on <b>how a function is called</b>:</p><ul><li>As a method (<code>obj.fn()</code>): <code>this</code> is <code>obj</code>.</li><li>As a plain function: <code>undefined</code> in strict mode.</li><li><b>Arrow functions</b> don't have their own <code>this</code>; they use the surrounding scope's.</li><li><code>call</code>, <code>apply</code> and <code>bind</code> set it explicitly.</li></ul>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-012",
+      "topic": "JS / TS",
+      "question": "What is hoisting?",
+      "answer": "<p>JavaScript moves declarations to the top of their scope before running code. <code>var</code> is hoisted and set to <code>undefined</code>. Function declarations are fully hoisted. <code>let</code> and <code>const</code> are hoisted but can't be used before their declaration (the \"temporal dead zone\").</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-013",
+      "topic": "JS / TS",
+      "question": "What do map, filter and reduce do?",
+      "answer": "<ul><li><code>map</code>: transforms each item, returning a new array of the same length.</li><li><code>filter</code>: keeps items that pass a test.</li><li><code>reduce</code>: combines all items into one value.</li></ul><pre><code>const total = quotes\n  .filter(q => q.status === \"bound\")\n  .map(q => q.premium)\n  .reduce((sum, p) => sum + p, 0);</code></pre>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-014",
+      "topic": "JS / TS",
+      "question": "What are spread and destructuring?",
+      "answer": "<pre><code>// Destructuring: pull values out\nconst { name, age } = user;\nconst [first, second] = list;\n\n// Spread: copy or merge\nconst copy = { ...user, age: 30 };\nconst all = [...a, ...b];</code></pre><p>Spread makes a <b>shallow</b> copy: nested objects are still shared.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "css-001",
+      "topic": "CSS",
+      "question": "What is the CSS box model?",
+      "answer": "<p>Every element is a box made of <b>content → padding → border → margin</b> (from inside out). By default <code>width</code> sets only the content. With <code>box-sizing: border-box</code>, width includes padding and border, which is easier to work with.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "css-002",
+      "topic": "CSS",
+      "question": "What's the difference between Flexbox and Grid?",
+      "answer": "<p><b>Flexbox</b> is one-dimensional: it lays items out in a row <i>or</i> a column, and is great for nav bars, aligning items and spacing. <b>Grid</b> is two-dimensional: rows <i>and</i> columns at once, great for page layouts and card grids. They're often used together.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "css-003",
+      "topic": "CSS",
+      "question": "How do you make a page responsive?",
+      "answer": "<ul><li>Add the viewport meta tag.</li><li>Use relative units (<code>%</code>, <code>rem</code>, <code>vw</code>) and flexible layouts (Flexbox/Grid).</li><li>Use <b>media queries</b>: <code>@media (max-width: 768px) { ... }</code></li><li>Design mobile-first, and make images flexible with <code>max-width: 100%</code>.</li></ul>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "css-004",
+      "topic": "CSS",
+      "question": "What is CSS specificity?",
+      "answer": "<p>The rule for which style wins when several apply. From strongest to weakest: inline styles → <b>IDs</b> → <b>classes, attributes, pseudo-classes</b> → <b>elements</b>. If specificity is equal, the later rule wins. <code>!important</code> overrides everything, so avoid it.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "react-001",
+      "topic": "React",
+      "question": "What's the difference between state and props in React?",
+      "answer": "<p><b>Props</b> are passed into a component from its parent and are read-only. <b>State</b> is data a component owns and can change with <code>useState</code>. Changing state re-renders the component.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "react-002",
+      "topic": "React",
+      "question": "What do useState and useEffect do?",
+      "answer": "<ul><li><code>useState</code>: adds state to a function component, returning <code>[value, setValue]</code>.</li><li><code>useEffect</code>: runs side effects (fetching data, subscriptions, timers) after render. The dependency array controls when it reruns, and the returned function cleans up.</li></ul><pre><code>useEffect(() => {\n  fetchQuotes().then(setQuotes);\n}, []); // [] = run once on mount</code></pre>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "react-003",
+      "topic": "React",
+      "question": "What is the virtual DOM?",
+      "answer": "<p>A lightweight copy of the real DOM kept in memory. When state changes, React builds a new virtual DOM, compares it with the old one (<b>diffing</b>), and updates only what changed in the real DOM, which is faster than re-rendering everything.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "react-004",
+      "topic": "React",
+      "question": "Why do lists in React need a key?",
+      "answer": "<p>Keys help React identify which items changed, were added or were removed, so it can update the list efficiently and keep each item's state correct. Use a stable unique ID, not the array index if the list can reorder.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "react-005",
+      "topic": "React",
+      "question": "How does React compare with Vue?",
+      "answer": "<p>Both are component-based with a virtual DOM and reactive updates. React uses <b>JSX</b> (HTML-like syntax in JavaScript) and is a library, so routing and state come from separate packages. Vue uses HTML-based <b>templates</b>, has <code>v-model</code> for two-way binding, and includes more out of the box. Coming from React, Vue is quick to pick up.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-011",
+      "topic": "Java",
+      "question": "What does static mean in Java?",
+      "answer": "<p>A <code>static</code> field or method belongs to the <b>class</b>, not to individual objects. All instances share it, and you call it without creating an object: <code>Math.max(a, b)</code>. Static methods can't use <code>this</code> or instance fields directly.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-012",
+      "topic": "Java",
+      "question": "What are generics in Java?",
+      "answer": "<p>They let classes and methods work with any type while staying type-safe at compile time. <code>List&lt;String&gt;</code> can only hold Strings, so there's no casting and no runtime <code>ClassCastException</code>.</p><pre><code>public &lt;T&gt; T first(List&lt;T&gt; list) { return list.get(0); }</code></pre>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-013",
+      "topic": "Java",
+      "question": "What are Streams and lambdas in Java?",
+      "answer": "<p><b>Lambdas</b> (Java 8) are short anonymous functions: <code>x -&gt; x * 2</code>. <b>Streams</b> process collections in a functional style:</p><pre><code>double total = quotes.stream()\n  .filter(q -&gt; q.isBound())\n  .mapToDouble(Quote::getPremium)\n  .sum();</code></pre>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-014",
+      "topic": "Java",
+      "question": "What's the difference between String and StringBuilder?",
+      "answer": "<p><code>String</code> is <b>immutable</b>: every change creates a new object, so concatenating in a loop is slow. <code>StringBuilder</code> is mutable and efficient for building strings step by step. (<code>StringBuffer</code> is the older, thread-safe version.)</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-015",
+      "topic": "Java",
+      "question": "What is garbage collection in Java?",
+      "answer": "<p>The JVM automatically frees memory used by objects that are no longer referenced, so you don't free memory manually like in C. You can still leak memory by keeping references you don't need, e.g. in a static collection that keeps growing.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-016",
+      "topic": "Java",
+      "question": "What's the difference between JDK, JRE and JVM?",
+      "answer": "<ul><li><b>JVM</b>: runs Java bytecode. It's what makes Java \"write once, run anywhere.\"</li><li><b>JRE</b>: the JVM plus the standard libraries needed to run apps.</li><li><b>JDK</b>: the JRE plus development tools like the compiler (<code>javac</code>).</li></ul>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-017",
+      "topic": "Java",
+      "question": "What is Spring Boot?",
+      "answer": "<p>A popular Java framework for building web apps and REST APIs quickly. It provides dependency injection, auto-configuration, an embedded server and easy database access (Spring Data JPA). Quarkus is a newer alternative focused on fast startup in containers.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-001",
+      "topic": ".NET / C#",
+      "question": "What is .NET?",
+      "answer": "<p>Microsoft's free, cross-platform framework for building web apps, APIs, desktop and cloud apps, mainly in <b>C#</b>. Modern .NET (5 and later, unifying the older .NET Framework and .NET Core) runs on Windows, Linux and macOS. Code compiles to intermediate language and runs on the <b>CLR</b> (Common Language Runtime), similar to Java's JVM.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-002",
+      "topic": ".NET / C#",
+      "question": "How does C# compare with Java?",
+      "answer": "<p>Very similar: both are statically typed, object-oriented, garbage-collected and run on a virtual machine. C# adds features like <b>properties</b> (<code>get; set;</code>), <b>LINQ</b>, <code>async/await</code> (which came to C# first), nullable reference types, records and <code>var</code>. Moving between them is fairly easy.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-003",
+      "topic": ".NET / C#",
+      "question": "What is ASP.NET Core?",
+      "answer": "<p>The .NET framework for building web apps and REST APIs. It's fast, cross-platform, has dependency injection built in, uses a middleware pipeline for requests, and supports MVC controllers or minimal APIs.</p><pre><code>app.MapGet(\"/quotes/{id}\", (int id) =&gt; GetQuote(id));</code></pre>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-004",
+      "topic": ".NET / C#",
+      "question": "What is LINQ?",
+      "answer": "<p>Language Integrated Query: lets you query collections and databases with C# syntax, similar to Java Streams or JS <code>filter</code>/<code>map</code>.</p><pre><code>var total = quotes\n  .Where(q =&gt; q.Status == \"Bound\")\n  .Sum(q =&gt; q.Premium);</code></pre>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-005",
+      "topic": ".NET / C#",
+      "question": "What is Entity Framework Core?",
+      "answer": "<p>The main <b>ORM</b> for .NET. It maps C# classes to database tables, so you can query with LINQ instead of writing raw SQL. It supports migrations to update the database schema from code, and works with SQL Server, PostgreSQL and others.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-006",
+      "topic": ".NET / C#",
+      "question": "What's the difference between a class and a struct in C#?",
+      "answer": "<p>A <b>class</b> is a <b>reference type</b>: variables point to the same object on the heap. A <b>struct</b> is a <b>value type</b>: it's copied when assigned or passed, and is good for small, simple data like a point or a money amount. Unlike Java, C# does have structs.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-007",
+      "topic": ".NET / C#",
+      "question": "How does async/await work in C#?",
+      "answer": "<p>A method marked <code>async</code> returns a <code>Task</code> (or <code>Task&lt;T&gt;</code>). <code>await</code> pauses the method until the task completes without blocking the thread, so the server can handle other requests meanwhile.</p><pre><code>public async Task&lt;Quote&gt; GetQuoteAsync(int id) {\n  return await _db.Quotes.FindAsync(id);\n}</code></pre>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-008",
+      "topic": ".NET / C#",
+      "question": "What is dependency injection in ASP.NET Core?",
+      "answer": "<p>Services are registered in a built-in container, and the framework passes them into constructors automatically, so classes don't create their own dependencies. That makes code easier to test and swap.</p><pre><code>builder.Services.AddScoped&lt;IQuoteService, QuoteService&gt;();</code></pre><p>Lifetimes: <b>Transient</b> (new every time), <b>Scoped</b> (one per request), <b>Singleton</b> (one for the whole app).</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "html-006",
+      "topic": "HTML / Web",
+      "question": "What's the difference between cookies, sessions and JWT?",
+      "answer": "<ul><li><b>Cookie</b>: small data the browser stores and sends with every request to that site.</li><li><b>Session</b>: the server stores the user's data and gives the browser a session ID (usually in a cookie). State lives on the server.</li><li><b>JWT</b>: a signed token holding the user's claims. The server doesn't store it, it just verifies the signature, which suits APIs and microservices.</li></ul>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "html-007",
+      "topic": "HTML / Web",
+      "question": "What is CORS?",
+      "answer": "<p>Cross-Origin Resource Sharing. By default browsers block a page from calling an API on a different origin (domain, port or protocol). The server allows specific origins by sending headers like <code>Access-Control-Allow-Origin</code>. It's enforced by the browser, not the server.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "html-008",
+      "topic": "HTML / Web",
+      "question": "What's the difference between authentication and authorisation?",
+      "answer": "<p><b>Authentication</b>: <i>who are you?</i> (logging in). <b>Authorisation</b>: <i>what are you allowed to do?</i> (permissions and roles). The 401 status means not authenticated; 403 means authenticated but not allowed.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "html-009",
+      "topic": "HTML / Web",
+      "question": "What happens when you type a URL into a browser?",
+      "answer": "<ol><li>DNS looks up the domain's IP address.</li><li>The browser opens a TCP connection, plus a TLS handshake for HTTPS.</li><li>It sends an HTTP request, and the server returns HTML.</li><li>The browser parses the HTML, loads CSS, JS and images, builds the DOM and renders the page.</li></ol>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "html-010",
+      "topic": "HTML / Web",
+      "question": "What are SQL injection and XSS, and how do you prevent them?",
+      "answer": "<ul><li><b>SQL injection</b>: user input gets run as part of an SQL query. Prevent it with parameterised queries or an ORM, never string concatenation.</li><li><b>XSS</b> (cross-site scripting): an attacker's script runs in other users' browsers. Prevent it by escaping output (frameworks do this by default), avoiding <code>innerHTML</code> with user data, and using a Content Security Policy.</li></ul>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "sql-006",
+      "topic": "SQL",
+      "question": "What is normalisation?",
+      "answer": "<p>Organising tables to reduce duplicate data and avoid update errors, e.g. storing customer details once in a <code>customers</code> table and referencing them by ID from <code>policies</code>, instead of repeating them in every row. Sometimes you <b>denormalise</b> on purpose for read performance.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "sql-007",
+      "topic": "SQL",
+      "question": "What's the difference between SQL and NoSQL databases?",
+      "answer": "<p><b>SQL</b> (PostgreSQL, SQL Server, MySQL): tables with a fixed schema, relationships, joins and strong ACID transactions, which suits financial and insurance data. <b>NoSQL</b> (MongoDB, Redis, DynamoDB): flexible schemas (documents, key–value), easy horizontal scaling, good for large or fast-changing data.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "sql-008",
+      "topic": "SQL",
+      "question": "What is the N+1 query problem?",
+      "answer": "<p>Loading a list with 1 query, then running 1 extra query <i>per item</i> to load related data, so 100 policies means 101 queries. It's common with ORMs. Fix it with a JOIN or eager loading (e.g. <code>JOIN FETCH</code> in JPA, <code>.Include()</code> in EF Core).</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "patterns-001",
+      "topic": "Design Patterns",
+      "question": "What is the Singleton pattern?",
+      "answer": "<p>Ensures a class has only <b>one instance</b> and provides global access to it, e.g. a configuration object or a logger. Overusing it creates hidden global state that makes testing harder. Dependency injection containers can manage single instances more cleanly.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "patterns-002",
+      "topic": "Design Patterns",
+      "question": "What is the Factory pattern?",
+      "answer": "<p>A method or class that creates objects for you, so the calling code doesn't need to know the exact class. Example: <code>PolicyFactory.create(\"home\")</code> returns a <code>HomePolicy</code>, and <code>\"car\"</code> returns a <code>CarPolicy</code>.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "patterns-003",
+      "topic": "Design Patterns",
+      "question": "What is the Observer pattern?",
+      "answer": "<p>One object (the subject) notifies many subscribers (observers) when something changes, without knowing who they are. Examples: DOM event listeners, reactive state in Vue and React, and event systems like Kafka at a larger scale.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "patterns-004",
+      "topic": "Design Patterns",
+      "question": "What is MVC?",
+      "answer": "<p>Model–View–Controller separates an app into three parts:</p><ul><li><b>Model</b>: data and business logic.</li><li><b>View</b>: what the user sees.</li><li><b>Controller</b>: handles requests, uses the model and picks a view.</li></ul><p>Used in Spring MVC, ASP.NET MVC and many web frameworks.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "patterns-005",
+      "topic": "Design Patterns",
+      "question": "What is dependency injection?",
+      "answer": "<p>Instead of a class creating its own dependencies (<code>new EmailService()</code>), they're passed in, usually through the constructor. This makes code loosely coupled and easy to test, because you can pass a mock. Spring, Quarkus and ASP.NET Core all have DI built in.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "cloud-001",
+      "topic": "Cloud",
+      "question": "What are IaaS, PaaS and SaaS?",
+      "answer": "<ul><li><b>IaaS</b>: you rent virtual machines and manage the OS and apps (Azure VMs, AWS EC2).</li><li><b>PaaS</b>: you deploy code and the platform manages servers (Azure App Service, Heroku).</li><li><b>SaaS</b>: finished software you just use (Gmail, Salesforce).</li></ul>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "cloud-002",
+      "topic": "Cloud",
+      "question": "What is serverless?",
+      "answer": "<p>You write functions and the cloud runs them on demand, scaling automatically. You pay only when they run and don't manage servers. Examples: Azure Functions, AWS Lambda. It's good for event-driven tasks, but cold starts and time limits can be drawbacks.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "cloud-003",
+      "topic": "Cloud",
+      "question": "What are environment variables, and why use them?",
+      "answer": "<p>Configuration values set outside the code, like database URLs, API keys or feature flags. The same code can then run in dev, staging and production with different settings, and secrets stay out of the codebase. In the cloud, secrets usually live in a vault such as Azure Key Vault.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "cloud-004",
+      "topic": "Cloud",
+      "question": "What are some core Azure services?",
+      "answer": "<ul><li><b>App Service</b>: host web apps and APIs.</li><li><b>AKS</b>: managed Kubernetes.</li><li><b>Azure SQL / Database for PostgreSQL</b>: managed databases.</li><li><b>Blob Storage</b>: files and documents.</li><li><b>Functions</b>: serverless.</li><li><b>Key Vault</b>: secrets.</li><li><b>Azure DevOps / GitHub Actions</b>: CI/CD.</li></ul>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "tools-009",
+      "topic": "Tools & Process",
+      "question": "What does a typical Git branching workflow look like?",
+      "answer": "<ol><li>Pull the latest <code>main</code>.</li><li>Create a feature branch: <code>git checkout -b feature/quote-form</code>.</li><li>Commit small changes with clear messages.</li><li>Push and open a pull request.</li><li>CI runs tests, and a teammate reviews.</li><li>Merge into <code>main</code> and delete the branch.</li></ol>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "tools-010",
+      "topic": "Tools & Process",
+      "question": "What is a pull request, and what makes a good one?",
+      "answer": "<p>A request to merge your branch, where teammates review the code and CI runs checks before it goes in. A good PR is small and focused, has a clear description of what changed and why, includes tests, and links the ticket.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "tools-011",
+      "topic": "Tools & Process",
+      "question": "How do you resolve a merge conflict?",
+      "answer": "<p>Git marks the conflicting lines with <code>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</code>, <code>=======</code> and <code>&gt;&gt;&gt;&gt;&gt;&gt;&gt;</code>. Read both versions, keep the right combination (ask the other developer if unsure), remove the markers, run the tests, then <code>git add</code> and commit. Pulling often keeps conflicts small.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "tools-012",
+      "topic": "Tools & Process",
+      "question": "What do git fetch, pull, stash and reset do?",
+      "answer": "<ul><li><code>fetch</code>: downloads remote changes without merging.</li><li><code>pull</code>: fetch plus merge (or rebase).</li><li><code>stash</code>: temporarily saves uncommitted changes.</li><li><code>reset</code>: moves your branch back to an earlier commit. <code>--hard</code> discards changes, so be careful.</li><li><code>revert</code>: creates a new commit that undoes an old one, which is safe on shared branches.</li></ul>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "behavioural-001",
+      "topic": "Behavioural",
+      "question": "How do you investigate a production bug?",
+      "answer": "<p>Reproduce it first, with exact steps, environment and data, and check the logs. Narrow it down: front end, API or database? Did it start after a recent release? Fix the root cause, add a test that would have caught it, and check nothing nearby broke. If users are affected, tell the team and stakeholders early.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "behavioural-002",
+      "topic": "Behavioural",
+      "question": "How would you work on a 10-year-old legacy system?",
+      "answer": "<p>Understand the existing behaviour before changing anything: trace the flow, read logs, use the debugger, and add tests around the area I'm touching. Ask the team about business rules, since the \"why\" often isn't documented. Make small, careful changes. I'd use AI tools to speed up reading code or writing tests, but not rely on them to fix things.</p>",
+      "difficulty": "medium",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "behavioural-003",
+      "topic": "Behavioural",
+      "question": "What do you say when you don't know the answer?",
+      "answer": "<p>\"I haven't worked with that directly, but my understanding is…\" or \"I'd approach it by…\". It shows how you think and that you're honest, which matters more than a perfect answer in a junior role.</p>",
+      "difficulty": "easy",
+      "tags": [],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "html-011",
+      "topic": "HTML / Web",
+      "question": "What is semantic HTML, and why does it matter?",
+      "answer": "<p>Using elements that describe their meaning, not just their look: <code>&lt;header&gt;</code>, <code>&lt;nav&gt;</code>, <code>&lt;main&gt;</code>, <code>&lt;article&gt;</code>, <code>&lt;section&gt;</code>, <code>&lt;footer&gt;</code>, <code>&lt;button&gt;</code> instead of a clickable <code>&lt;div&gt;</code>.</p><ul><li><b>Accessibility</b>: screen readers use these elements to announce and jump between regions.</li><li><b>SEO</b>: search engines understand the page structure.</li><li><b>Free behaviour</b>: a real <code>&lt;button&gt;</code> is focusable and works with Enter and Space.</li><li><b>Readability</b>: the markup explains itself to the next developer.</li></ul>",
+      "difficulty": "easy",
+      "tags": [
+        "html",
+        "accessibility"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "html-012",
+      "topic": "HTML / Web",
+      "question": "What's the difference between block and inline elements?",
+      "answer": "<ul><li><b>Block</b> (<code>&lt;div&gt;</code>, <code>&lt;p&gt;</code>, <code>&lt;h1&gt;</code>, <code>&lt;section&gt;</code>): starts on a new line and takes the full width available. Width, height and vertical margins apply.</li><li><b>Inline</b> (<code>&lt;span&gt;</code>, <code>&lt;a&gt;</code>, <code>&lt;strong&gt;</code>): flows inside text and is only as wide as its content. Width and height are ignored.</li><li><b>Inline-block</b>: flows like inline but accepts width and height.</li></ul><p>CSS <code>display</code> can change any element's behaviour.</p>",
+      "difficulty": "easy",
+      "tags": [
+        "html",
+        "css"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "html-013",
+      "topic": "HTML / Web",
+      "question": "What does <!DOCTYPE html> do?",
+      "answer": "<p>It tells the browser to render the page in <b>standards mode</b> using modern HTML rules. Without it, browsers fall back to <b>quirks mode</b>, which imitates old browser bugs, so layout (especially the box model) can behave differently. It must be the first line of the document.</p>",
+      "difficulty": "easy",
+      "tags": [
+        "html"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "html-014",
+      "topic": "HTML / Web",
+      "question": "What does the viewport meta tag do?",
+      "answer": "<pre><code>&lt;meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"&gt;</code></pre><p>It tells mobile browsers to make the page as wide as the device screen instead of pretending to be a ~980px desktop screen and zooming out. Without it, media queries for small screens don't work as expected.</p>",
+      "difficulty": "easy",
+      "tags": [
+        "html",
+        "mobile",
+        "responsive"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "html-015",
+      "topic": "HTML / Web",
+      "question": "What are data-* attributes?",
+      "answer": "<p>Custom attributes for storing extra information on an element, without inventing invalid attributes.</p><pre><code>&lt;button data-user-id=\"42\"&gt;Delete&lt;/button&gt;\n\nbtn.dataset.userId // \"42\"</code></pre><p>Values are always strings. Use them for small bits of data your JavaScript or CSS needs, not for large state.</p>",
+      "difficulty": "easy",
+      "tags": [
+        "html",
+        "javascript"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "html-016",
+      "topic": "HTML / Web",
+      "question": "What's the difference between async and defer on a script tag?",
+      "answer": "<p>Both download the script without blocking HTML parsing. The difference is <b>when it runs</b>:</p><ul><li><b>defer</b>: runs after the HTML is fully parsed, in the order the scripts appear, before <code>DOMContentLoaded</code>. Good for app code that needs the DOM.</li><li><b>async</b>: runs as soon as it finishes downloading, in any order. Good for independent scripts such as analytics.</li><li>Neither: parsing stops while the script downloads and runs.</li></ul><p><code>type=\"module\"</code> scripts are deferred by default.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "html",
+        "javascript",
+        "performance"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "html-017",
+      "topic": "HTML / Web",
+      "question": "How do you make a web page accessible?",
+      "answer": "<ul><li>Use semantic elements and a logical heading order (<code>h1</code> → <code>h2</code> …).</li><li>Give images meaningful <code>alt</code> text (empty <code>alt=\"\"</code> for decorative ones).</li><li>Label every form field with <code>&lt;label&gt;</code>.</li><li>Make everything work with the keyboard, with a visible focus outline.</li><li>Keep enough colour contrast, and don't rely on colour alone.</li><li>Use ARIA only when no native element fits (\"no ARIA is better than bad ARIA\").</li><li>Test with a screen reader and a tool such as Lighthouse or axe.</li></ul>",
+      "difficulty": "medium",
+      "tags": [
+        "accessibility",
+        "a11y",
+        "aria"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "html-018",
+      "topic": "HTML / Web",
+      "question": "What's the difference between localStorage, sessionStorage and cookies?",
+      "answer": "<ul><li><b>localStorage</b>: about 5 MB per origin, strings only, stays until cleared. Never sent to the server.</li><li><b>sessionStorage</b>: same API, but cleared when the tab closes, and separate per tab.</li><li><b>Cookies</b>: small (~4 KB), sent to the server with every matching request, can expire. Can be <code>HttpOnly</code> (hidden from JavaScript), <code>Secure</code> and <code>SameSite</code>.</li></ul><p>Don't store auth tokens in localStorage if you can avoid it, because any XSS can read them. An <code>HttpOnly</code> cookie is safer.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "storage",
+        "cookies",
+        "javascript"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "html-019",
+      "topic": "HTML / Web",
+      "question": "How do you make a web page load faster?",
+      "answer": "<ul><li>Send less: minify and compress (gzip/Brotli), split code, remove unused JavaScript.</li><li>Optimise images: modern formats (WebP/AVIF), correct sizes, <code>loading=\"lazy\"</code> below the fold.</li><li>Cache: long cache headers for hashed files, and a CDN.</li><li>Don't block rendering: <code>defer</code> scripts, inline critical CSS.</li><li>Measure with Lighthouse and the <b>Core Web Vitals</b>: LCP (loading), INP (responsiveness) and CLS (layout shift).</li></ul>",
+      "difficulty": "medium",
+      "tags": [
+        "performance",
+        "core web vitals"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "html-020",
+      "topic": "HTML / Web",
+      "question": "What is HTTPS, and what does TLS protect?",
+      "answer": "<p>HTTPS is HTTP over <b>TLS</b>. TLS gives three things:</p><ul><li><b>Encryption</b>: nobody on the network can read the traffic.</li><li><b>Integrity</b>: nobody can change it in transit without being detected.</li><li><b>Authentication</b>: the server's certificate, signed by a trusted certificate authority, proves you're talking to the real site.</li></ul><p>During the handshake the client checks the certificate and both sides agree on session keys. It doesn't hide which site you visit, and it doesn't make the site's own code secure.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "https",
+        "tls",
+        "security"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-018",
+      "topic": "Java",
+      "question": "What are the access modifiers in Java?",
+      "answer": "<ul><li><b>public</b>: visible everywhere.</li><li><b>protected</b>: same package, plus subclasses.</li><li><b>(no modifier)</b> package-private: same package only.</li><li><b>private</b>: same class only.</li></ul><p>Start with the most restrictive one that works, usually <code>private</code> fields with public methods.</p>",
+      "difficulty": "easy",
+      "tags": [
+        "oop",
+        "encapsulation"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-019",
+      "topic": "Java",
+      "question": "What's the contract between equals() and hashCode()?",
+      "answer": "<p>If two objects are <code>equals()</code>, they <b>must</b> return the same <code>hashCode()</code>. The reverse isn't required: different objects may share a hash code.</p><p>Hash-based collections (<code>HashMap</code>, <code>HashSet</code>) use the hash code to find the bucket, then <code>equals()</code> inside it. If you override <code>equals()</code> without <code>hashCode()</code>, an object you put in a <code>HashSet</code> may never be found again. Records generate both for you.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "collections",
+        "hashing"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-020",
+      "topic": "Java",
+      "question": "What's the difference between HashMap, Hashtable and ConcurrentHashMap?",
+      "answer": "<ul><li><b>HashMap</b>: not thread-safe, allows one <code>null</code> key and <code>null</code> values. The default choice.</li><li><b>Hashtable</b>: legacy. Every method is <code>synchronized</code>, so it's slow under contention. No nulls.</li><li><b>ConcurrentHashMap</b>: thread-safe with fine-grained locking, so many threads can read and write at once. No nulls. Has atomic helpers such as <code>computeIfAbsent</code> and <code>merge</code>.</li></ul>",
+      "difficulty": "medium",
+      "tags": [
+        "collections",
+        "concurrency"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-021",
+      "topic": "Java",
+      "question": "What is Optional, and when should you use it?",
+      "answer": "<p>A container that may or may not hold a value, used as a <b>return type</b> to make \"might be missing\" explicit instead of returning <code>null</code>.</p><pre><code>Optional&lt;User&gt; u = repo.findById(id);\nString name = u.map(User::getName).orElse(\"Unknown\");</code></pre><p>Don't use it for fields or method parameters, and avoid calling <code>get()</code> without checking. Prefer <code>orElse</code>, <code>orElseThrow</code>, <code>map</code> and <code>ifPresent</code>.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "null",
+        "java 8"
+      ],
+      "versions": [
+        "Java 8"
+      ],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-022",
+      "topic": "Java",
+      "question": "How do you make a class immutable in Java?",
+      "answer": "<ul><li>Make the class <code>final</code> so it can't be subclassed.</li><li>Make all fields <code>private final</code>, set once in the constructor.</li><li>No setters.</li><li>Copy mutable inputs and outputs (e.g. return <code>List.copyOf(items)</code>).</li></ul><p>Immutable objects are thread-safe and safe to share or use as map keys. <code>String</code>, <code>Integer</code> and records are examples; a record is the shortest way to write one, as long as its components are immutable too.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "immutability",
+        "records"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-023",
+      "topic": "Java",
+      "question": "How do you run work on another thread in Java?",
+      "answer": "<p>Avoid creating raw <code>Thread</code>s by hand. Use an <b>ExecutorService</b>, which manages a pool of threads:</p><pre><code>try (ExecutorService pool = Executors.newFixedThreadPool(4)) {\n  Future&lt;Integer&gt; f = pool.submit(() -&gt; compute());\n  int result = f.get();\n}</code></pre><p><code>CompletableFuture</code> lets you chain async steps (<code>thenApply</code>, <code>thenCombine</code>). A thread is a path of execution inside a process; threads share the process's memory, which is why shared state needs care.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "concurrency",
+        "threads",
+        "executor"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-024",
+      "topic": "Java",
+      "question": "What do synchronized and volatile do?",
+      "answer": "<ul><li><b>synchronized</b>: only one thread at a time can run the block for a given lock object, and changes made inside are visible to the next thread that takes the lock. Gives mutual exclusion <i>and</i> visibility.</li><li><b>volatile</b>: every read sees the latest write to that field, but there's no locking. Good for a simple flag such as <code>volatile boolean running</code>, not for <code>count++</code>, which is read-modify-write.</li></ul><p>For counters use <code>AtomicInteger</code>; for more complex cases, <code>ReentrantLock</code> or concurrent collections.</p>",
+      "difficulty": "hard",
+      "tags": [
+        "concurrency",
+        "synchronized",
+        "volatile"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-025",
+      "topic": "Java",
+      "question": "What are virtual threads?",
+      "answer": "<p>Lightweight threads managed by the JVM rather than the operating system, final since <b>Java 21</b>. You can run millions of them. When one blocks on I/O, the JVM parks it and frees the underlying OS thread for another.</p><pre><code>try (var ex = Executors.newVirtualThreadPerTaskExecutor()) {\n  ex.submit(() -&gt; callSlowApi());\n}</code></pre><p>They suit I/O-heavy servers (one thread per request, simple blocking code) and don't make CPU-heavy work faster. Don't pool them.</p>",
+      "difficulty": "hard",
+      "tags": [
+        "concurrency",
+        "virtual threads",
+        "java 21"
+      ],
+      "versions": [
+        "Java 21"
+      ],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "java-026",
+      "topic": "Java",
+      "question": "What are sealed classes and pattern matching for switch?",
+      "answer": "<p>A <b>sealed</b> type (Java 17) lists exactly which classes may extend it. <b>Pattern matching for switch</b> (Java 21) can then check every case, and the compiler complains if one is missing.</p><pre><code>sealed interface Shape permits Circle, Square {}\nrecord Circle(double r) implements Shape {}\nrecord Square(double side) implements Shape {}\n\ndouble area(Shape s) {\n  return switch (s) {\n    case Circle c -&gt; Math.PI * c.r() * c.r();\n    case Square q -&gt; q.side() * q.side();\n  };\n}</code></pre>",
+      "difficulty": "hard",
+      "tags": [
+        "sealed",
+        "pattern matching",
+        "java 17",
+        "java 21"
+      ],
+      "versions": [
+        "Java 17",
+        "Java 21"
+      ],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-015",
+      "topic": "JS / TS",
+      "question": "What's the difference between null and undefined?",
+      "answer": "<p><code>undefined</code> means a value was never assigned: a declared variable, a missing property, a function with no <code>return</code>. <code>null</code> is an intentional \"no value\" that you set yourself.</p><p><code>null == undefined</code> is true, <code>null === undefined</code> is false. A quirk: <code>typeof null</code> is <code>\"object\"</code>.</p>",
+      "difficulty": "easy",
+      "tags": [
+        "javascript"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-016",
+      "topic": "JS / TS",
+      "question": "How do arrow functions differ from regular functions?",
+      "answer": "<ul><li>No own <code>this</code>: they use the <code>this</code> of the surrounding code, which is why they're handy for callbacks.</li><li>No <code>arguments</code> object (use <code>...args</code>).</li><li>Can't be used as constructors with <code>new</code>.</li><li>Shorter syntax, with an implicit return for one expression: <code>x =&gt; x * 2</code>.</li></ul><p>Don't use an arrow function as an object method that needs <code>this</code>.</p>",
+      "difficulty": "easy",
+      "tags": [
+        "javascript",
+        "functions"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-017",
+      "topic": "JS / TS",
+      "question": "What do optional chaining (?.) and nullish coalescing (??) do?",
+      "answer": "<ul><li><code>a?.b</code> returns <code>undefined</code> instead of throwing if <code>a</code> is null or undefined. Works for calls too: <code>fn?.()</code>.</li><li><code>a ?? b</code> returns <code>b</code> only when <code>a</code> is null or undefined.</li></ul><p>The difference from <code>||</code>: <code>0 || 10</code> is 10, but <code>0 ?? 10</code> is 0, so <code>??</code> keeps valid falsy values like <code>0</code> and <code>\"\"</code>.</p>",
+      "difficulty": "easy",
+      "tags": [
+        "javascript"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-018",
+      "topic": "JS / TS",
+      "question": "What is prototypal inheritance?",
+      "answer": "<p>Every object has a hidden link to another object, its <b>prototype</b>. When you read a property the object doesn't have, JavaScript looks up the prototype chain until it finds it or reaches <code>null</code>.</p><pre><code>const animal = { speak() { return \"...\" } };\nconst dog = Object.create(animal);\ndog.speak(); // found on animal</code></pre><p><code>class</code> syntax is built on top of this: methods live on <code>ClassName.prototype</code>, shared by all instances.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "javascript",
+        "prototype",
+        "oop"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-019",
+      "topic": "JS / TS",
+      "question": "What's the difference between microtasks and macrotasks?",
+      "answer": "<p>After each task, the event loop empties the whole <b>microtask</b> queue before running the next <b>macrotask</b>.</p><ul><li><b>Macrotasks</b>: <code>setTimeout</code>, <code>setInterval</code>, I/O, UI events.</li><li><b>Microtasks</b>: promise callbacks (<code>.then</code>, code after <code>await</code>), <code>queueMicrotask</code>.</li></ul><pre><code>setTimeout(() =&gt; console.log(\"timeout\"));\nPromise.resolve().then(() =&gt; console.log(\"promise\"));\nconsole.log(\"sync\");\n// sync, promise, timeout</code></pre>",
+      "difficulty": "hard",
+      "tags": [
+        "javascript",
+        "event loop",
+        "async"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-020",
+      "topic": "JS / TS",
+      "question": "What are debounce and throttle?",
+      "answer": "<ul><li><b>Debounce</b>: wait until the calls stop for a set time, then run once. Example: search as you type, firing 300 ms after the last keystroke.</li><li><b>Throttle</b>: run at most once per set time while calls keep coming. Example: handling scroll or resize every 100 ms.</li></ul><p>Both limit how often an expensive function runs when an event fires many times a second.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "javascript",
+        "performance"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-021",
+      "topic": "JS / TS",
+      "question": "What is event delegation?",
+      "answer": "<p>Instead of adding a listener to every child, add one to a parent and check <code>event.target</code>. It works because most events <b>bubble</b> up from the element that was clicked through its ancestors.</p><pre><code>list.addEventListener(\"click\", e =&gt; {\n  const item = e.target.closest(\"li\");\n  if (item) select(item.dataset.id);\n});</code></pre><p>Fewer listeners, and items added later work automatically.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "javascript",
+        "dom",
+        "events"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-022",
+      "topic": "JS / TS",
+      "question": "What do Promise.all, allSettled, race and any do?",
+      "answer": "<ul><li><b>all</b>: waits for every promise; rejects as soon as one fails.</li><li><b>allSettled</b>: waits for every promise and gives each one's result or error. Never rejects.</li><li><b>race</b>: settles with whichever promise settles first, success or failure. Handy for timeouts.</li><li><b>any</b>: resolves with the first success; rejects only if all fail.</li></ul><p>Use them to run independent async work in parallel instead of <code>await</code>ing one at a time.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "javascript",
+        "promises",
+        "async"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-023",
+      "topic": "JS / TS",
+      "question": "What's the difference between a shallow copy and a deep copy?",
+      "answer": "<p>A <b>shallow copy</b> copies the top level only, so nested objects are still shared: <code>{...obj}</code>, <code>[...arr]</code>, <code>Object.assign</code>.</p><p>A <b>deep copy</b> copies everything, so changing a nested value doesn't affect the original. Use <code>structuredClone(obj)</code>. <code>JSON.parse(JSON.stringify(obj))</code> also works but loses dates, <code>undefined</code>, functions, Maps and Sets.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "javascript",
+        "objects"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "js-024",
+      "topic": "JS / TS",
+      "question": "What are generics in TypeScript?",
+      "answer": "<p>Type parameters that let one function or type work with many types while keeping type safety.</p><pre><code>function first&lt;T&gt;(items: T[]): T | undefined {\n  return items[0];\n}\nconst n = first([1, 2, 3]); // n is number | undefined</code></pre><p>You can constrain them with <code>&lt;T extends { id: string }&gt;</code>. Without generics you'd have to use <code>any</code> and lose the type.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "typescript",
+        "generics"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "node-001",
+      "topic": "Node.js",
+      "question": "What is Node.js?",
+      "answer": "<p>A JavaScript runtime built on Chrome's V8 engine that runs JavaScript outside the browser. It uses an event-driven, non-blocking I/O model, so one process can handle many connections at once.</p><p>Used for APIs, real-time apps (chat, websockets), command-line tools and build tooling. It's not a framework; Express, Fastify and NestJS are frameworks built on it.</p>",
+      "difficulty": "easy",
+      "tags": [
+        "node",
+        "runtime"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "node-002",
+      "topic": "Node.js",
+      "question": "How does Node.js handle many requests on a single thread?",
+      "answer": "<p>Your JavaScript runs on one thread, but slow work such as network and file I/O is handed off: the operating system or <b>libuv</b>'s thread pool does the waiting. When the result is ready, a callback is queued and the <b>event loop</b> runs it.</p><p>So the thread is never sitting idle waiting for a database. The catch: CPU-heavy code (big loops, image processing, sync crypto) blocks the one thread, and every request waits.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "node",
+        "event loop",
+        "libuv"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "node-003",
+      "topic": "Node.js",
+      "question": "What are the phases of the Node.js event loop?",
+      "answer": "<ol><li><b>Timers</b>: <code>setTimeout</code> and <code>setInterval</code> callbacks that are due.</li><li><b>Pending callbacks</b>: some deferred system callbacks.</li><li><b>Poll</b>: waits for and runs I/O callbacks.</li><li><b>Check</b>: <code>setImmediate</code> callbacks.</li><li><b>Close callbacks</b>: e.g. <code>socket.on(\"close\")</code>.</li></ol><p>Between each callback, Node empties the <code>process.nextTick</code> queue and then the promise microtask queue.</p>",
+      "difficulty": "hard",
+      "tags": [
+        "node",
+        "event loop"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "node-004",
+      "topic": "Node.js",
+      "question": "What's the difference between process.nextTick, setImmediate and setTimeout(fn, 0)?",
+      "answer": "<ul><li><b>process.nextTick</b>: runs right after the current operation, before promise callbacks and before the event loop continues. Overusing it can starve I/O.</li><li><b>setImmediate</b>: runs in the check phase, after I/O polling.</li><li><b>setTimeout(fn, 0)</b>: runs in the timers phase, after at least 1 ms.</li></ul><p>From the main module, the order of <code>setImmediate</code> and <code>setTimeout(0)</code> isn't guaranteed. Inside an I/O callback, <code>setImmediate</code> always runs first.</p>",
+      "difficulty": "hard",
+      "tags": [
+        "node",
+        "event loop",
+        "timers"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "node-005",
+      "topic": "Node.js",
+      "question": "What are package.json and package-lock.json?",
+      "answer": "<ul><li><b>package.json</b>: the project's name, scripts (<code>npm run dev</code>) and dependencies with allowed version ranges.</li><li><b>package-lock.json</b>: the exact version of every installed package, including dependencies of dependencies, so every machine installs the same tree.</li></ul><p>Commit both. Use <code>npm ci</code> in CI: it installs exactly what the lock file says. <code>dependencies</code> are needed at runtime; <code>devDependencies</code> only for building and testing.</p>",
+      "difficulty": "easy",
+      "tags": [
+        "npm",
+        "package.json"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "node-006",
+      "topic": "Node.js",
+      "question": "What do ^ and ~ mean in package.json versions?",
+      "answer": "<p>Versions follow <b>semver</b>: MAJOR.MINOR.PATCH (breaking.feature.fix).</p><ul><li><code>^1.4.2</code>: any 1.x.x from 1.4.2 up; minor and patch updates are allowed. The npm default.</li><li><code>~1.4.2</code>: any 1.4.x from 1.4.2 up; patch updates only.</li><li><code>1.4.2</code>: exactly that version.</li></ul>",
+      "difficulty": "easy",
+      "tags": [
+        "npm",
+        "semver"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "node-007",
+      "topic": "Node.js",
+      "question": "What's the difference between CommonJS and ES modules in Node?",
+      "answer": "<ul><li><b>CommonJS</b>: <code>require()</code> and <code>module.exports</code>. Loads synchronously. Node's original system.</li><li><b>ES modules</b>: <code>import</code> and <code>export</code>. The JavaScript standard, also used in browsers. Supports top-level <code>await</code>, and imports can be analysed statically (tree shaking).</li></ul><p>Node treats a file as an ES module if it ends in <code>.mjs</code>, or if <code>package.json</code> has <code>\"type\": \"module\"</code>. New projects usually choose ES modules.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "node",
+        "modules",
+        "esm",
+        "commonjs"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "node-008",
+      "topic": "Node.js",
+      "question": "What is Express, and what is middleware?",
+      "answer": "<p>Express is a minimal web framework for Node. <b>Middleware</b> is a function that runs on the way to your route handler: it can read or change the request, end the response, or call <code>next()</code> to pass control on.</p><pre><code>app.use(express.json());           // parse JSON bodies\napp.use((req, res, next) =&gt; {      // log every request\n  console.log(req.method, req.url);\n  next();\n});\napp.get(\"/users/:id\", getUser);</code></pre><p>Middleware runs in the order it's registered.</p>",
+      "difficulty": "easy",
+      "tags": [
+        "express",
+        "middleware"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "node-009",
+      "topic": "Node.js",
+      "question": "How do you handle errors in Express?",
+      "answer": "<p>Add an error-handling middleware with <b>four</b> arguments, registered after your routes:</p><pre><code>app.use((err, req, res, next) =&gt; {\n  console.error(err);\n  res.status(err.status || 500).json({ error: \"Something went wrong\" });\n});</code></pre><p>In Express 4, errors thrown in async handlers must be passed on with <code>next(err)</code> or they become unhandled rejections. Express 5 forwards rejected promises to the error handler automatically. Don't send stack traces to clients in production.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "express",
+        "errors"
+      ],
+      "versions": [
+        "Express 5"
+      ],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "node-010",
+      "topic": "Node.js",
+      "question": "What are streams in Node.js?",
+      "answer": "<p>A way to process data piece by piece instead of loading it all into memory. Four kinds: <b>Readable</b> (file read, HTTP request), <b>Writable</b> (file write, HTTP response), <b>Duplex</b> (socket) and <b>Transform</b> (gzip).</p><pre><code>import { pipeline } from \"node:stream/promises\";\nawait pipeline(\n  fs.createReadStream(\"big.log\"),\n  zlib.createGzip(),\n  fs.createWriteStream(\"big.log.gz\")\n);</code></pre><p><code>pipeline</code> handles backpressure and cleans up all the streams if one fails.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "node",
+        "streams"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "node-011",
+      "topic": "Node.js",
+      "question": "What is a Buffer in Node.js?",
+      "answer": "<p>A fixed-size chunk of raw binary data, used for files, network packets and images. Strings are text; Buffers are bytes.</p><pre><code>const b = Buffer.from(\"hi\", \"utf8\"); // &lt;Buffer 68 69&gt;\nb.toString(\"base64\");               // \"aGk=\"</code></pre><p>Most file and network APIs give you Buffers unless you ask for an encoding.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "node",
+        "binary"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "node-012",
+      "topic": "Node.js",
+      "question": "What is EventEmitter?",
+      "answer": "<p>Node's built-in implementation of the observer pattern. An object emits named events and listeners react to them. Streams, HTTP servers and sockets are all EventEmitters.</p><pre><code>import { EventEmitter } from \"node:events\";\nconst orders = new EventEmitter();\norders.on(\"created\", o =&gt; sendEmail(o));\norders.emit(\"created\", { id: 1 });</code></pre><p>Listeners run synchronously in the order they were added. An <code>\"error\"</code> event with no listener crashes the process.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "node",
+        "events"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "node-013",
+      "topic": "Node.js",
+      "question": "How do you run CPU-heavy work in Node without blocking the event loop?",
+      "answer": "<ul><li><b>worker_threads</b>: run JavaScript on separate threads inside the same process; pass data with messages. Best for CPU work such as image resizing or parsing.</li><li><b>child_process</b>: run a separate program or script.</li><li><b>cluster</b> (or a process manager such as PM2): run one Node process per CPU core behind one port, to use all cores for handling requests.</li><li>Move it to a job queue (e.g. BullMQ with Redis) processed by a separate worker.</li></ul><p>Async functions don't help here: <code>async</code> code still runs on the main thread.</p>",
+      "difficulty": "hard",
+      "tags": [
+        "node",
+        "worker threads",
+        "cluster",
+        "performance"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "node-014",
+      "topic": "Node.js",
+      "question": "How do you manage configuration and secrets in a Node app?",
+      "answer": "<p>Read them from <b>environment variables</b> (<code>process.env.DATABASE_URL</code>), never hard-code them. Locally, keep them in a <code>.env</code> file listed in <code>.gitignore</code>. Load it with <code>node --env-file=.env app.js</code> (built in since Node 20.6) or the <code>dotenv</code> package.</p><p>Validate the required values at startup so the app fails fast. In production, use the platform's secret store.</p>",
+      "difficulty": "easy",
+      "tags": [
+        "node",
+        "config",
+        "secrets"
+      ],
+      "versions": [
+        "Node 20"
+      ],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "node-015",
+      "topic": "Node.js",
+      "question": "How do you handle async errors and unhandled rejections in Node?",
+      "answer": "<ul><li>Wrap <code>await</code> in <code>try/catch</code>, or add <code>.catch()</code> to promises you don't await.</li><li>Since Node 15, an unhandled promise rejection crashes the process by default.</li><li>Use <code>process.on(\"unhandledRejection\")</code> and <code>process.on(\"uncaughtException\")</code> to log the error, then exit and let a process manager restart the app. The state after an uncaught exception can't be trusted.</li></ul>",
+      "difficulty": "medium",
+      "tags": [
+        "node",
+        "errors",
+        "promises"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "node-016",
+      "topic": "Node.js",
+      "question": "How do you secure a Node.js API?",
+      "answer": "<ul><li>Validate all input (e.g. with Zod or Joi).</li><li>Use parameterised queries or an ORM to prevent SQL injection.</li><li>Set security headers with <code>helmet</code>, and configure CORS narrowly.</li><li>Rate-limit login and other sensitive routes.</li><li>Hash passwords with bcrypt or argon2.</li><li>Keep secrets in environment variables; run <code>npm audit</code> and update dependencies.</li><li>Don't leak stack traces; run with <code>NODE_ENV=production</code>.</li></ul>",
+      "difficulty": "medium",
+      "tags": [
+        "node",
+        "security",
+        "express"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "node-017",
+      "topic": "Node.js",
+      "question": "How does JWT authentication work in a Node API?",
+      "answer": "<ol><li>The user logs in; the server checks the password and signs a token: <code>jwt.sign({ sub: user.id }, secret, { expiresIn: \"15m\" })</code>.</li><li>The client sends it on each request: <code>Authorization: Bearer &lt;token&gt;</code>.</li><li>Middleware verifies the signature and expiry with <code>jwt.verify</code> and sets <code>req.user</code>.</li></ol><p>A JWT is signed, not encrypted, so anyone can read its contents: don't put secrets in it. Keep access tokens short-lived and use a refresh token to get new ones.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "node",
+        "auth",
+        "jwt"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "node-018",
+      "topic": "Node.js",
+      "question": "How do you test a Node.js app?",
+      "answer": "<ul><li>Test runner: the built-in <code>node:test</code> (stable since Node 20), Jest or Vitest.</li><li>Unit tests for pure functions; mock external services.</li><li>API tests with <b>supertest</b>, which calls your Express app without starting a real server.</li><li>Integration tests against a real test database (e.g. in Docker).</li><li>Run them in CI on every pull request.</li></ul>",
+      "difficulty": "easy",
+      "tags": [
+        "node",
+        "testing"
+      ],
+      "versions": [
+        "Node 20"
+      ],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "node-019",
+      "topic": "Node.js",
+      "question": "How would you find a memory leak in a Node.js app?",
+      "answer": "<ol><li>Confirm it: memory (<code>process.memoryUsage().heapUsed</code>) keeps growing under steady load.</li><li>Take heap snapshots a few minutes apart (Chrome DevTools via <code>node --inspect</code>) and compare them to see which objects keep growing.</li><li>Common causes: caches or arrays that never shrink, event listeners added and never removed, timers that are never cleared, and closures holding large objects.</li></ol><p>Fix the cause; don't just raise <code>--max-old-space-size</code>.</p>",
+      "difficulty": "hard",
+      "tags": [
+        "node",
+        "memory",
+        "debugging",
+        "performance"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "node-020",
+      "topic": "Node.js",
+      "question": "Why prefer fs/promises over fs.readFileSync in a server?",
+      "answer": "<p><code>readFileSync</code> blocks the event loop until the file is read, so every other request waits. <code>fs/promises</code> does the work in the background:</p><pre><code>import { readFile } from \"node:fs/promises\";\nconst text = await readFile(\"data.json\", \"utf8\");</code></pre><p>Sync versions are fine in startup code and command-line scripts, where nothing else is waiting. For large files, use streams.</p>",
+      "difficulty": "easy",
+      "tags": [
+        "node",
+        "fs",
+        "files"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-009",
+      "topic": ".NET / C#",
+      "question": "What's the difference between const and readonly in C#?",
+      "answer": "<ul><li><b>const</b>: set at compile time, implicitly static, only for primitive types and strings. The value is copied into every assembly that uses it.</li><li><b>readonly</b>: set at declaration or in the constructor, can be any type, and can differ per instance.</li></ul><p>Use <code>const</code> for values that truly never change (<code>MaxRetries = 3</code>), and <code>readonly</code> for everything else.</p>",
+      "difficulty": "easy",
+      "tags": [
+        "c#",
+        "oop"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-010",
+      "topic": ".NET / C#",
+      "question": "What are extension methods in C#?",
+      "answer": "<p>Static methods that look like instance methods on a type you don't own. The first parameter has <code>this</code>.</p><pre><code>public static class StringExtensions {\n  public static bool IsBlank(this string? s) =&gt; string.IsNullOrWhiteSpace(s);\n}\n\"  \".IsBlank(); // true</code></pre><p>LINQ is built entirely from extension methods on <code>IEnumerable&lt;T&gt;</code>.</p>",
+      "difficulty": "easy",
+      "tags": [
+        "c#",
+        "linq"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-011",
+      "topic": ".NET / C#",
+      "question": "What's the difference between an abstract class and an interface in C#?",
+      "answer": "<ul><li><b>Abstract class</b>: can have fields, constructors and implemented methods. A class can inherit only one.</li><li><b>Interface</b>: a contract. A class can implement many. Since C# 8 it can include default method implementations, but still no instance fields.</li></ul><p>Use an interface to define a capability (<code>IPaymentService</code>), which also makes dependency injection and mocking easy. Use an abstract class to share code between closely related types.</p>",
+      "difficulty": "easy",
+      "tags": [
+        "c#",
+        "oop"
+      ],
+      "versions": [
+        "C# 8"
+      ],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-012",
+      "topic": ".NET / C#",
+      "question": "What are boxing and unboxing?",
+      "answer": "<p><b>Boxing</b> wraps a value type (such as <code>int</code>) in an object on the heap so it can be treated as <code>object</code>. <b>Unboxing</b> extracts it again.</p><pre><code>int n = 5;\nobject o = n;     // boxing\nint m = (int)o;   // unboxing</code></pre><p>Each box is a heap allocation, so it costs memory and time in hot loops. Generics (<code>List&lt;int&gt;</code> instead of <code>ArrayList</code>) avoid it.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "c#",
+        "memory"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-013",
+      "topic": ".NET / C#",
+      "question": "What are the Transient, Scoped and Singleton lifetimes in ASP.NET Core?",
+      "answer": "<ul><li><b>Transient</b>: a new instance every time it's requested.</li><li><b>Scoped</b>: one instance per HTTP request. <code>DbContext</code> is registered this way.</li><li><b>Singleton</b>: one instance for the whole app. Must be thread-safe.</li></ul><p>Never inject a scoped service into a singleton (a \"captive dependency\"): the scoped object would live forever and be shared between requests.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "asp.net core",
+        "dependency injection"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-014",
+      "topic": ".NET / C#",
+      "question": "What is middleware in ASP.NET Core, and why does order matter?",
+      "answer": "<p>Middleware components form a pipeline. Each one can handle the request, pass it to the next with <code>await next()</code>, and act on the response on the way back.</p><p>They run in the order registered in <code>Program.cs</code>, so order matters: exception handling goes first to catch everything, and <code>UseAuthentication()</code> must come before <code>UseAuthorization()</code>, both before the endpoints they protect. A typical order: exception handler → HTTPS redirection → static files → routing → CORS → authentication → authorization → endpoints.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "asp.net core",
+        "middleware"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-015",
+      "topic": ".NET / C#",
+      "question": "What's the difference between IEnumerable and IQueryable?",
+      "answer": "<ul><li><b>IEnumerable&lt;T&gt;</b>: runs in memory. LINQ operators are C# code executed on objects already loaded.</li><li><b>IQueryable&lt;T&gt;</b>: builds an expression tree that a provider (e.g. EF Core) translates, usually into SQL, and runs in the database.</li></ul><p>Calling <code>.ToList()</code> or <code>.AsEnumerable()</code> too early on an EF query loads every row and then filters in memory. Keep filtering (<code>Where</code>, <code>Take</code>) on the <code>IQueryable</code>.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "linq",
+        "entity framework"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-016",
+      "topic": ".NET / C#",
+      "question": "What are records in C#?",
+      "answer": "<p>Types designed for data, added in C# 9. They have <b>value equality</b> (two records with the same values are equal), a readable <code>ToString()</code>, and non-destructive copies with <code>with</code>.</p><pre><code>public record Quote(string Id, decimal Premium);\nvar q2 = q1 with { Premium = 120m };</code></pre><p>Good for DTOs and immutable values. <code>record struct</code> (C# 10) is the value-type version.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "c#",
+        "records",
+        "immutability"
+      ],
+      "versions": [
+        "C# 9"
+      ],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-017",
+      "topic": ".NET / C#",
+      "question": "What are nullable reference types in C#?",
+      "answer": "<p>A compiler feature (C# 8, on by default in new projects) that makes null intent explicit: <code>string</code> should never be null, <code>string?</code> might be. The compiler warns when you might dereference null or assign null to a non-nullable type.</p><p>It doesn't change runtime behaviour; it's static analysis. Use <code>?.</code>, <code>??</code> and null checks to handle the nullable cases.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "c#",
+        "null"
+      ],
+      "versions": [
+        "C# 8"
+      ],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-018",
+      "topic": ".NET / C#",
+      "question": "What is IDisposable, and what does a using statement do?",
+      "answer": "<p><code>IDisposable</code> is for objects that hold unmanaged resources such as files, database connections and sockets, which the garbage collector won't release promptly. <code>using</code> calls <code>Dispose()</code> automatically, even if an exception is thrown.</p><pre><code>using var conn = new SqlConnection(cs);\nawait conn.OpenAsync();\n// disposed at the end of the scope</code></pre><p>Exception: don't wrap <code>HttpClient</code> in <code>using</code> per request. Use <code>IHttpClientFactory</code>.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "c#",
+        "idisposable",
+        "resources"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-019",
+      "topic": ".NET / C#",
+      "question": "What are delegates, Func, Action and events?",
+      "answer": "<ul><li>A <b>delegate</b> is a type-safe reference to a method.</li><li><b>Func&lt;T, TResult&gt;</b>: built-in delegate that returns a value. <b>Action&lt;T&gt;</b>: returns nothing. Lambdas are usually passed as these, e.g. in LINQ.</li><li>An <b>event</b> is a delegate that outside code can only subscribe to (<code>+=</code>) or unsubscribe from (<code>-=</code>), not invoke.</li></ul><pre><code>Func&lt;int, int&gt; square = x =&gt; x * x;\nbutton.Click += (s, e) =&gt; Save();</code></pre>",
+      "difficulty": "medium",
+      "tags": [
+        "c#",
+        "delegates",
+        "events"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-020",
+      "topic": ".NET / C#",
+      "question": "What are minimal APIs in ASP.NET Core?",
+      "answer": "<p>A lightweight way to build HTTP APIs without controllers, added in .NET 6. Routes map straight to lambdas in <code>Program.cs</code>, with dependency injection and model binding in the parameters.</p><pre><code>app.MapGet(\"/quotes/{id}\", async (string id, IQuoteService svc) =&gt;\n  await svc.Find(id) is { } q ? Results.Ok(q) : Results.NotFound());</code></pre><p>Good for small services and microservices. Controllers still suit large APIs with many filters and conventions.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "asp.net core",
+        "minimal api"
+      ],
+      "versions": [
+        ".NET 6"
+      ],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-021",
+      "topic": ".NET / C#",
+      "question": "How do EF Core migrations work?",
+      "answer": "<p>Migrations turn changes to your C# model into versioned database schema changes.</p><ol><li>Change the entity classes.</li><li><code>dotnet ef migrations add AddPolicyStatus</code> generates a migration with <code>Up</code> and <code>Down</code> methods.</li><li>Review it, then apply it with <code>dotnet ef database update</code>, or generate a SQL script for production.</li></ol><p>Commit migrations to source control. EF stores which ones were applied in the <code>__EFMigrationsHistory</code> table.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "entity framework",
+        "migrations",
+        "database"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-022",
+      "topic": ".NET / C#",
+      "question": "What are common async/await mistakes in C#?",
+      "answer": "<ul><li><b>.Result or .Wait()</b> on a task: blocks a thread and can deadlock where there's a synchronization context. Use <code>await</code> all the way up.</li><li><b>async void</b>: exceptions can't be caught by the caller. Use it only for event handlers; return <code>Task</code> otherwise.</li><li><b>Task.Run in ASP.NET Core</b> to \"make it async\": just moves work to another thread-pool thread. Await real async I/O instead.</li><li>Forgetting to pass a <code>CancellationToken</code> to long operations.</li><li>Awaiting independent calls one by one instead of using <code>Task.WhenAll</code>.</li></ul>",
+      "difficulty": "hard",
+      "tags": [
+        "c#",
+        "async",
+        "deadlock"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-023",
+      "topic": ".NET / C#",
+      "question": "How does garbage collection work in .NET?",
+      "answer": "<p>The GC frees objects that are no longer reachable. The managed heap is split into <b>generations</b>:</p><ul><li><b>Gen 0</b>: new objects. Collected often and fast; most objects die here.</li><li><b>Gen 1</b>: a buffer between short- and long-lived objects.</li><li><b>Gen 2</b>: long-lived objects. Collected rarely and more expensively.</li><li><b>Large Object Heap</b>: objects of 85,000 bytes or more, collected with Gen 2.</li></ul><p>The GC doesn't close files or connections; that's what <code>IDisposable</code> is for.</p>",
+      "difficulty": "hard",
+      "tags": [
+        "c#",
+        "garbage collection",
+        "memory"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    },
+    {
+      "id": "dotnet-024",
+      "topic": ".NET / C#",
+      "question": "How does configuration work in ASP.NET Core?",
+      "answer": "<p>Values are merged from several sources, later ones winning: <code>appsettings.json</code>, <code>appsettings.{Environment}.json</code>, user secrets (in development), environment variables, then command-line arguments.</p><p>Bind a section to a class with the <b>options pattern</b>:</p><pre><code>builder.Services.Configure&lt;SmtpOptions&gt;(\n  builder.Configuration.GetSection(\"Smtp\"));\n// inject IOptions&lt;SmtpOptions&gt; where needed</code></pre><p>Keep secrets out of <code>appsettings.json</code>; use user secrets locally and a vault such as Azure Key Vault in production.</p>",
+      "difficulty": "medium",
+      "tags": [
+        "asp.net core",
+        "configuration",
+        "options"
+      ],
+      "versions": [],
+      "updatedAt": "2026-11-21"
+    }
+  ]
+}
