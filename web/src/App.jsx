@@ -773,9 +773,9 @@ export default function App() {
             update that restarted the app mid-scan would abandon a
             half-submitted application. */}
         {update?.updateAvailable && (
-          <div className="card" style={{
+          <div className="card card-accent" style={{
             marginBottom: 20, display: 'flex', alignItems: 'center', gap: 14,
-            borderLeft: '3px solid var(--accent)',
+            '--card-accent': 'var(--accent)',
           }}>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 13, fontWeight: 600 }}>

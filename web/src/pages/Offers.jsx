@@ -1,4 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
+import { formatDay } from '../dates'
+
+// "hybrid" → "Hybrid": the work-mode field is free text, usually typed lowercase.
+const sentence = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : '')
 
 // Offer comparison.
 //
@@ -17,7 +21,10 @@ const DECISIONS = [
   { id: 'expired', label: 'Expired' },
 ]
 
-const money = (n, currency = '') => (n == null ? '—' : `${currency || 'Currency unset'} ${Number(n).toLocaleString()}`)
+// A figure with no currency is shown as the bare number; the offer card says
+// separately that the currency is missing. Prefixing "Currency unset" to every
+// figure made the headline number read "Currency unset 160,000".
+const money = (n, currency = '') => (n == null ? '—' : `${currency ? `${currency} ` : ''}${Number(n).toLocaleString()}`)
 
 const blankForm = {
   baseSalary: '', bonus: '', equity: '', currency: '', benefits: '', startDate: '', respondBy: '',
@@ -462,10 +469,15 @@ export default function Offers({ active, showToast, onOpenApplication }) {
   const offerCurrencies = [...new Set(offers.map(o => o.currency).filter(Boolean))]
   const conv = data.converted
 
+  // The comparison note only means something when there are at least two open
+  // offers with figures to compare. It used to render whenever the comparison
+  // was not automatic — with no offers at all, or just one — and it rendered
+  // above the page title, so the page opened on a warning about nothing.
+  const comparable = live.filter(o => o.comparableComp != null).length
+  const showComparisonNote = !!data.comparisonNote && comparable >= 2
+
   return (
     <div>
-      {data.comparisonNote && <p>{data.comparisonNote}</p>}
-      {data.byCurrency?.length > 1 && <p>{data.byCurrency.map(group => `${group.currency}: best ${money(group.best, group.currency)}`).join(' / ')}</p>}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 0 }}>Offers</h1>
         {candidates.length > 0 && (
@@ -486,6 +498,21 @@ export default function Offers({ active, showToast, onOpenApplication }) {
       <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 20 }}>
         What is on the table, side by side, with the deadline that expires first at the top.
       </p>
+
+      {showComparisonNote && (
+        <div role="note" style={{
+          display: 'flex', gap: 10, alignItems: 'flex-start', marginBottom: 16, padding: '12px 14px',
+          borderRadius: 'var(--radius)', background: 'var(--accent-soft)', border: '1px solid var(--accent-soft)',
+          fontSize: 13, lineHeight: 1.5,
+        }}>
+          <span aria-hidden="true" style={{
+            flexShrink: 0, width: 18, height: 18, marginTop: 1, borderRadius: '50%',
+            background: 'var(--accent)', color: '#fff', fontSize: 11, fontWeight: 700,
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          }}>i</span>
+          <div>{data.comparisonNote}</div>
+        </div>
+      )}
 
       {(offerCurrencies.length > 1 || data.exchangeRates?.base) && (
         <ExchangeRates fx={data.exchangeRates} currencies={offerCurrencies} onSaved={load} showToast={showToast} />
@@ -513,45 +540,60 @@ export default function Offers({ active, showToast, onOpenApplication }) {
       )}
 
       {/* The summary only means anything with a real decision to make. */}
-      {live.length >= 1 && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 16, marginBottom: 20 }}>
-          <div className="card">
-            <div style={{ fontSize: 22, fontWeight: 700 }}>{data.live}</div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>open decision{data.live === 1 ? '' : 's'}</div>
+      {/* Two or more: with a single offer every tile repeats its own card
+          ("1 open decision", its figure as "best"), so the card says it alone. */}
+      {live.length >= 2 && (
+        // The same stat tiles the Dashboard and Analytics lead with, so the
+        // three summary pages read as one family rather than three designs.
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14, marginBottom: 20 }}>
+          <div className="card stat-card">
+            <div className="stat-value" style={{ fontSize: 28 }}>{data.live}</div>
+            <div className="stat-label">Open decision{data.live === 1 ? '' : 's'}</div>
           </div>
           {conv ? (
-            <div className="card">
-              <div style={{ fontSize: 22, fontWeight: 700 }}>{money(conv.best, conv.base)}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>best, converted to {conv.base} at your rates</div>
+            <div className="card stat-card">
+              <div className="stat-value" style={{ fontSize: 28 }}>{money(conv.best, conv.base)}</div>
+              {/* Says it is a conversion, and to what — a converted figure must
+                  never pass for one the employer wrote. */}
+              <div className="stat-label">best, converted to {conv.base} at your rates</div>
             </div>
+          ) : data.best == null && data.byCurrency?.length > 1 ? (
+            // No single best across currencies with no rate between them, so
+            // one tile per currency instead of a bare dash.
+            data.byCurrency.map(group => (
+              <div key={group.currency} className="card stat-card">
+                <div className="stat-value" style={{ fontSize: 28 }}>{money(group.best, group.currency)}</div>
+                <div className="stat-label">Best in {group.currency}</div>
+              </div>
+            ))
           ) : (
-            <div className="card">
-              <div style={{ fontSize: 22, fontWeight: 700 }}>{money(data.best, data.comparisonCurrency)}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>best in comparison currency</div>
+            <div className="card stat-card">
+              <div className="stat-value" style={{ fontSize: 28 }}>{money(data.best, data.comparisonCurrency)}</div>
+              <div className="stat-label">Best offer</div>
             </div>
           )}
           {(conv ? conv.spread : data.spread) != null && (
-            <div className="card">
-              <div style={{ fontSize: 22, fontWeight: 700 }}>{conv ? money(conv.spread, conv.base) : money(data.spread, data.comparisonCurrency)}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>between highest and lowest{conv ? ', converted at your rates' : ''}</div>
+            <div className="card stat-card">
+              <div className="stat-value" style={{ fontSize: 28 }}>{conv ? money(conv.spread, conv.base) : money(data.spread, data.comparisonCurrency)}</div>
+              <div className="stat-label">Gap, best to lowest{conv ? ', converted at your rates' : ''}</div>
             </div>
           )}
           {data.nextDeadline && (
-            <div className="card">
-              <div style={{ fontSize: 15, fontWeight: 700, color: deadlineTone(data.nextDeadline.daysToRespond, data.nextDeadline.expired) }}>
+            <div className="card stat-card">
+              <div className="stat-value" style={{ fontSize: 20, lineHeight: '32px', color: deadlineTone(data.nextDeadline.daysToRespond, data.nextDeadline.expired) }}>
                 {deadlineText(data.nextDeadline)}
               </div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{data.nextDeadline.company}</div>
+              <div className="stat-label">Next deadline · {data.nextDeadline.company}</div>
             </div>
           )}
         </div>
       )}
 
       {offers.map(o => (
-        <div key={o.applicationId} className="card" style={{
+        <div key={o.applicationId} className="card card-accent" style={{
           marginBottom: 12,
           opacity: o.decision === 'considering' ? 1 : 0.7,
-          borderLeft: `3px solid ${o.decision === 'accepted' ? 'var(--green)' : o.decision === 'declined' ? 'var(--text-muted)' : deadlineTone(o.daysToRespond, o.expired)}`,
+          '--card-accent': o.decision === 'accepted' ? 'var(--green)' : o.decision === 'declined' ? 'var(--text-muted)' : deadlineTone(o.daysToRespond, o.expired),
         }}>
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
@@ -559,12 +601,12 @@ export default function Offers({ active, showToast, onOpenApplication }) {
               <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
                 {o.company}
                 {o.location && ` · ${o.location}`}
-                {o.remote && ` · ${o.remote}`}
+                {o.remote && ` · ${sentence(o.remote)}`}
               </div>
             </div>
             <div style={{ textAlign: 'right' }}>
               <div style={{ fontSize: 20, fontWeight: 700 }}>{money(o.comparableComp, o.currency)}</div>
-              <div style={{ fontSize: 10, color: o.compIsAdvertised ? 'var(--yellow)' : 'var(--text-muted)' }}>
+              <div style={{ fontSize: 11.5, color: o.compIsAdvertised ? 'var(--yellow)' : 'var(--text-muted)' }}>
                 {/* Never let an advert masquerade as an offer. */}
                 {o.compIsAdvertised
                   ? 'advertised range — no offer figure entered'
@@ -572,6 +614,9 @@ export default function Offers({ active, showToast, onOpenApplication }) {
                     ? `${money(o.base_salary, o.currency)} base + ${money(o.bonus, o.currency)} bonus`
                     : 'base salary'}
               </div>
+              {!o.currency && o.comparableComp != null && (
+                <div style={{ fontSize: 11.5, color: 'var(--yellow)', marginTop: 2 }}>Currency not set — choose Edit to add it</div>
+              )}
               {convertedLabel(o) && (
                 <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>{convertedLabel(o)}</div>
               )}
@@ -582,7 +627,7 @@ export default function Offers({ active, showToast, onOpenApplication }) {
             <span style={{ color: deadlineTone(o.daysToRespond, o.expired), fontWeight: o.expired || (o.daysToRespond != null && o.daysToRespond <= 2) ? 600 : 400 }}>
               {deadlineText(o)}
             </span>
-            {o.start_date && <span style={{ color: 'var(--text-muted)' }}>Starts {o.start_date}</span>}
+            {o.start_date && <span style={{ color: 'var(--text-muted)' }}>Starts {formatDay(o.start_date)}</span>}
             {o.benefits && <span>Benefits: {o.benefits}</span>}
             {o.equity && <span style={{ color: 'var(--text-muted)' }}>Equity: {o.equity}</span>}
             {o.excitement != null && (

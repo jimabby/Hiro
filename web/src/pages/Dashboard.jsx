@@ -870,9 +870,9 @@ export default memo(function Dashboard({ active = true, scanRunning, onScanStart
           green panel is furniture people stop reading, and the whole point is
           being noticed on the one morning it matters. */}
       {automationHealth.some(h => h.status === 'critical' || h.status === 'warning') && (
-        <div className="card" style={{
+        <div className="card card-accent" style={{
           marginBottom: 16, padding: '12px 16px',
-          borderLeft: `3px solid ${automationHealth.some(h => h.status === 'critical') ? 'var(--red)' : 'var(--yellow)'}`,
+          '--card-accent': `${automationHealth.some(h => h.status === 'critical') ? 'var(--red)' : 'var(--yellow)'}`,
         }}>
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Automation health</div>
           {automationHealth
@@ -933,10 +933,10 @@ export default memo(function Dashboard({ active = true, scanRunning, onScanStart
           deliberate choice as a fault is exactly what the old code did when it
           reported this as a clean success by another route. */}
       {scanInfo?.lastScanCancelled && !scanRunning && scanInfo.lastScanEndedAt !== dismissedScanAt && (
-        <div className="card" style={{
+        <div className="card card-accent" style={{
           marginBottom: 16, padding: '12px 16px', display: 'flex',
           alignItems: 'center', justifyContent: 'space-between', gap: 12,
-          borderLeft: '3px solid var(--border-strong)',
+          '--card-accent': 'var(--border-strong)',
         }}>
           <div style={{ fontSize: 13 }}>
             <span style={{ fontWeight: 600 }}>Last scan was cancelled</span>
@@ -961,10 +961,10 @@ export default memo(function Dashboard({ active = true, scanRunning, onScanStart
       {/* Last-scan outcome. A toast is easy to miss and disappears — a failed
           overnight scan should still be visible the next morning. */}
       {scanInfo?.lastScanError && !scanRunning && scanInfo.lastScanEndedAt !== dismissedScanAt && (
-        <div className="card" style={{
+        <div className="card card-accent" style={{
           marginBottom: 16, padding: '12px 16px', display: 'flex',
           alignItems: 'center', justifyContent: 'space-between', gap: 12,
-          borderLeft: '3px solid var(--red)',
+          '--card-accent': 'var(--red)',
         }}>
           <div style={{ fontSize: 13 }}>
             <span style={{ color: 'var(--red)', fontWeight: 600 }}>Last scan failed</span>
@@ -985,10 +985,10 @@ export default memo(function Dashboard({ active = true, scanRunning, onScanStart
           just weren't allowed to see them, and the user has to act (back off,
           or re-authenticate) for the next scan to work. */}
       {scanInfo?.lastScanBlocked?.length > 0 && !scanRunning && scanInfo.lastScanEndedAt !== dismissedScanAt && (
-        <div className="card" style={{
+        <div className="card card-accent" style={{
           marginBottom: 16, padding: '12px 16px', display: 'flex',
           alignItems: 'flex-start', justifyContent: 'space-between', gap: 12,
-          borderLeft: '3px solid var(--yellow)',
+          '--card-accent': 'var(--yellow)',
         }}>
           <div style={{ fontSize: 13 }}>
             <span style={{ color: 'var(--yellow)', fontWeight: 600 }}>
@@ -1017,9 +1017,9 @@ export default memo(function Dashboard({ active = true, scanRunning, onScanStart
           nothing is wrong and there is nothing to do, but the missing results
           still have to be accounted for or the day looks like a thin market. */}
       {scanInfo?.lastScanPaused?.length > 0 && !scanRunning && (
-        <div className="card" style={{
+        <div className="card card-accent" style={{
           marginBottom: 16, padding: '12px 16px', fontSize: 13,
-          borderLeft: '3px solid var(--border)',
+          '--card-accent': 'var(--border-strong)',
         }}>
           <span style={{ fontWeight: 600 }}>
             Paused: {scanInfo.lastScanPaused.map(p => p.platform).join(', ')}
@@ -1107,7 +1107,7 @@ export default memo(function Dashboard({ active = true, scanRunning, onScanStart
           you have to scroll past 25 table rows to find is one nobody reads. */}
       {(interviews.length > 0 || hasLogs) && (
         <div style={{
-          display: 'grid', gap: 16, marginBottom: 24, alignItems: 'start',
+          display: 'grid', gap: 16, marginBottom: 24, alignItems: 'stretch',
           // Each column keeps a real minimum so the pair collapses to a single
           // column on a narrow window rather than crushing both.
           gridTemplateColumns: interviews.length > 0 && hasLogs
@@ -1116,7 +1116,7 @@ export default memo(function Dashboard({ active = true, scanRunning, onScanStart
         }}>
       {/* Upcoming interviews — detected from recruiter replies, or added by hand */}
       {interviews.length > 0 && (
-        <div className="card" style={{ borderLeft: '3px solid var(--green)', minWidth: 0 }}>
+        <div className="card card-accent" style={{ '--card-accent': 'var(--green)', minWidth: 0 }}>
           {/* Title and action on one line, explanation on its own beneath.
               This card now shares a row rather than spanning the page, and the
               caption is longer than the title — inline, it squeezed the heading
@@ -1267,7 +1267,7 @@ export default memo(function Dashboard({ active = true, scanRunning, onScanStart
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, margin: 0 }}>
             Minimum match
             <input aria-label="Minimum match score" type="number" min="0" max="100" placeholder="0–100" value={filter.minMatch || ''}
-              onChange={e => setFilter(f => ({ ...f, minMatch: e.target.value }))} style={{ width: 84, padding: '5px 8px' }} />
+              onChange={e => setFilter(f => ({ ...f, minMatch: e.target.value }))} style={{ width: 84, padding: '6px 10px', fontSize: 12 }} />
           </label>
           <label style={{ margin: 0 }}><input type="checkbox" checked={!!filter.dueOnly} onChange={e => setFilter(f => ({ ...f, dueOnly: e.target.checked }))} /> Has a follow-up scheduled</label>
         </div>
@@ -1326,15 +1326,15 @@ export default memo(function Dashboard({ active = true, scanRunning, onScanStart
               <option value="LinkedIn">LinkedIn</option>
               <option value="ATS">Career Boards</option>
             </select>
-            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => exportCsv({
+            <button className="btn btn-ghost" style={{ fontSize: 12, padding: '6px 12px' }} onClick={() => exportCsv({
               ...filter,
               // The inputs are in thousands; the query expects annual dollars.
               salaryFrom: filter.salaryFrom === '' ? '' : Number(filter.salaryFrom) * 1000,
               salaryTo: filter.salaryTo === '' ? '' : Number(filter.salaryTo) * 1000,
             }, showToast)}>Export CSV</button>
-            <button className="btn btn-ghost" onClick={loadData} style={{ whiteSpace: 'nowrap' }}>Refresh</button>
+            <button className="btn btn-ghost" onClick={loadData} style={{ whiteSpace: 'nowrap', fontSize: 12, padding: '6px 12px' }}>Refresh</button>
             {apps.length > 0 && (
-              <button className="btn btn-ghost" style={{ fontSize: 12, color: 'var(--red)' }} onClick={clearAll}>Clear All</button>
+              <button className="btn btn-ghost" style={{ fontSize: 12, padding: '6px 12px', color: 'var(--red)' }} onClick={clearAll}>Clear All</button>
             )}
           </div>
         </div>
@@ -1429,7 +1429,7 @@ export default memo(function Dashboard({ active = true, scanRunning, onScanStart
                           onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }}
                           style={{
                             background: 'transparent', border: 'none', borderBottom: '1px solid var(--border)',
-                            color: 'var(--text)', fontSize: 12, width: '100%', padding: '2px 4px',
+                            color: 'var(--text)', fontSize: 12, width: '100%', padding: '5px 4px 4px',
                             outline: 'none',
                           }}
                         />
@@ -1438,7 +1438,7 @@ export default memo(function Dashboard({ active = true, scanRunning, onScanStart
                         {a.status === 'skipped' ? (
                           <span className="badge badge-gray">Skipped</span>
                         ) : (
-                          <select value={a.status} aria-label={`Status of ${a.job_title} at ${a.company}`} style={{ width: 'auto', padding: '3px 6px', fontSize: 12 }}
+                          <select value={a.status} aria-label={`Status of ${a.job_title} at ${a.company}`} style={{ width: 'auto', padding: '4px 8px', fontSize: 12 }}
                             onChange={e => changeStatus(a.id, e.target.value, e)}>
                             {SETTABLE_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
                           </select>

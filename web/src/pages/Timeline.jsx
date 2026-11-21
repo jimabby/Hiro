@@ -101,7 +101,7 @@ export default function Timeline({ active }) {
                 {allPlatforms.map(p => <option key={p} value={p}>{p}</option>)}
               </select>
             )}
-            <button className="btn btn-ghost" style={{ fontSize: 12, whiteSpace: 'nowrap' }} onClick={async () => {
+            <button className="btn btn-ghost" style={{ fontSize: 12, padding: '6px 12px', whiteSpace: 'nowrap' }} onClick={async () => {
               if (expandAll) {
                 setExpandAll(false)
                 setExpandedJobs({})

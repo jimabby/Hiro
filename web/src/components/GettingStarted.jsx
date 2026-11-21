@@ -111,7 +111,7 @@ export default function GettingStarted({ hasScanned, onNavigate, onDryRun }) {
   }
 
   return (
-    <div className="card" data-testid="getting-started" style={{ marginBottom: 24, borderLeft: '3px solid var(--accent)' }}>
+    <div className="card card-accent" data-testid="getting-started" style={{ marginBottom: 24, '--card-accent': 'var(--accent)' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 12 }}>
         <div>
           <div style={{ fontSize: 15, fontWeight: 600 }}>Getting started</div>

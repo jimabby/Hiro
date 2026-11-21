@@ -560,7 +560,7 @@ function TopicPicker({ topics, settings, onChange, extra }) {
   return (
     <div style={{ marginBottom: 14 }}>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-        <button type="button" className="btn btn-sm" aria-expanded={open} onClick={() => setOpen(o => !o)}>
+        <button type="button" className="btn" style={{ padding: '6px 12px', fontSize: 12 }} aria-expanded={open} onClick={() => setOpen(o => !o)}>
           Topics: {summary} {open ? '▴' : '▾'}
         </button>
         <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -1269,7 +1269,10 @@ export default function Practice({ active, showToast, onNavigate }) {
   ]
 
   return (
-    <div style={{ maxWidth: 880 }}>
+    // Header and tabs span the page like every other page's; the cards below
+    // keep a reading width, because a flashcard answer set 1,100px wide is a
+    // line too long to read comfortably.
+    <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 16, flexWrap: 'wrap', marginBottom: 14 }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700 }}>Practice</h1>
@@ -1278,12 +1281,13 @@ export default function Practice({ active, showToast, onNavigate }) {
         <StatPills stats={stats} />
       </div>
       {error && <p role="alert" style={{ fontSize: 13, color: 'var(--red)', marginBottom: 12 }}>{error}</p>}
-      <div role="tablist" aria-label="Practice views" style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+      <div role="tablist" aria-label="Practice views" className="tabs" style={{ marginBottom: 18 }}>
         {tabs.map(t => (
-          <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm'}
+          <button key={t.id} role="tab" aria-selected={tab === t.id} className="tab"
             onClick={() => setTab(t.id)}>{t.label}</button>
         ))}
       </div>
+      <div style={{ maxWidth: 880 }}>
       {tab === 'today' && (
         <>
           {today && <CountdownBanner countdown={today.countdown} showToast={showToast} onPrepared={() => reloadToday()} />}
@@ -1296,6 +1300,7 @@ export default function Practice({ active, showToast, onNavigate }) {
       {tab === 'stories' && <StoriesView showToast={showToast} onChanged={() => reloadToday()} />}
       {tab === 'insights' && <InsightsView active={active !== false} onPractise={practiseTopic} onNavigate={onNavigate} />}
       {tab === 'reported' && <ReportedView bank={bank} onChanged={afterChange} showToast={showToast} />}
+      </div>
     </div>
   )
 }

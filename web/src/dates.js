@@ -44,6 +44,19 @@ export function relativeDay(day, now = new Date()) {
   })
 }
 
+// A stored YYYY-MM-DD shown the way people read dates: "Sat 21 Dec", with the
+// year only when it is not this year. Anything that is not a plain day comes
+// back unchanged rather than as "Invalid Date".
+export function formatDay(day, now = new Date()) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(day || ''))
+  if (!m) return day || ''
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12)
+  return d.toLocaleDateString(undefined, {
+    weekday: 'short', day: 'numeric', month: 'short',
+    ...(d.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }),
+  })
+}
+
 // The UTC bounds of one local calendar day, in the 'YYYY-MM-DD HH:MM:SS'
 // shape the applications table stores applied_at in.
 export function localDayBoundsUTC(day) {

@@ -53,7 +53,7 @@ export default class ErrorBoundary extends Component {
     if (!this.state.error) return this.props.children
 
     return (
-      <div className="card" role="alert" style={{ borderLeft: '3px solid var(--red)' }}>
+      <div className="card card-accent" role="alert" style={{ '--card-accent': 'var(--red)' }}>
         <h2 style={{ fontSize: 15, marginBottom: 6 }}>
           The {this.props.name} page couldn’t be displayed
         </h2>

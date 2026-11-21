@@ -119,8 +119,8 @@ function Card({ item, today, editing, onEdit, onSave, onCancel, onDone, onOpen, 
 
   return (
     <div
-      className={`card${editing ? '' : ' card-interactive'}`}
-      style={{ padding: 12, marginBottom: 8, borderLeft: `3px solid ${border}`, opacity: dragging ? 0.5 : 1 }}
+      className={`card card-accent${editing ? '' : ' card-interactive'}`}
+      style={{ padding: 12, marginBottom: 8, '--card-accent': border, opacity: dragging ? 0.5 : 1 }}
       onClick={open}
       // Dragging is the quick way between columns; the "Move to…" menu below
       // is the same thing for the keyboard and for anyone who can't drag.
@@ -392,9 +392,9 @@ export default function Pipeline({ active, onOpenApplication, onNavigate, showTo
       {/* Hoisted out of the columns on purpose: the whole failure this page exists
           to fix is an urgent follow-up sitting unnoticed inside a long list. */}
       {(overdue.length > 0 || dueToday.length > 0) && (
-        <div className="card" style={{
+        <div className="card card-accent" style={{
           marginBottom: 24,
-          borderLeft: `3px solid ${overdue.length ? 'var(--red)' : 'var(--accent)'}`,
+          '--card-accent': overdue.length ? 'var(--red)' : 'var(--accent)',
         }}>
           <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4 }}>
             {overdue.length > 0 && `${overdue.length} overdue`}

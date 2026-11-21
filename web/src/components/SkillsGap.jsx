@@ -42,9 +42,9 @@ export default function SkillsGap({ active }) {
     <div className="card" style={{ marginBottom: 24 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 8, flexWrap: 'wrap' }}>
         <span style={{ fontWeight: 600, fontSize: 14 }}>Skills employers ask for</span>
-        <label style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+        <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 8, margin: 0 }}>
           Ads from the last{' '}
-          <select aria-label="Time range for skills" value={days} onChange={e => setDays(Number(e.target.value))}>
+          <select aria-label="Time range for skills" value={days} onChange={e => setDays(Number(e.target.value))} style={{ width: 'auto', fontSize: 12, padding: '4px 8px' }}>
             {RANGES.map(d => <option key={d} value={d}>{d} days</option>)}
           </select>
         </label>

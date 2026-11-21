@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { formatDay } from '../dates'
 import { useTasksChanged } from '../taskEvents'
 
 // This week's targets and how far along each is (services/weeklyGoals.js).
@@ -46,7 +47,7 @@ export default function WeeklyGoals({ active, showToast }) {
   return (
     <section className="card" aria-label="Weekly goals" style={{ marginBottom: 16, padding: '12px 16px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
-        <div style={{ fontWeight: 600, fontSize: 14 }}>This week{data ? <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--text-muted)' }}> · {data.weekStart} to {data.weekEnd}</span> : null}</div>
+        <div style={{ fontWeight: 600, fontSize: 14 }}>This week{data ? <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--text-muted)' }}> · {formatDay(data.weekStart)} – {formatDay(data.weekEnd)}</span> : null}</div>
         {!editing && <button className="btn btn-ghost btn-sm" onClick={startEdit}>{goals.length ? 'Edit goals' : 'Set weekly goals'}</button>}
       </div>
       {error && <p role="alert" style={{ fontSize: 12, color: 'var(--red)' }}>{error}</p>}

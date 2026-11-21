@@ -186,7 +186,12 @@ function ColumnChart({ bars, threshold, height = 140, gap = 8 }) {
       <div style={{ display: 'flex', gap, marginTop: 6 }}>
         {bars.map(b => (
           <div key={b.key} style={{ flex: '1 1 0', minWidth: 0, textAlign: 'center', fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.3 }}>
-            <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{b.label}</div>
+            {/* Centred and allowed to spill into the empty neighbouring
+                columns. On the 30- and 90-day views only every few bars are
+                labelled and each column is ~15px wide, so clipping to the
+                column cut every date to "2…". Flex centring spreads the
+                overflow evenly both sides, keeping the label under its bar. */}
+            <div style={{ display: 'flex', justifyContent: 'center', whiteSpace: 'nowrap' }}>{b.label}</div>
             {b.sub && <div style={{ fontSize: 10, opacity: 0.75 }}>{b.sub}</div>}
           </div>
         ))}
@@ -214,7 +219,8 @@ function BarChart({ data }) {
   if (!data || data.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No data</div>
   const max = Math.max(...data.map(d => d.count), 1)
   // A month of days cannot each carry a weekday label; show every few.
-  const every = data.length > 14 ? Math.ceil(data.length / 10) : 1
+  // About seven labels across, so "21 Nov" has room beside its neighbours.
+  const every = data.length > 14 ? Math.ceil(data.length / 7) : 1
   return (
     <ColumnChart
       gap={data.length > 14 ? 3 : 8}

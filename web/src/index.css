@@ -338,14 +338,63 @@ input, textarea, select {
   transition: border-color 0.18s var(--ease), box-shadow 0.18s var(--ease), background 0.18s var(--ease);
 }
 input:hover:not(:disabled), textarea:hover:not(:disabled), select:hover:not(:disabled) {
-  border-color: var(--border-strong); background: var(--surface2);
+  border-color: var(--border-strong); background-color: var(--surface2);
 }
+/* background-color, not the shorthand: the shorthand resets background-image,
+   and the select's chevron vanished on hover. */
 input:focus, textarea:focus, select:focus {
-  border-color: var(--accent); background: var(--surface2); box-shadow: var(--ring);
+  border-color: var(--accent); background-color: var(--surface2); box-shadow: var(--ring);
 }
 input:disabled, textarea:disabled, select:disabled { opacity: 0.5; cursor: not-allowed; }
 input::placeholder, textarea::placeholder { color: var(--text-faint); }
 select { cursor: pointer; }
+
+/* ─── One control height ───────────────────────────────────────────
+   A text box, a select, a date picker and a button side by side must be the
+   same height, or every form row looks ragged. They were not: a text input
+   took its height from the font's "normal" line height, a select added
+   Chromium's own internal padding, a date input added the padding around its
+   date fields and the calendar button, and a button used 1.4 × its font size.
+   So 34, 36, 37 and 36px sat next to each other, with the select's text
+   indented 4px further than the text box beside it.
+   Every one now gets the same fixed line box, so the height is purely
+   padding + 18px + border: 36px at the default padding and 28px for the
+   compact variants — whatever font size a call site picks. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+select:not([multiple]) { line-height: 18px; }
+.btn { line-height: 18px; }
+
+/* The date and time pickers' inner parts carry their own padding and margins,
+   which is what made them taller than the text box beside them. */
+input::-webkit-datetime-edit,
+input::-webkit-datetime-edit-fields-wrapper { padding: 0; line-height: 18px; }
+input::-webkit-datetime-edit-text { padding: 0 1px; }
+input::-webkit-calendar-picker-indicator {
+  margin: 0 0 0 6px; padding: 0; width: 14px; height: 14px;
+  opacity: 0.55; cursor: pointer; transition: opacity 0.15s var(--ease);
+}
+input::-webkit-calendar-picker-indicator:hover { opacity: 0.9; }
+/* An empty date reads as a hint, like a placeholder — not as a date someone
+   typed. React keeps the value attribute in step with the field. */
+input[type="date"][value=""]::-webkit-datetime-edit { color: var(--text-faint); }
+
+/* Our own chevron rather than the native one: the native arrow sat at a
+   different inset in every select and its text started 4px right of the text
+   box above it. With the native chrome gone the select is laid out exactly
+   like a text input. The right padding is !important because call sites set
+   `padding` inline for compact selects, and the shorthand would otherwise run
+   the text under the arrow. */
+select:not([multiple]) {
+  -webkit-appearance: none; appearance: none;
+  background-image: var(--chevron);
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  background-size: 10px 6px;
+  padding-right: 30px !important;
+  text-overflow: ellipsis;
+}
+:root { --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%239aa3b8' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
+[data-theme="light"] { --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2357637a' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
 /* The native popup is an OS window, not part of the page — it cannot be
    translucent, so it needs a genuinely opaque colour or options render on
    whatever the platform picks. */
@@ -375,6 +424,30 @@ input[type="number"] { max-width: 260px; }
 
 .form-group { display: flex; flex-direction: column; gap: 4px; margin-bottom: 16px; }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+/* A compact two-column form inside a card: every field the same height and
+   on the same 10px rhythm. `.span-2` is a field that takes the full width. */
+/* Underlined section tabs — the pattern Settings and the Dashboard's status
+   filter already use, as a class so a page does not have to restate it. */
+.tabs { display: flex; flex-wrap: wrap; gap: 2px; border-bottom: 1px solid var(--border); }
+.tab {
+  background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  padding: 8px 14px; font: inherit; font-size: 13.5px; color: var(--text-muted);
+  cursor: pointer; white-space: nowrap; transition: color 0.15s var(--ease), border-color 0.15s var(--ease);
+}
+.tab:hover { color: var(--text); }
+.tab[aria-selected="true"] { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
+/* Two cards side by side whose rows line up: title, subtitle, form, actions.
+   Each card is a subgrid of the pair's four rows, so a subtitle that wraps
+   onto a second line in one card pushes the other card's fields down with it
+   — the fields of both always start on the same line, at any window width.
+   Each card needs exactly four children, in that order. */
+.card-pair {
+  display: grid; grid-template-columns: 1fr 1fr; column-gap: 18px;
+  grid-template-rows: auto auto auto 1fr;
+}
+.card-pair > .card { display: grid; grid-row: span 4; grid-template-rows: subgrid; row-gap: 0; align-content: start; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.form-grid > .span-2 { grid-column: 1 / -1; }
 
 /* ─── Cards ────────────────────────────────────────────────────────
    The workhorse surface, and the app's primary use of the material. */
@@ -390,6 +463,17 @@ input[type="number"] { max-width: 260px; }
 }
 /* Opt-in for cards that are themselves a click target (pipeline cards,
    timeline days) — a flat card that moves on hover reads as pressable. */
+/* A status colour on a card. It used to be a 3px border-left, and on an 18px
+   corner radius that border bends around both corners — a crescent at the top
+   and bottom that read as a rendering fault. This is a straight bar inset
+   from the corners instead, so the card keeps its shape and the colour still
+   reads at a glance. Set the colour with --card-accent; transparent hides it. */
+.card-accent { position: relative; }
+.card-accent::before {
+  content: ''; position: absolute; left: 0; top: 14px; bottom: 14px; width: 3px;
+  border-radius: 0 3px 3px 0; background: var(--card-accent, transparent);
+  pointer-events: none;
+}
 .card-interactive { cursor: pointer; }
 .card-interactive:hover {
   background: var(--glass-raised);
@@ -643,7 +727,7 @@ input[type="checkbox"] {
   display: flex; align-items: flex-start; justify-content: space-between;
   gap: 16px; margin-bottom: 24px;
 }
-.page-header h1 { font-size: 22px; }
+.page-header h1 { font-size: 22px; font-weight: 700; }
 /* The subtitle under a page title. Not .text-muted, because it also needs the
    spacing — and every page-header in the app has one. */
 .page-header p { color: var(--text-muted); font-size: 13px; margin-top: 5px; }

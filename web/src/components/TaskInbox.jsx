@@ -2,8 +2,23 @@ import { useCallback, useEffect, useState } from 'react'
 import { notifyTasksChanged, useTasksChanged } from '../taskEvents'
 import ProposeTimes from './ProposeTimes'
 import ThankYouNote from './ThankYouNote'
+import { formatDay } from '../dates'
 
 const BTN = { fontSize: 12, padding: '5px 11px' }
+
+// The task's kind as a person would say it; the raw key ("propose-times") read
+// like an internal identifier.
+const KIND_LABELS = {
+  checklist: 'Checklist', 'follow-up': 'Follow-up', 'propose-times': 'Interview times', 'thank-you': 'Thank-you note',
+  attention: 'Application deadline', offer: 'Offer decision',
+}
+const kindLabel = kind => KIND_LABELS[kind] || (kind ? kind.charAt(0).toUpperCase() + kind.slice(1).replace(/-/g, ' ') : 'Task')
+function dueLabel(due, today) {
+  if (!due) return 'No due date'
+  if (due < today) return `Overdue · was due ${formatDay(due)}`
+  if (due === today) return 'Due today'
+  return `Due ${formatDay(due)}`
+}
 
 export default function TaskInbox({ active, onOpenApplication, onNavigate, showToast }) {
   const [tasks, setTasks] = useState([]), [error, setError] = useState(''), [busy, setBusy] = useState(false)
@@ -40,7 +55,7 @@ export default function TaskInbox({ active, onOpenApplication, onNavigate, showT
       <div style={{ flex: '1 1 260px', minWidth: 0 }}>
         <div style={{ fontWeight: 600, fontSize: 13 }}>{task.title}</div>
         <div style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 1 }}>{[task.company, task.jobTitle].filter(Boolean).join(' · ')}</div>
-        <small style={{ display: 'block', fontSize: 11.5, marginTop: 2, color: task.due && task.due < today ? 'var(--red)' : 'var(--text-faint)' }}>{task.kind} · {task.due ? `${task.due < today ? 'Overdue · ' : ''}${task.due}` : 'No due date'}</small></div>
+        <small style={{ display: 'block', fontSize: 11.5, marginTop: 2, color: task.due && task.due < today ? 'var(--red)' : 'var(--text-faint)' }}>{kindLabel(task.kind)} · {dueLabel(task.due, today)}</small></div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end', marginLeft: 'auto' }}>
       {task.applicationId && <button className="btn btn-ghost btn-sm" style={BTN} onClick={() => onOpenApplication(task.applicationId)}>Open application</button>}
       {task.kind === 'attention' && <button className="btn btn-ghost btn-sm" style={BTN} onClick={() => onNavigate?.('attention')}>Open Needs Attention</button>}

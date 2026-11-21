@@ -1,4 +1,35 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { formatDay } from '../dates'
+
+const RELATIONSHIPS = [['recruiter', 'Recruiter'], ['referral', 'Referral'], ['hiring-manager', 'Hiring manager'], ['network', 'Network']]
+const relationshipLabel = value => RELATIONSHIPS.find(([v]) => v === value)?.[1] || value || ''
+
+// A date input with nothing in it shows "dd/mm/yyyy" and nothing about what
+// the date is for, beside text boxes that all say what they want. Empty, this
+// is a text box with a placeholder; on focus it becomes the date picker and
+// opens it, and once a date is chosen it stays a date input.
+function DateField({ value, onChange, placeholder }) {
+  const [focused, setFocused] = useState(false)
+  const ref = useRef(null)
+  const asDate = focused || !!value
+  return (
+    <input
+      ref={ref}
+      className="input"
+      type={asDate ? 'date' : 'text'}
+      aria-label={placeholder}
+      placeholder={placeholder}
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      onFocus={() => {
+        setFocused(true)
+        // After React has switched the type, so the picker is the date one.
+        requestAnimationFrame(() => { try { ref.current?.showPicker?.() } catch { /* needs a user gesture */ } })
+      }}
+      onBlur={() => setFocused(false)}
+    />
+  )
+}
 
 const blankCampaign = { name: '', keywords: '', location: '', salaryMin: 0, scheduleTime: '09:00', enabled: true, reviewBeforeSubmit: true }
 const blankJob = { url: '', title: '', company: '', description: '' }
@@ -68,7 +99,7 @@ export default function Workbench({ active, showToast }) {
     {dueContacts.length > 0 && <div className="card" style={{ marginBottom: 18, borderColor: 'var(--accent)' }}>
       <h2>Contact reminders due</h2>
       {dueContacts.map(person => <div className="list-row" key={person.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <div style={{ flex: 1 }}><strong>{person.name || person.email}</strong><div className="text-muted">Due {person.next_action_at} · {[person.company, person.role].filter(Boolean).join(' · ')}</div></div>
+        <div style={{ flex: 1 }}><strong>{person.name || person.email}</strong><div className="text-muted">Due {formatDay(person.next_action_at)} · {[person.company, person.role].filter(Boolean).join(' · ')}</div></div>
         <button className="btn btn-ghost" onClick={() => reloadAction(() => window.api.snoozeContactReminder(person.id, dateAfter(7)), 'Reminder moved one week')}>Snooze 1 week</button>
         <button className="btn btn-primary" onClick={() => reloadAction(() => window.api.completeContactReminder(person.id), 'Contact reminder completed')}>Done</button>
       </div>)}
@@ -92,16 +123,33 @@ export default function Workbench({ active, showToast }) {
         <label><input type="checkbox" checked={campaign.reviewBeforeSubmit !== false} onChange={e => setCampaign({ ...campaign, reviewBeforeSubmit: e.target.checked })} /> Review before submit</label>
       </div>
       <button className="btn btn-primary" style={{ marginTop: 10 }} onClick={async () => { if (await reloadAction(() => window.api.saveCampaign(campaign), 'Campaign saved')) setCampaign(blankCampaign) }}>Save campaign</button>
-      <div style={{ marginTop: 12 }}>{campaigns.map(c => <div key={c.id} className="list-row" style={{ display: 'flex', gap: 10, alignItems: 'center' }}><strong style={{ flex: 1 }}>{c.name}</strong><span className="text-muted">{c.enabled ? 'Enabled' : 'Paused'} · {c.keywords} · {c.location || 'anywhere'} · {c.scheduleTime}</span><button className="btn btn-ghost" onClick={() => reloadAction(() => window.api.runCampaign(c.id), 'Campaign scan queued')}>Run</button><button className="btn btn-ghost" onClick={() => setCampaign(c)}>Edit</button><button className="btn btn-ghost" onClick={() => { if (window.confirm(`Delete the campaign "${c.name || 'Untitled'}"?`)) reloadAction(() => window.api.deleteCampaign(c.id), 'Campaign deleted') }}>Delete</button></div>)}</div>
+      <div style={{ marginTop: 12 }}>{campaigns.map(c => <div key={c.id} className="list-row" style={{ display: 'flex', gap: 10, alignItems: 'center' }}><strong style={{ flex: 1 }}>{c.name}</strong><span className="text-muted">{c.enabled ? 'Enabled' : 'Paused'} · {c.keywords} · {c.location || 'anywhere'} · {c.scheduleTime}</span><button className="btn btn-ghost btn-sm" onClick={() => reloadAction(() => window.api.runCampaign(c.id), 'Campaign scan queued')}>Run</button><button className="btn btn-ghost btn-sm" onClick={() => setCampaign(c)}>Edit</button><button className="btn btn-ghost btn-sm" onClick={() => { if (window.confirm(`Delete the campaign "${c.name || 'Untitled'}"?`)) reloadAction(() => window.api.deleteCampaign(c.id), 'Campaign deleted') }}>Delete</button></div>)}</div>
     </div>
 
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
-      <div className="card"><h2>Import any job</h2><p className="text-muted">Add a listing here or use the browser extension in <code>extension/</code>.</p>
-        {field(job, setJob, 'url', { placeholder: 'https://company.example/jobs/…' })}<div style={{ display: 'flex', gap: 8, marginTop: 8 }}>{field(job, setJob, 'title', { placeholder: 'Role' })}{field(job, setJob, 'company', { placeholder: 'Company' })}</div><textarea className="input" aria-label="Job description" style={{ marginTop: 8, minHeight: 90 }} value={job.description} onChange={e => setJob({ ...job, description: e.target.value })} placeholder="Optional description" /><button className="btn btn-primary" style={{ marginTop: 8 }} onClick={async () => { if (await reloadAction(() => window.api.importJob(job), 'Job added to Needs Attention')) setJob(blankJob) }}>Import</button>
+    {/* Both cards have the same four parts — title, subtitle, form, actions —
+        laid on shared rows (.card-pair), so their fields start and end on the
+        same lines even when one subtitle wraps. The contacts card used to have
+        no subtitle at all, which put every one of its fields half a row higher
+        than the import card beside it. */}
+    <div className="card-pair">
+      <div className="card"><h2>Import any job</h2><p className="text-muted">Paste a job link from any site, or send one from the Hiro browser extension.</p>
+        <div className="form-grid">
+          <div className="span-2">{field(job, setJob, 'url', { placeholder: 'Job link, e.g. https://company.com/jobs/123' })}</div>
+          {field(job, setJob, 'title', { placeholder: 'Role' })}{field(job, setJob, 'company', { placeholder: 'Company' })}
+          <textarea className="input span-2" aria-label="Job description" style={{ minHeight: 136 }} value={job.description} onChange={e => setJob({ ...job, description: e.target.value })} placeholder="Job description (optional)" />
+        </div>
+        <div><button className="btn btn-primary" style={{ marginTop: 14 }} onClick={async () => { if (await reloadAction(() => window.api.importJob(job), 'Job added to Needs Attention')) setJob(blankJob) }}>Import job</button></div>
       </div>
-      <div className="card"><h2>Contacts & referrals</h2>
-        <div style={{ display: 'flex', gap: 8 }}>{field(contact, setContact, 'name', { placeholder: 'Name' })}{field(contact, setContact, 'email', { type: 'email', placeholder: 'Email' })}</div><div style={{ display: 'flex', gap: 8, marginTop: 8 }}>{field(contact, setContact, 'company', { placeholder: 'Company' })}{field(contact, setContact, 'role', { placeholder: 'Role / context' })}</div><div style={{ display: 'flex', gap: 8, marginTop: 8 }}><select className="input" aria-label="Relationship" value={contact.relationship} onChange={e => setContact({ ...contact, relationship: e.target.value })}><option value="recruiter">Recruiter</option><option value="referral">Referral</option><option value="hiring-manager">Hiring manager</option><option value="network">Network</option></select>{field(contact, setContact, 'next_action_at', { type: 'date', title: 'Next action date' })}</div><textarea className="input" aria-label="Contact notes" style={{ marginTop: 8, minHeight: 70 }} value={contact.notes} onChange={e => setContact({ ...contact, notes: e.target.value })} placeholder="Conversation notes or referral plan" /><button className="btn btn-primary" style={{ marginTop: 8 }} onClick={async () => { if (await reloadAction(() => window.api.saveContact(contact), 'Contact saved')) setContact(blankContact) }}>Save contact</button>
-        <div style={{ marginTop: 12 }}>{contacts.map(p => <div className="list-row" key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}><div style={{ flex: 1 }}><strong>{p.name || p.email}</strong><div className="text-muted">{p.relationship} · {p.company} {p.role && `· ${p.role}`} {p.next_action_at && `· next ${p.next_action_at}`}</div></div><button className="btn btn-ghost" onClick={() => setContact(p)}>Edit</button><button className="btn btn-ghost" onClick={() => { if (window.confirm(`Delete the contact ${p.name || p.email || 'with no name'}?`)) reloadAction(() => window.api.deleteContact(p.id), 'Contact deleted') }}>Delete</button></div>)}</div>
+      <div className="card"><h2>Contacts & referrals</h2><p className="text-muted">Recruiters and referrers, with a reminder to get back in touch.</p>
+        <div className="form-grid">
+          {field(contact, setContact, 'name', { placeholder: 'Name' })}{field(contact, setContact, 'email', { type: 'email', placeholder: 'Email' })}
+          {field(contact, setContact, 'company', { placeholder: 'Company' })}{field(contact, setContact, 'role', { placeholder: 'Role or how you met' })}
+          <select className="input" aria-label="Relationship" value={contact.relationship} onChange={e => setContact({ ...contact, relationship: e.target.value })}>{RELATIONSHIPS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
+          <DateField value={contact.next_action_at || ''} onChange={v => setContact({ ...contact, next_action_at: v })} placeholder="Follow up on (optional)" />
+          <textarea className="input span-2" aria-label="Contact notes" style={{ minHeight: 90 }} value={contact.notes} onChange={e => setContact({ ...contact, notes: e.target.value })} placeholder="Conversation notes or referral plan" />
+        </div>
+        <div><button className="btn btn-primary" style={{ marginTop: 14 }} onClick={async () => { if (await reloadAction(() => window.api.saveContact(contact), 'Contact saved')) setContact(blankContact) }}>{contact.id ? 'Update contact' : 'Save contact'}</button>
+        {contacts.length > 0 && <div style={{ marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 4 }}>{contacts.map(p => <div className="list-row" key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}><div style={{ flex: 1, minWidth: 0 }}><strong>{p.name || p.email}</strong><div className="text-muted">{[relationshipLabel(p.relationship), p.company, p.role, p.next_action_at && `follow up ${formatDay(p.next_action_at)}`].filter(Boolean).join(' · ')}</div></div><button className="btn btn-ghost btn-sm" onClick={() => setContact(p)}>Edit</button><button className="btn btn-ghost btn-sm" onClick={() => { if (window.confirm(`Delete the contact ${p.name || p.email || 'with no name'}?`)) reloadAction(() => window.api.deleteContact(p.id), 'Contact deleted') }}>Delete</button></div>)}</div>}</div>
       </div>
     </div>
   </div>
