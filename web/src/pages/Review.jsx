@@ -244,6 +244,8 @@ export default function Review({ active, showToast, onCountChange }) {
   })
 
   const allSelected = held.length > 0 && selected.size === held.length
+  // A column of dashes says nothing; it appears once any draft has a résumé name.
+  const showResume = held.some(r => r.resume_name)
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(held.map(h => h.id)))
 
   async function loadHold(id) {
@@ -481,13 +483,11 @@ export default function Review({ active, showToast, onCountChange }) {
                 <th style={{ padding: '10px 12px', width: 36 }}>
                   <input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="Select all" />
                 </th>
-                <th style={{ padding: '10px 12px' }}>Role</th>
-                <th style={{ padding: '10px 12px' }}>Company</th>
-                <th style={{ padding: '10px 12px' }}>Platform</th>
-                <th style={{ padding: '10px 12px' }}>Resume</th>
+                <th style={{ padding: '10px 12px' }}>Role / Company</th>
+                {showResume && <th style={{ padding: '10px 12px' }}>Resume</th>}
                 <th style={{ padding: '10px 12px', textAlign: 'right' }}>Match</th>
                 <th style={{ padding: '10px 12px' }}>Held</th>
-                <th style={{ padding: '10px 12px', width: 150 }} />
+                <th style={{ padding: '10px 16px 10px 12px' }}><span style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>Actions</span></th>
               </tr>
             </thead>
             <tbody>
@@ -501,30 +501,35 @@ export default function Review({ active, showToast, onCountChange }) {
                       aria-label={`Select ${row.job_title}`}
                     />
                   </td>
-                  <td style={{ padding: '10px 12px' }}>
+                  {/* Title and company in one cell, as on the Dashboard. Split,
+                      at the minimum window width both broke onto three lines and
+                      the Submit button sat flush against the card's edge. */}
+                  <td style={{ padding: '10px 12px', minWidth: 180 }}>
                     <button
                       onClick={() => openDetail(row)}
+                      title="Read what would be sent"
                       style={{
                         background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-                        color: 'var(--text)', fontSize: 13, textAlign: 'left', textDecoration: 'underline',
-                        textDecorationColor: 'var(--border)',
+                        color: 'var(--text)', fontSize: 13, fontWeight: 500, textAlign: 'left', textDecoration: 'underline',
+                        textDecorationColor: 'var(--border-strong)', textUnderlineOffset: 3,
                       }}
                     >
                       {row.job_title}
                     </button>
+                    <div style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 2 }}>
+                      {[row.company, row.platform].filter(Boolean).join(' · ')}
+                    </div>
                   </td>
-                  <td style={{ padding: '10px 12px', color: 'var(--text-muted)' }}>{row.company}</td>
-                  <td style={{ padding: '10px 12px', color: 'var(--text-muted)' }}>{row.platform}</td>
-                  <td style={{ padding: '10px 12px', color: 'var(--text-muted)' }}>{row.resume_name || '—'}</td>
+                  {showResume && <td style={{ padding: '10px 12px', color: 'var(--text-muted)' }}>{row.resume_name || '—'}</td>}
                   <td style={{ padding: '10px 12px', textAlign: 'right', color: scoreColour(row.match_score), fontWeight: 600 }}>
                     {row.match_score != null ? `${row.match_score}%` : '—'}
                   </td>
-                  <td style={{ padding: '10px 12px', color: 'var(--text-muted)', fontSize: 12 }}>{fmtWhen(row.held_at)}</td>
-                  <td style={{ padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    <button className="btn btn-ghost" disabled={busy} onClick={() => setConfirmReject(row)} style={{ marginRight: 6 }}>
+                  <td style={{ padding: '10px 12px', color: 'var(--text-muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{fmtWhen(row.held_at)}</td>
+                  <td style={{ padding: '10px 16px 10px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setConfirmReject(row)} style={{ marginRight: 6, fontSize: 12, padding: '5px 12px' }}>
                       Reject
                     </button>
-                    <button className="btn btn-primary" disabled={busy} onClick={() => approve([row.id])}>
+                    <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => approve([row.id])} style={{ fontSize: 12, padding: '5px 12px' }}>
                       Submit
                     </button>
                   </td>

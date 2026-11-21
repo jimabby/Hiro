@@ -80,6 +80,13 @@ export default function useModalFocus() {
         first.focus()
         return
       }
+      // Focus on the dialog itself (where it starts): Tab goes to the first
+      // control, Shift+Tab to the last.
+      if (document.activeElement === active) {
+        e.preventDefault()
+        ;(e.shiftKey ? last : first).focus()
+        return
+      }
       if (e.shiftKey && document.activeElement === first) {
         e.preventDefault()
         last.focus()
@@ -106,14 +113,15 @@ export default function useModalFocus() {
         // An element inside may already have autoFocus (the question dialog's
         // textarea does); don't fight it.
         if (!active.contains(document.activeElement)) {
-          const items = focusableWithin(active)
-          if (items.length) items[0].focus()
-          else {
-            // A dialog with no controls still has to receive focus, or the
-            // screen reader keeps announcing the page behind it.
-            active.setAttribute('tabindex', '-1')
-            active.focus()
-          }
+          // The dialog itself takes focus, not its first control. Focusing the
+          // first control put the cursor in whatever field happened to come
+          // first — the application panel opened with its closing-date input
+          // selected — and since Escape inside a field belongs to the field,
+          // Escape then did not close the panel. Focusing the dialog is the
+          // standard pattern: it is announced, Escape closes it, and the first
+          // Tab still lands on the first control.
+          active.setAttribute('tabindex', '-1')
+          active.focus({ preventScroll: true })
         }
       } else if (restoreTo?.isConnected) {
         // Closing: put focus back where it came from. Without this it lands on

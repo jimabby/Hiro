@@ -586,8 +586,21 @@ export default function Offers({ active, showToast, onOpenApplication }) {
             {o.benefits && <span>Benefits: {o.benefits}</span>}
             {o.equity && <span style={{ color: 'var(--text-muted)' }}>Equity: {o.equity}</span>}
             {o.excitement != null && (
-              <span style={{ color: 'var(--text-muted)' }}>
-                Excitement {'●'.repeat(o.excitement)}{'○'.repeat(5 - o.excitement)}
+              // Drawn dots rather than ● and ○: the two glyphs come from
+              // different fallback fonts on Windows and rendered at different
+              // sizes and baselines, so the row looked broken.
+              <span style={{ color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                aria-label={`Excitement ${o.excitement} of 5`}>
+                Excitement
+                <span aria-hidden="true" style={{ display: 'inline-flex', gap: 3 }}>
+                  {[1, 2, 3, 4, 5].map(n => (
+                    <span key={n} style={{
+                      width: 7, height: 7, borderRadius: '50%',
+                      background: n <= o.excitement ? 'var(--accent)' : 'transparent',
+                      border: `1.5px solid ${n <= o.excitement ? 'var(--accent)' : 'var(--border-strong)'}`,
+                    }} />
+                  ))}
+                </span>
               </span>
             )}
             {o.decision !== 'considering' && (

@@ -335,7 +335,10 @@ export default function Settings({ showToast, active, focusTab, onFocusTabHandle
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+      {/* A fixed height: the tabs without a Save button (Data, About) otherwise
+          had a shorter header, and the title and tab strip jumped up as you
+          switched to them. */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24, minHeight: 38 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700 }}>Settings</h1>
         {settingsTab !== 'about' && settingsTab !== 'data' && (
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>

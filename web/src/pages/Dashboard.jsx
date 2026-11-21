@@ -1050,8 +1050,8 @@ export default memo(function Dashboard({ active = true, scanRunning, onScanStart
 
       {/* Stats */}
       {!stats && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 16, marginBottom: 24 }}>
-          {Array.from({ length: 5 }).map((_, i) => (
+        <div className="stat-grid-6" style={{ marginBottom: 24 }}>
+          {Array.from({ length: 6 }).map((_, i) => (
             <div key={i} className="card stat-card" style={{ opacity: 0.5 }}>
               <div className="stat-value">—</div>
               <div className="stat-label">Loading...</div>
@@ -1060,7 +1060,7 @@ export default memo(function Dashboard({ active = true, scanRunning, onScanStart
         </div>
       )}
       {stats && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 16, marginBottom: 24 }}>
+        <div className="stat-grid-6" style={{ marginBottom: 24 }}>
           {[
             {
               label: 'Today',
@@ -1228,23 +1228,23 @@ export default memo(function Dashboard({ active = true, scanRunning, onScanStart
         {(() => {
           const TAB_STATUSES = FILTER_TABS
           return (
-            // flexWrap, because nine tabs do not fit. Without it the last one
-            // ("Skipped") pushed past the card, and because nothing between here
-            // and <main> clips, the ENTIRE page gained a horizontal scrollbar at
-            // any window narrower than about 1200px — the sidebar and all.
-            // Wrapping to a second row costs one line and only when needed.
-            <div style={{
-              display: 'flex', flexWrap: 'wrap', gap: 2, marginBottom: 16,
+            // One line that scrolls on its own when the window is too narrow.
+            // Overflowing the card gave the whole page a horizontal scrollbar;
+            // wrapping instead left "Skipped" alone on a second row, under a
+            // tab underline that no longer lined up with anything.
+            <div role="tablist" aria-label="Filter by status" style={{
+              display: 'flex', flexWrap: 'nowrap', gap: 2, marginBottom: 14,
               borderBottom: '1px solid var(--border)', paddingBottom: 0,
+              overflowX: 'auto', overflowY: 'hidden', scrollbarWidth: 'thin',
             }}>
               {TAB_STATUSES.map(tab => {
                 const count = tab.value ? apps.filter(a => a.status === tab.value).length : apps.length
                 const active = filter.status === tab.value
                 return (
-                  <button key={tab.value} onClick={() => setFilter(f => ({ ...f, status: tab.value }))}
+                  <button key={tab.value} role="tab" aria-selected={active} onClick={() => setFilter(f => ({ ...f, status: tab.value }))}
                     style={{
-                      background: 'none', border: 'none', cursor: 'pointer',
-                      padding: '8px 14px', fontSize: 13, fontWeight: active ? 600 : 400,
+                      background: 'none', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0,
+                      padding: '8px 11px', fontSize: 13, fontWeight: active ? 600 : 400,
                       color: active ? 'var(--accent)' : 'var(--text-muted)',
                       borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
                       marginBottom: -1, transition: 'color 0.15s',
@@ -1263,9 +1263,13 @@ export default memo(function Dashboard({ active = true, scanRunning, onScanStart
         })()}
 
         <SavedViews filter={filter} sort={sort} onApply={view => { setFilter(view.filter); setSort(view.sort); setCurrentPage(1); setSelectedIds(new Set()) }} />
-        <div style={{ display: 'flex', gap: 12, marginBottom: 10 }}>
-          <label>Minimum match <input aria-label="Minimum match score" type="number" min="0" max="100" value={filter.minMatch || ''} onChange={e => setFilter(f => ({ ...f, minMatch: e.target.value }))} style={{ width: 80 }} /></label>
-          <label><input type="checkbox" checked={!!filter.dueOnly} onChange={e => setFilter(f => ({ ...f, dueOnly: e.target.checked }))} /> Has a follow-up scheduled</label>
+        <div style={{ display: 'flex', gap: 18, marginBottom: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, margin: 0 }}>
+            Minimum match
+            <input aria-label="Minimum match score" type="number" min="0" max="100" placeholder="0–100" value={filter.minMatch || ''}
+              onChange={e => setFilter(f => ({ ...f, minMatch: e.target.value }))} style={{ width: 84, padding: '5px 8px' }} />
+          </label>
+          <label style={{ margin: 0 }}><input type="checkbox" checked={!!filter.dueOnly} onChange={e => setFilter(f => ({ ...f, dueOnly: e.target.checked }))} /> Has a follow-up scheduled</label>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -1375,11 +1379,20 @@ export default memo(function Dashboard({ active = true, scanRunning, onScanStart
                         style={{ width: 'auto' }}
                       />
                     </th>
-                    <th className="sortable" onClick={() => toggleSort('job_title')}>Role{sortIndicator('job_title')}</th>
-                    <th className="sortable" onClick={() => toggleSort('company')}>Company{sortIndicator('company')}</th>
+                    {/* One column for both. As two, the auto layout gave Role
+                        whatever was left after seven other columns — about
+                        130px — so a long title broke onto six or seven lines and
+                        every row was a different height. */}
+                    <th>
+                      <span className="th-sort" role="button" tabIndex={0} onClick={() => toggleSort('job_title')}
+                        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSort('job_title') } }}>Role{sortIndicator('job_title')}</span>
+                      <span aria-hidden="true" style={{ margin: '0 6px', opacity: 0.5 }}>/</span>
+                      <span className="th-sort" role="button" tabIndex={0} onClick={() => toggleSort('company')}
+                        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSort('company') } }}>Company{sortIndicator('company')}</span>
+                    </th>
                     <th className="sortable" onClick={() => toggleSort('platform')}>Platform{sortIndicator('platform')}</th>
                     <th className="sortable" onClick={() => toggleSort('match_score')}>Match{sortIndicator('match_score')}</th>
-                    <th>Comment</th>
+                    <th className="col-comment">Comment</th>
                     <th className="sortable" onClick={() => toggleSort('status')}>Status{sortIndicator('status')}</th>
                     <th className="sortable" onClick={() => toggleSort('applied_at')}>Date{sortIndicator('applied_at')}</th>
                     <th></th>
@@ -1396,16 +1409,18 @@ export default memo(function Dashboard({ active = true, scanRunning, onScanStart
                           style={{ width: 'auto' }}
                         />
                       </td>
-                      <td style={{ fontWeight: 500 }}>{a.job_title}</td>
-                      <td>{a.company}</td>
+                      <td style={{ minWidth: 180 }}>
+                        <div className="cell-title" title={a.job_title}>{a.job_title}</div>
+                        <div style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 1 }}>{a.company}</div>
+                      </td>
                       <td><span className="badge badge-blue">{a.platform}</span></td>
                       <td>
-                        <span style={{
+                        <span className="tnum" style={{
                           color: a.match_score >= 85 ? 'var(--green)' : a.match_score >= 70 ? 'var(--yellow)' : 'var(--text-muted)',
                           fontWeight: 600,
-                        }}>{a.match_score}%</span>
+                        }}>{a.match_score != null ? `${a.match_score}%` : '—'}</span>
                       </td>
-                      <td onClick={e => e.stopPropagation()} style={{ minWidth: 140 }}>
+                      <td className="col-comment" onClick={e => e.stopPropagation()} style={{ minWidth: 120, width: 160 }}>
                         <input
                           defaultValue={a.comment || ''}
                           aria-label={`Note for ${a.job_title} at ${a.company}`}

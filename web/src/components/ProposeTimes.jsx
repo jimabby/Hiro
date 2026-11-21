@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 // Free interview slots from the calendar, and an editable reply offering them.
 // See services/availability.js. Nothing is sent from here: the reply is copied
 // or opened in the user's own mail app.
 
-export default function ProposeTimes({ applicationId, onClose, showToast }) {
+function ProposeTimesDialog({ applicationId, onClose, showToast }) {
   const [result, setResult] = useState(null)
   const [email, setEmail] = useState('')
   const [to, setTo] = useState('')
@@ -99,4 +100,13 @@ export default function ProposeTimes({ applicationId, onClose, showToast }) {
       </div>
     </div>
   )
+}
+
+// Rendered into <body>, not where it is opened from. It is opened from inside
+// glass cards (the Upcoming Interviews panel, the task inbox), and a card's
+// backdrop-filter makes it the containing block for position:fixed
+// descendants — so the overlay was boxed into the card and painted under the
+// cards after it, instead of covering the window.
+export default function ProposeTimes(props) {
+  return createPortal(<ProposeTimesDialog {...props} />, document.body)
 }

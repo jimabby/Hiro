@@ -78,6 +78,11 @@ export default function NotificationCenter({ entries, unread, onOpen, onClear })
             position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 240,
             width: 340, maxHeight: '60vh', overflowY: 'auto', padding: 0,
             boxShadow: 'var(--shadow-lg)',
+            // Opaque. It hangs out of the sidebar over the page, and a glass
+            // surface nested in the sidebar's own backdrop-filter cannot blur
+            // what lies behind the sidebar — the page's text read straight
+            // through it. The thick glass tint over the page colour keeps the look.
+            background: 'linear-gradient(var(--glass-thick), var(--glass-thick)), var(--bg)',
           }}>
           <div style={{
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',

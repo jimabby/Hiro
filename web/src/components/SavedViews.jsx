@@ -16,15 +16,21 @@ export default function SavedViews({ filter, sort, onApply }) {
     try { await window.api.deleteView(selected); setViews(await window.api.getSavedViews()); setSelected('') }
     catch (e) { setError(e.message) } finally { setBusy(false) }
   }
-  return <div style={{ marginBottom: 12 }}>
+  // One compact toolbar. Each control used to take the full width of the card
+  // (the global input rule), stacking four rows of chrome above the table.
+  const compact = { width: 'auto', padding: '5px 10px', fontSize: 12 }
+  return <div style={{ marginBottom: 10 }}>
     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-      <select aria-label="Saved application view" value={selected} onChange={e => {
+      <select aria-label="Saved application view" value={selected} style={{ ...compact, minWidth: 170, maxWidth: 240 }} onChange={e => {
         const id = e.target.value; setSelected(id)
         const view = views.find(v => v.id === id); if (view) onApply(view)
-      }}><option value="">Saved views</option>{views.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}</select>
-      <input aria-label="New view name" placeholder="Name current view" value={name} onChange={e => setName(e.target.value)} maxLength={60} />
-      <button className="btn btn-ghost" disabled={busy || !name.trim()} onClick={save}>Save current view</button>
-      <button className="btn btn-ghost" disabled={busy || !selected} onClick={remove}>Delete saved view</button>
+      }}><option value="">{views.length ? 'Saved views…' : 'No saved views yet'}</option>{views.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}</select>
+      {selected && <button className="btn btn-ghost btn-sm" disabled={busy} onClick={remove}>Delete view</button>}
+      <span style={{ width: 1, height: 20, background: 'var(--border)', margin: '0 4px' }} aria-hidden="true" />
+      <input aria-label="New view name" placeholder="Name these filters…" value={name} onChange={e => setName(e.target.value)} maxLength={60}
+        onKeyDown={e => { if (e.key === 'Enter' && name.trim() && !busy) save() }}
+        style={{ ...compact, width: 190 }} />
+      <button className="btn btn-ghost btn-sm" disabled={busy || !name.trim()} onClick={save}>Save view</button>
     </div>
     {error && <p role="alert">{error}</p>}
   </div>

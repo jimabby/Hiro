@@ -82,7 +82,9 @@ export default function InterviewBriefCard({ client, applicationId }) {
 }
 
 const makeStyles = (c) => StyleSheet.create({
-  card: { backgroundColor: c.surface, borderWidth: 1, borderColor: c.border, borderRadius: radius, padding: 14, marginBottom: 12 },
+  // Spaced from above like the detail screen's own cards; a bottom margin here
+  // stacked with the next card's top margin into a double gap.
+  card: { backgroundColor: c.surface, borderWidth: 1, borderColor: c.border, borderRadius: radius, padding: 14, marginTop: 12 },
   title: { fontSize: 14, fontWeight: '600', color: c.text, marginBottom: 6 },
   label: { fontSize: 12, fontWeight: '700', color: c.textMuted, marginTop: 12, marginBottom: 4, textTransform: 'uppercase' },
   body: { fontSize: 13, color: c.text, lineHeight: 19, marginBottom: 3 },

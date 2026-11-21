@@ -19,6 +19,12 @@ import { radius, radiusLg, useTheme } from '../theme'
 import { messageFor } from '../requestErrors'
 import { formatDay } from '../dates'
 
+// The desktop's /api/offers rows are keyed by application_id and carry no id
+// of their own (the cloud's do). Keying on o.id alone gave every LAN offer the
+// key `undefined`: React warned, and expanding one offer expanded all of them,
+// because they all shared expanded[undefined].
+const offerKey = (o) => (o.id != null ? `o${o.id}` : `a${o.application_id}`)
+
 // How the deadline is coloured. An offer with two days left and one with three
 // weeks left must not look the same — that is the whole premise of the page.
 function urgency(days, c) {
@@ -137,10 +143,10 @@ export default function OffersScreen({ client, active = true }) {
       {!!board?.comparisonNote && live.length > 0 && <Text style={styles.emptyBody}>{board.comparisonNote}</Text>}
       {live.map(o => (
         <OfferCard
-          key={o.id}
+          key={offerKey(o)}
           offer={o}
-          open={!!expanded[o.id]}
-          onToggle={() => setExpanded(e => ({ ...e, [o.id]: !e[o.id] }))}
+          open={!!expanded[offerKey(o)]}
+          onToggle={() => setExpanded(e => ({ ...e, [offerKey(o)]: !e[offerKey(o)] }))}
         />
       ))}
 
@@ -149,11 +155,11 @@ export default function OffersScreen({ client, active = true }) {
           <Text style={styles.sectionHead}>Settled</Text>
           {settled.map(o => (
             <OfferCard
-              key={o.id}
+              key={offerKey(o)}
               offer={o}
               settled
-              open={!!expanded[o.id]}
-              onToggle={() => setExpanded(e => ({ ...e, [o.id]: !e[o.id] }))}
+              open={!!expanded[offerKey(o)]}
+              onToggle={() => setExpanded(e => ({ ...e, [offerKey(o)]: !e[offerKey(o)] }))}
             />
           ))}
         </>

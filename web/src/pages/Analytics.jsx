@@ -1,11 +1,19 @@
 import { useState, useEffect, useRef } from 'react'
 import SkillsGap from '../components/SkillsGap'
 
-const PLATFORM_COLORS = { Seek: 'var(--accent)', LinkedIn: 'var(--green)', Indeed: 'var(--yellow)' }
+import { statusBadge } from '../statuses'
+
+const PLATFORM_COLORS = {
+  Seek: 'var(--accent)', LinkedIn: 'var(--chart-sky)', Indeed: 'var(--yellow)',
+  // Career-board rows carry the ATS provider's name.
+  Greenhouse: 'var(--green)', Lever: 'var(--chart-violet)', Ashby: 'var(--chart-violet)',
+  Workable: 'var(--chart-violet)', SmartRecruiters: 'var(--chart-violet)', ATS: 'var(--green)',
+}
+const platformColor = (p) => PLATFORM_COLORS[p] || 'var(--chart-gray)'
 const STATUS_COLORS = {
-  applied: 'var(--accent)', interview: 'var(--green)', offer: 'var(--green)',
-  rejected: 'var(--red)', pending: 'var(--yellow)', skipped: 'var(--text-muted)',
-  no_response: 'var(--border)',
+  applied: 'var(--accent)', held: 'var(--chart-violet)', interview: 'var(--green)', offer: 'var(--chart-sky)',
+  rejected: 'var(--red)', pending: 'var(--yellow)', no_response: 'var(--chart-gray)',
+  withdrawn: 'var(--text-faint)', skipped: 'var(--border-strong)',
 }
 
 // Compact annual figure. Salaries are whole thousands often enough that "$120k"
@@ -144,28 +152,85 @@ function ChartFrame({ title, summary, columns, rows, filename, children }) {
   )
 }
 
+// A column chart drawn in HTML rather than SVG.
+//
+// The SVG versions were drawn in a fixed coordinate space about 1060 units wide
+// and scaled to fit the card, which scaled their text with them: the 9px axis
+// labels rendered at about 7px in the default window and under 5px at the
+// minimum width, and the plot sat at the bottom of a box much taller than it.
+// Laid out with flexbox, the columns stretch to the card while every label stays
+// at the size it is set to.
+//
+// bars: [{ key, label, value (0..1 of plot height), top, sub, color, opacity, title }]
+// threshold: optional { at: 0..1 across the plot, label }
+function ColumnChart({ bars, threshold, height = 140, gap = 8 }) {
+  return (
+    <div style={{ position: 'relative', paddingTop: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap, height, borderBottom: '1px solid var(--border)' }}>
+        {bars.map(b => (
+          <div key={b.key} title={b.title} style={{
+            flex: '1 1 0', minWidth: 0, height: '100%',
+            display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', alignItems: 'center',
+          }}>
+            {b.top != null && (
+              <div className="tnum" style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 4, whiteSpace: 'nowrap' }}>{b.top}</div>
+            )}
+            <div style={{
+              width: '100%', maxWidth: 64, height: `${Math.max(0, Math.min(1, b.value)) * 100}%`, minHeight: 2,
+              background: b.color || 'var(--accent)', opacity: b.opacity ?? 0.85,
+              borderRadius: '4px 4px 1px 1px', transition: 'height 0.3s var(--ease)',
+            }} />
+          </div>
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap, marginTop: 6 }}>
+        {bars.map(b => (
+          <div key={b.key} style={{ flex: '1 1 0', minWidth: 0, textAlign: 'center', fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.3 }}>
+            <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{b.label}</div>
+            {b.sub && <div style={{ fontSize: 10, opacity: 0.75 }}>{b.sub}</div>}
+          </div>
+        ))}
+      </div>
+      {threshold && (
+        <div aria-hidden="true" style={{
+          position: 'absolute', top: 0, height: height + 18, left: `${threshold.at * 100}%`,
+          borderLeft: '1.5px dashed var(--red)', pointerEvents: 'none',
+        }}>
+          <span style={{
+            // Flipped to the left of the line near the right edge, where it
+            // would otherwise run out of the card.
+            position: 'absolute', top: 0, whiteSpace: 'nowrap',
+            ...(threshold.at > 0.8 ? { right: 5 } : { left: 5 }),
+            fontSize: 11, fontWeight: 600, color: 'var(--red)',
+            background: 'var(--glass-thick)', borderRadius: 4, padding: '0 4px',
+          }}>threshold {threshold.label}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function BarChart({ data }) {
   if (!data || data.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No data</div>
   const max = Math.max(...data.map(d => d.count), 1)
-  const chartH = 140
-  const barW = Math.max(Math.floor(400 / data.length) - 6, 12)
-
+  // A month of days cannot each carry a weekday label; show every few.
+  const every = data.length > 14 ? Math.ceil(data.length / 10) : 1
   return (
-    <svg width="100%" height={chartH + 40} viewBox={`0 0 ${data.length * (barW + 6)} ${chartH + 40}`} preserveAspectRatio="xMidYMax meet">
-      {data.map((d, i) => {
-        const h = Math.max((d.count / max) * chartH, 2)
-        const x = i * (barW + 6)
-        const y = chartH - h
-        const label = new Date(d.date + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short' })
-        return (
-          <g key={d.date}>
-            <rect x={x} y={y} width={barW} height={h} fill="var(--accent)" rx={3} opacity={0.85} />
-            {d.count > 0 && <text x={x + barW / 2} y={y - 6} textAnchor="middle" fontSize={10} fill="var(--text-muted)" fontWeight="600">{d.count}</text>}
-            <text x={x + barW / 2} y={chartH + 16} textAnchor="middle" fontSize={9} fill="var(--text-muted)">{label}</text>
-          </g>
-        )
+    <ColumnChart
+      gap={data.length > 14 ? 3 : 8}
+      bars={data.map((d, i) => {
+        const date = new Date(d.date + 'T12:00:00')
+        return {
+          key: d.date,
+          value: d.count / max,
+          top: d.count > 0 && data.length <= 14 ? d.count : null,
+          label: i % every === 0
+            ? date.toLocaleDateString(undefined, data.length > 7 ? { day: 'numeric', month: 'short' } : { weekday: 'short' })
+            : ' ',
+          title: `${date.toLocaleDateString()}: ${d.count}`,
+        }
       })}
-    </svg>
+    />
   )
 }
 
@@ -189,7 +254,7 @@ function PieChart({ data, colorMap }) {
         const largeArc = slice > Math.PI ? 1 : 0
         const path = `M ${xi1} ${yi1} L ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2} L ${xi2} ${yi2} A ${innerR} ${innerR} 0 ${largeArc} 0 ${xi1} ${yi1}`
         const key = d.platform || d.status
-        const color = (colorMap || PLATFORM_COLORS)[key] || 'var(--text-muted)'
+        const color = (colorMap || PLATFORM_COLORS)[key] || 'var(--chart-gray)'
         angle += slice
         return <path key={key} d={path} fill={color} opacity={0.85} />
       })}
@@ -212,43 +277,22 @@ function ScoreHistogram({ apps, threshold }) {
     buckets[Math.min(9, Math.floor(s / 10))].count++
   }
   const max = Math.max(...buckets.map(b => b.count), 1)
-  // Bar geometry is in viewBox units, and `meet` scales the whole drawing to
-  // fit the SVG box while preserving its aspect ratio. At barW 34 the drawing
-  // was 412 units wide against a card of roughly 1150px, so the histogram was
-  // scaled down to about a third of the space it was given and floated in the
-  // middle of an otherwise empty card. Sizing the drawing near the width it
-  // will actually occupy lets it fill the card — and keeps the labels at their
-  // intended size instead of shrinking them along with everything else.
-  const chartH = 120, barW = 92, gap = 16
-  const width = 10 * (barW + gap) - gap
-  const thrX = Math.min((threshold / 100) * width, width)
-  // Headroom above the plot, because the count sits ABOVE its bar at y - 5 and
-  // the tallest bar is exactly chartH high — so its label landed at y = -5,
-  // outside the viewBox, and was clipped. That silently blanked the label on the
-  // one bar that most needs it: the tallest bar is the mode of the distribution
-  // here and the best-converting band in the chart below, and it was the only
-  // bar in either with no number on it.
-  const topPad = 14
-
   return (
-    <svg width="100%" height={chartH + 36 + topPad} viewBox={`0 ${-topPad} ${width} ${chartH + 36 + topPad}`} preserveAspectRatio="xMidYMax meet">
-      {buckets.map((b, i) => {
-        const h = b.count === 0 ? 2 : Math.max((b.count / max) * chartH, 3)
-        const x = i * (barW + gap)
-        const y = chartH - h
+    <ColumnChart
+      threshold={{ at: Math.min(threshold, 100) / 100, label: `${threshold}%` }}
+      bars={buckets.map(b => {
         const applies = b.hi >= threshold // bucket (partially) clears the threshold
-        return (
-          <g key={b.lo}>
-            <rect x={x} y={y} width={barW} height={h} rx={3}
-              fill={applies ? 'var(--green)' : 'var(--text-muted)'} opacity={applies ? 0.85 : 0.35} />
-            {b.count > 0 && <text x={x + barW / 2} y={y - 5} textAnchor="middle" fontSize={10} fill="var(--text-muted)" fontWeight="600">{b.count}</text>}
-            <text x={x + barW / 2} y={chartH + 14} textAnchor="middle" fontSize={9} fill="var(--text-muted)">{b.lo}–{b.hi}</text>
-          </g>
-        )
+        return {
+          key: b.lo,
+          value: b.count / max,
+          top: b.count > 0 ? b.count : null,
+          label: `${b.lo}–${b.hi}`,
+          color: applies ? 'var(--green)' : 'var(--text-muted)',
+          opacity: b.count === 0 ? 0.2 : applies ? 0.85 : 0.35,
+          title: `${b.lo}–${b.hi}%: ${b.count}`,
+        }
       })}
-      <line x1={thrX} y1={-2} x2={thrX} y2={chartH} stroke="var(--red)" strokeWidth={1.5} strokeDasharray="4 3" />
-      <text x={Math.min(thrX + 4, width - 70)} y={10} fontSize={9} fill="var(--red)" fontWeight="600">threshold {threshold}%</text>
-    </svg>
+    />
   )
 }
 
@@ -269,58 +313,25 @@ function ConversionChart({ bands, threshold }) {
     )
   }
 
-  // Bar geometry is in viewBox units, and `meet` scales the whole drawing to
-  // fit the SVG box while preserving its aspect ratio. At barW 34 the drawing
-  // was 412 units wide against a card of roughly 1150px, so the histogram was
-  // scaled down to about a third of the space it was given and floated in the
-  // middle of an otherwise empty card. Sizing the drawing near the width it
-  // will actually occupy lets it fill the card — and keeps the labels at their
-  // intended size instead of shrinking them along with everything else.
-  const chartH = 120, barW = 92, gap = 16
-  const width = 10 * (barW + gap) - gap
-  const thrX = Math.min((threshold / 100) * width, width)
-  // Headroom above the plot, because the count sits ABOVE its bar at y - 5 and
-  // the tallest bar is exactly chartH high — so its label landed at y = -5,
-  // outside the viewBox, and was clipped. That silently blanked the label on the
-  // one bar that most needs it: the tallest bar is the mode of the distribution
-  // here and the best-converting band in the chart below, and it was the only
-  // bar in either with no number on it.
-  const topPad = 14
   const maxRate = Math.max(...withData.map(b => b.conversionRate || 0), 1)
-
   return (
-    <svg width="100%" height={chartH + 36 + topPad} viewBox={`0 ${-topPad} ${width} ${chartH + 36 + topPad}`} preserveAspectRatio="xMidYMax meet">
-      {bands.map((b, i) => {
-        const x = i * (barW + gap)
+    <ColumnChart
+      threshold={{ at: Math.min(threshold, 100) / 100, label: `${threshold}%` }}
+      bars={bands.map(b => {
         const reliable = b.applied >= MIN_SAMPLE
         const rate = b.conversionRate ?? 0
-        const h = b.applied === 0 ? 2 : Math.max((rate / maxRate) * chartH, 3)
-        const y = chartH - h
-        return (
-          <g key={b.lo}>
-            <title>
-              {`${b.lo}–${b.hi}%: ${b.converted}/${b.applied} converted`}
-              {reliable ? '' : ' (too few to be meaningful)'}
-            </title>
-            <rect x={x} y={y} width={barW} height={h} rx={3}
-              fill={reliable ? 'var(--green)' : 'var(--text-muted)'}
-              opacity={b.applied === 0 ? 0.2 : reliable ? 0.85 : 0.35} />
-            {b.applied > 0 && (
-              <text x={x + barW / 2} y={y - 5} textAnchor="middle" fontSize={10}
-                fill="var(--text-muted)" fontWeight="600">{rate}%</text>
-            )}
-            <text x={x + barW / 2} y={chartH + 14} textAnchor="middle" fontSize={9} fill="var(--text-muted)">{b.lo}–{b.hi}</text>
-            {b.applied > 0 && (
-              <text x={x + barW / 2} y={chartH + 25} textAnchor="middle" fontSize={8} fill="var(--text-muted)" opacity={0.7}>
-                n={b.applied}
-              </text>
-            )}
-          </g>
-        )
+        return {
+          key: b.lo,
+          value: b.applied === 0 ? 0 : rate / maxRate,
+          top: b.applied > 0 ? `${rate}%` : null,
+          label: `${b.lo}–${b.hi}`,
+          sub: b.applied > 0 ? `n=${b.applied}` : null,
+          color: reliable ? 'var(--green)' : 'var(--text-muted)',
+          opacity: b.applied === 0 ? 0.2 : reliable ? 0.85 : 0.35,
+          title: `${b.lo}–${b.hi}%: ${b.converted}/${b.applied} converted${reliable ? '' : ' (too few to be meaningful)'}`,
+        }
       })}
-      <line x1={thrX} y1={-2} x2={thrX} y2={chartH} stroke="var(--red)" strokeWidth={1.5} strokeDasharray="4 3" />
-      <text x={Math.min(thrX + 4, width - 70)} y={10} fontSize={9} fill="var(--red)" fontWeight="600">threshold {threshold}%</text>
-    </svg>
+    />
   )
 }
 
@@ -639,7 +650,7 @@ export default function Analytics({ active }) {
       </div>
 
       {/* Key metrics row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 16, marginBottom: 24 }}>
+      <div className="stat-grid-5" style={{ marginBottom: 24 }}>
         {[
           { label: 'Response Rate', value: `${responseRate}%`, sub: `${respondedCount} replied` },
           { label: 'Interview Rate', value: `${interviewRate}%`, sub: `${interviewCount + offerCount} reached interview` },
@@ -653,7 +664,7 @@ export default function Analytics({ active }) {
           },
         ].map(s => (
           <div key={s.label} className="card stat-card">
-            <div className="stat-value" style={{ fontSize: 24, color: s.color || 'var(--text)' }}>{s.value}</div>
+            <div className="stat-value" style={{ color: s.color || 'var(--text)', overflowWrap: 'anywhere' }}>{s.value}</div>
             <div className="stat-label">{s.label}</div>
             {s.sub && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{s.sub}</div>}
           </div>
@@ -661,7 +672,7 @@ export default function Analytics({ active }) {
       </div>
 
       {/* Charts row */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 24 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16, marginBottom: 24 }}>
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
             <span style={{ fontWeight: 600, fontSize: 14 }}>Applications — Last {timeRange} Days</span>
@@ -700,7 +711,7 @@ export default function Analytics({ active }) {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {byPlatform.map(p => (
                   <div key={p.platform} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-                    <span style={{ width: 10, height: 10, borderRadius: 2, background: PLATFORM_COLORS[p.platform] || 'var(--text-muted)', flexShrink: 0 }} />
+                    <span style={{ width: 10, height: 10, borderRadius: 2, background: platformColor(p.platform), flexShrink: 0 }} />
                     {p.platform}: <span style={{ fontWeight: 600 }}>{p.count}</span>
                   </div>
                 ))}
@@ -1083,7 +1094,7 @@ export default function Analytics({ active }) {
       <VersionOutcomesPanel data={versions} />
 
       {/* Funnel + Status breakdown */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16 }}>
         <div className="card">
           <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 16 }}>Application Funnel</div>
           <FunnelBar label="Submitted" count={submittedCount} total={allApps.length} color="var(--accent)" />
@@ -1101,7 +1112,7 @@ export default function Analytics({ active }) {
             title="Applications by status"
             summary={`Donut chart: applications by status. `
               + (byStatus.length
-                ? byStatus.map(s => `${s.status} ${s.count}`).join(', ')
+                ? byStatus.map(s => `${statusBadge(s.status).label} ${s.count}`).join(', ')
                 : 'No applications yet.')}
             columns={[{ key: 'status', label: 'Status' }, { key: 'count', label: 'Applications', numeric: true }]}
             rows={byStatus}
@@ -1112,8 +1123,8 @@ export default function Analytics({ active }) {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {byStatus.map(s => (
                   <div key={s.status} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-                    <span style={{ width: 10, height: 10, borderRadius: 2, background: STATUS_COLORS[s.status] || 'var(--text-muted)', flexShrink: 0 }} />
-                    <span style={{ textTransform: 'capitalize' }}>{s.status}:</span>
+                    <span style={{ width: 10, height: 10, borderRadius: 2, background: STATUS_COLORS[s.status] || 'var(--chart-gray)', flexShrink: 0 }} />
+                    <span>{statusBadge(s.status).label}:</span>
                     <span style={{ fontWeight: 600 }}>{s.count}</span>
                   </div>
                 ))}

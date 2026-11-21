@@ -381,8 +381,12 @@ export default function DashboardScreen({ client, active = true, onOpenApplicati
         )}
         <TextInput
           style={styles.input}
-          placeholder="Keywords (optional — blank uses desktop settings)"
+          // Short enough to fit a phone-width field. The longer "blank uses
+          // desktop settings" ran off the edge, which is the half that says
+          // what leaving it empty does — so it moved into the hint.
+          placeholder="Keywords (optional)"
           placeholderTextColor={colors.textMuted}
+          accessibilityHint="Leave blank to use the desktop's own search settings"
           value={keywords}
           onChangeText={setKeywords}
           autoCapitalize="none"
@@ -685,7 +689,9 @@ const makeStyles = (c) => StyleSheet.create({
   calendarBtn: { alignSelf: 'flex-start', paddingVertical: 8, minHeight: 36, justifyContent: 'center' },
   calendarBtnText: { color: c.accent, fontSize: 12, fontWeight: '600' },
   error: { color: c.red, fontSize: 13, marginBottom: 12 },
-  statRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
+  // Spaced from ABOVE, like every card. With only a bottom margin the first
+  // row sat flush against the card before it (the Import card), with no gap.
+  statRow: { flexDirection: 'row', gap: 10, marginTop: 10 },
   statCard: {
     flex: 1, backgroundColor: c.surface, borderWidth: 1, borderColor: c.border,
     borderRadius: radius, padding: 16, alignItems: 'center',

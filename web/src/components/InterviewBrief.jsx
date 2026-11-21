@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 // The night-before interview brief: when, what they said, what is in the news,
 // the likely questions with your answers, and what to ask them. Built by
@@ -16,7 +17,7 @@ function formatWhen(value, hasTime) {
   return hasTime ? `${date} at ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : date
 }
 
-export default function InterviewBrief({ applicationId, onClose, showToast }) {
+function InterviewBriefDialog({ applicationId, onClose, showToast }) {
   const [brief, setBrief] = useState(null)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -149,4 +150,13 @@ export default function InterviewBrief({ applicationId, onClose, showToast }) {
       </div>
     </div>
   )
+}
+
+// Rendered into <body>, not where it is opened from. It is opened from inside
+// glass cards (the Upcoming Interviews panel, the task inbox), and a card's
+// backdrop-filter makes it the containing block for position:fixed
+// descendants — so the overlay was boxed into the card and painted under the
+// cards after it, instead of covering the window.
+export default function InterviewBrief(props) {
+  return createPortal(<InterviewBriefDialog {...props} />, document.body)
 }

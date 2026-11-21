@@ -52,11 +52,22 @@ function tab({ shift = false } = {}) {
 const settle = async () => { await act(async () => { await Promise.resolve() }) }
 
 describe('modal focus', () => {
-  it('moves focus into a dialog when it opens', async () => {
+  it('moves focus to the dialog itself when it opens, not into its first field', async () => {
     render(<Harness />)
     act(() => screen.getByText('open').click())
     await settle()
+    // The dialog, so Escape closes it — a focused field would keep Escape for itself.
+    expect(document.activeElement).toBe(screen.getByRole('dialog'))
+    tab()
     expect(document.activeElement).toBe(screen.getByText('first'))
+  })
+
+  it('Shift+Tab from the dialog itself goes to the last control', async () => {
+    render(<Harness />)
+    act(() => screen.getByText('open').click())
+    await settle()
+    tab({ shift: true })
+    expect(document.activeElement).toBe(screen.getByText('last'))
   })
 
   it('wraps forward from the last control to the first', async () => {
@@ -140,7 +151,7 @@ describe('modal focus across page switches', () => {
     try {
       render(<PagedHarness />)
       await settle()
-      expect(document.activeElement).toBe(screen.getByText('inside'))
+      expect(document.activeElement).toBe(screen.getByRole('dialog'))
 
       act(() => screen.getByText('leave').click())
       await settle()

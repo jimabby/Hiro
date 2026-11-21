@@ -23,10 +23,11 @@ export default function ApplicationChecklist({ applicationId }) {
       <button className="btn btn-ghost" disabled={busy} onClick={() => { setEditing(item.id); setTitle(item.title); setDue(item.due || '') }}>Edit</button>
       <button className="btn btn-ghost" disabled={busy} aria-label={`Delete ${item.title}`} onClick={() => change({ id: item.id, remove: true })}>Delete</button>
     </div>)}
-    <form onSubmit={e => { e.preventDefault(); change({ id: editing, title, due }, true) }} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
-      <input aria-label="Checklist task" placeholder="Assessment, references, portfolio…" value={title} onChange={e => setTitle(e.target.value)} maxLength={200} />
-      <input aria-label="Task due date" type="date" value={due} onChange={e => setDue(e.target.value)} />
-      <button className="btn btn-primary" disabled={busy || !title.trim()}>{editing ? 'Save task' : 'Add task'}</button>
+    <form onSubmit={e => { e.preventDefault(); change({ id: editing, title, due }, true) }} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12, alignItems: 'center' }}>
+      <input aria-label="Checklist task" placeholder="Assessment, references, portfolio…" value={title} onChange={e => setTitle(e.target.value)} maxLength={200}
+        style={{ flex: '1 1 240px', width: 'auto', minWidth: 0 }} />
+      <input aria-label="Task due date" type="date" title="Due date (optional)" value={due} onChange={e => setDue(e.target.value)} style={{ width: 160, flexShrink: 0 }} />
+      <button className="btn btn-primary" disabled={busy || !title.trim()} style={{ flexShrink: 0 }}>{editing ? 'Save task' : 'Add task'}</button>
       {editing && <button className="btn btn-ghost" type="button" onClick={() => { setEditing(null); setTitle(''); setDue('') }}>Cancel edit</button>}
     </form>
   </section>

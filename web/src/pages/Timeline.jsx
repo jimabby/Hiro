@@ -156,10 +156,12 @@ export default function Timeline({ active }) {
               <div key={date} style={{ position: 'relative', marginBottom: 12 }}>
                 {/* Timeline dot */}
                 <div style={{
-                  position: 'absolute', left: -18, top: 22,
+                  // Centred on the day's heading (20px card padding + half of
+                  // the two-line heading), not on the card's top edge.
+                  position: 'absolute', left: -18, top: 32,
                   width: 10, height: 10, borderRadius: '50%',
-                  background: isOpen ? 'var(--accent)' : 'var(--border)',
-                  border: '2px solid var(--surface)',
+                  background: isOpen ? 'var(--accent)' : 'var(--border-strong)',
+                  boxShadow: '0 0 0 3px var(--bg)',
                   transition: 'background 0.15s',
                 }} />
 

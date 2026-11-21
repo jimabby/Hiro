@@ -111,8 +111,10 @@ function buildStatusColors(c) {
     offer: c.green,
     rejected: c.red,
     pending: c.yellow,
-    no_response: c.borderStrong,
-    skipped: c.textMuted,
+    // A border colour is drawn to be barely there, which is right for a border
+    // and wrong for an 8px status dot: on the dark card it was invisible.
+    no_response: c.textMuted,
+    skipped: c.borderStrong,
     // Review mode drafted this but hasn't sent it — waiting on the user, not done.
     held: c.yellow,
     // You pulled out. Grey rather than red, matching the desktop: nobody rejected

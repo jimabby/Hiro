@@ -83,6 +83,13 @@
   --danger: var(--red);
   --amber: var(--yellow);
 
+  /* Extra series colours for charts with more categories than the semantic
+     four (status and platform donuts). Without them, interview and offer were
+     both green and "no response" was drawn in the border colour — invisible. */
+  --chart-sky: #38bdf8;
+  --chart-violet: #a78bfa;
+  --chart-gray: #8a93a8;
+
   --green-soft: rgba(50, 213, 131, 0.16);
   --yellow-soft: rgba(253, 176, 34, 0.16);
   --red-soft: rgba(249, 112, 102, 0.16);
@@ -126,6 +133,13 @@
   --ease-spring: cubic-bezier(0.34, 1.4, 0.5, 1);
 }
 
+/* Native controls (checkboxes, date and time pickers, scrollbars, the select
+   popup) follow this, not the CSS variables. Without it Chromium drew them in
+   their light style on the dark theme: unchecked checkboxes were bright white
+   squares down the Dashboard table. */
+:root { color-scheme: dark; }
+[data-theme="light"] { color-scheme: light; }
+
 [data-theme="light"] {
   --bg: #eef0f6;
   --bg-tint-a: rgba(99, 102, 241, 0.17);
@@ -156,6 +170,10 @@
   --green: #0f9d58;
   --yellow: #b45309;
   --red: #dc2626;
+  --chart-sky: #0284c7;
+  --chart-violet: #7c3aed;
+  --chart-gray: #7b8496;
+
   --green-soft: rgba(15, 157, 88, 0.13);
   --yellow-soft: rgba(180, 83, 9, 0.13);
   --red-soft: rgba(220, 38, 38, 0.12);
@@ -336,6 +354,24 @@ select option { background: #1a1d29; color: #f0f2f8; }
 textarea { resize: vertical; min-height: 80px; line-height: 1.6; }
 
 label { display: block; color: var(--text-muted); font-size: 12px; margin-bottom: 4px; font-weight: 500; }
+
+/* The rule above sizes every input to its container, which is right for text
+   fields and wrong for these: a checkbox or radio stretched to the full width
+   of its row pushed its own label text onto the next line ("Enabled",
+   "Review before submit" sat under their boxes). They keep their natural size,
+   and a label wrapping one lines the box up with its text. */
+input[type="checkbox"], input[type="radio"] {
+  width: auto; padding: 0; margin: 0; flex-shrink: 0;
+  box-shadow: none; accent-color: var(--accent); cursor: pointer;
+}
+label:has(> input[type="checkbox"]), label:has(> input[type="radio"]) {
+  display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+}
+/* A count, a day, a dollar figure: no number needs the full width of a card. */
+input[type="number"] { max-width: 260px; }
+/* A dialog takes focus when it opens (useModalFocus) so Escape closes it; it is
+   not a control, and must not draw a focus ring around the whole panel. */
+[role="dialog"]:focus, [role="alertdialog"]:focus { outline: none; }
 
 .form-group { display: flex; flex-direction: column; gap: 4px; margin-bottom: 16px; }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -623,6 +659,43 @@ input[type="checkbox"] {
 .list-row:last-child { border-bottom: none; padding-bottom: 0; }
 .list-row .text-muted { font-size: 12px; margin-top: 2px; }
 
+/* The Dashboard's six figures. auto-fit wrapped them 5 + 1 at the default
+   window and 4 + 2 at the minimum — one tile orphaned on a row of its own —
+   so the column count is chosen instead: one row of six when there is room,
+   two rows of three when there is not. Never a lone tile. */
+.stat-grid-6 { display: grid; gap: 14px; grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.stat-grid-6 .stat-value { font-size: 30px; }
+@media (max-width: 1099px) {
+  .stat-grid-6 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+/* Analytics' five, which have a sub-line each and need more width per tile. */
+.stat-grid-5 { display: grid; gap: 14px; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.stat-grid-5 .stat-value { font-size: 28px; }
+@media (max-width: 1099px) {
+  .stat-grid-5 .stat-value { font-size: 24px; }
+  .stat-grid-5 .stat-card { padding: 13px 8px; }
+}
+
+/* A title in a table cell: two lines at most, the rest in the tooltip, so one
+   long advert title does not make its row four times the height of the rest. */
+.cell-title {
+  font-weight: 500;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; overflow-wrap: anywhere;
+}
+/* A sort control inside a header that holds two of them. */
+.th-sort { cursor: pointer; user-select: none; transition: color 0.15s var(--ease); }
+.th-sort:hover { color: var(--text); }
+/* The inline note column is the first thing to go on a narrow window — the
+   same note is editable in the application's detail view — so Status and Date
+   stay on screen instead of behind a horizontal scroll. */
+@media (max-width: 1099px) {
+  .col-comment { display: none; }
+  /* 24px of horizontal padding per cell is ~190px across an eight-column
+     table — the width of the last column, which was what fell off the edge. */
+  th, td { padding-left: 8px; padding-right: 8px; }
+}
+
 /* Same auto-fit grid the Dashboard and Analytics build inline. */
 .stats-grid {
   display: grid; gap: 16px;
@@ -678,7 +751,9 @@ input[type="checkbox"] {
 .nav-item-active .nav-icon { opacity: 1; color: var(--accent); }
 .nav-item:hover .nav-icon { opacity: 1; }
 .nav-item .kbd { opacity: 0; transition: opacity 0.18s var(--ease); }
-.nav-item:hover .kbd, .nav-item-active .kbd { opacity: 1; }
+/* Hover only. Shown permanently on the active item, the hint sat in the slot
+   where every other row shows its count, and read as one. */
+.nav-item:hover .kbd { opacity: 1; }
 
 /* ─── Reduced motion ───────────────────────────────────────────────
    The pulse and shimmer loops in particular run forever and are exactly what

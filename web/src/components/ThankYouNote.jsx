@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 // The thank-you note after an interview (services/thankYouNote.js). Drafted by
 // the AI, edited here, and sent by the user from their own mail app — nothing
 // is sent from Hiro. The draft carries one placeholder for something that
 // really came up in the interview, because the model was not in the room.
 
-export default function ThankYouNote({ interviewId, onClose, onDone, showToast }) {
+function ThankYouNoteDialog({ interviewId, onClose, onDone, showToast }) {
   const [draft, setDraft] = useState(null)
   const [error, setError] = useState(null)
   const [to, setTo] = useState('')
@@ -84,4 +85,13 @@ export default function ThankYouNote({ interviewId, onClose, onDone, showToast }
       </div>
     </div>
   )
+}
+
+// Rendered into <body>, not where it is opened from. It is opened from inside
+// glass cards (the Upcoming Interviews panel, the task inbox), and a card's
+// backdrop-filter makes it the containing block for position:fixed
+// descendants — so the overlay was boxed into the card and painted under the
+// cards after it, instead of covering the window.
+export default function ThankYouNote(props) {
+  return createPortal(<ThankYouNoteDialog {...props} />, document.body)
 }

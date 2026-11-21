@@ -230,7 +230,13 @@ export default function ConnectScreen({ onConnected }) {
         <Text style={styles.buttonText}>Scan the QR code</Text>
       </TouchableOpacity>
 
-      <Text style={styles.label}>…or enter the 8-character code</Text>
+      {/* Typed pairing needs the code AND the address, so all three fields come
+          before the button that uses them. The button used to sit between the
+          code and the address, with a note underneath saying the address
+          "below" was needed too — you pressed Pair before you had reached it. */}
+      <Text style={styles.divider}>or type it in</Text>
+
+      <Text style={styles.label}>8-character code</Text>
       <TextInput
         style={styles.input}
         value={pairCode}
@@ -240,13 +246,45 @@ export default function ConnectScreen({ onConnected }) {
         autoCapitalize="characters"
         autoCorrect={false}
         maxLength={8}
-        returnKeyType="go"
-        onSubmitEditing={() => pair()}
+        returnKeyType="next"
         accessibilityLabel="Pairing code"
       />
 
+      <View style={styles.row}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.label}>Server address (IP)</Text>
+          <TextInput
+            style={styles.input}
+            value={host}
+            onChangeText={setHost}
+            placeholder="192.168.1.10"
+            placeholderTextColor={colors.textMuted}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="numbers-and-punctuation"
+            accessibilityLabel="Server address"
+          />
+        </View>
+        <View style={{ width: 96 }}>
+          <Text style={styles.label}>Port</Text>
+          <TextInput
+            style={styles.input}
+            value={port}
+            onChangeText={setPort}
+            placeholder="4823"
+            placeholderTextColor={colors.textMuted}
+            keyboardType="number-pad"
+            returnKeyType="go"
+            onSubmitEditing={() => pair()}
+            accessibilityLabel="Port"
+          />
+        </View>
+      </View>
+
+      {!!error && <Text style={styles.error}>{error}</Text>}
+
       <TouchableOpacity
-        style={[styles.button, busy && styles.buttonDisabled, { marginBottom: 22 }]}
+        style={[styles.button, busy && styles.buttonDisabled]}
         onPress={() => pair()}
         disabled={busy}
         accessibilityRole="button"
@@ -257,32 +295,14 @@ export default function ConnectScreen({ onConnected }) {
       </TouchableOpacity>
 
       <Text style={styles.hint}>
-        Typing the code needs the address below too. Scanning fills in everything.
+        Your phone and computer must be on the same Wi-Fi network.
       </Text>
 
-      <Text style={styles.label}>Server address (IP)</Text>
-        <TextInput
-          style={styles.input}
-          value={host}
-          onChangeText={setHost}
-          placeholder="192.168.1.10"
-          placeholderTextColor={colors.textMuted}
-          autoCapitalize="none"
-          autoCorrect={false}
-          keyboardType="numbers-and-punctuation"
-        />
-
-        <Text style={styles.label}>Port</Text>
-        <TextInput
-          style={styles.input}
-          value={port}
-          onChangeText={setPort}
-          placeholder="4823"
-          placeholderTextColor={colors.textMuted}
-          keyboardType="number-pad"
-        />
-
-        <Text style={styles.label}>Shared token (older desktops only)</Text>
+      {/* The pre-pairing way in, kept for desktops too old to pair. Drawn as a
+          secondary action so it does not compete with the two ways above —
+          as a third full-width accent button it looked like the main one. */}
+      <View style={styles.legacy}>
+        <Text style={styles.label}>Older desktop? Paste its shared token</Text>
         <TextInput
           style={styles.input}
           value={token}
@@ -291,19 +311,14 @@ export default function ConnectScreen({ onConnected }) {
           placeholderTextColor={colors.textMuted}
           autoCapitalize="none"
           autoCorrect={false}
+          accessibilityLabel="Shared token"
         />
-
-        {!!error && <Text style={styles.error}>{error}</Text>}
-
-        <TouchableOpacity style={[styles.button, busy && styles.buttonDisabled]} onPress={connect} disabled={busy}
+        <TouchableOpacity style={[styles.buttonSecondary, busy && styles.buttonDisabled]} onPress={connect} disabled={busy}
           accessibilityRole="button" accessibilityLabel="Connect to the desktop"
           accessibilityState={{ disabled: busy, busy }}>
-          <Text style={styles.buttonText}>{busy ? 'Connecting…' : 'Connect'}</Text>
+          <Text style={styles.buttonSecondaryText}>{busy ? 'Connecting…' : 'Connect with token'}</Text>
         </TouchableOpacity>
-
-        <Text style={styles.hint}>
-          Your phone and computer must be on the same Wi-Fi network.
-        </Text>
+      </View>
     </>
   )
 
@@ -384,5 +399,13 @@ const makeStyles = (c) => StyleSheet.create({
   },
   buttonDisabled: { opacity: 0.5 },
   buttonText: { color: '#fff', fontSize: 15, fontWeight: '600' },
-  hint: { color: c.textMuted, fontSize: 12, textAlign: 'center', marginTop: 18 },
+  hint: { color: c.textMuted, fontSize: 12, textAlign: 'center', marginTop: 14 },
+  divider: { color: c.textMuted, fontSize: 12, textAlign: 'center', marginTop: 8, marginBottom: 14 },
+  row: { flexDirection: 'row', gap: 10 },
+  legacy: { marginTop: 28, paddingTop: 20, borderTopWidth: 1, borderTopColor: c.border },
+  buttonSecondary: {
+    borderRadius: radius, borderWidth: 1, borderColor: c.border,
+    paddingVertical: 12, alignItems: 'center', minHeight: 46, justifyContent: 'center',
+  },
+  buttonSecondaryText: { color: c.text, fontSize: 15, fontWeight: '600' },
 })

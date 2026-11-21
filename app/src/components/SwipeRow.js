@@ -86,8 +86,12 @@ export default function SwipeRow({ actions, open, onOpen, onClose, style, childr
 
   return (
     <View style={[styles.wrap, style]}>
-      <View
-        style={[styles.actions, { width: total }]}
+      <Animated.View
+        // Invisible while the row is fully closed. The row on top has rounded
+        // corners, and the coloured buttons sitting directly behind it showed
+        // through their anti-aliased edge as a red sliver down the right side
+        // of every card in the list. One pixel of travel brings them back.
+        style={[styles.actions, { width: total, opacity: x.interpolate({ inputRange: [-1, 0], outputRange: [1, 0], extrapolate: 'clamp' }) }]}
         // Hidden while closed so a screen reader does not walk into buttons
         // that are behind the row; the row itself exposes the same actions.
         importantForAccessibility={open ? 'auto' : 'no-hide-descendants'}
@@ -104,7 +108,7 @@ export default function SwipeRow({ actions, open, onOpen, onClose, style, childr
             <Text style={styles.actionText} numberOfLines={2}>{a.label}</Text>
           </TouchableOpacity>
         ))}
-      </View>
+      </Animated.View>
       <Animated.View style={{ transform: [{ translateX: x }] }} {...responder.panHandlers}>
         {children}
       </Animated.View>

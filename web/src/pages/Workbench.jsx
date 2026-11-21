@@ -37,7 +37,8 @@ export default function Workbench({ active, showToast }) {
     <input
       className="input"
       aria-label={props['aria-label'] || props.placeholder || props.title || key}
-      value={state[key] ?? ''}
+      // A zero minimum salary is "no minimum": show the hint, not a bare 0.
+      value={props.type === 'number' && Number(state[key]) === 0 ? '' : (state[key] ?? '')}
       onChange={e => setState({ ...state, [key]: e.target.value })}
       {...props}
     />
@@ -82,11 +83,11 @@ export default function Workbench({ active, showToast }) {
     </div>}
 
     <div className="card" style={{ marginBottom: 18 }}><h2>Search campaigns</h2><p className="text-muted">Each enabled campaign runs weekdays at its own time and records its outcomes here.</p>
-      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 2fr 1fr 110px 110px', gap: 8 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 2fr 1fr 130px 140px', gap: 8 }}>
         {field(campaign, setCampaign, 'name', { placeholder: 'Campaign name' })}{field(campaign, setCampaign, 'keywords', { placeholder: 'Keywords' })}{field(campaign, setCampaign, 'location', { placeholder: 'Location' })}{field(campaign, setCampaign, 'salaryMin', { type: 'number', min: 0, placeholder: 'Min salary' })}{field(campaign, setCampaign, 'scheduleTime', { type: 'time', 'aria-label': 'Daily scan time' })}
       </div>
-      <div style={{ display: 'flex', gap: 18, alignItems: 'center', marginTop: 8 }}>
-        <select className="input" aria-label="Resume for this campaign" value={campaign.resumeId || ''} onChange={e => setCampaign({ ...campaign, resumeId: e.target.value })}><option value="">Default routed resume</option>{resumes.map(r => <option key={r.id} value={r.id}>{r.name || 'Unnamed resume'}</option>)}</select>
+      <div style={{ display: 'flex', gap: 18, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+        <select className="input" style={{ flex: '1 1 260px', width: 'auto', maxWidth: 420 }} aria-label="Resume for this campaign" value={campaign.resumeId || ''} onChange={e => setCampaign({ ...campaign, resumeId: e.target.value })}><option value="">Default routed resume</option>{resumes.map(r => <option key={r.id} value={r.id}>{r.name || 'Unnamed resume'}</option>)}</select>
         <label><input type="checkbox" checked={campaign.enabled !== false} onChange={e => setCampaign({ ...campaign, enabled: e.target.checked })} /> Enabled</label>
         <label><input type="checkbox" checked={campaign.reviewBeforeSubmit !== false} onChange={e => setCampaign({ ...campaign, reviewBeforeSubmit: e.target.checked })} /> Review before submit</label>
       </div>

@@ -9,12 +9,12 @@ function ClosingBadge({ date }) {
   if (isNaN(parsed.getTime())) return null
   const days = Math.round((parsed - new Date()) / 86400000)
   const label = days < 0 ? 'closed' : days === 0 ? 'closes today' : days === 1 ? 'closes tomorrow' : `closes in ${days}d`
-  const color = days < 0 ? 'var(--text-muted)' : days <= 2 ? 'var(--red)' : days <= 7 ? 'var(--yellow)' : 'var(--text-muted)'
+  // A badge like the platform and match ones beside it, so the three read as
+  // one row of facts rather than two pills and a hand-drawn box.
+  const tone = days < 0 ? 'badge-gray' : days <= 2 ? 'badge-red' : days <= 7 ? 'badge-yellow' : 'badge-gray'
   return (
-    <span title={`Applications close ${date}`} style={{
-      fontSize: 11, fontWeight: 600, color, border: `1px solid ${color}`,
-      borderRadius: 6, padding: '1px 6px', opacity: days < 0 ? 0.6 : 1,
-    }}>{label}</span>
+    <span className={`badge ${tone}`} title={`Applications close ${date}`}
+      style={{ opacity: days < 0 ? 0.6 : 1 }}>{label}</span>
   )
 }
 
@@ -385,7 +385,7 @@ export default function NeedsAttention({ active, onCountChange, showToast }) {
           {selectedIds.size > 0 && (
             <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginLeft: 8, paddingLeft: 8, borderLeft: '1px solid var(--border)' }}>
               <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{selectedIds.size} selected</span>
-              <button className="btn btn-primary" style={{ fontSize: 11, padding: '3px 8px', background: 'var(--accent)' }}
+              <button className="btn btn-primary btn-sm"
                 onClick={aiApplySelected} disabled={applying !== null}>
                 Retry Selected
               </button>
@@ -434,9 +434,16 @@ export default function NeedsAttention({ active, onCountChange, showToast }) {
                 if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelected(job) }
               }}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, flex: 1 }}>
-                  <input type="checkbox" style={{ width: 'auto', marginTop: 4, flexShrink: 0 }}
+              {/* Title, company and the badges each get their own line, and the
+                  actions wrap under the text when the card is narrow. The badges
+                  used to share the title's line, beside five fixed-width buttons:
+                  a long title squeezed them until the match % ran into the first
+                  button, and at the minimum window width the title broke onto a
+                  word per line while the buttons spilled out of the card. */}
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, flex: '1 1 320px', minWidth: 0 }}>
+                  <input type="checkbox" style={{ marginTop: 4 }}
+                    aria-label={`Select ${job.job_title} at ${job.company}`}
                     checked={selectedIds.has(job.id)}
                     onClick={e => e.stopPropagation()}
                     onChange={e => {
@@ -447,44 +454,47 @@ export default function NeedsAttention({ active, onCountChange, showToast }) {
                       })
                     }}
                   />
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                    <span style={{ fontWeight: 600, fontSize: 15 }}>{job.job_title}</span>
-                    <span className="badge badge-blue">{job.platform}</span>
-                    <span style={{
-                      color: job.match_score >= 85 ? 'var(--green)' : 'var(--yellow)',
-                      fontWeight: 600, fontSize: 13,
-                    }}>{job.match_score}%</span>
-                    {job.closing_date && <ClosingBadge date={job.closing_date} />}
-                  </div>
-                  <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>
-                    {job.company} {job.salary ? `· ${job.salary}` : ''}
-                  </div>
-                  <div style={{ color: 'var(--red)', fontSize: 12, marginTop: 4 }}>
-                    {job.reason}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 15, lineHeight: 1.35, overflowWrap: 'anywhere' }}>{job.job_title}</div>
+                    <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 2 }}>
+                      {[job.company, job.salary].filter(Boolean).join(' · ')}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                      <span className="badge badge-blue">{job.platform}</span>
+                      {job.match_score != null && (
+                        <span className={`badge ${job.match_score >= 85 ? 'badge-green' : 'badge-yellow'} tnum`}
+                          title="How well this job matches your résumé">{job.match_score}% match</span>
+                      )}
+                      {job.closing_date && <ClosingBadge date={job.closing_date} />}
+                    </div>
+                    {job.reason && (
+                      <div style={{ color: 'var(--red)', fontSize: 12, marginTop: 8, display: 'flex', gap: 6, alignItems: 'baseline' }}>
+                        <span aria-hidden="true">⚠</span><span>{job.reason}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
-                </div>
-                <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-                  <button className="btn btn-primary" style={{ fontSize: 12, padding: '6px 12px', background: 'var(--accent)' }}
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', marginLeft: 'auto' }}>
+                  <button className="btn btn-primary btn-sm" style={{ fontSize: 12, padding: '6px 12px' }}
                     onClick={e => { e.stopPropagation(); aiApply(job) }}
                     disabled={applying !== null}>
                     {applying === job.id ? 'Applying...' : 'AI Apply'}
                   </button>
-                  <button className="btn btn-primary" style={{ fontSize: 12, padding: '6px 12px' }}
+                  <button className="btn btn-sm" style={{ fontSize: 12, padding: '6px 12px' }}
                     title="Opens the form with your details, résumé and answers filled in. You review it and press Submit."
                     onClick={e => { e.stopPropagation(); fillForm(job) }}
                     disabled={filling !== null || !job.job_url}>
                     {filling === job.id ? 'Form open…' : 'Fill Application'}
                   </button>
-                  <a className="btn btn-ghost" href={job.job_url} target="_blank" rel="noreferrer"
+                  <a className="btn btn-ghost btn-sm" href={job.job_url} target="_blank" rel="noreferrer"
                     style={{ fontSize: 12, padding: '6px 12px', textDecoration: 'none' }}
                     onClick={e => e.stopPropagation()}>Open Posting</a>
-                  <button className="btn btn-ghost" style={{ fontSize: 12, padding: '6px 12px' }}
+                  <button className="btn btn-ghost btn-sm" style={{ fontSize: 12, padding: '6px 12px' }}
                     onClick={e => { e.stopPropagation(); dismiss(job.id) }}>
                     Dismiss
                   </button>
-                  <button className="btn btn-ghost" style={{ fontSize: 12, padding: '6px 12px', color: 'var(--red)' }}
+                  <button className="btn btn-ghost btn-sm" style={{ fontSize: 12, padding: '6px 10px', color: 'var(--red)' }}
+                    aria-label={`Delete ${job.job_title} at ${job.company}`} title="Delete"
                     onClick={e => { e.stopPropagation(); deleteJob(job.id) }}>
                     ✕
                   </button>

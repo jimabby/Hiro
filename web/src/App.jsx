@@ -567,6 +567,12 @@ export default function App() {
         // plus enough headroom that a slightly longer label does not reintroduce
         // it.
         width: 252, flexShrink: 0,
+        // Above the page. The sidebar's backdrop-filter makes it a stacking
+        // context, painted before the page's own glass cards — so anything that
+        // opens out of it (the notification history, 340px wide in a 252px
+        // rail) was drawn underneath the page and cut off at the rail's edge.
+        // Dialogs still cover it: they sit at z-index 100 and up.
+        position: 'relative', zIndex: 20,
         background: 'var(--glass)',
         backdropFilter: 'var(--blur)',
         WebkitBackdropFilter: 'var(--blur)',
@@ -596,6 +602,10 @@ export default function App() {
             >
               <span className="nav-icon" aria-hidden="true">{n.icon}</span>
               <span style={{ flex: 1 }}>{n.label}</span>
+              {/* Not beside a count: a grey "5" next to a red "4" read as two
+                  numbers about the same queue. The shortcut is still in the
+                  tooltip and in the ? panel. */}
+              {n.shortcut && !(count > 0) && <span className="kbd" aria-hidden="true">{n.shortcut}</span>}
               {count > 0 && (
                 <span
                   // Review is a queue waiting on the user, not a problem — the
@@ -610,7 +620,6 @@ export default function App() {
                   }}
                 >{count}</span>
               )}
-              {n.shortcut && <span className="kbd" aria-hidden="true">{n.shortcut}</span>}
             </button>
           )
         })}

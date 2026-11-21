@@ -141,35 +141,29 @@ function Card({ item, today, editing, onEdit, onSave, onCancel, onDone, onOpen, 
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(item) }
       }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {item.job_title}
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-            {item.company} · {item.platform}
-            {item.match_score != null && ` · ${item.match_score}%`}
-          </div>
-        </div>
-        {item.nextInterview && (
-          <span title={`Interview ${item.nextInterview.scheduled_at}`} style={{
-            fontSize: 10, background: 'var(--green)', color: '#fff',
-            borderRadius: 10, padding: '1px 6px', height: 16, flexShrink: 0,
-          }}>interview</span>
-        )}
+      {/* The title gets the card's full width. The interview badge used to
+          share its line, and in a 160px board column that cut the title to
+          "Senior Fr…"; the Done button likewise squeezed the action note
+          beside it onto three lines. Both now sit on rows of their own. */}
+      <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+        title={item.job_title}>
+        {item.job_title}
       </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {[item.company, item.platform, item.match_score != null ? `${item.match_score}%` : null].filter(Boolean).join(' · ')}
+      </div>
+      {item.nextInterview && (
+        <span className="badge badge-green" title={`Interview ${item.nextInterview.scheduled_at}`}
+          style={{ marginTop: 6, fontSize: 9.5, padding: '1.5px 7px' }}>interview</span>
+      )}
 
       {due && (
-        <div style={{ marginTop: 8, fontSize: 11, display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span title={due} style={{
-            color: item.overdue ? 'var(--red)' : item.dueToday ? 'var(--accent)' : 'var(--text-muted)',
-            fontWeight: item.overdue || item.dueToday ? 600 : 400,
-          }}>
-            {item.overdue ? '⚑ ' : ''}{item.next_action_note || 'Follow up'} · {relativeDay(due, today)}
-          </span>
-          <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }}
-            onClick={(e) => { e.stopPropagation(); onDone(item) }}
-            title="Mark this action done and clear the reminder">Done</button>
+        <div title={due} style={{
+          marginTop: 8, fontSize: 11, lineHeight: 1.4,
+          color: item.overdue ? 'var(--red)' : item.dueToday ? 'var(--accent)' : 'var(--text-muted)',
+          fontWeight: item.overdue || item.dueToday ? 600 : 400,
+        }}>
+          {item.overdue ? '⚑ ' : ''}{item.next_action_note || 'Follow up'} · {relativeDay(due, today)}
         </div>
       )}
 
@@ -184,8 +178,13 @@ function Card({ item, today, editing, onEdit, onSave, onCancel, onDone, onOpen, 
       {editing
         ? <NextActionEditor item={item} onSave={onSave} onCancel={onCancel} />
         : (
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6 }}>
-            <button className="btn btn-ghost btn-sm"
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+            {due && (
+              <button className="btn btn-ghost btn-sm" style={{ flexShrink: 0 }}
+                onClick={(e) => { e.stopPropagation(); onDone(item) }}
+                title="Mark this action done and clear the reminder">Done</button>
+            )}
+            <button className="btn btn-ghost btn-sm" style={{ flexShrink: 0 }}
               onClick={(e) => { e.stopPropagation(); onEdit(item) }}>
               {due ? 'Reschedule' : 'Set next action'}
             </button>
@@ -199,7 +198,7 @@ function Card({ item, today, editing, onEdit, onSave, onCancel, onDone, onOpen, 
                   const m = moves.find(x => x.status === e.target.value)
                   if (m) onMove(item, m.status)
                 }}
-                style={{ fontSize: 11, padding: '2px 6px', marginLeft: 'auto', width: 'auto' }}
+                style={{ fontSize: 11, padding: '4px 6px', flex: '1 1 96px', minWidth: 0, maxWidth: '100%', width: 'auto', height: 28 }}
               >
                 <option value="" disabled>Move to…</option>
                 {moves.map(m => <option key={m.status} value={m.status}>{m.label}</option>)}
@@ -331,8 +330,8 @@ export default function Pipeline({ active, onOpenApplication, onNavigate, showTo
   if (!data) {
     return (
       <div data-testid="pipeline">
-      <TaskInbox onNavigate={onNavigate} active={active} onOpenApplication={onOpenApplication} showToast={showToast} />
         <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>Pipeline</h1>
+        <TaskInbox onNavigate={onNavigate} active={active} onOpenApplication={onOpenApplication} showToast={showToast} />
         {/* Shaped placeholders rather than the word "Loading" — the board's
             layout appears immediately, so the page doesn't jump when it lands. */}
         <div aria-hidden="true" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(220px, 1fr))', gap: 14, marginTop: 20 }}>
@@ -364,7 +363,6 @@ export default function Pipeline({ active, onOpenApplication, onNavigate, showTo
 
   return (
     <div data-testid="pipeline">
-      <TaskInbox onNavigate={onNavigate} active={active} onOpenApplication={onOpenApplication} showToast={showToast} />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Pipeline</h1>
         <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={load}>Refresh</button>
@@ -373,6 +371,7 @@ export default function Pipeline({ active, onOpenApplication, onNavigate, showTo
         What each application is waiting on, and what you owe it. Held and skipped drafts are not
         here — nothing was ever sent, so there is nothing to chase.
       </p>
+      <TaskInbox onNavigate={onNavigate} active={active} onOpenApplication={onOpenApplication} showToast={showToast} />
 
       {error && <p style={{ color: 'var(--red)', fontSize: 13, marginBottom: 16 }}>{error}</p>}
       <span role="status" aria-live="polite" style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>
@@ -397,12 +396,12 @@ export default function Pipeline({ active, onOpenApplication, onNavigate, showTo
           marginBottom: 24,
           borderLeft: `3px solid ${overdue.length ? 'var(--red)' : 'var(--accent)'}`,
         }}>
-          <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>
+          <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4 }}>
             {overdue.length > 0 && `${overdue.length} overdue`}
             {overdue.length > 0 && dueToday.length > 0 && ' · '}
             {dueToday.length > 0 && `${dueToday.length} due today`}
           </div>
-          <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 12 }}>
+          <p style={{ fontSize: 12.5, color: 'var(--text-muted)', marginBottom: 12 }}>
             Deal with these first. Everything below is organised by where the application got to.
           </p>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 10 }}>
@@ -414,14 +413,21 @@ export default function Pipeline({ active, onOpenApplication, onNavigate, showTo
       )}
 
       {!empty && (
-        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${stages.length}, minmax(220px, 1fr))`, gap: 14, overflowX: 'auto' }}>
+        // All five stages fit side by side in the default window. Narrower than
+        // that they wrap onto a second row rather than scrolling: at a fixed
+        // 190px per column the board overflowed its card and "Closed" sat
+        // half-cut at the edge with nothing to say there was more.
+        <div style={{
+          display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12,
+          rowGap: 20, alignItems: 'start',
+        }}>
           {stages.map(stage => {
             const items = byStage[stage.id] || []
             const needing = items.filter(i => !i.next_action_at && i.needsAction).length
             return (
               <div key={stage.id} data-testid={`pipeline-stage-${stage.id}`} {...stageProps(stage)}
                 style={{
-                  borderRadius: 'var(--radius)', minHeight: 80,
+                  borderRadius: 'var(--radius)', minHeight: 80, minWidth: 0,
                   outline: dropStage === stage.id ? '2px dashed var(--accent)' : 'none',
                   outlineOffset: 4,
                 }}>
