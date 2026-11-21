@@ -73,6 +73,9 @@ stub({
     },
     more: ({ count }) => { practiceCalls.push(['more', count]); return {} },
     flag: (cardId, reason, note) => { practiceCalls.push(['flag', cardId, reason, note]); return { success: true } },
+    saveNote: (cardId, note) => { practiceCalls.push(['note', cardId, note]); return { success: true, note } },
+    explanations: (cardId) => [{ id: 1, prompt: '', reply: 'Saved for ' + cardId, blocks: [] }],
+    explain: async () => { practiceCalls.push(['explain']); return { success: true } },
   },
   './logger': { append: () => {}, tail: () => [] },
   // The real pairing module, with the expensive call counted. deviceSecrets is
@@ -221,6 +224,10 @@ const post = async (path, body) => {
   check('more cards', (await post('/api/practice/more', { count: 5 })).body?.fromMore, true)
   check('reporting a card', (await post('/api/practice/flag', { cardId: 'node-001', reason: 'wrong', note: 'old' })).status, 200)
   check('the routes passed the phone\'s values through', practiceCalls.filter(c => c[0] !== 'rate'), [['more', 5], ['flag', 'node-001', 'wrong', 'old']])
+  check('a note is saved from the phone', (await post('/api/practice/note', { cardId: 'node-001', note: 'mine' })).body?.note, 'mine')
+  check('saved explanations are readable', (await get('/api/practice/explanations?cardId=node-001')).body?.[0]?.reply, 'Saved for node-001')
+  check('asking the AI needs a paired phone, not the shared token', (await post('/api/practice/explain', { cardId: 'node-001' })).status, 403)
+  check('and nothing was asked', practiceCalls.some(c => c[0] === 'explain'), false)
 
   // ── Review queue over the LAN ───────────────────────────────────
   const heldRes = await get('/api/held')

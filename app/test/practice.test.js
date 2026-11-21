@@ -1,6 +1,6 @@
 // Pure helpers behind the Practice tab.
 const { createChecker } = require('./helpers')
-const { formatInterval, statsLine, currentCard } = require('../src/practice')
+const { formatInterval, statsLine, currentCard, applyPendingPractice } = require('../src/practice')
 const { check, done } = createChecker()
 
 check('days', formatInterval(6), '6d')
@@ -16,5 +16,22 @@ const data = { cards: [{ id: 'a', done: true }, { id: 'b' }, { id: 'c' }], queue
 check('the first card still queued', currentCard(data).id, 'b')
 check('done for the day', currentCard({ cards: data.cards, queue: [] }), null)
 check('nothing loaded yet', currentCard(null), null)
+
+// ── Practice through the cloud ──
+const snap = { day: '2026-11-21', cards: [{ id: 'a' }, { id: 'b', note: '' }, { id: 'c' }], queue: ['a', 'b', 'c'], doneCount: 0, available: 5 }
+const over = applyPendingPractice(snap, [
+  { type: 'rate', cardId: 'a', rating: 'good' },
+  { type: 'note', cardId: 'b', note: '  my example  ' },
+  { type: 'flag', cardId: 'c', reason: 'wrong' },
+  { type: 'rate', cardId: 'gone', rating: 'good' },
+])
+check('a card answered on the phone leaves the queue before the desktop applies it', over.queue, ['b'])
+check('and counts as done', [over.cards[0].done, over.doneCount], [true, 1])
+check('a note shows straight away', over.cards[1].note, 'my example')
+check('a reported card leaves the queue', over.cards[2].flagged, true)
+check('pending changes are counted; unknown cards ignored', over.pendingChanges, 3)
+check('it is marked as coming through the cloud, with nothing more to add', [over.cloud, over.available], [true, 0])
+check('the snapshot itself is not changed', [snap.queue.length, snap.cards[0].done], [3, undefined])
+check('rating the same card twice counts it once', applyPendingPractice(snap, [{ type: 'rate', cardId: 'a' }, { type: 'rate', cardId: 'a' }]).doneCount, 1)
 
 done()

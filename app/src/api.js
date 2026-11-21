@@ -372,6 +372,23 @@ export class HiroClient {
   flagPracticeCard(cardId, reason, note = '') {
     return this.request('/api/practice/flag', { method: 'POST', body: JSON.stringify({ cardId, reason, note }) })
   }
+  savePracticeNote(cardId, note) {
+    return this.request('/api/practice/note', { method: 'POST', body: JSON.stringify({ cardId, note }) })
+  }
+  // What the AI already said about a card (free to read), and asking it more.
+  // Asking spends on the desktop's AI key, so the desktop allows it only from a
+  // paired phone, and it can take as long as an Ask Hiro answer.
+  getPracticeExplanations(cardId) {
+    return this.request(`/api/practice/explanations?cardId=${encodeURIComponent(cardId)}`)
+  }
+  explainPracticeCard(cardId, followUp = '', { idempotencyKey } = {}) {
+    return this.request('/api/practice/explain', {
+      method: 'POST',
+      body: JSON.stringify({ cardId, followUp }),
+      timeoutMs: ASK_TIMEOUT_MS,
+      headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+    })
+  }
   getScanStatus() { return this.request('/api/scan/status') }
   cancelScan() { return this.request('/api/scan/cancel', { method: 'POST' }) }
 

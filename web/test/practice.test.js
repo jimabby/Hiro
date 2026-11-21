@@ -10,7 +10,19 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'hiro-practice-'))
 process.on('exit', () => { try { fs.rmSync(TMP, { recursive: true, force: true }) } catch {} })
 
 let config = { practice: { topics: [], dailyCount: 8 } }
+// The AI, replaced: deck generation gets a JSON reply, Ask AI gets markdown.
+const aiCalls = []
+let deckReply = null
+const NL = String.fromCharCode(10)
+const BT = String.fromCharCode(96)
 stub({
+  './ai/index': {
+    chat: async (provider, key, input) => {
+      aiCalls.push(input)
+      if (input.operation === 'practiceDeck') return deckReply
+      return ['It is **a runtime**.', '', '- Point one', '', '```js', 'console.log(1)', '```'].join(NL)
+    },
+  },
   './config': { CONFIG_DIR: TMP, load: () => ({ ...config }), update: p => { config = { ...config, ...p }; return config } },
   './logger': { append: () => {} },
 })
@@ -177,12 +189,250 @@ async function main() {
   const jobs = practice.jobCards()
   check('one card per generated question', jobs.length, 3)
   check('job cards are labelled with the application', jobs[0].topic, 'Acme — Backend Developer')
-  check('job answers are plain text', jobs[0].format, 'text')
+  check('job answers are read as light markdown', jobs[0].format, 'markdown')
   check('job card ids are stable for the same question', practice.jobCards()[0].id, jobs[0].id)
   config.practice = { topics: [practice.JOB_TOPIC], dailyCount: 8 }
   const jt = practice.today({ now: at('2026-11-23'), rng: seq() })
   check('the job deck can be practised on its own', jt.cards.length, 3)
   check('a job card can be rated', practice.rate(jobs[1].id, 'easy', { now: at('2026-11-23') }).success, true)
+
+  // ─── Categories ───────────────────────────────────────────────
+  check('every bank question has a category', practice.loadBank().every(q => q.category), true)
+  check('model categories are normalised', [core.normalizeCategory('behavioral'), core.normalizeCategory('Role specific'), core.normalizeCategory('nonsense')], ['Behavioural', 'Role-specific', null])
+  check('job cards carry their category', jobs.find(j => j.question === 'Why Acme?').category, 'Behavioural')
+
+  // ─── Notes ────────────────────────────────────────────────────
+  const noteCard = practice.loadBank()[0].id
+  check('saving a note', practice.saveNote(noteCard, '  My example: the booking API  ').note, 'My example: the booking API')
+  check('the note travels with the card', practice.bank({ now: at('2026-11-23') }).cards.find(c => c.id === noteCard).note, 'My example: the booking API')
+  check('notes are capped', practice.saveNote(noteCard, 'x'.repeat(6000)).note.length, 5000)
+  practice.saveNote(noteCard, '')
+  check('an empty note removes it', practice.bank({ now: at('2026-11-23') }).cards.find(c => c.id === noteCard).note, '')
+  check('a note on an unknown card is refused', practice.saveNote('nope-1', 'x').success, false)
+
+  // ─── Ask AI ───────────────────────────────────────────────────
+  config.aiProvider = undefined
+  check('asking needs an AI provider', (await practice.explain(noteCard)).success, false)
+  config.aiProvider = 'claude'; config.aiApiKey = 'test-key'
+  const firstAsk = await practice.explain(noteCard)
+  check('the AI explains a card', firstAsk.success, true)
+  check('the reply arrives as safe blocks', firstAsk.entry.blocks.map(b => b.type), ['p', 'li', 'pre'])
+  check('the card text is fenced as data in the prompt', /untrusted input/i.test(aiCalls[aiCalls.length - 1].messages[0].content), true)
+  const followAsk = await practice.explain(noteCard, 'Show me a C# example')
+  check('a follow-up is asked and kept', followAsk.entry.prompt, 'Show me a C# example')
+  check('the follow-up sees the earlier answer', aiCalls[aiCalls.length - 1].messages[0].content.includes('Earlier in this conversation'), true)
+  check('explanations are saved with the card', practice.explanations(noteCard).length, 2)
+  check('the card shows it has saved AI help', practice.bank({ now: at('2026-11-23') }).cards.find(c => c.id === noteCard).explained, true)
+  practice.clearExplanations(noteCard)
+  check('clearing removes them', practice.explanations(noteCard).length, 0)
+
+  // ─── Decks from a job ad ──────────────────────────────────────
+  const ad = 'Junior React Developer at Acme. You will build features in React and TypeScript, call REST APIs, write Jest tests and join code reviews. Nice to have: Node.js and Docker.'
+  check('a short ad is refused before any AI call', (await practice.generateDeck({ jobText: 'React dev' })).success, false)
+  deckReply = 'Here you go:' + NL + JSON.stringify([
+    { question: 'What does useEffect do?', answer: 'Runs side effects after render.', category: 'technical', skill: 'React', difficulty: 'easy' },
+    { question: 'How do you type props in TypeScript?', answer: 'With an interface or type alias.', category: 'Practical', skill: 'TypeScript', difficulty: 'medium' },
+    { question: 'Tell me about a code review you learned from.', answer: 'Use STAR.', category: 'behavioral', difficulty: 'easy' },
+    { question: 'What does useEffect do?', answer: 'Duplicate.', category: 'technical' },
+    { question: 'x', answer: '' },
+  ])
+  const made = await practice.generateDeck({ jobText: ad, count: 15 })
+  check('a deck is generated from the ad', [made.success, made.deck && made.deck.cards], [true, 3])
+  check('the deck is named from the ad when no name is given', made.deck.title, ad.slice(0, 60))
+  check('the ad is fenced as untrusted input', aiCalls[aiCalls.length - 1].messages[0].content.includes('JOB AD'), true)
+  const named = await practice.generateDeck({ title: 'Acme', jobText: ad, count: 10 })
+  check('a chosen name is used', named.deck.title, 'Acme')
+  check('a second deck with the same name is numbered', (await practice.generateDeck({ title: 'Acme', jobText: ad })).deck.title, 'Acme (2)')
+  const deckList = practice.decks()
+  check('decks are listed', deckList.generated.map(d => d.title).includes('Acme'), true)
+  check('deck cards join the topics', practice.bank({ now: at('2026-11-23') }).topics.some(t => t.name === 'Deck: Acme'), true)
+  config.practice = { topics: ['Deck: Acme'], dailyCount: 8 }
+  const dt = practice.today({ now: at('2026-11-24'), rng: seq() })
+  check('a generated deck can be practised on its own', [dt.cards.length, dt.cards.every(c => c.deck === 'custom')], [3, true])
+  check('generated answers come as blocks', Array.isArray(dt.cards[0].blocks), true)
+  check('a generated card can be rated', practice.rate(dt.cards[0].id, 'good', { now: at('2026-11-24') }).success, true)
+  check('renaming a deck', practice.renameDeck(named.deck.id, 'Acme React').success, true)
+  check('the chosen topic follows the rename', config.practice.topics, ['Deck: Acme React'])
+  check('a rename may not clash', practice.renameDeck(named.deck.id, 'Acme (2)').success, false)
+  check('deleting a deck', practice.deleteDeck(named.deck.id).success, true)
+  check('its cards are gone', practice.deckCards().some(c => c.deckId === named.deck.id), false)
+  deckReply = 'Sorry, I cannot help with that.'
+  check('an unusable reply is reported, not saved', (await practice.generateDeck({ jobText: ad })).success, false)
+
+  // ─── Markdown for model text ──────────────────────────────────
+  const md = ['# Title', 'Some **bold** and ' + BT + 'code' + BT + '.', '', '1. One', '2. Two'].join(NL)
+  check('markdown blocks', core.markdownBlocks(md).map(b => [b.type, b.marker || '', b.spans.map(x => x.text).join('')]),
+    [['p', '', 'Title'], ['p', '', 'Some bold and code.'], ['li', '1.', 'One'], ['li', '2.', 'Two']])
+
+  // ─── Core: priority, days, weak topics ─────────────────────────
+  check('priority cards go first', core.buildSet({ cards, states, today, count: 3, priority: ['c', 'd'], rng: seq() }), ['c', 'd', 'b'])
+  check('priority respects kept cards and the count', core.buildSet({ cards, states, today, count: 2, keep: ['a'], priority: ['c', 'd'], rng: seq() }), ['a', 'c'])
+  check('days between', [core.daysBetween('2026-11-21', '2026-11-24 10:00:00'), core.daysBetween('2026-12-31', '2027-01-01')], [3, 1])
+  const wt = core.weakTopics([
+    { card_id: 'x1', rating: 'again' }, { card_id: 'x1', rating: 'again' }, { card_id: 'x2', rating: 'good' }, { card_id: 'x2', rating: 'hard' },
+    { card_id: 'y1', rating: 'good' }, { card_id: 'y1', rating: 'good' }, { card_id: 'y2', rating: 'again' }, { card_id: 'y2', rating: 'good' },
+    { card_id: 'z1', rating: 'again' }, { card_id: 'gone', rating: 'again' },
+  ], id => ({ x1: 'Node', x2: 'Node', y1: 'SQL', y2: 'SQL', z1: 'CSS' }[id] || null))
+  check('weak topics are ranked by how often they are forgotten', wt.map(t => [t.name, t.againRate, t.cards]), [['Node', 0.5, 2], ['SQL', 0.25, 2]])
+
+  // ─── Interview countdown ──────────────────────────────────────
+  const realNow = new Date()
+  const localDay = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  const inDays = n => { const d = new Date(realNow); d.setDate(d.getDate() + n); return localDay(d) }
+  // A day well clear of the fixed dates the earlier tests used.
+  const testDay = new Date(realNow.getTime() + 10 * 86400000)
+  config.practice = { topics: ['Java'], dailyCount: 4 }
+  db.addInterviewEvent({ applicationId: appId, scheduledAt: `${inDays(13)} 10:00:00` })
+  db.insertApplication({ job_title: 'Graduate .NET Developer', company: 'Contoso', platform: 'seek', job_url: 'https://example.com/job/2', status: 'Interview' })
+  const contosoId = db.getApplications().find(a => a.company === 'Contoso').id
+  db.addInterviewEvent({ applicationId: contosoId, scheduledAt: `${inDays(15)} 09:00:00` })
+  db.insertApplication({ job_title: 'Far Away', company: 'Later Co', platform: 'seek', job_url: 'https://example.com/job/3', status: 'Interview' })
+  db.addInterviewEvent({ applicationId: db.getApplications().find(a => a.company === 'Later Co').id, scheduledAt: `${inDays(30)} 09:00:00` })
+  const ct = practice.today({ now: testDay, rng: seq() })
+  check('interviews in the next week are counted down', ct.countdown.map(c => [c.company, c.daysLeft]), [['Acme', 3], ['Contoso', 5]])
+  const acmeLeft = ct.countdown[0].cardsLeft
+  check('the job deck leads the day, whatever topics are chosen', ct.cards.slice(0, acmeLeft).every(c => c.applicationId === appId), true)
+  check('an interview with no questions yet says so', ct.countdown[1].cards, 0)
+  check('card ids stay out of the public countdown', 'cardIds' in ct.countdown[0], false)
+  practice.rate(ct.queue[0], 'good', { now: testDay })
+  check('cards left goes down as they are done', practice.today({ now: testDay }).countdown[0].cardsLeft, acmeLeft - 1)
+  check('preparing a deck for an unknown application is refused', (await practice.prepareJobDeck(99999)).success, false)
+
+  // ─── Weak topics with demand ──────────────────────────────────
+  const nodeCards = practice.loadBank().filter(q => q.topic === 'Node.js').slice(10, 14)
+  for (const q of nodeCards) practice.rate(q.id, 'again', { now: testDay })
+  const ins = practice.insights({ now: testDay, skillsGap: { enoughData: true, sample: 30, missing: [{ skill: 'Node.js', share: 0.4, jobs: 12 }], covered: [{ skill: 'Java', share: 0.3, jobs: 9 }] } })
+  const nodeRow = ins.topics.find(t => t.name === 'Node.js')
+  check('a forgotten topic shows up as weak', nodeRow && nodeRow.again >= 4, true)
+  check('demand from the skills report is joined to the topic', nodeRow.demand, { skill: 'Node.js', share: 0.4, jobs: 12, inResume: false })
+  check('the cards forgotten most are listed', ins.weakCards.some(c => nodeCards.some(q => q.id === c.id)), true)
+  check('totals', ins.totals.reviews > 0 && ins.skillsGap.available, true)
+
+  // ─── STAR stories ─────────────────────────────────────────────
+  check('a story needs a title', practice.saveStory({ situation: 'x' }).success, false)
+  check('a story needs some content', practice.saveStory({ title: 'Empty' }).success, false)
+  const behaviouralCard = practice.loadBank().find(q => q.category === 'Behavioural').id
+  const story1 = practice.saveStory({ title: 'Capstone demo', situation: 'Final-year project', task: 'Deploy broke', action: 'Fixed the pipeline', result: 'Demo on time', cardId: behaviouralCard })
+  check('a story is saved', story1.success, true)
+  check('written from a question, it is attached to it', practice.bank({ now: testDay }).cards.find(c => c.id === behaviouralCard).storyIds, [story1.story.id])
+  check('editing a story', practice.saveStory({ id: story1.story.id, title: 'Capstone demo rescue', result: 'Demo on time; client signed off' }).story.title, 'Capstone demo rescue')
+  const other = practice.loadBank().find(q => q.category === 'Behavioural' && q.id !== behaviouralCard).id
+  check('attaching a story to another question', practice.linkStory(other, story1.story.id).success, true)
+  check('the story counts its questions', practice.stories().find(x => x.id === story1.story.id).linkedCards, 2)
+  await practice.explain(behaviouralCard)
+  check('Ask AI sees the attached story', aiCalls[aiCalls.length - 1].messages[0].content.includes('MY STAR STORIES'), true)
+  check('the phone gets the story with the card', (() => {
+    config.practice = { topics: ['Behavioural'], dailyCount: 30 }
+    const ph = practice.forPhone({ now: new Date(testDay.getTime() + 2 * 86400000) })
+    const c = ph.cards.find(x => x.id === behaviouralCard)
+    return c ? c.stories.map(x => x.title) : ['card not in set']
+  })(), ['Capstone demo rescue'])
+  practice.unlinkStory(other, story1.story.id)
+  check('detaching', practice.stories().find(x => x.id === story1.story.id).linkedCards, 1)
+  practice.deleteStory(story1.story.id)
+  check('deleting a story removes its links', practice.bank({ now: testDay }).cards.find(c => c.id === behaviouralCard).storyIds, [])
+
+  // ─── Daily reminder ───────────────────────────────────────────
+  check('the reminder is off by default', practice.reminderSettings(), { enabled: false, time: '19:00' })
+  check('a bad time is refused', practice.saveReminder({ enabled: true, time: '7pm' }).success, false)
+  check('saving the reminder', practice.saveReminder({ enabled: true, time: '07:30' }).settings, { enabled: true, time: '07:30' })
+  const tomorrow2 = new Date(testDay.getTime() + 86400000)
+  config.practice = { topics: [], dailyCount: 8 }
+  const text = practice.reminderText({ now: tomorrow2 })
+  check('the reminder leads with the interview when one is close', /Acme interview in 2 days/.test(text || ''), true)
+  check('and says how long it takes', /about \d+ minutes/.test(text || ''), true)
+  const t2 = practice.today({ now: tomorrow2 })
+  practice.rate(t2.queue[0], 'good', { now: tomorrow2 })
+  check('no reminder once you have practised that day', practice.reminderText({ now: tomorrow2 }), null)
+
+  // ─── Question bank updates ────────────────────────────────────
+  const bundled = practice.bankInfo()
+  check('the built-in bank is used until a newer one is fetched', bundled.source, 'bundled')
+  const published = (updatedAt, n, extraQ) => ({
+    ok: true, status: 200,
+    text: async () => JSON.stringify({ schema: 1, updatedAt, questions: [
+      ...Array.from({ length: n }, (_, i) => ({ id: `pub-${i}`, topic: 'Published', category: 'Concept', question: `Published question ${i}?`, answer: '<p>Answer</p>', difficulty: 'easy' })),
+      ...(extraQ || []),
+    ] }),
+  })
+  config.practiceBankUpdates = false
+  check('updates can be switched off', (await practice.refreshBank({ fetchImpl: async () => published('2099-01-01', 60) })).skipped, 'disabled')
+  config.practiceBankUpdates = true
+  check('plain http is refused', (await practice.refreshBank({ cfg: { practiceBankUrl: 'http://example.com/q.json' }, fetchImpl: async () => published('2099-01-01', 60) })).success, false)
+  check('a bank with too few questions is ignored', (await practice.refreshBank({ force: true, fetchImpl: async () => published('2099-01-01', 5) })).success, false)
+  check('a server error is reported, not fatal', (await practice.refreshBank({ force: true, fetchImpl: async () => ({ ok: false, status: 503, text: async () => '' }) })).error, 'the server answered HTTP 503')
+  check('an older published bank is not taken', (await practice.refreshBank({ force: true, fetchImpl: async () => published('2000-01-01', 60) })).updated, false)
+  let fetchedUrl = null
+  const got = await practice.refreshBank({ force: true, fetchImpl: async (url) => { fetchedUrl = url; return published('2099-01-01', 60) } })
+  check('a newer published bank is taken', [got.success, got.updated, got.count], [true, true, 60])
+  check('it comes from the public repo by default', fetchedUrl, practice.BANK_URL)
+  check('and is used from then on', [practice.bankInfo().source, practice.loadBank().length], ['downloaded', 60])
+  check('a recent check is not repeated', (await practice.refreshBank({ fetchImpl: async () => published('2099-01-02', 61) })).skipped, 'recent')
+  const evil = [{ id: 'pub-evil', topic: 'Published', question: 'Evil?', answer: '<p onclick="x()">Hi</p><script>alert(1)</script>' }]
+  await practice.refreshBank({ force: true, fetchImpl: async () => published('2099-01-03', 60, evil) })
+  check('downloaded answers still become safe text for the phone', core.answerBlocks(practice.loadBank().find(q => q.id === 'pub-evil').answer).map(b => b.spans.map(x => x.text).join('')), ['Hi'])
+  fs.rmSync(path.join(TMP, 'practice-bank.json'), { force: true })
+  practice.resetBank()
+  check('without the cached copy the built-in bank is back', practice.bankInfo().source, 'bundled')
+
+  // ─── Importing question files ─────────────────────────────────
+  const NL2 = String.fromCharCode(10)
+  const TAB = String.fromCharCode(9)
+  const csv = ['question,answer,topic,difficulty', '"What is a closure?","A function that remembers, even later, the variables in scope.",JavaScript,easy',
+    '"Multi-line?","Line one' + NL2 + '- a bullet",JavaScript,medium', ',no question,JS,', '"What is a closure?","dup",JS,', '"No answer",,JS,'].join(NL2)
+  const pc = core.parseImport(csv, { name: 'js.csv' })
+  check('CSV with a header row', [pc.format, pc.cards.length], ['csv', 2])
+  check('quoted commas survive', pc.cards[0].answer, 'A function that remembers, even later, the variables in scope.')
+  check('header columns are mapped', [pc.cards[0].topic, pc.cards[0].difficulty], ['JavaScript', 'easy'])
+  check('quoted newlines survive and plain text reads as markdown', [pc.cards[1].format, core.answerBlocks(pc.cards[1].answer, 'markdown').map(b => b.type)], ['markdown', ['p', 'li']])
+  check('bad rows are reported with the line they start on (after a two-line row)', pc.skipped.map(x => [x.where, x.reason]), [['line 5', 'no question'], ['line 6', 'duplicate question'], ['line 7', 'no answer']])
+  const tsv = core.parseImport(['Event loop' + TAB + 'Runs callbacks when the stack is empty', 'Hoisting' + TAB + 'Declarations move up'].join(NL2), { name: 'quizlet.txt' })
+  check('a Quizlet/TSV export without a header', [tsv.format, tsv.cards.map(c => c.question)], ['tsv', ['Event loop', 'Hoisting']])
+  const anki = core.parseImport(['#separator:tab', '#html:true', '#tags column:3', 'What is <b>REST</b>?' + TAB + '<div>Resources and verbs</div><div><img src="x.png">Stateless</div>[sound:a.mp3]' + TAB + 'web'].join(NL2))
+  check('Anki headers are honoured', anki.format, 'anki')
+  check('HTML in the question is reduced to text', anki.cards[0].question, 'What is REST?')
+  check('Anki HTML keeps only safe tags', [anki.cards[0].format, anki.cards[0].answer], ['html', '<p>Resources and verbs</p><p>Stateless</p>'])
+  const json = core.parseImport(JSON.stringify([{ front: 'What is SQL?', back: 'A query language', category: 'concept' }, { q: 'x' }]))
+  check('JSON with front/back keys', [json.format, json.cards[0].question, json.cards[0].category, json.skipped.length], ['json', 'What is SQL?', 'Concept', 1])
+  check('Hiro bank JSON imports too', core.parseImport(fs.readFileSync(path.join(__dirname, '..', 'electron', 'data', 'questions.json'), 'utf8')).cards.length >= 180, true)
+  check('semicolon CSV (European Excel)', core.parseImport('Q1;A1' + NL2 + 'Q2;A2', { name: 'x.csv' }).cards.length, 2)
+  check('broken JSON is reported', core.parseImport('[{', { name: 'x.json' }).skipped[0].reason, 'not valid JSON')
+  const big = Array.from({ length: core.MAX_IMPORT_CARDS + 5 }, (_, i) => 'Q' + i + ',A').join(NL2)
+  check('imports are capped', core.parseImport(big).cards.length, core.MAX_IMPORT_CARDS)
+
+  const pv = practice.previewImport({ name: 'react_basics.csv', text: csv })
+  check('the preview counts and samples without saving', [pv.success, pv.count, pv.skippedCount, pv.suggestedTitle, Array.isArray(pv.sample[0].blocks)], [true, 2, 3, 'react basics', true])
+  check('an empty file is refused', practice.previewImport({ name: 'x.csv', text: '   ' }).success, false)
+  const imp = practice.importDeck({ name: 'react_basics.csv', text: csv, title: 'My React cards' })
+  check('importing creates a deck', [imp.success, imp.deck.title, imp.deck.cards, imp.skippedCount], [true, 'My React cards', 2, 3])
+  const ankiDeck = practice.importDeck({ name: 'anki.txt', text: ['#html:true', 'What is REST?' + TAB + '<p>Resources <b>and</b> verbs</p>'].join(NL2) })
+  const ankiCard = practice.deckCards().find(c => c.deckId === ankiDeck.deck.id)
+  check('an imported HTML answer stays HTML and becomes safe blocks', [ankiCard.format, core.answerBlocks(ankiCard.answer, ankiCard.format)[0].spans.map(x => x.text).join('')], ['html', 'Resources and verbs'])
+  check('imported decks say where they came from', practice.decks().generated.find(d => d.id === imp.deck.id).source, 'import')
+  check('a file with no usable rows is refused', practice.importDeck({ name: 'x.csv', text: 'just one column' }).success, false)
+
+  // ─── Web page to cards ────────────────────────────────────────
+  const longText = 'The JavaScript event loop lets a single thread handle asynchronous work. '.repeat(12)
+  const pageHtml = '<html><head><title>Event loop explained &amp; more</title></head><body><nav>Home About Login</nav><main><h1>Event loop</h1><p>' + longText + '</p></main><footer>Copyright</footer></body></html>'
+  let fetched = null
+  const fakeFetch = async (u) => { fetched = u; return { url: u, html: pageHtml } }
+  deckReply = JSON.stringify([
+    { question: 'What does the event loop do?', answer: 'It runs queued callbacks when the call stack is empty.', category: 'Concept', skill: 'JavaScript', difficulty: 'easy' },
+    { question: 'Microtasks or macrotasks first?', answer: 'Microtasks run first.', category: 'Comparison', difficulty: 'medium' },
+    { question: 'Why is JavaScript single-threaded?', answer: 'One call stack keeps the DOM safe.', category: 'Concept' },
+  ])
+  const web = await practice.deckFromUrl({ url: 'https://example.com/event-loop', count: 10 }, { fetchPage: fakeFetch })
+  check('a page becomes a deck', [web.success, web.deck && web.deck.cards], [true, 3])
+  check('named from the page title', web.deck.title, 'Event loop explained & more')
+  const pagePromptText = aiCalls[aiCalls.length - 1].messages[0].content
+  check('the page is fenced as untrusted input', pagePromptText.includes('WEB PAGE https://example.com/event-loop') && /untrusted input/i.test(pagePromptText), true)
+  check('navigation and footers are left out', [pagePromptText.includes('Home About Login'), pagePromptText.includes('Copyright')], [false, false])
+  const webDeck = practice.decks().generated.find(d => d.id === web.deck.id)
+  check('the deck remembers its page', [webDeck.source, webDeck.sourceUrl], ['web-page', 'https://example.com/event-loop'])
+  check('a page with too little text is refused before any AI call', (await practice.deckFromUrl({ url: 'https://example.com/x' }, { fetchPage: async (u) => ({ url: u, html: '<p>Sign in</p>' }) })).success, false)
+  check('a private address is refused by the guarded fetch', /local|private/i.test((await practice.deckFromUrl({ url: 'http://localhost:3000/admin' })).error || ''), true)
+  check('only http(s) links', (await practice.deckFromUrl({ url: 'file:///etc/passwd' })).success, false)
+  check('the fake fetch saw the address', fetched, 'https://example.com/event-loop')
 
   done()
 }

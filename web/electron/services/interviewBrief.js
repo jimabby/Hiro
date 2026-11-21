@@ -186,4 +186,4 @@ function toText(brief) {
   return lines.join('\n')
 }
 
-module.exports = { buildBrief, runDue, toText, nextInterview, QUESTIONS_TO_ASK }
+module.exports = { buildBrief, runDue, toText, nextInterview, ensureQuestions, QUESTIONS_TO_ASK }

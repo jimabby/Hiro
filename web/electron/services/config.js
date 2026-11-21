@@ -272,6 +272,12 @@ const DEFAULTS = {
   // Practice flashcards (services/practice.js). topics: [] means every topic;
   // dailyCount is the size of each day's set.
   practice: { topics: [], dailyCount: 8 },
+  // A daily nudge to practise, on the desktop and the phone. Off until chosen.
+  practiceReminder: { enabled: false, time: '19:00' },
+  // Fetch the published question bank once a day (services/practice.js
+  // refreshBank). practiceBankUrl overrides where it comes from (https only).
+  practiceBankUpdates: true,
+  practiceBankUrl: '',
   // Extra skills for the skills-gap report (services/skillsGap.js), on top of
   // its built-in vocabulary. Comma-separated, matched literally.
   skillTerms: '',
@@ -523,6 +529,7 @@ const DEFAULTS = {
     followUp: true,     // a pipeline next-action date came due
     offerDeadline: true, // an offer's respond-by date is close
     taskDue: true,      // an application checklist task came due
+    practice: true,     // the daily practice reminder (only when it is switched on)
   },
   // How far ahead to warn about an interview, and how long to keep quiet
   // afterwards. Two reminders (a day out, an hour out) is the useful shape.

@@ -75,16 +75,22 @@ function shuffle(items, rng = Math.random) {
 //
 //   cards   — every eligible card (already filtered by topic, flags removed)
 //   states  — Map of card id → stored state
-//   keep    — ids that must stay (cards already answered today)
-//   exclude — ids that may not be chosen (already in today's set)
+//   keep     — ids that must stay (cards already answered today)
+//   exclude  — ids that may not be chosen (already in today's set)
+//   priority — ids that go before everything else (an interview is close)
 //
-// Due reviews come first, most overdue and then hardest first: a forgotten card
-// is what spaced repetition exists to catch. New cards fill what is left, job
+// Priority cards come first: an interview in three days outranks any schedule.
+// Then due reviews, most overdue and then hardest first: a forgotten card is
+// what spaced repetition exists to catch. New cards fill what is left, job
 // cards before bank cards, because a deck made from a real application is the
 // one with an interview attached.
-function buildSet({ cards, states, today, count, keep = [], exclude = [], rng = Math.random }) {
+function buildSet({ cards, states, today, count, keep = [], exclude = [], priority = [], rng = Math.random }) {
   const taken = new Set([...keep, ...exclude])
   const chosen = [...keep]
+  for (const id of priority) {
+    if (chosen.length >= count) break
+    if (!taken.has(id) && !chosen.includes(id)) { chosen.push(id); taken.add(id) }
+  }
   const due = cards
     .filter(c => !taken.has(c.id) && states.get(c.id) && states.get(c.id).due_on <= today)
     .sort((a, b) => {
@@ -99,6 +105,35 @@ function buildSet({ cards, states, today, count, keep = [], exclude = [], rng = 
     chosen.push(c.id)
   }
   return chosen
+}
+
+// Whole days from `today` to `day` (both "YYYY-MM-DD"); 0 is today.
+function daysBetween(today, day) {
+  const [y1, m1, d1] = String(today).split('-').map(Number)
+  const [y2, m2, d2] = String(day).slice(0, 10).split('-').map(Number)
+  return Math.round((new Date(y2, m2 - 1, d2) - new Date(y1, m1 - 1, d1)) / 86400000)
+}
+
+// Ratings → how often each topic is forgotten. `reviews` is [{ card_id,
+// rating }], `topicOf` maps a card id to its topic name (or null for a card
+// that no longer exists). Topics with fewer than `minReviews` ratings are left
+// out: two misses out of two says nothing yet.
+function weakTopics(reviews, topicOf, { minReviews = 4 } = {}) {
+  const by = new Map()
+  for (const r of reviews) {
+    const topic = topicOf(r.card_id)
+    if (!topic) continue
+    const t = by.get(topic) || { name: topic, reviews: 0, again: 0, hard: 0, cards: new Set() }
+    t.reviews++
+    if (r.rating === 'again') t.again++
+    if (r.rating === 'hard') t.hard++
+    t.cards.add(r.card_id)
+    by.set(topic, t)
+  }
+  return [...by.values()]
+    .filter(t => t.reviews >= minReviews)
+    .map(t => ({ name: t.name, reviews: t.reviews, again: t.again, hard: t.hard, cards: t.cards.size, againRate: Math.round((t.again / t.reviews) * 100) / 100 }))
+    .sort((a, b) => b.againRate - a.againRate || b.again - a.again || a.name.localeCompare(b.name))
 }
 
 // Practice days → streak and this week's count. `days` is any list of
@@ -133,6 +168,23 @@ const textList = (v, maxItems, maxLen) => Array.isArray(v)
   ? v.filter(s => typeof s === 'string' && s.trim() && s.length <= maxLen).slice(0, maxItems)
   : []
 
+// What kind of question it is, shown beside the topic. Bank questions carry one
+// of these; generated ones are mapped onto them (normalizeCategory).
+const CATEGORIES = ['Concept', 'Comparison', 'Practical', 'Best practice', 'Problem solving', 'Behavioural', 'Technical', 'Situational', 'Role-specific', 'System design']
+const CATEGORY_ALIASES = {
+  behavioral: 'Behavioural', behavioural: 'Behavioural', technical: 'Technical', situational: 'Situational',
+  'role-specific': 'Role-specific', 'role specific': 'Role-specific', concept: 'Concept', conceptual: 'Concept',
+  comparison: 'Comparison', practical: 'Practical', 'best practice': 'Best practice', 'best practices': 'Best practice',
+  'problem solving': 'Problem solving', 'problem-solving': 'Problem solving', coding: 'Problem solving',
+  'system design': 'System design', design: 'System design',
+}
+function normalizeCategory(value) {
+  if (typeof value !== 'string') return null
+  const v = value.trim()
+  if (CATEGORIES.includes(v)) return v
+  return CATEGORY_ALIASES[v.toLowerCase()] || null
+}
+
 function cleanQuestion(raw) {
   if (!raw || typeof raw !== 'object') return null
   if (typeof raw.id !== 'string' || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(raw.id)) return null
@@ -141,6 +193,7 @@ function cleanQuestion(raw) {
     id: raw.id,
     deck: 'bank',
     format: 'html',
+    category: normalizeCategory(raw.category),
     topic: raw.topic.trim(),
     question: raw.question.trim(),
     answer: raw.answer,
@@ -165,6 +218,227 @@ function cleanBank(parsed) {
   return out
 }
 
+// ─── Questions generated from a job ad ─────────────────────────────
+//
+// A model's reply → clean questions. The reply should be a JSON array, but a
+// model may wrap it in prose or a code fence, so the first [...] is taken. Each
+// entry is checked like a bank entry: anything malformed is dropped, the rest
+// is trimmed to size, and duplicate questions keep the first.
+function parseGeneratedQuestions(text, max = 25) {
+  const s = String(text || '')
+  const start = s.indexOf('[')
+  const end = s.lastIndexOf(']')
+  if (start < 0 || end <= start) return []
+  let list
+  try { list = JSON.parse(s.slice(start, end + 1)) } catch { return [] }
+  if (!Array.isArray(list)) return []
+  const seen = new Set()
+  const out = []
+  for (const raw of list) {
+    if (!raw || typeof raw !== 'object') continue
+    const question = typeof raw.question === 'string' ? raw.question.trim().slice(0, 500) : ''
+    const answer = typeof raw.answer === 'string' ? raw.answer.trim().slice(0, 4000) : ''
+    if (question.length < 8 || !answer) continue
+    const key = question.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({
+      question,
+      answer,
+      category: normalizeCategory(raw.category) || 'Technical',
+      skill: typeof raw.skill === 'string' ? raw.skill.trim().slice(0, 40) : '',
+      difficulty: DIFFICULTIES.includes(raw.difficulty) ? raw.difficulty : null,
+    })
+    if (out.length >= max) break
+  }
+  return out
+}
+
+// ─── Importing the user's own question files ──────────────────────
+//
+// CSV, TSV (Quizlet, spreadsheets), Anki's "Notes in Plain Text" export and
+// JSON (Hiro's bank format, or a plain list). Each becomes cards of
+// { question, answer, format, topic?, category?, difficulty? }. Nothing here
+// trusts the file: sizes are capped, HTML answers are kept only as the subset
+// the renderer rebuilds tag by tag, and rows that cannot be read are reported
+// back with the line they came from rather than silently dropped.
+
+const MAX_IMPORT_CARDS = 2000
+const HEADER_ALIASES = {
+  question: ['question', 'questions', 'front', 'term', 'prompt', 'q'],
+  answer: ['answer', 'answers', 'back', 'definition', 'response', 'a'],
+  topic: ['topic', 'subject', 'deck', 'section'],
+  category: ['category', 'type', 'kind'],
+  difficulty: ['difficulty', 'level'],
+}
+
+// RFC 4180-style splitting: quoted fields may hold the delimiter, newlines and
+// doubled quotes. Returns rows with the line each one started on.
+function splitDelimited(text, delimiter) {
+  const rows = []
+  let row = [], field = '', quoted = false, line = 1, start = 1
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (quoted) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++ } else quoted = false
+      } else {
+        if (ch === '\n') line++
+        field += ch
+      }
+      continue
+    }
+    if (ch === '"' && field === '') { quoted = true; continue }
+    if (ch === delimiter) { row.push(field); field = ''; continue }
+    if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++
+      row.push(field); rows.push({ cells: row, line: start })
+      row = []; field = ''; line++; start = line
+      continue
+    }
+    field += ch
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push({ cells: row, line: start }) }
+  return rows.filter(r => r.cells.some(c => c.trim()))
+}
+
+// Anki writes <div> and <br> for line breaks and may include media and
+// cloze markup; keep the text and the tags the renderer allows.
+function cleanImportedHtml(html) {
+  return String(html || '')
+    .replace(/\[sound:[^\]]*\]/gi, '')
+    .replace(/<img\b[^>]*>/gi, '')
+    .replace(/\{\{c\d+::(.*?)(::.*?)?\}\}/g, '$1')
+    .replace(/<div\b[^>]*>/gi, '<p>').replace(/<\/div>/gi, '</p>')
+    .replace(/<(\/?)(b|strong|i|em|code|pre|ul|ol|li|p)\b[^>]*>/gi, '<$1$2>')
+    .replace(/&nbsp;/g, ' ')
+    .trim()
+}
+
+const looksHtml = s => /<\/?(p|div|br|b|i|strong|em|ul|ol|li|code|pre)\b/i.test(s)
+
+function importCard(raw) {
+  // Block-level tags become a space; inline ones (<b>, <code>) just go, so
+  // "What is <b>REST</b>?" does not become "What is REST ?".
+  const question = String(raw.question ?? '')
+    .replace(/<\/?(br|p|div|li|ul|ol|h[1-6]|tr|td)\b[^>]*>/gi, ' ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ').trim()
+  let answer = String(raw.answer ?? '').trim()
+  if (!question) return { error: 'no question' }
+  if (!answer) return { error: 'no answer' }
+  if (question.length > 500) return { error: 'question longer than 500 characters' }
+  const html = raw.html === true || (raw.html !== false && looksHtml(answer))
+  answer = html ? cleanImportedHtml(answer) : answer.replace(/\r\n?/g, '\n')
+  if (answer.length > 8000) return { error: 'answer longer than 8,000 characters' }
+  const card = { question, answer, format: html ? 'html' : 'markdown' }
+  const topic = String(raw.topic ?? '').trim().slice(0, 60)
+  if (topic) card.topic = topic
+  const category = normalizeCategory(raw.category)
+  if (category) card.category = category
+  if (DIFFICULTIES.includes(String(raw.difficulty || '').toLowerCase())) card.difficulty = String(raw.difficulty).toLowerCase()
+  return { card }
+}
+
+function detectFormat(text, name = '') {
+  const ext = String(name).toLowerCase().split('.').pop()
+  const trimmed = text.trimStart()
+  if (ext === 'json' || trimmed.startsWith('[') || trimmed.startsWith('{')) return 'json'
+  if (/^#(separator|html|columns|notetype|deck|tags)/im.test(text.slice(0, 2000))) return 'anki'
+  if (ext === 'tsv') return 'tsv'
+  if (ext === 'csv') return 'csv'
+  const first = text.split(/\r?\n/).find(l => l.trim()) || ''
+  return first.includes('\t') ? 'tsv' : 'csv'
+}
+
+function parseImport(input, { name = '' } = {}) {
+  const text = String(input || '').replace(/^\uFEFF/, '')
+  const format = detectFormat(text, name)
+  const cards = []
+  const skipped = []
+  const seen = new Set()
+  const add = (raw, where) => {
+    const { card, error } = importCard(raw)
+    if (error) { skipped.push({ where, reason: error }); return }
+    const key = card.question.toLowerCase()
+    if (seen.has(key)) { skipped.push({ where, reason: 'duplicate question' }); return }
+    if (cards.length >= MAX_IMPORT_CARDS) { skipped.push({ where, reason: `more than ${MAX_IMPORT_CARDS} cards` }); return }
+    seen.add(key)
+    cards.push(card)
+  }
+
+  if (format === 'json') {
+    let parsed
+    try { parsed = JSON.parse(text) } catch { return { format, cards, skipped: [{ where: 'file', reason: 'not valid JSON' }] } }
+    const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.questions) ? parsed.questions : Array.isArray(parsed?.cards) ? parsed.cards : null
+    if (!list) return { format, cards, skipped: [{ where: 'file', reason: 'no list of questions found' }] }
+    list.forEach((item, i) => {
+      if (!item || typeof item !== 'object') { skipped.push({ where: `item ${i + 1}`, reason: 'not an object' }); return }
+      add({
+        question: item.question ?? item.q ?? item.front ?? item.term,
+        answer: item.answer ?? item.a ?? item.back ?? item.definition,
+        topic: item.topic, category: item.category, difficulty: item.difficulty,
+      }, `item ${i + 1}`)
+    })
+    return { format, cards, skipped }
+  }
+
+  let delimiter = format === 'csv' ? ',' : '\t'
+  let html = null
+  let body = text
+  if (format === 'anki') {
+    const lines = text.split(/\r?\n/)
+    const headers = []
+    while (lines.length && lines[0].startsWith('#')) headers.push(lines.shift())
+    for (const h of headers) {
+      const m = /^#(\w+):(.*)$/.exec(h.trim())
+      if (!m) continue
+      if (m[1] === 'separator') delimiter = { tab: '\t', comma: ',', semicolon: ';', pipe: '|', space: ' ' }[m[2].trim().toLowerCase()] || m[2] || '\t'
+      if (m[1] === 'html') html = m[2].trim().toLowerCase() === 'true'
+    }
+    body = lines.join('\n')
+  } else if (format === 'csv') {
+    const first = text.split(/\r?\n/).find(l => l.trim()) || ''
+    if (!first.includes(',') && first.includes(';')) delimiter = ';'
+  }
+
+  const rows = splitDelimited(body, delimiter)
+  let cols = { question: 0, answer: 1 }
+  if (rows.length) {
+    const header = rows[0].cells.map(c => c.trim().toLowerCase())
+    const mapped = {}
+    for (const [field, aliases] of Object.entries(HEADER_ALIASES)) {
+      const idx = header.findIndex(h => aliases.includes(h))
+      if (idx >= 0) mapped[field] = idx
+    }
+    if (mapped.question != null && mapped.answer != null) { cols = mapped; rows.shift() }
+  }
+  for (const r of rows) {
+    const cell = k => (cols[k] != null ? r.cells[cols[k]] : undefined)
+    add({ question: cell('question'), answer: cell('answer'), topic: cell('topic'), category: cell('category'), difficulty: cell('difficulty'), html: html ?? undefined }, `line ${r.line}`)
+  }
+  return { format, cards, skipped }
+}
+
+// The readable part of a web page: the <main> or <article> if it has one, so
+// navigation and footers do not become flashcards, else the whole body.
+function mainHtml(html) {
+  const src = String(html || '')
+  for (const tag of ['article', 'main']) {
+    const m = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, 'i').exec(src)
+    if (m && m[1].replace(/<[^>]+>/g, '').trim().length > 400) return m[1]
+  }
+  const body = /<body\b[^>]*>([\s\S]*)<\/body>/i.exec(src)
+  return (body ? body[1] : src).replace(/<(nav|header|footer|aside|form)\b[\s\S]*?<\/\1>/gi, ' ')
+}
+
+function pageTitle(html) {
+  const og = /<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i.exec(html)
+  const t = og?.[1] || /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1] || ''
+  return t.replace(/\s+/g, ' ').replace(/&amp;/g, '&').replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"').trim().slice(0, 120)
+}
+
 // ─── Answers as text blocks ────────────────────────────────────────
 //
 // The phone has no HTML renderer, and should not need one. An answer becomes a
@@ -181,7 +455,59 @@ const decode = s => s.replace(/&(#\d+|#x[0-9a-f]+|[a-z]+);/gi, (m, e) => {
   return Number.isFinite(code) && code > 0 && code < 0x110000 ? String.fromCodePoint(code) : m
 })
 
+// Inline markdown → spans: **bold**, *italic* / _italic_, `code`. Anything
+// unbalanced is left as the literal characters.
+function inlineSpans(text) {
+  const spans = []
+  const re = /(\*\*[^*\n]+\*\*|`[^`\n]+`|\*[^*\n]+\*|_[^_\n]+_)/g
+  let last = 0
+  for (const m of String(text).matchAll(re)) {
+    if (m.index > last) spans.push({ text: text.slice(last, m.index) })
+    const tok = m[0]
+    if (tok.startsWith('**')) spans.push({ text: tok.slice(2, -2), bold: true })
+    else if (tok.startsWith('`')) spans.push({ text: tok.slice(1, -1), code: true })
+    else spans.push({ text: tok.slice(1, -1), italic: true })
+    last = m.index + tok.length
+  }
+  if (last < text.length) spans.push({ text: text.slice(last) })
+  return spans.filter(s => s.text)
+}
+
+// A model's reply (light markdown) → the same blocks as answerBlocks.
+// Fenced code becomes 'pre', "- " / "* " / "1. " lines become list items,
+// headings become bold paragraphs, and blank lines separate paragraphs.
+function markdownBlocks(text) {
+  const blocks = []
+  const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n')
+  let para = []
+  const flush = () => {
+    if (para.length) blocks.push({ type: 'p', spans: inlineSpans(para.join(' ').replace(/\s+/g, ' ').trim()) })
+    para = []
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (/^\s*```/.test(line)) {
+      flush()
+      const code = []
+      for (i++; i < lines.length && !/^\s*```/.test(lines[i]); i++) code.push(lines[i])
+      if (code.length) blocks.push({ type: 'pre', spans: [{ text: code.join('\n'), code: true }] })
+      continue
+    }
+    if (!line.trim()) { flush(); continue }
+    const bullet = /^\s*[-*•]\s+(.*)$/.exec(line)
+    const numbered = /^\s*(\d+)[.)]\s+(.*)$/.exec(line)
+    const heading = /^\s*#{1,6}\s+(.*)$/.exec(line)
+    if (bullet) { flush(); blocks.push({ type: 'li', marker: '•', spans: inlineSpans(bullet[1].trim()) }); continue }
+    if (numbered) { flush(); blocks.push({ type: 'li', marker: `${numbered[1]}.`, spans: inlineSpans(numbered[2].trim()) }); continue }
+    if (heading) { flush(); blocks.push({ type: 'p', spans: [{ text: heading[1].replace(/\*\*/g, '').trim(), bold: true }] }); continue }
+    para.push(line.trim())
+  }
+  flush()
+  return blocks.filter(b => b.spans.length)
+}
+
 function answerBlocks(answer, format = 'html') {
+  if (format === 'markdown') return markdownBlocks(answer)
   if (format === 'text') {
     return String(answer || '').split(/\n\s*\n/).map(s => s.trim()).filter(Boolean)
       .map(text => ({ type: 'p', spans: [{ text }] }))
@@ -238,6 +564,7 @@ function answerBlocks(answer, format = 'html') {
 
 module.exports = {
   RATINGS, START_EASE, MIN_EASE, MAX_INTERVAL, DIFFICULTIES,
-  addDays, nextState, previewIntervals, shuffle, buildSet, dayStats, mondayOf,
-  cleanQuestion, cleanBank, answerBlocks,
+  addDays, nextState, previewIntervals, shuffle, buildSet, dayStats, mondayOf, daysBetween, weakTopics,
+  cleanQuestion, cleanBank, answerBlocks, markdownBlocks, CATEGORIES, normalizeCategory, parseGeneratedQuestions,
+  parseImport, splitDelimited, mainHtml, pageTitle, MAX_IMPORT_CARDS,
 }

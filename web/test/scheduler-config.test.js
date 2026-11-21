@@ -42,10 +42,13 @@ cfg = { ...cfg, scheduledScanTime: 'not-a-time', dailyReportTime: '25:99' }
 let threw = null
 try { scheduler.restart(null) } catch (e) { threw = e.message }
 check('garbage times do not throw', threw, null)
-// Six: scan, daily report, contact reminders, backup drill, the night-before
-// interview brief (on by default — services/interviewBrief.js), and the weekly
-// goal check (services/weeklyGoals.js), which does nothing when no goal is set.
-check('core and safety tasks still scheduled', scheduled.length, 6)
+// Seven: scan, daily report, contact reminders, backup drill, the night-before
+// interview brief (on by default — services/interviewBrief.js), the weekly
+// goal check (services/weeklyGoals.js), which does nothing when no goal is set,
+// and the daily question bank check (services/practice.js). The practice
+// reminder is off by default, so it adds nothing here.
+check('core and safety tasks still scheduled', scheduled.length, 7)
+check('the question bank is checked once a day', scheduled.includes('20 10 * * *'), true)
 check('the weekly goal check runs late Wednesday to Friday', scheduled.includes('0 17 * * 3-5'), true)
 check('the interview brief check is among them', scheduled.filter(e => e === '*/10 * * * *').length >= 1, true)
 check('contact reminders are scheduled daily', scheduled.includes('0 9 * * *'), true)
@@ -77,5 +80,15 @@ cfg = { ...cfg, scheduledScanTime: '09:00', dailyReportTime: '18:00', enableInbo
 scheduler.restart(null)
 check('the inbox cron uses an even interval', scheduled.includes('0 */4 * * *'), true)
 check('and never an uneven one', scheduled.includes('0 */5 * * *'), false)
+
+// The daily practice reminder runs at the time the user chose, and only when on.
+scheduled.length = 0
+cfg = { ...cfg, practiceReminder: { enabled: true, time: '07:30' } }
+scheduler.restart(null)
+check('the practice reminder is scheduled at the chosen time', scheduled.includes('30 7 * * *'), true)
+scheduled.length = 0
+cfg = { ...cfg, practiceReminder: { enabled: false, time: '07:30' } }
+scheduler.restart(null)
+check('and not when it is off', scheduled.includes('30 7 * * *'), false)
 
 done()

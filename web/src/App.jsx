@@ -101,6 +101,16 @@ export default function App() {
   // Set when the command palette asks Settings to open on a specific tab.
   const [focusSettingsTab, setFocusSettingsTab] = useState(null)
   const [setupDone, setSetupDone] = useState(null)
+  // Practice before setup: someone who only wants interview flashcards can use
+  // the Practice page without a résumé, an AI key or a board login. Remembered
+  // on this machine until they choose to set up the job search.
+  const [practiceOnly, setPracticeOnly] = useState(() => {
+    try { return localStorage.getItem('hiro.practiceOnly') === '1' } catch { return false }
+  })
+  const choosePracticeOnly = useCallback((on) => {
+    try { if (on) localStorage.setItem('hiro.practiceOnly', '1'); else localStorage.removeItem('hiro.practiceOnly') } catch { /* private mode */ }
+    setPracticeOnly(on)
+  }, [])
   // Set when the config could not be read at all. Without it the window stayed
   // blank forever — `setupDone` never left null.
   const [loadError, setLoadError] = useState(null)
@@ -241,6 +251,9 @@ export default function App() {
       if (data.type === 'weekly-goals') {
         const behind = (data.progress?.goals || []).filter(g => g.state === 'behind')
         if (behind.length) showToast(`Weekly goals: ${behind.map(g => `${g.done}/${g.target} ${g.label.toLowerCase()}`).join(', ')} — a little behind pace`, 'info')
+      }
+      if (data.type === 'practice-reminder' && data.text) {
+        showToast(data.text, 'info')
       }
       if (data.type === 'backup-drill' && data.report?.success === false) {
         showToast(data.report.error || `${data.report.failed} backup recovery check(s) failed`, 'error')
@@ -476,7 +489,7 @@ export default function App() {
     offers: <Offers active={page === 'offers'} showToast={showToast} onOpenApplication={openApplication} />,
     workbench: <Workbench active={page === 'workbench'} showToast={showToast} />,
     settings: <Settings active={page === 'settings'} showToast={showToast} focusTab={focusSettingsTab} onFocusTabHandled={clearFocusSettingsTab} />,
-    practice: <Practice active={page === 'practice'} showToast={showToast} />,
+    practice: <Practice active={page === 'practice'} showToast={showToast} onNavigate={setPage} />,
     ask: <AskHiro showToast={showToast} onNavigate={setPage} onOpenApplication={openApplication} />,
   }), [page, scanRunning, startRealScan, startDryScan, handleClearLogs, showToast, focusApp, clearFocusApp, openApplication, focusSettingsTab, clearFocusSettingsTab])
 
@@ -494,10 +507,68 @@ export default function App() {
     )
   }
 
+  // One toast, rendered into whichever of the two live regions matches its
+  // urgency. Extracted so the markup is stated once rather than twice.
+  const renderToast = (t) => (
+    <div key={t.id} className={`toast toast-${t.type}`}>
+      <span className="toast-icon" aria-hidden="true">
+        {t.type === 'success' ? '✓' : t.type === 'error' ? '✗' : 'ℹ'}
+      </span>
+      <span className="toast-msg">{t.msg}</span>
+      {t.action && (
+        <button
+          className="toast-action"
+          onClick={() => {
+            // Dismissed first: the action re-renders the page underneath, and a
+            // toast still offering "Undo" over restored rows invites a second
+            // click that has nothing left to undo.
+            dismissToast(t.id)
+            t.action.onAction()
+          }}
+        >{t.action.label}</button>
+      )}
+      <button className="toast-close" aria-label="Dismiss notification"
+        onClick={() => dismissToast(t.id)}>×</button>
+    </div>
+  )
+
+  const toastStack = (
+    <div className="toast-stack">
+      <div role="alert" aria-live="assertive" className="toast-region">
+        {toasts.filter(t => t.type === 'error').map(t => renderToast(t))}
+      </div>
+      <div role="status" aria-live="polite" className="toast-region">
+        {toasts.filter(t => t.type !== 'error').map(t => renderToast(t))}
+      </div>
+    </div>
+  )
+
   if (setupDone === null) return null // loading
 
   if (!setupDone) {
-    return <Setup onComplete={() => setSetupDone(true)} />
+    if (practiceOnly) {
+      return (
+        <div style={{ minHeight: '100vh' }}>
+          <header style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '16px 32px', borderBottom: '1px solid var(--border)' }}>
+            <HiroLogo size={26} />
+            <span style={{ fontWeight: 700, fontSize: 18 }}>Hiro</span>
+            <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>Interview practice</span>
+            <span style={{ flex: 1 }} />
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Want Hiro to find and apply to jobs too?</span>
+            <button className="btn btn-primary btn-sm" onClick={() => choosePracticeOnly(false)}>Set up the job search</button>
+          </header>
+          <main style={{ padding: '24px 32px' }}>
+            <ErrorBoundary name="Practice">
+              <Suspense fallback={<div style={{ color: 'var(--text-muted)', fontSize: 13 }} role="status">Loading…</div>}>
+                <Practice active showToast={showToast} />
+              </Suspense>
+            </ErrorBoundary>
+          </main>
+          {toastStack}
+        </div>
+      )
+    }
+    return <Setup onComplete={() => { choosePracticeOnly(false); setSetupDone(true) }} onPracticeOnly={() => choosePracticeOnly(true)} />
   }
 
   async function handleResumeUpload() {
@@ -529,31 +600,6 @@ export default function App() {
   }
 
   const badgeFor = (id) => (id === 'attention' ? attentionCount : id === 'review' ? heldCount : 0)
-
-  // One toast, rendered into whichever of the two live regions matches its
-  // urgency. Extracted so the markup is stated once rather than twice.
-  const renderToast = (t) => (
-    <div key={t.id} className={`toast toast-${t.type}`}>
-      <span className="toast-icon" aria-hidden="true">
-        {t.type === 'success' ? '✓' : t.type === 'error' ? '✗' : 'ℹ'}
-      </span>
-      <span className="toast-msg">{t.msg}</span>
-      {t.action && (
-        <button
-          className="toast-action"
-          onClick={() => {
-            // Dismissed first: the action re-renders the page underneath, and a
-            // toast still offering "Undo" over restored rows invites a second
-            // click that has nothing left to undo.
-            dismissToast(t.id)
-            t.action.onAction()
-          }}
-        >{t.action.label}</button>
-      )}
-      <button className="toast-close" aria-label="Dismiss notification"
-        onClick={() => dismissToast(t.id)}>×</button>
-    </div>
-  )
 
   return (
     // The data-testid attributes on the shell and the nav are the only stable

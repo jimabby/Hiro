@@ -723,6 +723,50 @@ exception when duplicate_object then null; end $$;
 alter table public.scan_requests add column if not exists request_key text;
 create unique index if not exists idx_scan_request_key on public.scan_requests(user_id, request_key);
 
+-- Practice flashcards away from home Wi-Fi (optional; the schema version is
+-- unchanged, and a project without these tables simply has no off-Wi-Fi
+-- practice). See syncPractice in the desktop's services/cloudSync.js.
+--
+--   practice_snapshot — today's cards as the desktop prepared them, one row per
+--                       account. The whole payload is one encrypted envelope:
+--                       questions are public, but notes and STAR stories are
+--                       the user's own writing.
+--   practice_events   — what the phone did (a rating, a note, a report), one
+--                       encrypted row each, with an id the phone chooses so the
+--                       envelope can be bound to its row. The desktop deletes
+--                       each row as it applies it.
+create table if not exists public.practice_snapshot (
+  user_id     uuid primary key references auth.users (id) on delete cascade,
+  payload     text not null,
+  updated_at  timestamptz default now()
+);
+
+alter table public.practice_snapshot enable row level security;
+
+drop policy if exists "own practice snapshot" on public.practice_snapshot;
+create policy "own practice snapshot" on public.practice_snapshot
+  for all
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+create table if not exists public.practice_events (
+  id          uuid primary key,
+  user_id     uuid not null references auth.users (id) on delete cascade,
+  payload     text not null,
+  created_at  timestamptz default now()
+);
+
+alter table public.practice_events enable row level security;
+
+drop policy if exists "own practice events" on public.practice_events;
+create policy "own practice events" on public.practice_events
+  for all
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+create index if not exists idx_practice_events_user_created
+  on public.practice_events (user_id, created_at);
+
 -- Version 4: phone commands can be changed or cancelled before the desktop starts
 -- them, and finished review commands no longer block a new decision.
 create or replace function public.hiro_schema_version()

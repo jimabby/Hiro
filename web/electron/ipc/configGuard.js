@@ -51,7 +51,7 @@ const REDACTED_KEYS = [
 // of what must not travel to another machine.
 const SERVICE_OWNED_KEYS = [
   'cloudCommandReceipts', 'cloudScanResults',
-  'pendingScans', 'lastScanAt', 'lastInboxCheck', 'lastCloudSyncAt', 'lastJobAlertCheck',
+  'pendingScans', 'lastScanAt', 'lastInboxCheck', 'lastCloudSyncAt', 'lastJobAlertCheck', 'practiceBankCheck',
   'lastBackupDrill', 'lastScanOutcome',
   'cloudSyncEnabled', 'supabaseEmail', 'supabaseRefreshToken', 'cloudDataKey',
   'cloudIdentityAccount', 'cloudFirstSyncChoice', 'deviceId', 'knownDeviceIds',

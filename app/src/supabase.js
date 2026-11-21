@@ -53,6 +53,15 @@ import { randomUUID } from 'expo-crypto'
 import * as cloudCommands from './cloudCommands'
 import { decryptCloudPayload, encryptCloudPayload, rowContext } from './cloudCrypto'
 import { checkCloudSchema } from './cloudSchema'
+import { applyPendingPractice } from './practice'
+
+// Practice through the cloud cannot be reached: the screen shows the message.
+function practiceUnavailable(message) {
+  const err = new Error(message)
+  err.status = 404
+  err.practiceUnavailable = true
+  return err
+}
 
 const VALID_STATUSES = ['applied', 'interview', 'offer', 'rejected', 'pending', 'no_response', 'skipped', 'held', 'withdrawn']
 
@@ -103,6 +112,10 @@ export class CloudClient {
     // cloud: we insert into scan_requests and the desktop picks it up on its
     // next sync cycle (~2 minutes).
     this.canScan = true
+    // Practice away from home: today's cards come from the desktop's snapshot,
+    // and ratings, notes and reports go back as encrypted events it applies on
+    // its next sync. Asking the AI and adding cards still need the LAN.
+    this.canPractice = true
     this._cache = null // short-lived shared fetch: stats + chart + list reuse one download
     // Narrowed to BASE_COLUMNS once if this project's schema predates the
     // pipeline columns; see _fetchAll.
@@ -443,6 +456,55 @@ export class CloudClient {
   // that matters when it is in a different timezone from the desktop that last
   // synced. Mirroring a stale daysToRespond is how an offer with one day left
   // reads as having three.
+  // ── Practice (see syncPractice in the desktop's cloudSync.js) ──
+  async getPractice() {
+    let data, error
+    try {
+      ({ data, error } = await supabase.from('practice_snapshot').select('payload, updated_at').eq('user_id', this.userId).maybeSingle())
+    } catch {
+      throw practiceUnavailable('Could not reach the cloud. Check your connection, or connect on the same Wi-Fi as the desktop.')
+    }
+    if (error) throw practiceUnavailable('Practice away from home needs the latest supabase/schema.sql in your Supabase project. Until then it works on the same Wi-Fi as the desktop.')
+    if (!data) throw practiceUnavailable('Open Hiro on the desktop with cloud sync on, and today’s cards will appear here within a few minutes.')
+    const snapshot = await decryptCloudPayload(data.payload, rowContext('practice_snapshot', this.userId, 'payload'))
+    const pending = []
+    const { data: rows } = await supabase.from('practice_events').select('id, payload, created_at').eq('user_id', this.userId).order('created_at', { ascending: true })
+    for (const row of rows || []) {
+      try { pending.push(await decryptCloudPayload(row.payload, rowContext('practice_events', row.id, 'payload'))) } catch { /* unreadable: the desktop drops it too */ }
+    }
+    return applyPendingPractice(snapshot, pending)
+  }
+
+  async _practiceEvent(event) {
+    const id = randomUUID()
+    const payload = await encryptCloudPayload({ ...event, at: new Date().toISOString() }, rowContext('practice_events', id, 'payload'))
+    const { error } = await supabase.from('practice_events').insert({ id, user_id: this.userId, payload })
+    if (error) throw new Error(error.message)
+  }
+
+  async ratePracticeCard(cardId, rating) {
+    await this._practiceEvent({ type: 'rate', cardId, rating })
+    return { success: true, practice: await this.getPractice() }
+  }
+
+  async savePracticeNote(cardId, note) {
+    const text = String(note || '').trim().slice(0, 5000)
+    await this._practiceEvent({ type: 'note', cardId, note: text })
+    return { success: true, note: text }
+  }
+
+  async flagPracticeCard(cardId, reason, note = '') {
+    await this._practiceEvent({ type: 'flag', cardId, reason, note })
+    return { success: true, practice: await this.getPractice() }
+  }
+
+  async practiceMore() {
+    throw new Error('Adding more cards needs the desktop. Connect on the same Wi-Fi to practise more.')
+  }
+
+  // Saved AI answers are not in the snapshot; asking needs the LAN anyway.
+  async getPracticeExplanations() { return [] }
+
   async getOffers() {
     const empty = { offers: [], live: 0, best: null, spread: null, nextDeadline: null }
     let data, error

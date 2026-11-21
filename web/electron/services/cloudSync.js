@@ -974,6 +974,73 @@ async function pushOffers(c) {
   }, (o) => o.application_id)
 }
 
+// Practice away from home Wi-Fi.
+//
+// The phone normally practises over the LAN, against the schedule in this
+// desktop's database. Through the cloud it works in two halves:
+//   practice_events   — what the phone did (a rating, a note, a report), one
+//                       encrypted row each. Claimed here with delete-then-
+//                       apply, so an event is applied once even if two syncs
+//                       overlap, and applied with the time the phone recorded.
+//   practice_snapshot — today's cards as the phone would get them over the
+//                       LAN, one encrypted row per account, republished when
+//                       it changes. Until the desktop applies an event, the
+//                       phone hides the cards it already answered itself.
+// Both tables are optional: a project that has not re-run schema.sql simply
+// has no off-Wi-Fi practice. Without a cloud data key nothing is published —
+// notes and STAR stories are the user's own writing.
+let lastSnapshotHash = null
+
+async function syncPractice(c, { practice = require('./practice') } = {}) {
+  const dataKey = configService.load().cloudDataKey
+  if (!dataKey) return { skipped: 'no-key' }
+  const applied = []
+
+  let events
+  try {
+    events = await selectAll(() => c.from('practice_events').select('id, payload, created_at').eq('user_id', user.id).order('created_at', { ascending: true }))
+  } catch (error) {
+    if (isMissingTable(error, 'practice_events')) return { skipped: 'no-table' }
+    throw error
+  }
+  if (events && events.length) {
+    const { data: claimed, error } = await c.from('practice_events').delete().in('id', events.map(e => e.id)).eq('user_id', user.id).select('id')
+    if (error) throw new Error(error.message)
+    const mine = new Set((claimed || []).map(r => r.id))
+    for (const row of events.filter(e => mine.has(e.id))) {
+      let event
+      try {
+        event = cloudCrypto.decrypt(dataKey, row.payload, cloudCrypto.rowContext('practice_events', row.id, 'payload'))
+      } catch (err) {
+        logger.append(`Cloud sync: a practice event from the phone could not be read and was dropped (${err.message})`)
+        continue
+      }
+      const at = Date.parse(event?.at)
+      const now = Number.isFinite(at) ? new Date(at) : new Date(row.created_at)
+      let result
+      if (event?.type === 'rate') result = practice.rate(String(event.cardId || ''), String(event.rating || ''), { now })
+      else if (event?.type === 'note') result = practice.saveNote(String(event.cardId || ''), typeof event.note === 'string' ? event.note : '')
+      else if (event?.type === 'flag') result = practice.flag(String(event.cardId || ''), String(event.reason || ''), typeof event.note === 'string' ? event.note : '')
+      else result = { success: false, error: 'unknown event' }
+      if (result?.success) applied.push(event.type)
+      else logger.append(`Cloud sync: a practice ${event?.type || 'event'} from the phone was not applied (${result?.error || 'unknown reason'})`)
+    }
+  }
+
+  const snapshot = practice.forPhone()
+  const hash = crypto.createHash('sha256').update(JSON.stringify(snapshot)).digest('hex')
+  if (hash !== lastSnapshotHash) {
+    const payload = cloudCrypto.encrypt(dataKey, { ...snapshot, generatedAt: new Date().toISOString() }, cloudCrypto.rowContext('practice_snapshot', user.id, 'payload'))
+    const { error } = await c.from('practice_snapshot').upsert({ user_id: user.id, payload, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
+    if (error) {
+      if (isMissingTable(error, 'practice_snapshot')) return { skipped: 'no-table', applied }
+      throw new Error(error.message)
+    }
+    lastSnapshotHash = hash
+  }
+  return { applied, published: true }
+}
+
 // Pick up scan requests the phone queued via the cloud (scan_requests table):
 // delete-then-queue, with .select() confirming which rows THIS desktop claimed,
 // so a request is never queued twice even if two syncs overlap.
@@ -1470,6 +1537,14 @@ async function sync() {
     await pushOffers(c)
     await pollScanRequests(c)
     await pollReviewRequests(c)
+    // Practice is a convenience on top of the sync, never a reason for it to
+    // fail: a problem here is logged and the rest of the pass carries on.
+    try {
+      const p = await syncPractice(c)
+      if (p.applied?.length) logger.append(`Cloud sync: applied ${p.applied.length} practice change(s) from the phone`)
+    } catch (err) {
+      logger.append(`Cloud sync: practice could not be synced — ${err.message}`)
+    }
     await registerDevice(c)
     // Reading the list back is also how a new device on the account is noticed;
     // never let that reporting break a sync that otherwise succeeded.
@@ -1551,5 +1626,7 @@ module.exports = {
   _mirrorTable: (c, testUser, ...args) => { user = testUser; return mirrorTable(c, ...args) },
   _checkCloudSchema: (c, testUser) => { user = testUser; verifiedSchemaFor = null; return checkCloudSchema(c) },
   _localToCloud: (a, testUser) => { user = testUser; return localToCloud(a) },
+  _syncPractice: (c, testUser, deps) => { user = testUser; return syncPractice(c, deps) },
+  _resetPracticeSnapshot: () => { lastSnapshotHash = null },
   REQUIRED_CLOUD_SCHEMA,
 }

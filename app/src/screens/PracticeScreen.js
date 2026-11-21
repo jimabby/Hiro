@@ -6,12 +6,17 @@
 // desktop's practiceCore.answerBlocks), never as HTML, so nothing in a question
 // bank can become markup here.
 //
+// Each card can carry the user's note (saved on the desktop, so it shows on
+// both) and can be explained further by the AI — the same stored answers the
+// desktop shows, and asking more spends on the desktop's AI key, so only a
+// paired phone may.
+//
 // What stays on the desktop: choosing topics, browsing and searching the bank,
-// and restoring reported cards.
+// generating decks from a job ad, and restoring reported cards.
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, RefreshControl, Platform,
+  View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, RefreshControl, Platform, TextInput,
 } from 'react-native'
 import { radius, useTheme } from '../theme'
 import { messageFor } from '../requestErrors'
@@ -51,6 +56,128 @@ function Blocks({ blocks, styles }) {
   })
 }
 
+// Note, Ask AI and Report for one card.
+function CardExtras({ client, card, styles, colors, onReport }) {
+  const [panel, setPanel] = useState(null) // 'note' | 'ask'
+  const [note, setNote] = useState(card.note || '')
+  const [draft, setDraft] = useState(card.note || '')
+  const [entries, setEntries] = useState(null)
+  const [question, setQuestion] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    setPanel(null); setNote(card.note || ''); setDraft(card.note || ''); setEntries(null); setQuestion(''); setError('')
+  }, [card.id, card.note])
+
+  async function saveNote() {
+    setBusy(true)
+    try {
+      const res = await client.savePracticeNote(card.id, draft)
+      setNote(res?.note || '')
+      setDraft(res?.note || '')
+      setPanel(null)
+      haptics.success()
+    } catch (err) {
+      haptics.failure()
+      setError(messageFor(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function ask(followUp = '') {
+    setBusy(true); setError('')
+    try {
+      const res = await client.explainPracticeCard(card.id, followUp, { idempotencyKey: randomKey() })
+      if (!res?.success) setError(res?.error || 'The AI request failed.')
+      else { setEntries(list => [...(list || []), res.entry]); setQuestion('') }
+    } catch (err) {
+      setError(messageFor(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function openAsk() {
+    if (panel === 'ask') { setPanel(null); return }
+    setPanel('ask'); setError('')
+    if (entries) return
+    try {
+      const list = await client.getPracticeExplanations(card.id)
+      const saved = Array.isArray(list) ? list : []
+      setEntries(saved)
+      if (!saved.length) ask('')
+    } catch (err) {
+      setError(messageFor(err))
+    }
+  }
+
+  return (
+    <View style={styles.extras}>
+      {!!note && panel !== 'note' && (
+        <View style={styles.noteBox}>
+          <Text style={styles.noteLabel}>Your note</Text>
+          <Text style={styles.noteText}>{note}</Text>
+        </View>
+      )}
+      <View style={styles.extrasRow}>
+        {client?.canAsk && (
+          <TouchableOpacity style={[styles.extraButton, panel === 'ask' && styles.extraButtonOn]} onPress={openAsk} accessibilityRole="button"
+            accessibilityLabel={card.explained ? 'Ask AI, has a saved answer' : 'Ask AI about this question'}>
+            <Text style={[styles.extraText, panel === 'ask' && styles.extraTextOn]}>✦ Ask AI{card.explained && panel !== 'ask' ? ' · saved' : ''}</Text>
+          </TouchableOpacity>
+        )}
+        <TouchableOpacity style={[styles.extraButton, panel === 'note' && styles.extraButtonOn]} onPress={() => setPanel(p => (p === 'note' ? null : 'note'))}
+          accessibilityRole="button">
+          <Text style={[styles.extraText, panel === 'note' && styles.extraTextOn]}>✎ {note ? 'Edit note' : 'Add note'}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.extraButton} onPress={onReport} accessibilityRole="button" accessibilityLabel="Report outdated or wrong">
+          <Text style={styles.extraText}>⚑ Report</Text>
+        </TouchableOpacity>
+      </View>
+      {!!error && <Text style={styles.error} accessibilityRole="alert">{error}</Text>}
+
+      {panel === 'note' && (
+        <View style={styles.panel}>
+          <TextInput value={draft} onChangeText={setDraft} multiline maxLength={5000} autoFocus
+            placeholder="Your own words, an example from a project…" placeholderTextColor={colors.textFaint}
+            style={styles.noteInput} accessibilityLabel="Your note" />
+          <View style={styles.panelRow}>
+            <TouchableOpacity style={[styles.smallButton, styles.buttonPrimary]} onPress={saveNote} disabled={busy} accessibilityRole="button">
+              <Text style={styles.buttonPrimaryText}>Save note</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.smallButton} onPress={() => { setDraft(note); setPanel(null) }} accessibilityRole="button">
+              <Text style={styles.extraText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {panel === 'ask' && (
+        <View style={styles.panel}>
+          {entries?.map(e => (
+            <View key={e.id} style={{ marginBottom: 10 }}>
+              {!!e.prompt && <Text style={styles.asked}>You asked: {e.prompt}</Text>}
+              <Blocks blocks={e.blocks} styles={styles} />
+            </View>
+          ))}
+          {busy && <ActivityIndicator style={{ marginVertical: 8 }} color={colors.textMuted} />}
+          <View style={styles.panelRow}>
+            <TextInput value={question} onChangeText={setQuestion} maxLength={1000} placeholder="Ask a follow-up…"
+              placeholderTextColor={colors.textFaint} style={styles.askInput} accessibilityLabel="Ask a follow-up question"
+              returnKeyType="send" onSubmitEditing={() => question.trim() && ask(question)} />
+            <TouchableOpacity style={[styles.smallButton, styles.buttonPrimary]} disabled={busy || !question.trim()} onPress={() => ask(question)} accessibilityRole="button">
+              <Text style={styles.buttonPrimaryText}>Ask</Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.hint}>Uses the desktop&apos;s AI provider. Answers are saved with the card.</Text>
+        </View>
+      )}
+    </View>
+  )
+}
+
 export default function PracticeScreen({ client, active }) {
   const colors = useTheme()
   const styles = useMemo(() => makeStyles(colors), [colors])
@@ -68,7 +195,8 @@ export default function PracticeScreen({ client, active }) {
       setError('')
       setUnavailable('')
     } catch (err) {
-      if (Number(err.status) === 404) setUnavailable('Update Hiro on the desktop to practise from your phone.')
+      if (err.practiceUnavailable) setUnavailable(err.message)
+      else if (Number(err.status) === 404) setUnavailable('Update Hiro on the desktop to practise from your phone.')
       else setError(messageFor(err))
     }
   }, [client])
@@ -148,10 +276,25 @@ export default function PracticeScreen({ client, active }) {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content}
+    <ScrollView style={styles.root} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled"
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={colors.textMuted} />}>
       <Text style={styles.title} accessibilityRole="header">Practice</Text>
       {!!data?.stats && <Text style={styles.muted}>{statsLine(data.stats)}</Text>}
+      {!!data?.cloud && (
+        <Text style={[styles.muted, { marginTop: 4 }]} accessibilityRole="text">
+          Through the cloud · cards from {data.day}
+          {data.pendingChanges ? ` · ${data.pendingChanges} change${data.pendingChanges === 1 ? '' : 's'} reach the desktop when it next syncs` : ''}
+        </Text>
+      )}
+      {(data?.countdown || []).filter(c => c.cards > 0).map(c => (
+        <View key={c.applicationId} style={styles.countdown} accessibilityRole="text">
+          <Text style={styles.countdownDays}>{c.daysLeft === 0 ? 'Today' : c.daysLeft === 1 ? '1 day' : `${c.daysLeft} days`}</Text>
+          <Text style={styles.countdownText}>
+            {c.company || 'Interview'} interview {c.daysLeft === 0 ? 'today' : c.daysLeft === 1 ? 'tomorrow' : `in ${c.daysLeft} days`}
+            {c.cardsLeft > 0 ? ` · ${c.cardsLeft} card${c.cardsLeft === 1 ? '' : 's'} left, first in line` : ' · done for today ✓'}
+          </Text>
+        </View>
+      ))}
       {!!error && <Text style={styles.error} accessibilityRole="alert">{error}</Text>}
 
       {!data && !error && <ActivityIndicator style={{ marginTop: 32 }} color={colors.textMuted} />}
@@ -177,10 +320,11 @@ export default function PracticeScreen({ client, active }) {
       {!!current && (
         <View style={styles.card}>
           <View style={styles.cardHead}>
-            <Text style={styles.topic} numberOfLines={1}>{current.deck === 'job' ? `Job: ${current.topic}` : current.topic}</Text>
+            <Text style={styles.topic} numberOfLines={1}>{current.deck === 'job' ? `Job: ${current.topic}` : current.deck === 'custom' ? `Deck: ${current.topic}` : current.topic}</Text>
             <Text style={styles.position}>{data.doneCount + 1} of {data.cards.length}</Text>
           </View>
           <View style={styles.tags}>
+            {!!current.category && <Text style={[styles.tag, styles.tagCategory]} accessibilityLabel={`Category: ${current.category}`}>Category: {current.category}</Text>}
             {!!current.difficulty && <Text style={styles.tag}>{current.difficulty}</Text>}
             {current.versions?.map(v => <Text key={v} style={styles.tag}>{v}</Text>)}
             <Text style={styles.tag}>{current.isNew ? 'New' : 'Review'}</Text>
@@ -207,9 +351,7 @@ export default function PracticeScreen({ client, active }) {
               </View>
             </>
           )}
-          <TouchableOpacity onPress={report} style={styles.reportLink} accessibilityRole="button">
-            <Text style={styles.reportText}>Report outdated or wrong</Text>
-          </TouchableOpacity>
+          <CardExtras client={client} card={current} styles={styles} colors={colors} onReport={report} />
         </View>
       )}
     </ScrollView>
@@ -262,6 +404,26 @@ const makeStyles = (c) => StyleSheet.create({
   ratingHint: { color: c.textMuted, fontSize: 11.5, marginTop: 2 },
   ratingLabelStrong: { color: '#fff' },
 
+  tagCategory: { color: c.text, borderColor: c.borderStrong },
+  countdown: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 10, padding: 10, borderRadius: 10, backgroundColor: c.surface2, borderWidth: 1, borderColor: c.border },
+  countdownDays: { color: '#fff', backgroundColor: c.accent, fontWeight: '700', fontSize: 12, borderRadius: 999, paddingHorizontal: 9, paddingVertical: 3, overflow: 'hidden' },
+  countdownText: { color: c.text, fontSize: 13, flex: 1 },
+  extras: { marginTop: 14 },
+  extrasRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  extraButton: { borderWidth: 1, borderColor: c.border, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 7, minHeight: 36, justifyContent: 'center' },
+  extraButtonOn: { backgroundColor: c.accent, borderColor: c.accent },
+  extraText: { color: c.text, fontSize: 13 },
+  extraTextOn: { color: '#fff', fontWeight: '600' },
+  noteBox: { backgroundColor: c.surface2, borderRadius: 10, padding: 10, marginBottom: 10, borderLeftWidth: 3, borderLeftColor: c.accent },
+  noteLabel: { color: c.textMuted, fontSize: 11.5, fontWeight: '600', marginBottom: 2 },
+  noteText: { color: c.text, fontSize: 14, lineHeight: 20 },
+  panel: { marginTop: 10, padding: 12, borderRadius: 10, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface2 },
+  panelRow: { flexDirection: 'row', gap: 8, alignItems: 'center', marginTop: 8 },
+  noteInput: { minHeight: 90, color: c.text, fontSize: 14, textAlignVertical: 'top', borderWidth: 1, borderColor: c.border, borderRadius: 8, padding: 10, backgroundColor: c.surface },
+  askInput: { flex: 1, color: c.text, fontSize: 14, borderWidth: 1, borderColor: c.border, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, backgroundColor: c.surface, minHeight: 40 },
+  smallButton: { borderRadius: 8, paddingHorizontal: 14, paddingVertical: 9, minHeight: 40, justifyContent: 'center', borderWidth: 1, borderColor: c.border },
+  asked: { color: c.textMuted, fontSize: 12.5, marginBottom: 4 },
+  hint: { color: c.textFaint, fontSize: 11.5, marginTop: 6 },
   reportLink: { marginTop: 14, alignSelf: 'flex-start', minHeight: 32, justifyContent: 'center' },
   reportText: { color: c.textMuted, fontSize: 12.5, textDecorationLine: 'underline' },
 })

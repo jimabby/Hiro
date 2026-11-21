@@ -21,6 +21,9 @@ let pushTask = null
 let briefTask = null
 let contactTask = null
 let goalTask = null
+let practiceTask = null
+let bankTask = null
+let bankTimeout = null
 let backupDrillTask = null
 let campaignTasks = []
 let batchTimeouts = []
@@ -237,6 +240,28 @@ function startTasks() {
     goalTask = cron.schedule('0 17 * * 3-5', () => { runGoalNudge() })
   } catch (err) {
     log(`Could not schedule weekly goal reminders: ${err.message}`)
+  }
+
+  // Practice (services/practice.js): the daily reminder at the user's chosen
+  // time, and a once-a-day look for an updated question bank. The bank check
+  // also runs shortly after start; refreshBank itself skips it when the last
+  // check was recent, so a restart does not refetch.
+  try {
+    const reminder = require('./practice').reminderSettings(cfg)
+    if (reminder.enabled) {
+      const [h, m] = reminder.time.split(':').map(Number)
+      practiceTask = cron.schedule(`${m} ${h} * * *`, () => { runPracticeReminder() })
+    }
+  } catch (err) {
+    log(`Could not schedule the practice reminder: ${err.message}`)
+  }
+  try {
+    bankTask = cron.schedule('20 10 * * *', () => { runBankRefresh() })
+    bankTimeout = setTimeout(() => { runBankRefresh() }, 45 * 1000)
+    // Never the reason the process stays alive (a test, or an app quitting).
+    bankTimeout.unref?.()
+  } catch (err) {
+    log(`Could not schedule question bank updates: ${err.message}`)
   }
 
   if (cfg.enableBackupDrills !== false) {
@@ -522,6 +547,9 @@ function stop({ abortRun = true } = {}) {
   briefTask = disposeTask(briefTask)
   contactTask = disposeTask(contactTask)
   goalTask = disposeTask(goalTask)
+  practiceTask = disposeTask(practiceTask)
+  bankTask = disposeTask(bankTask)
+  if (bankTimeout) { clearTimeout(bankTimeout); bankTimeout = null }
   backupDrillTask = disposeTask(backupDrillTask)
   campaignTasks.forEach(disposeTask)
   campaignTasks = []
@@ -1130,6 +1158,40 @@ function runGoalNudge({ now = new Date() } = {}) {
   }
 }
 
+// The daily practice reminder. Desktop and phone are deduplicated separately,
+// so a phone that was unreachable at the first attempt is not skipped because
+// the desktop already showed it.
+async function runPracticeReminder({ now = new Date() } = {}) {
+  try {
+    const practice = require('./practice')
+    if (!practice.reminderSettings().enabled) return { success: true, sent: false }
+    const text = practice.reminderText({ now })
+    if (!text) return { success: true, sent: false }
+    const day = localDate(now)
+    if (database.claimPushKey(`practice-desktop:${day}`, 'practice', 'Interview practice', text)) {
+      notify({ type: 'practice-reminder', text })
+      nativeNotify('Interview practice', text)
+    }
+    await push.send({ kind: 'practice', dedupeKey: `practice:${day}`, title: 'Interview practice', body: text, data: { screen: 'practice' } })
+    return { success: true, sent: true, text }
+  } catch (err) {
+    log(`Practice reminder failed: ${describeError(err)}`)
+    return { success: false, error: describeError(err) }
+  }
+}
+
+async function runBankRefresh() {
+  try {
+    const result = await require('./practice').refreshBank()
+    if (result.updated) log(`Practice: question bank updated (${result.count} questions, ${result.updatedAt}).`)
+    else if (!result.success) log(`Practice: could not check for question bank updates — ${result.error}`)
+    return result
+  } catch (err) {
+    log(`Practice: question bank check failed — ${describeError(err)}`)
+    return { success: false, error: describeError(err) }
+  }
+}
+
 function runBackupDrill() {
   try {
     database.maybeBackup()
@@ -1203,6 +1265,6 @@ function cloudCommandStatus(id) {
   return finishedCloudScans.get(id) || cfg.cloudScanResults?.[id] || ((cfg.pendingScans || []).some(r => r.cloudCommandId === id) ? { status: 'accepted', error: '' } : null)
 }
 
-module.exports = { cloudCommandStatus, init, restart, stop, cancelScan, runNow, runDryRun, requestScan, processQueue, getScanInfo, getLastDryRun, runInboxCheck, runFollowUp, runStaleSweep, runContactReminders, runGoalNudge, runBackupDrill, runBackupDrillIfDue, getStatus, getBatchSchedule, runBatch,
+module.exports = { cloudCommandStatus, init, restart, stop, cancelScan, runNow, runDryRun, requestScan, processQueue, getScanInfo, getLastDryRun, runInboxCheck, runFollowUp, runStaleSweep, runContactReminders, runGoalNudge, runPracticeReminder, runBankRefresh, runBackupDrill, runBackupDrillIfDue, getStatus, getBatchSchedule, runBatch,
   // exported for tests
   evenHourInterval, seededJitter, _markBatchRun: markBatchRun }

@@ -806,6 +806,64 @@ function createPracticeTables() {
     note TEXT NOT NULL DEFAULT '',
     flagged_at TEXT DEFAULT (datetime('now'))
   )`)
+  // The user's own notes on a card, and what the AI said when asked about it
+  // (kept so a second look costs nothing, and so the phone can read it).
+  db.run(`CREATE TABLE IF NOT EXISTS practice_notes (
+    card_id TEXT PRIMARY KEY,
+    note TEXT NOT NULL,
+    updated_at TEXT DEFAULT (datetime('now'))
+  )`)
+  db.run(`CREATE TABLE IF NOT EXISTS practice_explanations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    card_id TEXT NOT NULL,
+    prompt TEXT NOT NULL DEFAULT '',
+    reply TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  )`)
+  db.run('CREATE INDEX IF NOT EXISTS idx_practice_explanations_card ON practice_explanations(card_id, id)')
+  // Decks generated from a job ad the user pasted or uploaded. The ad itself is
+  // kept so the deck can say what it was made from.
+  db.run(`CREATE TABLE IF NOT EXISTS practice_decks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    source_text TEXT NOT NULL DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now'))
+  )`)
+  db.run(`CREATE TABLE IF NOT EXISTS practice_deck_cards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    deck_id INTEGER NOT NULL,
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    category TEXT,
+    skill TEXT NOT NULL DEFAULT '',
+    difficulty TEXT
+  )`)
+  db.run('CREATE INDEX IF NOT EXISTS idx_practice_deck_cards_deck ON practice_deck_cards(deck_id)')
+  // Where a deck came from ('job-ad', 'web-page', 'import') and, for a web
+  // page, its address; and how each card's answer is written ('markdown' from
+  // the AI or a plain-text import, 'html' from an Anki or HTML import).
+  ensureColumn('practice_decks', 'source', "TEXT NOT NULL DEFAULT 'job-ad'")
+  ensureColumn('practice_decks', 'source_url', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn('practice_deck_cards', 'format', "TEXT NOT NULL DEFAULT 'markdown'")
+  ensureColumn('practice_deck_cards', 'topic', "TEXT NOT NULL DEFAULT ''")
+  // STAR stories: the user's own examples, written once and attached to the
+  // behavioural questions they answer.
+  db.run(`CREATE TABLE IF NOT EXISTS practice_stories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    situation TEXT NOT NULL DEFAULT '',
+    task TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL DEFAULT '',
+    result TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  )`)
+  db.run(`CREATE TABLE IF NOT EXISTS practice_story_links (
+    card_id TEXT NOT NULL,
+    story_id INTEGER NOT NULL,
+    PRIMARY KEY (card_id, story_id)
+  )`)
 }
 
 // Ask Hiro threads, automatic interview prep, and the user's offer exchange
@@ -2947,6 +3005,123 @@ function setPracticeFlag(cardId, reason, note) {
 
 function clearPracticeFlag(cardId) {
   run('DELETE FROM practice_flags WHERE card_id = ?', [cardId])
+}
+
+function getPracticeNotes() {
+  return query('SELECT card_id, note, updated_at FROM practice_notes')
+}
+
+// An empty note removes it.
+function savePracticeNote(cardId, note) {
+  if (!note) run('DELETE FROM practice_notes WHERE card_id = ?', [cardId])
+  else run("INSERT OR REPLACE INTO practice_notes (card_id, note, updated_at) VALUES (?, ?, datetime('now'))", [cardId, note])
+}
+
+function getPracticeExplanations(cardId) {
+  return query('SELECT id, prompt, reply, created_at FROM practice_explanations WHERE card_id = ? ORDER BY id', [cardId])
+}
+
+function addPracticeExplanation(cardId, prompt, reply) {
+  run('INSERT INTO practice_explanations (card_id, prompt, reply) VALUES (?, ?, ?)', [cardId, prompt, reply])
+  return queryOne('SELECT id, prompt, reply, created_at FROM practice_explanations WHERE card_id = ? ORDER BY id DESC LIMIT 1', [cardId])
+}
+
+function clearPracticeExplanations(cardId) {
+  run('DELETE FROM practice_explanations WHERE card_id = ?', [cardId])
+}
+
+// Card ids that have at least one saved explanation, for the "AI" marker.
+function getPracticeExplainedIds() {
+  return query('SELECT DISTINCT card_id FROM practice_explanations').map(r => r.card_id)
+}
+
+function getPracticeDecks() {
+  return query(`SELECT d.id, d.title, d.created_at, d.source, d.source_url, LENGTH(d.source_text) AS source_chars,
+                       (SELECT COUNT(*) FROM practice_deck_cards c WHERE c.deck_id = d.id) AS cards
+                FROM practice_decks d ORDER BY d.id DESC`)
+}
+
+function getPracticeDeckCards() {
+  return query(`SELECT c.*, d.title AS deck_title FROM practice_deck_cards c
+                JOIN practice_decks d ON d.id = c.deck_id ORDER BY c.deck_id DESC, c.id`)
+}
+
+// A deck and its cards, written together. Returns the new deck's id.
+function createPracticeDeck(title, sourceText, cards, { source = 'job-ad', sourceUrl = '' } = {}) {
+  let id = null
+  batch(() => {
+    run('INSERT INTO practice_decks (title, source_text, source, source_url) VALUES (?, ?, ?, ?)', [title, sourceText, source, sourceUrl])
+    id = queryOne('SELECT last_insert_rowid() AS id').id
+    for (const c of cards) {
+      run('INSERT INTO practice_deck_cards (deck_id, question, answer, category, skill, difficulty, format, topic) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [id, c.question, c.answer, c.category || null, c.skill || '', c.difficulty || null, c.format === 'html' ? 'html' : 'markdown', c.topic || ''])
+    }
+  })
+  return id
+}
+
+function renamePracticeDeck(id, title) {
+  run('UPDATE practice_decks SET title = ? WHERE id = ?', [title, id])
+}
+
+function deletePracticeDeck(id) {
+  batch(() => {
+    run('DELETE FROM practice_deck_cards WHERE deck_id = ?', [id])
+    run('DELETE FROM practice_decks WHERE id = ?', [id])
+  })
+}
+
+function getPracticeReviewsSince(day) {
+  return query('SELECT card_id, rating, reviewed_on FROM practice_reviews WHERE reviewed_on >= ? ORDER BY id', [day])
+}
+
+function getPracticeStories() {
+  return query('SELECT * FROM practice_stories ORDER BY updated_at DESC, id DESC')
+}
+
+// Creates when `id` is absent, updates otherwise. Returns the saved row.
+function savePracticeStory({ id, title, situation, task, action, result, tags }) {
+  if (id) {
+    run(`UPDATE practice_stories SET title = ?, situation = ?, task = ?, action = ?, result = ?, tags = ?, updated_at = datetime('now')
+         WHERE id = ?`, [title, situation, task, action, result, tags, id])
+    return queryOne('SELECT * FROM practice_stories WHERE id = ?', [id])
+  }
+  // In one batch: persisting exports the database, and sql.js forgets
+  // last_insert_rowid() across an export.
+  let saved = null
+  batch(() => {
+    run('INSERT INTO practice_stories (title, situation, task, action, result, tags) VALUES (?, ?, ?, ?, ?, ?)',
+      [title, situation, task, action, result, tags])
+    saved = queryOne('SELECT * FROM practice_stories WHERE id = last_insert_rowid()')
+  })
+  return saved
+}
+
+function deletePracticeStory(id) {
+  batch(() => {
+    run('DELETE FROM practice_story_links WHERE story_id = ?', [id])
+    run('DELETE FROM practice_stories WHERE id = ?', [id])
+  })
+}
+
+function getPracticeStoryLinks() {
+  return query('SELECT card_id, story_id FROM practice_story_links')
+}
+
+function linkPracticeStory(cardId, storyId) {
+  run('INSERT OR IGNORE INTO practice_story_links (card_id, story_id) VALUES (?, ?)', [cardId, storyId])
+}
+
+function unlinkPracticeStory(cardId, storyId) {
+  run('DELETE FROM practice_story_links WHERE card_id = ? AND story_id = ?', [cardId, storyId])
+}
+
+// Interviews from today on, with the application they belong to.
+function getPracticeInterviews(untilDay) {
+  return query(`SELECT e.id, e.application_id, e.scheduled_at, e.has_time, a.company, a.job_title
+                FROM interview_events e JOIN applications a ON a.id = e.application_id
+                WHERE e.scheduled_at >= date('now','localtime') AND substr(e.scheduled_at, 1, 10) <= ?
+                ORDER BY e.scheduled_at ASC`, [untilDay])
 }
 
 // Applications with generated interview questions: the source of job decks.
@@ -5098,6 +5273,10 @@ module.exports = {
   saveInterviewPrep, getInterviewPrep, deleteInterviewPrep, getInterviewPrepWithAnswers,
   getPracticeStates, savePracticeReview, getPracticeDay, savePracticeDay, getPracticeReviewedOn,
   getPracticeReviewDays, getPracticeFlags, setPracticeFlag, clearPracticeFlag, getPracticeJobApplications,
+  getPracticeNotes, savePracticeNote, getPracticeExplanations, addPracticeExplanation, clearPracticeExplanations,
+  getPracticeExplainedIds, getPracticeDecks, getPracticeDeckCards, createPracticeDeck, renamePracticeDeck, deletePracticeDeck,
+  getPracticeReviewsSince, getPracticeStories, savePracticeStory, deletePracticeStory, getPracticeStoryLinks,
+  linkPracticeStory, unlinkPracticeStory, getPracticeInterviews,
   getCompanyResearch, saveCompanyResearch,
   localDateString, getWeeklyActivity, getRecentJobDescriptions, getThankYouDue, completeThankYou, getApplicationsForAsk, applicationExists, listAskThreads, getAskThread, appendAskTurn, deleteAskThread,
   scheduleInterviewPrep, getInterviewPrepJob, getDueInterviewPrepJobs, updateInterviewPrepJob, countInterviewPrepDoneSince,

@@ -46,6 +46,7 @@ const KIND_SETTING = {
   // one level up. A new kind belongs in this map before anywhere else.
   'offer-deadline': 'offerDeadline',
   'task-due': 'taskDue',
+  practice: 'practice',
 }
 
 function isEnabled(kind) {

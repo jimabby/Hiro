@@ -1,0 +1,111 @@
+name: Question bank
+
+# The practice question bank (web/electron/data/questions.json) is data that
+# installed copies of Hiro download from main once a day, so a merge here is a
+# release of the questions. Two jobs guard that:
+#
+#   validate — every pull request or push that touches the bank: the same rules
+#              the app applies when it loads the file, so a contribution cannot
+#              ship a question the app would drop or misshow.
+#   review   — weekly (and on demand): Claude checks the least recently reviewed
+#              questions for answers that are outdated or wrong, and opens a pull
+#              request with its rewrites and a summary. A person merges it.
+#              Needs the ANTHROPIC_API_KEY repository secret; without it the job
+#              says so and does nothing. Opening the pull request also needs
+#              Settings → Actions → General → "Allow GitHub Actions to create
+#              and approve pull requests".
+
+on:
+  pull_request:
+    paths:
+      - web/electron/data/questions.json
+      - web/electron/services/practiceCore.js
+      - web/scripts/check-question-bank.js
+  push:
+    branches: [main]
+    paths:
+      - web/electron/data/questions.json
+  schedule:
+    - cron: '23 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      count:
+        description: How many questions to review
+        default: '15'
+
+concurrency:
+  group: question-bank-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate the question bank
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+      # The validator needs no dependencies, so nothing is installed: a
+      # contributor's pull request runs no package scripts here.
+      - run: node web/scripts/check-question-bank.js
+
+  review:
+    name: Weekly AI review
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      HIRO_SKIP_BROWSER_INSTALL: '1'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci --prefix web --ignore-scripts
+
+      - name: Review questions
+        id: review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          REVIEW_COUNT: ${{ github.event.inputs.count || '15' }}
+        run: node web/scripts/review-question-bank.js --summary "$RUNNER_TEMP/review-summary.md"
+
+      # The review's own output goes through the same gate as any contribution.
+      - run: node web/scripts/check-question-bank.js
+
+      # Opened even when every answer was still current: the pull request then
+      # only records which questions were checked, so next week moves on to
+      # others instead of reviewing the same ones again.
+      - name: Open a pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet -- web/electron/data/questions.json; then
+            echo "Nothing to propose."
+            exit 0
+          fi
+          day="$(date -u +%Y-%m-%d)"
+          branch="question-review/$day-${{ github.run_number }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add web/electron/data/questions.json
+          git commit -m "Weekly question bank review ($day)"
+          git push -u origin "$branch"
+          if [ "${{ steps.review.outputs.rewritten }}" = "0" ]; then
+            title="Question bank review $day: all checked answers still current"
+          else
+            title="Question bank review $day: ${{ steps.review.outputs.rewritten }} answer(s) rewritten"
+          fi
+          gh pr create --base main --head "$branch" --title "$title" --body-file "$RUNNER_TEMP/review-summary.md"

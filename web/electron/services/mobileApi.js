@@ -853,6 +853,28 @@ async function route(req, res) {
         return { status: 200, body: practice.forPhone({ day: practice.more({ count: body.count }) }) }
       })
     }
+    if (req.method === 'POST' && path === '/api/practice/note') {
+      const body = await readBody(req)
+      const result = require('./practice').saveNote(String(body.cardId || '').slice(0, 80), typeof body.note === 'string' ? body.note : '')
+      return json(res, result.success ? 200 : 400, result)
+    }
+    if (req.method === 'GET' && path === '/api/practice/explanations') {
+      return json(res, 200, require('./practice').explanations(String(url.searchParams.get('cardId') || '').slice(0, 80)))
+    }
+    // Asking the AI spends on the desktop's key, so — like Ask Hiro — only a
+    // paired phone may, and each request is written to the activity log.
+    if (req.method === 'POST' && path === '/api/practice/explain') {
+      if (!phoneReview.deviceMayApprove(check.device)) {
+        return json(res, 403, { error: 'Only a paired phone can ask the AI. Re-pair this phone if it was set up before pairing existed.' })
+      }
+      const body = await readBody(req)
+      return respondOnce(res, idempotencySlot(req, check.device), async () => {
+        const cardId = String(body.cardId || '').slice(0, 80)
+        logger.append(`Mobile API: Practice "Ask AI" from ${check.device?.name || 'a paired phone'} (${cardId})`)
+        const result = await require('./practice').explain(cardId, typeof body.followUp === 'string' ? body.followUp : '')
+        return { status: result.success ? 200 : 400, body: result }
+      })
+    }
     if (req.method === 'POST' && path === '/api/practice/flag') {
       const body = await readBody(req)
       const practice = require('./practice')

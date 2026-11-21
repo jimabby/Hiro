@@ -6,7 +6,7 @@ import { AI_PROVIDERS } from '../aiProviders'
 
 const STEPS = ['AI Provider', 'Email', 'Job Criteria', 'Resume', 'Review']
 
-export default function Setup({ onComplete }) {
+export default function Setup({ onComplete, onPracticeOnly }) {
   const [step, setStep] = useState(0)
   const [form, setForm] = useState({
     aiProvider: 'claude',
@@ -165,6 +165,15 @@ export default function Setup({ onComplete }) {
           <div role="status" aria-live="polite" style={{ color: 'var(--text-muted)' }}>
             Setup Wizard — {STEPS[step]} (step {step + 1} of {STEPS.length})
           </div>
+          {onPracticeOnly && step === 0 && (
+            <div className="card" style={{ marginTop: 16, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, textAlign: 'left' }}>
+              <div style={{ flex: 1, fontSize: 13 }}>
+                <strong>Only here to prepare for interviews?</strong>
+                <div style={{ color: 'var(--text-muted)', marginTop: 2 }}>Practise 170+ developer interview questions now. No résumé or AI key needed — set up the job search whenever you like.</div>
+              </div>
+              <button type="button" className="btn btn-sm" onClick={onPracticeOnly}>Start practising</button>
+            </div>
+          )}
         </div>
 
         {/* Progress */}

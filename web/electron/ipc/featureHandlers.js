@@ -30,6 +30,46 @@ module.exports = function registerFeatureHandlers({ ipcMain, scheduler, getWindo
   ipcMain.handle('practice:flag', (_, cardId, reason, note) => practice().flag(cardId, reason, note))
   ipcMain.handle('practice:unflag', (_, cardId) => practice().unflag(cardId))
   ipcMain.handle('practice:saveSettings', (_, settings) => practice().saveSettings(settings))
+  ipcMain.handle('practice:saveNote', (_, cardId, note) => practice().saveNote(cardId, note))
+  // Ask AI and deck generation spend on the user's AI key; both are refused
+  // without a provider and stop at the monthly cap like every other call.
+  ipcMain.handle('practice:explanations', (_, cardId) => practice().explanations(cardId))
+  ipcMain.handle('practice:explain', (_, cardId, followUp) => practice().explain(cardId, followUp))
+  ipcMain.handle('practice:clearExplanations', (_, cardId) => practice().clearExplanations(cardId))
+  ipcMain.handle('practice:decks', () => practice().decks())
+  ipcMain.handle('practice:generateDeck', (_, input) => practice().generateDeck(input && typeof input === 'object' ? input : {}))
+  ipcMain.handle('practice:renameDeck', (_, id, title) => practice().renameDeck(id, title))
+  ipcMain.handle('practice:deleteDeck', (_, id) => practice().deleteDeck(id))
+  ipcMain.handle('practice:prepareJobDeck', (_, applicationId) => practice().prepareJobDeck(applicationId))
+  // A question file the user chose: read in the renderer as text, parsed and
+  // checked here. Previewed first; nothing is saved until importDeck.
+  const importInput = (input) => ({
+    name: typeof input?.name === 'string' ? input.name.slice(0, 200) : '',
+    text: typeof input?.text === 'string' ? input.text : '',
+    title: typeof input?.title === 'string' ? input.title : '',
+  })
+  ipcMain.handle('practice:previewImport', (_, input) => practice().previewImport(importInput(input)))
+  ipcMain.handle('practice:importDeck', (_, input) => practice().importDeck(importInput(input)))
+  ipcMain.handle('practice:deckFromUrl', (_, input) => practice().deckFromUrl({
+    url: typeof input?.url === 'string' ? input.url : '',
+    title: typeof input?.title === 'string' ? input.title : '',
+    count: input?.count,
+  }))
+  ipcMain.handle('practice:stories', () => practice().stories())
+  ipcMain.handle('practice:saveStory', (_, story) => practice().saveStory(story && typeof story === 'object' ? story : {}))
+  ipcMain.handle('practice:deleteStory', (_, id) => practice().deleteStory(id))
+  ipcMain.handle('practice:linkStory', (_, cardId, storyId) => practice().linkStory(cardId, storyId))
+  ipcMain.handle('practice:unlinkStory', (_, cardId, storyId) => practice().unlinkStory(cardId, storyId))
+  ipcMain.handle('practice:insights', (_, opts) => practice().insights({ days: opts?.days }))
+  ipcMain.handle('practice:reminder', () => practice().reminderSettings())
+  // A new time only takes effect once the cron job is rebuilt.
+  ipcMain.handle('practice:saveReminder', (_, settings) => {
+    const result = practice().saveReminder(settings)
+    if (result.success) scheduler.restart(getWindow())
+    return result
+  })
+  ipcMain.handle('practice:bankInfo', () => practice().bankInfo())
+  ipcMain.handle('practice:refreshBank', () => practice().refreshBank({ force: true }))
   ipcMain.handle('features:views', () => featureHub.savedViews())
   ipcMain.handle('features:saveView', (_, view) => featureHub.saveView(view))
   ipcMain.handle('features:deleteView', (_, id) => featureHub.deleteView(id))
