@@ -32,6 +32,10 @@ const RUNTIME_KEYS = new Set([
   'calendarSyncCursor', 'lastCalendarSyncAt', 'encryptDatabase',
   'automationCooldowns',
   'lastBackupDrill', 'lastScanOutcome',
+  // Where the practice question bank is downloaded from, and when it last was.
+  // An address that arrived in a shared settings file could point every
+  // question at someone else's answers; the check time is this machine's.
+  'practiceBankUrl', 'practiceBankCheck',
   // Registers a login item pointing at THIS machine's install path, and the
   // OS-level entry is written by the tray service rather than by config alone.
   // Importing it elsewhere would tick the box without registering anything.

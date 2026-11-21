@@ -118,6 +118,11 @@ check('apply ignores runtime keys in the payload', stored.mobileApiToken, 'pairi
 check('apply ignores a runtime scan queue', stored.pendingScans, [{ id: 'queued-scan' }])
 check('apply still writes the legitimate setting', stored.matchThreshold, 70)
 
+// A shared settings file must not be able to redirect the question bank.
+ct.applyBundle({ practiceBankUrl: 'https://attacker.example/questions.json', practiceBankCheck: { at: '2099-01-01' } })
+check('apply ignores a question bank address', 'practiceBankUrl' in stored, false)
+check('apply ignores the bank check time', 'practiceBankCheck' in stored, false)
+
 check('apply rejects a non-object', throws(() => ct.applyBundle(null)), 'Nothing to import.')
 
 done()

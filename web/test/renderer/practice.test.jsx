@@ -86,6 +86,42 @@ describe('Practice page', () => {
     await waitFor(() => expect(window.api.ratePracticeCard).toHaveBeenCalledWith('node-001', 'again'))
   })
 
+  it('ignores a second key press while the next card is loading', async () => {
+    let today = dayWith([card(), card({ id: 'node-002', question: 'What is a Buffer?' })])
+    // After a rating, the next load waits until the test lets it finish.
+    let finishLoad = null
+    let slow = false
+    window.api.getPracticeToday = vi.fn(() => (slow ? new Promise(r => { finishLoad = () => r(today) }) : Promise.resolve(today)))
+    window.api.getPracticeStats = vi.fn(async () => stats)
+    window.api.ratePracticeCard = vi.fn(async (id) => {
+      today = dayWith(today.cards.map(c => c.id === id ? { ...c, done: true } : c))
+      slow = true
+      return { success: true }
+    })
+    render(<Practice active showToast={() => {}} />)
+    await screen.findByText('What is Node.js?')
+    fireEvent.keyDown(window, { key: ' ' })
+    fireEvent.keyDown(window, { key: '3' })
+    await waitFor(() => expect(window.api.ratePracticeCard).toHaveBeenCalledTimes(1))
+    // The reload is still pending: the rated card is on screen and revealed.
+    fireEvent.keyDown(window, { key: '3' })
+    expect(window.api.ratePracticeCard).toHaveBeenCalledTimes(1)
+    slow = false
+    await waitFor(() => expect(finishLoad).toBeTypeOf('function'))
+    finishLoad()
+    expect(await screen.findByText('What is a Buffer?')).toBeTruthy()
+  })
+
+  it('shows a missed card again as a second look, not one more card', async () => {
+    const missed = card({ done: true, relearn: true, intervals: { again: 1, hard: 1, good: 1, easy: 1 } })
+    window.api.getPracticeToday = vi.fn(async () => ({ ...dayWith([missed, card({ id: 'node-002', done: true })]), queue: ['node-001'], relearnCount: 1 }))
+    window.api.getPracticeStats = vi.fn(async () => stats)
+    render(<Practice active showToast={() => {}} />)
+    expect(await screen.findByText('Once more · 1 to go')).toBeTruthy()
+    expect(screen.getByText(/You missed this one earlier/)).toBeTruthy()
+    expect(screen.queryByText(/Card 3 of 2/)).toBeNull()
+  })
+
   it('leaves digits alone before the answer is shown', async () => {
     window.api.getPracticeToday = vi.fn(async () => dayWith([card()]))
     window.api.getPracticeStats = vi.fn(async () => stats)

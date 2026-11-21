@@ -61,6 +61,8 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # To start CI on the review branch (see the last step).
+      actions: write
     env:
       HIRO_SKIP_BROWSER_INSTALL: '1'
     steps:
@@ -109,3 +111,8 @@ jobs:
             title="Question bank review $day: ${{ steps.review.outputs.rewritten }} answer(s) rewritten"
           fi
           gh pr create --base main --head "$branch" --title "$title" --body-file "$RUNNER_TEMP/review-summary.md"
+          # A pull request opened with the workflow's own token starts no other
+          # workflows, so CI would never run on it. A manual dispatch is the one
+          # event that token may trigger; the run reports on the branch's
+          # commit, which is the pull request's head, so it shows as its check.
+          gh workflow run ci.yml --ref "$branch"

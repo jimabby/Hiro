@@ -143,11 +143,13 @@ const hashText = s => crypto.createHash('sha1').update(String(s).trim().toLowerC
 // Cards made from the questions generated for each application. The id hashes
 // the question text, so regenerated questions start fresh while an unchanged
 // question keeps its schedule.
-function jobCards() {
+// `applicationId` limits it to one application.
+function jobCards({ applicationId = null } = {}) {
   const cards = []
   const seen = new Set()
   let apps = []
   try { apps = database.getPracticeJobApplications() } catch { return cards }
+  if (applicationId != null) apps = apps.filter(a => a.id === applicationId)
   for (const app of apps) {
     let questions = null
     try { questions = database.getInterviewPrepWithAnswers(app.id) } catch { questions = null }
@@ -302,18 +304,31 @@ function today({ now = new Date(), cfg = configService.load(), rng = Math.random
     const priority = countdown.flatMap(c => c.cardIds)
     const ids = core.buildSet({ cards: snap.eligible, states: snap.states, today: day, count: settings.dailyCount, keep, priority, rng })
     database.savePracticeDay(day, ids, key)
-    row = { day, cardIds: ids, filterKey: key }
+    row = { day, cardIds: ids, filterKey: key, relearn: row?.relearn || [] }
   }
   const byId = new Map(snap.cards.map(c => [c.id, c]))
   const set = row.cardIds.filter(id => byId.has(id))
-  const cards = set.map(id => ({ ...view(byId.get(id), snap), done: done.has(id) }))
-  const queue = cards.filter(c => !c.done && !c.flag)
+  // Cards missed earlier today, to be seen once more after the rest.
+  const relearn = (row.relearn || []).filter(id => set.includes(id) && done.has(id) && !snap.flags.has(id))
+  const again = new Set(relearn)
+  const cards = set.map(id => {
+    const card = { ...view(byId.get(id), snap), done: done.has(id), relearn: again.has(id) }
+    // A second look does not move the schedule: whatever the answer, the card
+    // returns when the miss already set it to.
+    if (card.relearn && card.state) {
+      const n = card.state.interval
+      card.intervals = { again: n, hard: n, good: n, easy: n }
+    }
+    return card
+  })
+  const queue = [...cards.filter(c => !c.done && !c.flag).map(c => c.id), ...relearn]
   return {
     day,
     settings,
     topics: snap.topics,
     cards,
-    queue: queue.map(c => c.id),
+    queue,
+    relearnCount: relearn.length,
     doneCount: cards.filter(c => c.done).length,
     // Due cards that did not fit today, so "practise more" is an informed choice.
     dueLater: snap.eligible.filter(c => !set.includes(c.id) && snap.states.get(c.id)?.due_on <= day).length,
@@ -335,9 +350,17 @@ function more({ count, now = new Date(), cfg = configService.load(), rng = Math.
   return today({ now, cfg, rng })
 }
 
+// A card id says where the card comes from (job-<application>-…, deck-<deck>-…,
+// otherwise the bank), so only that source is read: rating a card reads one
+// application's questions, not every application's. The bank is the fallback
+// in case a bank id ever starts the same way.
 function findCard(cardId) {
   if (typeof cardId !== 'string' || !CARD_ID.test(cardId)) return null
-  return allCards().find(c => c.id === cardId) || null
+  const job = /^job-(\d+)-/.exec(cardId)
+  const found = job ? jobCards({ applicationId: Number(job[1]) }).find(c => c.id === cardId)
+    : cardId.startsWith('deck-') ? deckCards().find(c => c.id === cardId)
+      : null
+  return found || loadBank().find(c => c.id === cardId) || null
 }
 
 function rate(cardId, rating, { now = new Date() } = {}) {
@@ -345,9 +368,37 @@ function rate(cardId, rating, { now = new Date() } = {}) {
   if (!findCard(cardId)) return { success: false, error: 'That card no longer exists.' }
   const day = database.localDateString(now)
   const prev = database.getPracticeStates().find(s => s.card_id === cardId) || null
+  const publicState = s => ({ ease: s.ease, interval: s.interval_days, reps: s.reps, lapses: s.lapses, dueOn: s.due_on })
+  const dayRow = database.getPracticeDay(day)
+  const relearn = dayRow?.relearn || []
+
+  // A card missed earlier today, seen once more. Its schedule was already set
+  // by the miss (back tomorrow), so this look only decides whether it comes
+  // round again today: Again sends it to the back of the queue, anything else
+  // lets it go. Nothing is written to the review history, so the topic's
+  // forget rate and the streak count the first answer only.
+  if (prev && relearn.includes(cardId)) {
+    const rest = relearn.filter(id => id !== cardId)
+    database.setPracticeRelearn(day, rating === 'again' ? [...rest, cardId] : rest)
+    return { success: true, relearn: true, state: publicState(prev) }
+  }
+
+  // Otherwise a card is rated once a day. A second rating the same day is a
+  // repeat of the first (a double key press before the next card loaded, or a
+  // phone that rated away from home and again on the LAN before the desktop
+  // applied the cloud event); applying it would push the card twice as far
+  // out, so it is acknowledged and ignored.
+  if (prev && database.getPracticeReviewedOn(day).includes(cardId)) {
+    return { success: true, duplicate: true, state: publicState(prev) }
+  }
   const state = core.nextState(prev, rating, day)
   database.savePracticeReview({ cardId, state, rating, day })
-  return { success: true, state: { ease: state.ease, interval: state.interval_days, reps: state.reps, lapses: state.lapses, dueOn: state.due_on } }
+  // Missed: it comes back at the end of today's cards, while the answer is
+  // still fresh enough to fix. Only for a card in today's set.
+  if (rating === 'again' && dayRow?.cardIds.includes(cardId)) {
+    database.setPracticeRelearn(day, [...relearn, cardId])
+  }
+  return { success: true, state: publicState(state) }
 }
 
 function flag(cardId, reason, note = '') {
@@ -835,12 +886,13 @@ function forPhone({ now = new Date(), cfg = configService.load(), day } = {}) {
     cards: t.cards.map(c => ({
       id: c.id, deck: c.deck, topic: c.topic, question: c.question, difficulty: c.difficulty,
       versions: c.versions, category: c.category || null, blocks: core.answerBlocks(c.answer, c.format),
-      intervals: c.intervals, isNew: !c.state, done: c.done, flagged: Boolean(c.flag),
+      intervals: c.intervals, isNew: !c.state, done: c.done, relearn: Boolean(c.relearn), flagged: Boolean(c.flag),
       note: c.note || '', explained: Boolean(c.explained),
       stories: (c.storyIds || []).map(id => allStories.get(id)).filter(Boolean)
         .map(s => ({ id: s.id, title: s.title, situation: s.situation, task: s.task, action: s.action, result: s.result })),
     })),
     queue: t.queue,
+    relearnCount: t.relearnCount || 0,
     doneCount: t.doneCount,
     dueLater: t.dueLater,
     available: t.available,

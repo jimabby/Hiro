@@ -201,9 +201,11 @@ jobs:
   #
   # The AI provider suites skip themselves without keys, so this job covers the
   # job-board and push contracts only. See web/test/contract/README.md.
+  # A manual run on another branch (the weekly question review dispatches CI on
+  # its own branch) is a branch check like a PR, so it skips them too.
   contract:
     name: Provider contracts
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     env:
       HIRO_SKIP_BROWSER_INSTALL: '1'

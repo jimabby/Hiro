@@ -1017,18 +1017,25 @@ async function syncPractice(c, { practice = require('./practice') } = {}) {
       }
       const at = Date.parse(event?.at)
       const now = Number.isFinite(at) ? new Date(at) : new Date(row.created_at)
+      // Each event is applied on its own: the batch is already deleted from the
+      // cloud, so one that throws must not take the rest of it down with it.
       let result
-      if (event?.type === 'rate') result = practice.rate(String(event.cardId || ''), String(event.rating || ''), { now })
-      else if (event?.type === 'note') result = practice.saveNote(String(event.cardId || ''), typeof event.note === 'string' ? event.note : '')
-      else if (event?.type === 'flag') result = practice.flag(String(event.cardId || ''), String(event.reason || ''), typeof event.note === 'string' ? event.note : '')
-      else result = { success: false, error: 'unknown event' }
+      try {
+        if (event?.type === 'rate') result = practice.rate(String(event.cardId || ''), String(event.rating || ''), { now })
+        else if (event?.type === 'note') result = practice.saveNote(String(event.cardId || ''), typeof event.note === 'string' ? event.note : '')
+        else if (event?.type === 'flag') result = practice.flag(String(event.cardId || ''), String(event.reason || ''), typeof event.note === 'string' ? event.note : '')
+        else result = { success: false, error: 'unknown event' }
+      } catch (err) {
+        result = { success: false, error: err?.message || String(err) }
+      }
       if (result?.success) applied.push(event.type)
       else logger.append(`Cloud sync: a practice ${event?.type || 'event'} from the phone was not applied (${result?.error || 'unknown reason'})`)
     }
   }
 
   const snapshot = practice.forPhone()
-  const hash = crypto.createHash('sha256').update(JSON.stringify(snapshot)).digest('hex')
+  // Keyed by account as well, so signing in as someone else always publishes.
+  const hash = crypto.createHash('sha256').update(`${user.id}\n${JSON.stringify(snapshot)}`).digest('hex')
   if (hash !== lastSnapshotHash) {
     const payload = cloudCrypto.encrypt(dataKey, { ...snapshot, generatedAt: new Date().toISOString() }, cloudCrypto.rowContext('practice_snapshot', user.id, 'payload'))
     const { error } = await c.from('practice_snapshot').upsert({ user_id: user.id, payload, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })

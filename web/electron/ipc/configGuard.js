@@ -52,6 +52,9 @@ const REDACTED_KEYS = [
 const SERVICE_OWNED_KEYS = [
   'cloudCommandReceipts', 'cloudScanResults',
   'pendingScans', 'lastScanAt', 'lastInboxCheck', 'lastCloudSyncAt', 'lastJobAlertCheck', 'practiceBankCheck',
+  // No form edits the question bank address; it is set by hand in the config
+  // file, so nothing the renderer sends can redirect it.
+  'practiceBankUrl',
   'lastBackupDrill', 'lastScanOutcome',
   'cloudSyncEnabled', 'supabaseEmail', 'supabaseRefreshToken', 'cloudDataKey',
   'cloudIdentityAccount', 'cloudFirstSyncChoice', 'deviceId', 'knownDeviceIds',

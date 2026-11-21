@@ -684,10 +684,15 @@ function TodayView({ active, data, reload, showToast }) {
   const rate = useCallback(async (rating) => {
     if (!current || busy) return
     setBusy(true)
-    const res = await window.api.ratePracticeCard(current.id, rating)
-    setBusy(false)
-    if (!res?.success) { showToast?.(res?.error || 'Could not save the rating', 'error'); return }
-    reload()
+    try {
+      const res = await window.api.ratePracticeCard(current.id, rating)
+      if (!res?.success) { showToast?.(res?.error || 'Could not save the rating', 'error'); return }
+      // Stay busy until the next card is on screen: until then the rated card
+      // is still current, and a second key press would rate it again.
+      await reload()
+    } finally {
+      setBusy(false)
+    }
   }, [current, busy, reload, showToast])
 
   // Space or Enter shows the answer; 1–4 rate it once shown. Registered in the
@@ -745,8 +750,13 @@ function TodayView({ active, data, reload, showToast }) {
       <div className="practice-progress" aria-hidden="true"><div style={{ width: `${Math.round((data.doneCount / Math.max(1, total)) * 100)}%` }} /></div>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 12, alignItems: 'flex-start' }}>
         <CardMeta card={current} />
-        <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Card {position} of {total}</span>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+          {current.relearn ? `Once more · ${data.relearnCount || 1} to go` : `Card ${Math.min(position, total)} of ${total}`}
+        </span>
       </div>
+      {current.relearn && (
+        <p className="practice-relearn">You missed this one earlier. One more look while it is fresh; it comes back tomorrow either way.</p>
+      )}
       <h2 style={{ fontSize: 20, fontWeight: 700, lineHeight: 1.35, marginBottom: 18 }}>{current.question}</h2>
       {!revealed ? (
         <button className="btn btn-primary" onClick={() => setRevealed(true)}>Show answer <span style={{ opacity: 0.7 }}>(Space)</span></button>
@@ -762,7 +772,11 @@ function TodayView({ active, data, reload, showToast }) {
               </button>
             ))}
           </div>
-          <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>Keys 1–4 rate the card. Again and Hard bring it back sooner.</p>
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+            {current.relearn
+              ? 'Keys 1–4. Again shows it once more; anything else and you are done with it for today.'
+              : 'Keys 1–4 rate the card. Again also shows it once more after today’s other cards.'}
+          </p>
         </>
       )}
       <div style={{ marginTop: 16 }}>
@@ -1229,7 +1243,7 @@ export default function Practice({ active, showToast, onNavigate }) {
   useEffect(() => { if (active !== false && available && (tab === 'browse' || tab === 'reported')) loadBank() }, [active, available, tab, loadBank])
 
   const afterChange = useCallback(() => { loadToday(); loadBank() }, [loadToday, loadBank])
-  const reloadToday = useCallback((given) => { loadToday(given); setBank(null) }, [loadToday])
+  const reloadToday = useCallback((given) => { setBank(null); return loadToday(given) }, [loadToday])
 
   const changeSettings = useCallback(async (next) => {
     const res = await window.api.savePracticeSettings(next)

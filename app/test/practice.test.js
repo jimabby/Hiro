@@ -1,6 +1,6 @@
 // Pure helpers behind the Practice tab.
 const { createChecker } = require('./helpers')
-const { formatInterval, statsLine, currentCard, applyPendingPractice } = require('../src/practice')
+const { formatInterval, statsLine, currentCard, applyPendingPractice, positionLabel, localDay, currentCountdown, isStale } = require('../src/practice')
 const { check, done } = createChecker()
 
 check('days', formatInterval(6), '6d')
@@ -33,5 +33,31 @@ check('pending changes are counted; unknown cards ignored', over.pendingChanges,
 check('it is marked as coming through the cloud, with nothing more to add', [over.cloud, over.available], [true, 0])
 check('the snapshot itself is not changed', [snap.queue.length, snap.cards[0].done], [3, undefined])
 check('rating the same card twice counts it once', applyPendingPractice(snap, [{ type: 'rate', cardId: 'a' }, { type: 'rate', cardId: 'a' }]).doneCount, 1)
+
+// ── A missed card comes back, as on the desktop ──
+const miss = applyPendingPractice(snap, [{ type: 'rate', cardId: 'a', rating: 'again' }])
+check('a card missed away from home goes to the back of the queue', miss.queue, ['b', 'c', 'a'])
+check('as a second look whose buttons show the schedule the miss set', [miss.cards[0].relearn, miss.cards[0].done, miss.cards[0].intervals], [true, true, { again: 1, hard: 1, good: 1, easy: 1 }])
+check('and is counted', [miss.relearnCount, miss.doneCount], [1, 1])
+const missTwice = applyPendingPractice(snap, [{ type: 'rate', cardId: 'a', rating: 'again' }, { type: 'rate', cardId: 'a', rating: 'again' }])
+check('missing it on the second look sends it round again', [missTwice.queue, missTwice.doneCount], [['b', 'c', 'a'], 1])
+const passed = applyPendingPractice(snap, [{ type: 'rate', cardId: 'a', rating: 'again' }, { type: 'rate', cardId: 'a', rating: 'good' }, { type: 'rate', cardId: 'a', rating: 'again' }])
+check('a pass lets it go, and a later repeat does not bring it back', [passed.queue, passed.relearnCount], [['b', 'c'], 0])
+const fromDesktop = applyPendingPractice({ ...snap, cards: [{ id: 'a', done: true, relearn: true }, { id: 'b' }], queue: ['b', 'a'] }, [{ type: 'rate', cardId: 'a', rating: 'easy' }])
+check('a second look the desktop queued is finished on the phone', fromDesktop.queue, ['b'])
+
+check('position on a first look', positionLabel({ doneCount: 2, cards: [1, 2, 3, 4] }, { id: 'x' }), '3 of 4')
+check('a second look is not one more card', positionLabel({ doneCount: 4, relearnCount: 2, cards: [1, 2, 3, 4] }, { id: 'x', relearn: true }), 'Once more · 2 to go')
+
+// ── Through the cloud, the phone's own today ──
+check('a calendar day', localDay(new Date(2026, 0, 5, 23, 30)), '2026-01-05')
+const cd = [
+  { applicationId: 1, scheduledAt: '2026-11-23 09:00:00', daysLeft: 3 },
+  { applicationId: 2, scheduledAt: '2026-11-21 14:00:00', daysLeft: 1 },
+  { applicationId: 3, daysLeft: 4 },
+]
+check('days left counted from the phone\'s today, past interviews dropped', currentCountdown(cd, '2026-11-22').map(c => [c.applicationId, c.daysLeft]), [[1, 1], [3, 4]])
+check('cards from an earlier day are stale through the cloud', [isStale({ cloud: true, day: '2026-11-21' }, '2026-11-22'), isStale({ cloud: true, day: '2026-11-22' }, '2026-11-22')], [true, false])
+check('over the LAN they are always current', isStale({ day: '2026-11-21' }, '2026-11-22'), false)
 
 done()

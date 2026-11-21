@@ -136,6 +136,9 @@ async function main() {
   check('rating a card', practice.rate(first, 'good', { now: at(day) }).state.dueOn, '2026-11-22')
   t = practice.today({ now: at(day) })
   check('a rated card leaves the queue', [t.queue.includes(first), t.doneCount], [false, 1])
+  const repeat = practice.rate(first, 'easy', { now: at(day) })
+  check('a second rating the same day is acknowledged but not applied', [repeat.success, repeat.duplicate, repeat.state.dueOn], [true, true, '2026-11-22'])
+  check('and is not counted as another review', practice.insights({ now: at(day), skillsGap: { enoughData: false } }).totals.reviews, 1)
   check('an unknown card cannot be rated', practice.rate('nope-999', 'good', { now: at(day) }).success, false)
   check('an unknown rating is refused by the service', practice.rate(t.queue[0], 'meh', { now: at(day) }).success, false)
 
@@ -433,6 +436,37 @@ async function main() {
   check('a private address is refused by the guarded fetch', /local|private/i.test((await practice.deckFromUrl({ url: 'http://localhost:3000/admin' })).error || ''), true)
   check('only http(s) links', (await practice.deckFromUrl({ url: 'file:///etc/passwd' })).success, false)
   check('the fake fetch saw the address', fetched, 'https://example.com/event-loop')
+
+  // ─── A missed card comes back the same day ────────────────────
+  config.practice = { topics: ['Java'], dailyCount: 3 }
+  const rd = at('2030-03-04')
+  const reviewsSoFar = () => practice.insights({ now: rd, skillsGap: { enoughData: false } }).totals.reviews
+  let rt = practice.today({ now: rd, rng: seq() })
+  const [m1, m2, m3] = rt.queue
+  practice.rate(m1, 'again', { now: rd })
+  rt = practice.today({ now: rd })
+  check('a missed card goes to the back of the queue', rt.queue, [m2, m3, m1])
+  const missed = rt.cards.find(c => c.id === m1)
+  check('marked as a second look, its buttons showing the schedule the miss set', [missed.relearn, missed.done, Object.values(missed.intervals)], [true, true, [1, 1, 1, 1]])
+  check('and counted', rt.relearnCount, 1)
+  check('the phone gets it the same way', [practice.forPhone({ now: rd }).cards.find(c => c.id === m1).relearn, practice.forPhone({ now: rd }).queue], [true, [m2, m3, m1]])
+  practice.rate(m2, 'good', { now: rd })
+  practice.rate(m3, 'good', { now: rd })
+  const missedState = practice.bank({ now: rd }).cards.find(c => c.id === m1).state
+  const missAgain = practice.rate(m1, 'again', { now: rd })
+  check('missing it again keeps it coming round', [missAgain.relearn, practice.today({ now: rd }).queue], [true, [m1]])
+  config.practice = { topics: [], dailyCount: 3 }
+  check('changing topics keeps a card still to see again', practice.today({ now: rd, rng: seq() }).queue, [m1])
+  const pass = practice.rate(m1, 'good', { now: rd })
+  check('any other answer lets it go for today', [pass.relearn, practice.today({ now: rd }).queue], [true, []])
+  check('the schedule the first miss set is untouched', practice.bank({ now: rd }).cards.find(c => c.id === m1).state, missedState)
+  check('second looks are not counted as reviews', reviewsSoFar(), 3)
+  check('a later repeat is ignored', practice.rate(m1, 'again', { now: rd }).duplicate, true)
+  check('and does not bring it back', practice.today({ now: rd }).queue, [])
+
+  // ─── Imported text is decoded once ────────────────────────────
+  check('an escaped entity in a question stays escaped', core.parseImport('What does &amp;lt;br&amp;gt; mean?,A line break', { name: 'x.csv' }).cards[0].question, 'What does &lt;br&gt; mean?')
+  check('ordinary entities are decoded', core.parseImport('Fish &amp; chips &lt;3?,Yes', { name: 'x.csv' }).cards[0].question, 'Fish & chips <3?')
 
   done()
 }

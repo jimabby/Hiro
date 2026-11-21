@@ -97,5 +97,25 @@ const event = (id, body, contextId = id) => ({
   cloudSync._resetPracticeSnapshot()
   check('a project without the tables is skipped quietly', (await cloudSync._syncPractice(fakeCloud({ missing: true }).c, USER, { practice })).skipped, 'no-table')
 
+  // One event that throws does not lose the others claimed with it.
+  const applied = []
+  const flaky = {
+    ...practice,
+    rate: (cardId) => { if (cardId === 'boom-001') throw new Error('database is locked'); applied.push(cardId); return { success: true } },
+  }
+  const second = fakeCloud()
+  second.db.events.push(
+    event('b0000000-0000-4000-8000-000000000001', { type: 'rate', cardId: 'boom-001', rating: 'good' }),
+    event('b0000000-0000-4000-8000-000000000002', { type: 'rate', cardId: 'node-003', rating: 'good' }),
+  )
+  const res = await cloudSync._syncPractice(second.c, USER, { practice: flaky })
+  check('a failing event leaves the rest of the batch applied', [applied, res.applied], [['node-003'], ['rate']])
+  check('and is logged', logs.some(l => /not applied \(database is locked\)/.test(l)), true)
+
+  // Signing in as another account publishes even when the cards are the same.
+  const other = fakeCloud()
+  await cloudSync._syncPractice(other.c, { id: '99999999-2222-4333-8444-555555555555' }, { practice })
+  check('another account gets its own snapshot', other.db.upserts, 1)
+
   done()
 })().catch(err => { console.error(err); process.exit(1) })

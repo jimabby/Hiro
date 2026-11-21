@@ -22,7 +22,7 @@ import { radius, useTheme } from '../theme'
 import { messageFor } from '../requestErrors'
 import { randomKey } from '../secureProtocol'
 import * as haptics from '../haptics'
-import { formatInterval, statsLine, currentCard } from '../practice'
+import { formatInterval, statsLine, currentCard, currentCountdown, isStale, positionLabel } from '../practice'
 
 const RATINGS = [
   { key: 'again', label: 'Again', hint: 'Forgot it' },
@@ -286,7 +286,12 @@ export default function PracticeScreen({ client, active }) {
           {data.pendingChanges ? ` · ${data.pendingChanges} change${data.pendingChanges === 1 ? '' : 's'} reach the desktop when it next syncs` : ''}
         </Text>
       )}
-      {(data?.countdown || []).filter(c => c.cards > 0).map(c => (
+      {isStale(data) && (
+        <Text style={styles.stale} accessibilityRole="alert">
+          Hiro on your desktop has not synced today, so these are the cards from {data.day}. Your answers still count, and today’s set appears once the desktop is on.
+        </Text>
+      )}
+      {currentCountdown(data?.countdown).filter(c => c.cards > 0).map(c => (
         <View key={c.applicationId} style={styles.countdown} accessibilityRole="text">
           <Text style={styles.countdownDays}>{c.daysLeft === 0 ? 'Today' : c.daysLeft === 1 ? '1 day' : `${c.daysLeft} days`}</Text>
           <Text style={styles.countdownText}>
@@ -321,14 +326,17 @@ export default function PracticeScreen({ client, active }) {
         <View style={styles.card}>
           <View style={styles.cardHead}>
             <Text style={styles.topic} numberOfLines={1}>{current.deck === 'job' ? `Job: ${current.topic}` : current.deck === 'custom' ? `Deck: ${current.topic}` : current.topic}</Text>
-            <Text style={styles.position}>{data.doneCount + 1} of {data.cards.length}</Text>
+            <Text style={styles.position}>{positionLabel(data, current)}</Text>
           </View>
           <View style={styles.tags}>
             {!!current.category && <Text style={[styles.tag, styles.tagCategory]} accessibilityLabel={`Category: ${current.category}`}>Category: {current.category}</Text>}
             {!!current.difficulty && <Text style={styles.tag}>{current.difficulty}</Text>}
             {current.versions?.map(v => <Text key={v} style={styles.tag}>{v}</Text>)}
-            <Text style={styles.tag}>{current.isNew ? 'New' : 'Review'}</Text>
+            <Text style={styles.tag}>{current.relearn ? 'Missed earlier' : current.isNew ? 'New' : 'Review'}</Text>
           </View>
+          {!!current.relearn && (
+            <Text style={[styles.muted, { marginBottom: 6 }]}>You missed this one earlier. One more look while it is fresh; it is back tomorrow either way.</Text>
+          )}
           <Text style={styles.question}>{current.question}</Text>
 
           {!revealed ? (
@@ -368,6 +376,7 @@ const makeStyles = (c) => StyleSheet.create({
   title: { fontSize: 22, fontWeight: '700', color: c.text, marginBottom: 6 },
   muted: { color: c.textMuted, fontSize: 13, lineHeight: 19 },
   error: { color: c.red, fontSize: 13, marginTop: 8 },
+  stale: { color: c.text, fontSize: 13, lineHeight: 19, marginTop: 8, padding: 10, borderRadius: radius, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface },
 
   card: { backgroundColor: c.surface, borderWidth: 1, borderColor: c.border, borderRadius: radius, padding: 16, marginTop: 14 },
   doneCard: { alignItems: 'center', paddingVertical: 28 },

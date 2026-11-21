@@ -703,6 +703,15 @@ const SCHEMA_MIGRATIONS = [
   { version: 1, name: 'baseline columns and indexes', up: migrateBaseline },
   { version: 2, name: 'experiment arms, mirror state, timestamp format', up: migrateExperimentAndSyncState },
   { version: 3, name: 'offer benefits', up: () => ensureColumn('offers', 'benefits', "TEXT DEFAULT ''") },
+  // Cards missed ("Again") earlier in the day, shown once more before the day
+  // is done. The practice tables are otherwise created after these steps, so
+  // this one creates them first: a new database gets the column with the
+  // table, and an older one has just the column added.
+  {
+    version: 4,
+    name: 'practice relearning',
+    up: () => { createPracticeTables(); ensureColumn('practice_days', 'relearn', "TEXT NOT NULL DEFAULT '[]'") },
+  },
 ]
 const SCHEMA_VERSION = SCHEMA_MIGRATIONS[SCHEMA_MIGRATIONS.length - 1].version
 
@@ -798,7 +807,8 @@ function createPracticeTables() {
   db.run(`CREATE TABLE IF NOT EXISTS practice_days (
     day TEXT PRIMARY KEY,
     card_ids TEXT NOT NULL DEFAULT '[]',
-    filter_key TEXT NOT NULL DEFAULT ''
+    filter_key TEXT NOT NULL DEFAULT '',
+    relearn TEXT NOT NULL DEFAULT '[]'
   )`)
   db.run(`CREATE TABLE IF NOT EXISTS practice_flags (
     card_id TEXT PRIMARY KEY,
@@ -2976,15 +2986,27 @@ function savePracticeReview({ cardId, state, rating, day }) {
 function getPracticeDay(day) {
   const row = queryOne('SELECT * FROM practice_days WHERE day = ?', [day])
   if (!row) return null
-  let cardIds = []
-  try { cardIds = JSON.parse(row.card_ids) } catch { /* rebuilt by the caller */ }
-  return { day: row.day, cardIds: Array.isArray(cardIds) ? cardIds.filter(id => typeof id === 'string') : [], filterKey: row.filter_key }
+  const ids = (text) => {
+    let list = []
+    try { list = JSON.parse(text || '[]') } catch { /* rebuilt by the caller */ }
+    return Array.isArray(list) ? list.filter(id => typeof id === 'string') : []
+  }
+  return { day: row.day, cardIds: ids(row.card_ids), filterKey: row.filter_key, relearn: ids(row.relearn) }
 }
 
+// Keeps the day's relearning list: rebuilding the set (new topics, "practise
+// more") must not forget the cards still to be seen again.
 function savePracticeDay(day, cardIds, filterKey) {
-  run('INSERT OR REPLACE INTO practice_days (day, card_ids, filter_key) VALUES (?, ?, ?)', [day, JSON.stringify(cardIds), filterKey])
+  run(`INSERT INTO practice_days (day, card_ids, filter_key) VALUES (?, ?, ?)
+       ON CONFLICT(day) DO UPDATE SET card_ids = excluded.card_ids, filter_key = excluded.filter_key`, [day, JSON.stringify(cardIds), filterKey])
   // Old days are only needed for the day itself; reviews keep the history.
   run('DELETE FROM practice_days WHERE day < date(?, \'-14 days\')', [day])
+}
+
+// The cards to show once more today ("Again" earlier in the day), in order.
+// Only a day that already has a set is updated.
+function setPracticeRelearn(day, cardIds) {
+  run('UPDATE practice_days SET relearn = ? WHERE day = ?', [JSON.stringify(cardIds), day])
 }
 
 function getPracticeReviewedOn(day) {
@@ -5276,7 +5298,7 @@ module.exports = {
   getPracticeNotes, savePracticeNote, getPracticeExplanations, addPracticeExplanation, clearPracticeExplanations,
   getPracticeExplainedIds, getPracticeDecks, getPracticeDeckCards, createPracticeDeck, renamePracticeDeck, deletePracticeDeck,
   getPracticeReviewsSince, getPracticeStories, savePracticeStory, deletePracticeStory, getPracticeStoryLinks,
-  linkPracticeStory, unlinkPracticeStory, getPracticeInterviews,
+  linkPracticeStory, unlinkPracticeStory, getPracticeInterviews, setPracticeRelearn,
   getCompanyResearch, saveCompanyResearch,
   localDateString, getWeeklyActivity, getRecentJobDescriptions, getThankYouDue, completeThankYou, getApplicationsForAsk, applicationExists, listAskThreads, getAskThread, appendAskTurn, deleteAskThread,
   scheduleInterviewPrep, getInterviewPrepJob, getDueInterviewPrepJobs, updateInterviewPrepJob, countInterviewPrepDoneSince,

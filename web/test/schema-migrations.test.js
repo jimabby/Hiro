@@ -103,6 +103,17 @@ const columns = (raw, table) => raw.exec(`PRAGMA table_info("${table}")`)[0].val
   await db.init()
   check('existing version 2 installs gain benefits', (await inspect(raw => columns(raw, 'offers'))).includes('benefits'), true)
 
+  // A version 3 install made its practice tables before the relearning list.
+  await rewrite(raw => {
+    raw.run('DROP TABLE IF EXISTS practice_days')
+    raw.run("CREATE TABLE practice_days (day TEXT PRIMARY KEY, card_ids TEXT NOT NULL DEFAULT '[]', filter_key TEXT NOT NULL DEFAULT '')")
+    raw.run(`INSERT INTO practice_days (day, card_ids, filter_key) VALUES ('2026-11-20', '["node-001"]', 'k')`)
+    raw.run('PRAGMA user_version = 3')
+  })
+  await db.init()
+  check('existing version 3 installs gain the relearning list', (await inspect(raw => columns(raw, 'practice_days'))).includes('relearn'), true)
+  check('and keep the day they had', db.getPracticeDay('2026-11-20'), { day: '2026-11-20', cardIds: ['node-001'], filterKey: 'k', relearn: [] })
+
   await rewrite(raw => raw.run(`PRAGMA user_version = ${db.SCHEMA_VERSION + 5}`))
   await db.init()
   check('a database from a newer build keeps its version', db.getSchemaVersion(), db.SCHEMA_VERSION + 5)

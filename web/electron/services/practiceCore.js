@@ -323,7 +323,9 @@ function importCard(raw) {
   const question = String(raw.question ?? '')
     .replace(/<\/?(br|p|div|li|ul|ol|h[1-6]|tr|td)\b[^>]*>/gi, ' ')
     .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    // One pass, so "&amp;lt;" (a literal "&lt;" in the source) stays "&lt;"
+    // instead of being decoded twice into "<".
+    .replace(/&(#\d+|#x[0-9a-f]+|[a-z]+);/gi, m => decode(m))
     .replace(/\s+/g, ' ').trim()
   let answer = String(raw.answer ?? '').trim()
   if (!question) return { error: 'no question' }
