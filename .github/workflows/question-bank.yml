@@ -11,7 +11,7 @@ name: Question bank
 #              questions for answers that are outdated or wrong, and opens a pull
 #              request with its rewrites and a summary. A person merges it.
 #              Needs the ANTHROPIC_API_KEY repository secret; without it the job
-#              says so and does nothing. Opening the pull request also needs
+#              does nothing and leaves a warning on the run. Opening the pull request also needs
 #              Settings → Actions → General → "Allow GitHub Actions to create
 #              and approve pull requests".
 
@@ -47,12 +47,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # The commit the change started from, to compare the bank with.
+          fetch-depth: 0
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '22'
       # The validator needs no dependencies, so nothing is installed: a
       # contributor's pull request runs no package scripts here.
-      - run: node web/scripts/check-question-bank.js
+      # Compared with the base commit's copy, so changed questions must come
+      # with a new updatedAt. A first push (no previous file) skips that part.
+      - name: Check the question bank
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          previous="$RUNNER_TEMP/previous-questions.json"
+          if [ -n "$BASE_SHA" ] && git show "$BASE_SHA:web/electron/data/questions.json" > "$previous" 2>/dev/null; then
+            node web/scripts/check-question-bank.js --against "$previous"
+          else
+            node web/scripts/check-question-bank.js
+          fi
 
   review:
     name: Weekly AI review

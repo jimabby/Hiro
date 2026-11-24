@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, fireEvent, screen, waitFor } from '@testing-library/react'
 import SafeAnswer from '../../src/components/SafeAnswer'
-import Practice, { formatInterval } from '../../src/pages/Practice'
+import Practice, { formatInterval, ratingWhen } from '../../src/pages/Practice'
 import Setup from '../../src/pages/Setup'
 import App from '../../src/App'
 
@@ -51,6 +51,8 @@ describe('SafeAnswer', () => {
 describe('Practice page', () => {
   it('formats intervals', () => {
     expect([formatInterval(1), formatInterval(45), formatInterval(365)]).toEqual(['1d', '2mo', '1y'])
+    // A missed card returns at the end of today's cards, not tomorrow.
+    expect(['again', 'hard', 'easy'].map(k => ratingWhen(k, { again: 1, hard: 3, good: 6, easy: 8 }))).toEqual(['today', '3d', '8d'])
   })
 
   it('reveals the answer, rates the card, and moves on', async () => {
@@ -273,6 +275,69 @@ describe('Practice page', () => {
     fireEvent.change(screen.getByLabelText('Search questions'), { target: { value: 'bytes' } })
     expect(screen.getByText('1 of 2 questions')).toBeTruthy()
     expect(screen.getByText('What is a Buffer?')).toBeTruthy()
+  })
+
+  it('exports the questions Browse is showing, in the chosen format', async () => {
+    window.api.getPracticeToday = vi.fn(async () => dayWith([card()]))
+    window.api.getPracticeStats = vi.fn(async () => stats)
+    window.api.getPracticeBank = vi.fn(async () => ({
+      day: '2026-11-21', topics: [{ name: 'Node.js', count: 2 }], settings: { topics: [], dailyCount: 8 }, orphanFlags: [],
+      cards: [card(), card({ id: 'node-002', question: 'What is a Buffer?', answer: '<p>Raw bytes</p>' })],
+    }))
+    window.api.exportPracticeCards = vi.fn(async (ids) => ({ success: true, count: ids.length }))
+    const showToast = vi.fn()
+    render(<Practice active showToast={showToast} />)
+    await screen.findByText('What is Node.js?')
+    fireEvent.click(screen.getByRole('tab', { name: 'Browse' }))
+    await screen.findByText('2 of 2 questions')
+    fireEvent.change(screen.getByLabelText('Search questions'), { target: { value: 'bytes' } })
+    fireEvent.change(screen.getByLabelText('Export format'), { target: { value: 'anki' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Export 1 question' }))
+    await waitFor(() => expect(window.api.exportPracticeCards).toHaveBeenCalledWith(['node-002'], 'anki'))
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith('Exported 1 question', 'success'))
+  })
+
+  it('crams a topic: a miss comes round again, and nothing is rated', async () => {
+    window.api.getPracticeToday = vi.fn(async () => dayWith([card()]))
+    window.api.getPracticeStats = vi.fn(async () => stats)
+    window.api.ratePracticeCard = vi.fn()
+    window.api.cramPractice = vi.fn(async (topic) => ({
+      success: true, topic, total: 30,
+      cards: [card({ id: 'node-010', question: 'What is libuv?' }), card({ id: 'node-011', question: 'What is a stream?' })],
+    }))
+    render(<Practice active showToast={() => {}} />)
+    await screen.findByText('What is Node.js?')
+    fireEvent.click(screen.getByRole('tab', { name: 'Cram' }))
+    fireEvent.change(await screen.findByLabelText('Cards in the session'), { target: { value: '10' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }))
+    await waitFor(() => expect(window.api.cramPractice).toHaveBeenCalledWith('Node.js', 10))
+    expect(await screen.findByText('What is libuv?')).toBeTruthy()
+    fireEvent.keyDown(window, { key: ' ' })
+    fireEvent.click(await screen.findByRole('button', { name: /Missed it/ }))
+    expect(await screen.findByText('What is a stream?')).toBeTruthy()
+    fireEvent.keyDown(window, { key: ' ' })
+    fireEvent.keyDown(window, { key: '2' })
+    // The missed card is back, at the end of the session.
+    expect(await screen.findByText('What is libuv?')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Show answer (Space)' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Got it' }))
+    expect(await screen.findByText('Session done')).toBeTruthy()
+    expect(screen.getByRole('status').textContent).toContain('1 of 2 first time · 1 needed another look')
+    expect(window.api.ratePracticeCard).not.toHaveBeenCalled()
+  })
+
+  it('opens Cram on a weak topic from Insights', async () => {
+    window.api.getPracticeToday = vi.fn(async () => ({ ...dayWith([card()]), topics: [{ name: 'Node.js', count: 20 }, { name: 'SQL', count: 12 }] }))
+    window.api.getPracticeStats = vi.fn(async () => stats)
+    window.api.getPracticeInsights = vi.fn(async () => ({
+      days: 90, totals: { reviews: 20, again: 7, againRate: 0.35, activeDays: 4 }, skillsGap: { available: false, sample: 0 },
+      topics: [{ name: 'SQL', reviews: 6, again: 4, hard: 1, cards: 5, againRate: 0.67, demand: null }], weakCards: [],
+    }))
+    render(<Practice active showToast={() => {}} />)
+    await screen.findByText('What is Node.js?')
+    fireEvent.click(screen.getByRole('tab', { name: 'Insights' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Cram' }))
+    expect((await screen.findByLabelText('Topic to cram')).value).toBe('SQL')
   })
 
   it('counts down to an interview and creates questions for one that has none', async () => {

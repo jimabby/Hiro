@@ -37,9 +37,11 @@
     "expo-notifications": "~57.0.23",
     "expo-secure-store": "~57.0.4",
     "expo-share-intent": "^8.0.1",
+    "expo-speech": "~57.0.3",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
     "react-native": "0.86.3",
+    "react-native-android-widget": "^0.26.0",
     "react-native-safe-area-context": "~5.7.0",
     "react-native-url-polyfill": "^3.0.0"
   },

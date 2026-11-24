@@ -93,7 +93,19 @@ async function review(client, q) {
 
 async function main({ Anthropic: SDK } = {}) {
   if (!process.env.ANTHROPIC_API_KEY) {
-    console.log('ANTHROPIC_API_KEY is not set: skipping the question review. Add it as a repository secret to turn the weekly check on.')
+    const message = 'ANTHROPIC_API_KEY is not set: skipping the question review. Add it as a repository secret to turn the weekly check on.'
+    console.log(message)
+    // In Actions, say it where it is seen. A plain log line left the weekly run
+    // green, so weeks of skipped reviews looked like weeks of passed ones.
+    if (process.env.GITHUB_ACTIONS === 'true') {
+      console.log(`::warning title=Question review skipped::${message}`)
+      if (process.env.GITHUB_STEP_SUMMARY) {
+        try { fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### Question review skipped
+
+${message}
+`) } catch { /* the summary is a courtesy */ }
+      }
+    }
     return
   }
   const COUNT = Math.min(50, Math.max(1, Number(arg('--count', process.env.REVIEW_COUNT || 15)) || 15))

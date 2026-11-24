@@ -1,12 +1,13 @@
 // Pure helpers behind the Practice tab.
 const { createChecker } = require('./helpers')
-const { formatInterval, statsLine, currentCard, applyPendingPractice, positionLabel, localDay, currentCountdown, isStale } = require('../src/practice')
+const { formatInterval, ratingWhen, statsLine, currentCard, applyPendingPractice, positionLabel, localDay, currentCountdown, isStale, speechText, widgetSummary, widgetView, isPracticeLink } = require('../src/practice')
 const { check, done } = createChecker()
 
 check('days', formatInterval(6), '6d')
 check('months', formatInterval(45), '2mo')
 check('a year', formatInterval(365), '1y')
 check('nonsense reads as a day', formatInterval(undefined), '1d')
+check('Again comes back today, the rest when scheduled', ['again', 'hard', 'easy'].map(k => ratingWhen(k, { again: 1, hard: 3, good: 6, easy: 8 })), ['today', '3d', '8d'])
 
 check('no stats, no line', statsLine(null), '')
 check('week, streak and due', statsLine({ daysThisWeek: 3, weeklyGoalDays: 4, streak: 5, due: 2 }), '3 of 4 days this week · 5-day streak · 2 due')
@@ -59,5 +60,31 @@ const cd = [
 check('days left counted from the phone\'s today, past interviews dropped', currentCountdown(cd, '2026-11-22').map(c => [c.applicationId, c.daysLeft]), [[1, 1], [3, 4]])
 check('cards from an earlier day are stale through the cloud', [isStale({ cloud: true, day: '2026-11-21' }, '2026-11-22'), isStale({ cloud: true, day: '2026-11-22' }, '2026-11-22')], [true, false])
 check('over the LAN they are always current', isStale({ day: '2026-11-21' }, '2026-11-22'), false)
+
+// ─── Read aloud ──────────────────────────────────────────────────
+const spoken = speechText([
+  { type: 'p', spans: [{ text: 'A ' }, { text: 'closure', bold: true }, { text: ' keeps its scope' }] },
+  { type: 'li', marker: '•', spans: [{ text: 'Used for callbacks.' }] },
+  { type: 'pre', spans: [{ text: 'const f = () => x', code: true }] },
+  { type: 'p', spans: [{ text: '   ' }] },
+])
+check('answers are read as sentences, code is announced not spelled out', spoken, 'A closure keeps its scope. Used for callbacks. Code example on screen.')
+check('no blocks, nothing to say', speechText(undefined), '')
+
+// ─── Home-screen widget ──────────────────────────────────────────
+const dayData = { day: '2026-11-24', cards: [{}, {}, {}, {}, {}], queue: ['a', 'b'], doneCount: 3, stats: { streak: 5, practisedToday: true, daysThisWeek: 2, weeklyGoalDays: 4, due: 6 } }
+const summary = widgetSummary(dayData, new Date('2026-11-24T08:00:00'))
+check('the widget keeps counts only', Object.keys(summary).sort(), ['day', 'daysThisWeek', 'done', 'due', 'left', 'practisedToday', 'savedAt', 'streak', 'total', 'weeklyGoalDays'])
+check('cards left are the queue', [summary.left, summary.done, summary.total], [2, 3, 5])
+check('today: cards left, streak and week', widgetView(summary, '2026-11-24'), { headline: '2 cards left today', detail: '5-day streak · 2 of 4 days this week', stale: false })
+check('today, all done', widgetView({ ...summary, left: 0 }, '2026-11-24').headline, 'Done for today ✓')
+check('one card is singular', widgetView({ ...summary, left: 1 }, '2026-11-24').headline, '1 card left today')
+check('the next morning the streak is still there to keep', widgetView(summary, '2026-11-25'), { headline: 'New cards today', detail: 'Keep your 5-day streak · 2 of 4 days this week', stale: true })
+check('a day missed: the streak has gone', widgetView(summary, '2026-11-26').detail, '2 of 4 days this week')
+check('a new week starts at zero', widgetView({ ...summary, day: '2026-11-29' }, '2026-11-30').detail, 'Keep your 5-day streak · 0 of 4 days this week')
+check('yesterday unpractised: no streak to keep', widgetView({ ...summary, practisedToday: false }, '2026-11-25').detail, '2 of 4 days this week')
+check('nothing saved yet', widgetView(null).headline, 'Daily interview practice')
+check('no day data, no summary', widgetSummary(null), null)
+check('the widget link opens Practice', [isPracticeLink('hiro://practice'), isPracticeLink('hiro:/practice'), isPracticeLink('hiro://import?url=x'), isPracticeLink('https://practice'), isPracticeLink(null)], [true, true, false, false, false])
 
 done()

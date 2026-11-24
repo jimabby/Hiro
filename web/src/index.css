@@ -900,6 +900,9 @@ input[type="checkbox"] {
 .chip.chip-on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .practice-ratings { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .practice-ratings .btn { justify-content: center; }
+.practice-cram-answers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.practice-cram-answers .btn { justify-content: center; }
+.practice-browse-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin: 10px 0 8px; }
 .practice-select, .practice-filters select, .practice-filters input { width: auto; padding: 6px 10px; font-size: 13px; }
 .practice-select { padding-right: 28px; }
 .practice-filters select, .practice-filters input { width: 100%; }

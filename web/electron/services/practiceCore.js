@@ -23,10 +23,31 @@ function addDays(day, n) {
   return dayOf(new Date(y, m - 1, d + n))
 }
 
+// How much further Easy sends a card than Good, and how much Hard grows the
+// current interval. Plain SM-2 gives Hard, Good and Easy the same next interval
+// (they differ only in the ease they leave behind), so the three buttons showed
+// the same "back in 15d" and the choice looked meaningless. These are Anki's
+// defaults.
+const HARD_FACTOR = 1.2
+const EASY_BONUS = 1.3
+const EASY_FIRST = 4
+
+// Days until the next look after a pass. Good follows SM-2 as published:
+// 1 → 6 → interval × ease. Hard grows the current interval more slowly (and by
+// at least a day once the card is past its first steps); Easy goes further
+// than Good. Hard never exceeds Good, and Easy always beats it.
+function passInterval(q, reps, interval, ease) {
+  const good = reps === 0 ? 1 : reps === 1 ? 6 : Math.round(interval * ease)
+  if (q === RATINGS.good) return good
+  if (q === RATINGS.easy) return reps === 0 ? EASY_FIRST : Math.max(good + 1, Math.round(good * EASY_BONUS))
+  const hard = reps === 0 ? 1 : reps === 1 ? Math.round(good / 2) : Math.max(interval + 1, Math.round(interval * HARD_FACTOR))
+  return Math.min(good, hard)
+}
+
 // The next schedule for a card after a rating. `prev` is the stored state (or
-// null for a card never seen). Follows SM-2 as published: a failed recall
-// restarts the repetitions without touching the ease; a pass grows the interval
-// 1 → 6 → interval × ease, then adjusts the ease by how hard the recall was.
+// null for a card never seen). A failed recall restarts the repetitions without
+// touching the ease (SM-2); a pass grows the interval (passInterval), then
+// adjusts the ease by how hard the recall was.
 function nextState(prev, rating, today) {
   const q = RATINGS[rating]
   if (q == null) throw new Error(`Unknown rating: ${rating}`)
@@ -39,7 +60,7 @@ function nextState(prev, rating, today) {
     interval = 1
     lapses += 1
   } else {
-    interval = reps === 0 ? 1 : reps === 1 ? 6 : Math.round(interval * ease)
+    interval = passInterval(q, reps, interval, ease)
     reps += 1
     ease = Math.max(MIN_EASE, ease + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)))
   }
@@ -320,6 +341,10 @@ const looksHtml = s => /<\/?(p|div|br|b|i|strong|em|ul|ol|li|code|pre)\b/i.test(
 function importCard(raw) {
   // Block-level tags become a space; inline ones (<b>, <code>) just go, so
   // "What is <b>REST</b>?" does not become "What is REST ?".
+  // A leading apostrophe before = + @ is the formula guard exportCards adds to
+  // CSV cells, not part of the text.
+  const unguard = v => (typeof v === 'string' ? v.replace(/^'(?=[=+@])/, '') : v)
+  raw = { ...raw, question: unguard(raw.question), answer: unguard(raw.answer) }
   const question = String(raw.question ?? '')
     .replace(/<\/?(br|p|div|li|ul|ol|h[1-6]|tr|td)\b[^>]*>/gi, ' ')
     .replace(/<[^>]+>/g, '')
@@ -389,11 +414,18 @@ function parseImport(input, { name = '' } = {}) {
   let delimiter = format === 'csv' ? ',' : '\t'
   let html = null
   let body = text
+  // Anki puts the note type, deck, guid and tags in columns of their own when
+  // the export includes them, and says where in "#deck column:2" headers.
+  // Those columns are not the question or the answer: the note's fields are
+  // the columns left over, in order.
+  const ankiColumns = {}
   if (format === 'anki') {
     const lines = text.split(/\r?\n/)
     const headers = []
     while (lines.length && lines[0].startsWith('#')) headers.push(lines.shift())
     for (const h of headers) {
+      const col = /^#(notetype|deck|guid|tags)\s+column:\s*(\d+)\s*$/i.exec(h.trim())
+      if (col) { ankiColumns[col[1].toLowerCase()] = Number(col[2]) - 1; continue }
       const m = /^#(\w+):(.*)$/.exec(h.trim())
       if (!m) continue
       if (m[1] === 'separator') delimiter = { tab: '\t', comma: ',', semicolon: ';', pipe: '|', space: ' ' }[m[2].trim().toLowerCase()] || m[2] || '\t'
@@ -407,7 +439,17 @@ function parseImport(input, { name = '' } = {}) {
 
   const rows = splitDelimited(body, delimiter)
   let cols = { question: 0, answer: 1 }
-  if (rows.length) {
+  const reserved = new Set(Object.values(ankiColumns).filter(n => n >= 0))
+  if (reserved.size) {
+    const fields = []
+    for (let i = 0; fields.length < 2 && i < 64; i++) if (!reserved.has(i)) fields.push(i)
+    cols = { question: fields[0], answer: fields[1] }
+    if (ankiColumns.deck >= 0) cols.deck = ankiColumns.deck
+  }
+  // A deck name is the closest thing an Anki export has to a topic; nested
+  // decks ("Interview::Java") keep the innermost name.
+  const deckTopic = s => (s == null ? undefined : String(s).split('::').pop().trim() || undefined)
+  if (rows.length && !reserved.size) {
     const header = rows[0].cells.map(c => c.trim().toLowerCase())
     const mapped = {}
     for (const [field, aliases] of Object.entries(HEADER_ALIASES)) {
@@ -418,7 +460,7 @@ function parseImport(input, { name = '' } = {}) {
   }
   for (const r of rows) {
     const cell = k => (cols[k] != null ? r.cells[cols[k]] : undefined)
-    add({ question: cell('question'), answer: cell('answer'), topic: cell('topic'), category: cell('category'), difficulty: cell('difficulty'), html: html ?? undefined }, `line ${r.line}`)
+    add({ question: cell('question'), answer: cell('answer'), topic: cell('topic') ?? deckTopic(cell('deck')), category: cell('category'), difficulty: cell('difficulty'), html: html ?? undefined }, `line ${r.line}`)
   }
   return { format, cards, skipped }
 }
@@ -564,8 +606,112 @@ function answerBlocks(answer, format = 'html') {
   }).filter(b => b.spans.length)
 }
 
+// ─── Cram: one topic, now, outside the schedule ───────────────────
+//
+// Before an interview you want SQL today, not whichever SQL cards happen to be
+// due. A cram session draws from one topic, puts the cards you have forgotten
+// before (or found hard) into the set first, and shuffles the rest in. Nothing
+// about it is recorded: the schedule, the review history and the streak only
+// ever see the daily set.
+function cramSet({ cards, states, count, rng = Math.random }) {
+  const weak = []
+  const rest = []
+  for (const c of cards) {
+    const s = states.get(c.id)
+    if (s && (Number(s.lapses) > 0 || Number(s.ease) < START_EASE)) weak.push(c)
+    else rest.push(c)
+  }
+  const lapses = c => Number(states.get(c.id).lapses) || 0
+  const ease = c => Number(states.get(c.id).ease) || START_EASE
+  weak.sort((a, b) => lapses(b) - lapses(a) || ease(a) - ease(b))
+  const picked = [...weak, ...shuffle(rest, rng)].slice(0, Math.max(1, count))
+  // Weakest are chosen first but not shown first: a session that opens on the
+  // five worst cards in a row is a discouraging way to start.
+  return shuffle(picked, rng).map(c => c.id)
+}
+
+// ─── Export: cards out, in formats other tools read ───────────────
+//
+// CSV (Excel, Google Sheets, Quizlet, and Hiro's own import) keeps each answer
+// exactly as stored, so a file exported and imported again is the same deck.
+// Anki gets HTML built from the answer's text blocks, so nothing in an answer
+// reaches Anki as markup Hiro would not itself show; each card goes into a
+// "Hiro::<topic>" deck, which Hiro's Anki import reads back as the topic.
+
+const escapeHtml = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+
+function spansHtml(spans) {
+  return spans.map(s => {
+    let t = escapeHtml(s.text).replace(/\n/g, '<br>')
+    if (s.code) t = `<code>${t}</code>`
+    if (s.italic) t = `<i>${t}</i>`
+    if (s.bold) t = `<b>${t}</b>`
+    return t
+  }).join('')
+}
+
+// Text blocks (answerBlocks) → the small HTML subset Hiro itself renders.
+// Consecutive list items share one list, numbered when their markers are.
+function blocksHtml(blocks) {
+  const out = []
+  let list = null
+  for (const b of blocks) {
+    if (b.type === 'li') {
+      const tag = /^\d/.test(b.marker || '') ? 'ol' : 'ul'
+      if (list !== tag) { if (list) out.push(`</${list}>`); out.push(`<${tag}>`); list = tag }
+      out.push(`<li>${spansHtml(b.spans)}</li>`)
+      continue
+    }
+    if (list) { out.push(`</${list}>`); list = null }
+    if (b.type === 'pre') out.push(`<pre>${escapeHtml(b.spans.map(s => s.text).join(''))}</pre>`)
+    else out.push(`<p>${spansHtml(b.spans)}</p>`)
+  }
+  if (list) out.push(`</${list}>`)
+  return out.join('')
+}
+
+// A cell a spreadsheet would run as a formula is opened with an apostrophe,
+// which Excel and Sheets hide and parseImport takes off again. "-" is left
+// alone: markdown answers start lists with it.
+const csvCell = v => {
+  let s = String(v ?? '')
+  if (/^[=+@\t\r]/.test(s)) s = `'${s}`
+  return `"${s.replace(/"/g, '""')}"`
+}
+const ankiField = v => {
+  const s = String(v ?? '')
+  return /[\t\n\r"]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+const ankiTag = s => String(s || '').trim().replace(/\s+/g, '_').replace(/[^\p{L}\p{N}_:-]/gu, '')
+
+// cards: [{ question, answer, format, topic, category?, difficulty?, note? }]
+function exportCards(cards, format) {
+  if (format === 'csv') {
+    const rows = [['question', 'answer', 'topic', 'category', 'difficulty', 'notes'].map(csvCell).join(',')]
+    for (const c of cards) {
+      rows.push([c.question, c.answer, c.topic, c.category || '', c.difficulty || '', c.note || ''].map(csvCell).join(','))
+    }
+    // The byte-order mark is what makes Excel read the file as UTF-8.
+    return `\uFEFF${rows.join('\r\n')}\r\n`
+  }
+  if (format === 'anki') {
+    const lines = ['#separator:tab', '#html:true', '#deck column:3', '#tags column:4']
+    for (const c of cards) {
+      let back = blocksHtml(answerBlocks(c.answer, c.format || 'html'))
+      const note = String(c.note || '').trim()
+      if (note) back += `<hr><p><b>My notes</b></p><p>${escapeHtml(note).replace(/\r?\n/g, '<br>')}</p>`
+      const deck = `Hiro::${String(c.topic || 'Questions').replace(/::/g, ' ').trim() || 'Questions'}`
+      const tags = [c.category, c.difficulty].map(ankiTag).filter(Boolean).join(' ')
+      lines.push([escapeHtml(c.question), back, deck, tags].map(ankiField).join('\t'))
+    }
+    return `${lines.join('\n')}\n`
+  }
+  throw new Error(`Unknown export format: ${format}`)
+}
+
 module.exports = {
   RATINGS, START_EASE, MIN_EASE, MAX_INTERVAL, DIFFICULTIES,
+  cramSet, exportCards, blocksHtml,
   addDays, nextState, previewIntervals, shuffle, buildSet, dayStats, mondayOf, daysBetween, weakTopics,
   cleanQuestion, cleanBank, answerBlocks, markdownBlocks, CATEGORIES, normalizeCategory, parseGeneratedQuestions,
   parseImport, splitDelimited, mainHtml, pageTitle, MAX_IMPORT_CARDS,

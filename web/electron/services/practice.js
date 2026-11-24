@@ -856,6 +856,57 @@ function bank({ now = new Date(), cfg = configService.load() } = {}) {
   }
 }
 
+// ─── Cram a topic ──────────────────────────────────────────────────
+//
+// One topic, right now, outside the daily set: the night before an interview
+// that will be about SQL. The cards come back without rating previews because
+// nothing a cram session does is saved — the schedule, the review history and
+// the streak belong to the daily set alone. Reported cards stay out.
+const CRAM_DEFAULT = 20
+const CRAM_MAX = 50
+
+function cram({ topic, count, now = new Date(), cfg = configService.load(), rng = Math.random } = {}) {
+  if (typeof topic !== 'string' || !topic.trim()) return { success: false, error: 'Choose a topic to cram.' }
+  const snap = snapshot({ now, cfg })
+  const cards = snap.cards.filter(c => !snap.flags.has(c.id) && topicKey(c) === topic)
+  if (!cards.length) return { success: false, error: 'There are no cards in that topic.' }
+  const n = Math.floor(Number(count))
+  const size = Number.isFinite(n) && n > 0 ? Math.min(CRAM_MAX, n) : CRAM_DEFAULT
+  const byId = new Map(cards.map(c => [c.id, c]))
+  const ids = core.cramSet({ cards, states: snap.states, count: size, rng })
+  return {
+    success: true,
+    topic,
+    total: cards.length,
+    cards: ids.map(id => {
+      const { intervals: _intervals, ...card } = view(byId.get(id), snap)
+      return card
+    }),
+  }
+}
+
+// ─── Export ────────────────────────────────────────────────────────
+//
+// The cards the user chose (Browse sends the ones its filters show), as CSV or
+// an Anki import file, with the user's notes. A card id that no longer exists
+// is skipped rather than failing the whole export.
+const EXPORT_EXTENSIONS = { csv: 'csv', anki: 'txt' }
+const MAX_EXPORT_IDS = 20000
+
+function exportCards({ ids, format, now = new Date(), cfg = configService.load() } = {}) {
+  if (!EXPORT_EXTENSIONS[format]) return { success: false, error: 'Choose CSV or Anki.' }
+  const wanted = Array.isArray(ids) ? [...new Set(ids.slice(0, MAX_EXPORT_IDS).filter(id => typeof id === 'string' && CARD_ID.test(id)))] : []
+  if (!wanted.length) return { success: false, error: 'There are no questions to export.' }
+  const snap = snapshot({ now, cfg })
+  const byId = new Map(snap.cards.map(c => [c.id, c]))
+  const cards = wanted.map(id => byId.get(id)).filter(Boolean).map(c => ({
+    question: c.question, answer: c.answer, format: c.format, topic: c.topic,
+    category: c.category, difficulty: c.difficulty, note: snap.notes.get(c.id)?.note || '',
+  }))
+  if (!cards.length) return { success: false, error: 'Those questions no longer exist.' }
+  return { success: true, count: cards.length, extension: EXPORT_EXTENSIONS[format], text: core.exportCards(cards, format) }
+}
+
 // The habit the MVP is measured on: practising on at least 4 days a week.
 function stats({ now = new Date(), cfg = configService.load() } = {}) {
   const snap = snapshot({ now, cfg })
@@ -916,4 +967,5 @@ module.exports = {
   stories, saveStory, deleteStory, linkStory, unlinkStory, insights,
   previewImport, importDeck, deckFromUrl,
   reminderSettings, saveReminder, reminderText,
+  cram, CRAM_DEFAULT, CRAM_MAX, exportCards,
 }

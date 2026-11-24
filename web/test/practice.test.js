@@ -61,7 +61,41 @@ async function main() {
   let threw = false
   try { core.nextState(null, 'meh', today) } catch { threw = true }
   check('an unknown rating is refused', threw, true)
-  check('button previews', core.previewIntervals(null, today), { again: 1, hard: 1, good: 1, easy: 1 })
+  check('button previews', core.previewIntervals(null, today), { again: 1, hard: 1, good: 1, easy: 4 })
+  // Plain SM-2 sent Hard, Good and Easy the same distance (15, 15, 15 here),
+  // so the buttons read as interchangeable.
+  check('Hard, Good and Easy differ once a card is learned', core.previewIntervals(s, '2026-12-13'), { again: 1, hard: 18, good: 38, easy: 49 })
+  check('and on the second look', core.previewIntervals({ ease: 2.5, interval_days: 1, reps: 1 }, today), { again: 1, hard: 3, good: 6, easy: 8 })
+  check('Hard never beats Good, even at the lowest ease', (() => { const p = core.previewIntervals({ ease: 1.3, interval_days: 2, reps: 2 }, today); return p.hard <= p.good && p.good < p.easy })(), true)
+  check('Hard still moves a learned card on by at least a day', core.nextState({ ease: 1.3, interval_days: 10, reps: 4 }, 'hard', today).interval_days > 10, true)
+
+  // ─── Cram selection ───────────────────────────────────────────
+  const cramCards = Array.from({ length: 12 }, (_, i) => ({ id: `c-${i}` }))
+  const cramStates = new Map([
+    ['c-3', { lapses: 4, ease: 1.8 }], ['c-7', { lapses: 1, ease: 2.3 }], ['c-9', { lapses: 0, ease: 2.2 }], ['c-1', { lapses: 0, ease: 2.5 }],
+  ])
+  const crammed = core.cramSet({ cards: cramCards, states: cramStates, count: 4, rng: seq() })
+  check('a cram set always includes the cards forgotten before or found hard', ['c-3', 'c-7', 'c-9'].every(id => crammed.includes(id)), true)
+  check('and fills up to the size asked for', new Set(crammed).size, 4)
+  check('a cram set is never bigger than the topic', core.cramSet({ cards: cramCards, states: cramStates, count: 50 }).length, 12)
+
+  // ─── Export formats ───────────────────────────────────────────
+  const exportable = [
+    { question: 'What is <b>REST</b>?', answer: '<p>An <code>HTTP</code> style</p>', format: 'html', topic: 'Web', category: 'Concept', difficulty: 'easy', note: 'Said "stateless"\nin my demo' },
+    { question: '=HYPERLINK("x") is a formula?', answer: '- one\n- two', format: 'markdown', topic: 'Deck: Mine' },
+  ]
+  const csvOut = core.exportCards(exportable, 'csv')
+  const csvBack = core.parseImport(csvOut, { name: 'out.csv' })
+  check('CSV round-trips questions, answers and topics', csvBack.cards.map(c => [c.question, c.answer, c.topic]), [
+    ['What is REST?', '<p>An <code>HTTP</code> style</p>', 'Web'], ['=HYPERLINK("x") is a formula?', '- one\n- two', 'Deck: Mine'],
+  ])
+  check('a cell a spreadsheet would run is guarded', csvOut.includes(`"'=HYPERLINK`), true)
+  const ankiOut = core.exportCards(exportable, 'anki')
+  const ankiBack = core.parseImport(ankiOut, { name: 'out.txt' })
+  check('Anki export reads back with the deck as topic', ankiBack.cards.map(c => [c.question, c.topic]), [['What is <b>REST</b>?', 'Web'], ['=HYPERLINK("x") is a formula?', 'Deck: Mine']])
+  check('Anki answers are rebuilt as safe HTML, notes included', ankiBack.cards[0].answer.startsWith('<p>An <code>HTTP</code> style</p><hr>'), true)
+  check('markdown lists become HTML lists for Anki', ankiBack.cards[1].answer, '<ul><li>one</li><li>two</li></ul>')
+  check('Anki tags carry the category and difficulty', ankiOut.split('\n')[4].endsWith('\tConcept easy'), true)
 
   // ─── Streaks ──────────────────────────────────────────────────
   check('Monday of a Saturday', core.mondayOf('2026-11-21'), '2026-11-16')
@@ -177,6 +211,31 @@ async function main() {
   const phone = practice.forPhone({ now: at('2026-11-22') })
   check('the phone gets text blocks, not HTML', [Array.isArray(phone.cards[0].blocks), 'answer' in phone.cards[0]], [true, false])
   check('the phone gets the stats with the day', phone.stats.streak, 2)
+
+  // ─── Cram and export ──────────────────────────────────────────
+  const later = at('2026-11-22')
+  const statesBefore = JSON.stringify(db.getPracticeStates())
+  const reviewsBefore = practice.insights({ now: later, skillsGap: { enoughData: false } }).totals.reviews
+  const cr = practice.cram({ topic: 'Java', count: 6, now: later, rng: seq() })
+  check('cram draws only from the chosen topic', [cr.success, cr.cards.length, cr.cards.every(c => c.topicKey === 'Java'), cr.total], [true, 6, true, 28])
+  check('cram cards carry no rating previews', cr.cards.some(c => 'intervals' in c), false)
+  check('cramming saves nothing', [JSON.stringify(db.getPracticeStates()), practice.insights({ now: later, skillsGap: { enoughData: false } }).totals.reviews], [statesBefore, reviewsBefore])
+  check('cram sessions are capped at the topic size', practice.cram({ topic: 'Java', count: 999, now: later }).cards.length, 28)
+  check('a topic with no cards cannot be crammed', practice.cram({ topic: 'Made up', now: later }).success, false)
+  check('cram needs a topic', practice.cram({ now: later }).success, false)
+
+  const exportId = tomorrow.cards[0].id
+  practice.saveNote(exportId, 'Used it in the booking API')
+  const ex = practice.exportCards({ ids: [exportId, 'nope-999', exportId, '../etc'], format: 'csv', now: later })
+  check('export takes each existing card once', [ex.success, ex.count, ex.extension], [true, 1, 'csv'])
+  const exBack = core.parseImport(ex.text, { name: 'x.csv' })
+  check('an exported CSV imports back with the same question', exBack.cards[0].question, tomorrow.cards[0].question)
+  check('and the note travels in its own column', ex.text.includes('Used it in the booking API'), true)
+  const exAnki = practice.exportCards({ ids: [exportId], format: 'anki', now: later })
+  check('Anki export', [exAnki.extension, exAnki.text.startsWith('#separator:tab'), exAnki.text.includes(`Hiro::${tomorrow.cards[0].topic}`)], ['txt', true, true])
+  check('an unknown export format is refused', practice.exportCards({ ids: [exportId], format: 'xlsx' }).success, false)
+  check('nothing to export is refused', practice.exportCards({ ids: [], format: 'csv' }).success, false)
+  practice.saveNote(exportId, '')
 
   check('saving settings drops unknown topics and clamps the count',
     practice.saveSettings({ topics: ['Java', 'Made up'], dailyCount: 500 }).settings, { topics: ['Java'], dailyCount: 30 })
@@ -395,6 +454,13 @@ async function main() {
   check('Anki headers are honoured', anki.format, 'anki')
   check('HTML in the question is reduced to text', anki.cards[0].question, 'What is REST?')
   check('Anki HTML keeps only safe tags', [anki.cards[0].format, anki.cards[0].answer], ['html', '<p>Resources and verbs</p><p>Stateless</p>'])
+  // An export with "Include deck name" / "Include notetype name" put the note
+  // type in the question and the deck in the answer.
+  const ankiCols = core.parseImport(['#separator:tab', '#html:true', '#notetype column:1', '#deck column:2', '#tags column:5', 'Basic' + TAB + 'Interview::Java' + TAB + 'What is the JVM?' + TAB + 'The runtime' + TAB + 'java'].join(NL2))
+  check('Anki note type and deck columns are skipped', [ankiCols.cards[0].question, ankiCols.cards[0].answer], ['What is the JVM?', 'The runtime'])
+  check('the innermost deck becomes the topic', ankiCols.cards[0].topic, 'Java')
+  const ankiGuid = core.parseImport(['#separator:tab', '#html:true', '#guid column:1', 'Ab1:xQ' + TAB + 'What is a closure?' + TAB + 'A function with its scope'].join(NL2))
+  check('an Anki guid column is skipped', [ankiGuid.cards[0].question, ankiGuid.cards[0].answer], ['What is a closure?', 'A function with its scope'])
   const json = core.parseImport(JSON.stringify([{ front: 'What is SQL?', back: 'A query language', category: 'concept' }, { q: 'x' }]))
   check('JSON with front/back keys', [json.format, json.cards[0].question, json.cards[0].category, json.skipped.length], ['json', 'What is SQL?', 'Concept', 1])
   check('Hiro bank JSON imports too', core.parseImport(fs.readFileSync(path.join(__dirname, '..', 'electron', 'data', 'questions.json'), 'utf8')).cards.length >= 180, true)

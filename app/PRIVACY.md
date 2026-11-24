@@ -35,6 +35,16 @@ your device.
 token of your desktop, stored securely on your device (iOS Keychain / Android
 Keystore).
 
+**Practice widget (Android)** — if you add the Practice widget to your home
+screen, the app keeps a small summary on your phone for it to show: how many
+cards are left today, your streak and this week's practice days. Counts only;
+no question or answer text. It is removed when you disconnect or sign out.
+
+**Read aloud (optional)** — when you turn on *Read aloud* on the Practice tab,
+the question and answer text is spoken by your phone's own text-to-speech
+service. Hiro sends it nowhere else; whether a voice works offline depends on
+the speech engine and voice your phone is set to use.
+
 ## Where your data goes
 
 **Wi-Fi (LAN) mode:** your phone communicates directly with the Hiro desktop

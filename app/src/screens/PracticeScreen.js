@@ -14,15 +14,23 @@
 // What stays on the desktop: choosing topics, browsing and searching the bank,
 // generating decks from a job ad, and restoring reported cards.
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, RefreshControl, Platform, TextInput,
 } from 'react-native'
 import { radius, useTheme } from '../theme'
 import { messageFor } from '../requestErrors'
 import { randomKey } from '../secureProtocol'
+import * as Speech from 'expo-speech'
+import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as haptics from '../haptics'
-import { formatInterval, statsLine, currentCard, currentCountdown, isStale, positionLabel } from '../practice'
+import { ratingWhen, statsLine, currentCard, currentCountdown, isStale, positionLabel, speechText } from '../practice'
+import { updatePracticeWidget } from '../widget'
+
+// Read cards aloud: remembered on this phone. On, each new card's question is
+// read as it appears, and the answer when it is shown, for practice with the
+// phone in a pocket. The speaker button reads the card once either way.
+const READ_ALOUD_KEY = 'hiro.practice.readAloud'
 
 const RATINGS = [
   { key: 'again', label: 'Again', hint: 'Forgot it' },
@@ -187,6 +195,41 @@ export default function PracticeScreen({ client, active }) {
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
   const [unavailable, setUnavailable] = useState('')
+  const [readAloud, setReadAloud] = useState(false)
+  const [speaking, setSpeaking] = useState(false)
+  const speakId = useRef(0)
+
+  useEffect(() => {
+    AsyncStorage.getItem(READ_ALOUD_KEY).then(v => setReadAloud(v === '1')).catch(() => {})
+  }, [])
+
+  const stopSpeaking = useCallback(() => {
+    speakId.current++
+    setSpeaking(false)
+    try { Speech.stop() } catch { /* nothing playing */ }
+  }, [])
+
+  // Speaks the parts in order; a newer call (or stopSpeaking) cancels it.
+  const speak = useCallback((parts) => {
+    const text = parts.filter(Boolean).join(' ').trim()
+    try { Speech.stop() } catch { /* nothing playing */ }
+    if (!text) { setSpeaking(false); return }
+    const id = ++speakId.current
+    setSpeaking(true)
+    const finished = () => { if (speakId.current === id) setSpeaking(false) }
+    Speech.speak(text, { onDone: finished, onStopped: finished, onError: finished })
+  }, [])
+
+  function toggleReadAloud() {
+    const next = !readAloud
+    setReadAloud(next)
+    AsyncStorage.setItem(READ_ALOUD_KEY, next ? '1' : '0').catch(() => {})
+    if (!next) stopSpeaking()
+    haptics.selection()
+  }
+
+  // The widget shows this day's counts; refreshed whenever they change.
+  useEffect(() => { if (data) updatePracticeWidget(data) }, [data])
 
   const load = useCallback(async () => {
     if (!client?.canPractice) return
@@ -205,6 +248,24 @@ export default function PracticeScreen({ client, active }) {
 
   const current = currentCard(data)
   useEffect(() => { setRevealed(false) }, [current?.id])
+
+  // Read aloud: the question as a card appears, the answer when it is shown.
+  // Nothing plays while the tab is hidden, and leaving it stops the voice.
+  useEffect(() => {
+    if (!active || !readAloud || !current) return
+    if (revealed) speak([speechText(current.blocks)])
+    else speak([current.question])
+    // Keyed on the card's id, not the card: a refreshed day hands back new
+    // objects for the same card, which must not start the reading over.
+  }, [active, readAloud, current?.id, revealed])
+  useEffect(() => { if (!active) stopSpeaking() }, [active, stopSpeaking])
+  useEffect(() => () => { try { Speech.stop() } catch { /* unmounting */ } }, [])
+
+  function speakCard() {
+    if (!current) return
+    if (speaking) { stopSpeaking(); return }
+    speak(revealed ? [current.question, speechText(current.blocks)] : [current.question])
+  }
 
   async function refresh() {
     setRefreshing(true)
@@ -278,7 +339,14 @@ export default function PracticeScreen({ client, active }) {
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled"
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={colors.textMuted} />}>
-      <Text style={styles.title} accessibilityRole="header">Practice</Text>
+      <View style={styles.titleRow}>
+        <Text style={styles.title} accessibilityRole="header">Practice</Text>
+        <TouchableOpacity onPress={toggleReadAloud} style={[styles.readAloud, readAloud && styles.readAloudOn]}
+          accessibilityRole="switch" accessibilityState={{ checked: readAloud }}
+          accessibilityLabel="Read cards aloud" accessibilityHint="Reads each question, and the answer when you show it">
+          <Text style={[styles.readAloudText, readAloud && styles.readAloudTextOn]}>{readAloud ? '🔊 Reading aloud' : '🔈 Read aloud'}</Text>
+        </TouchableOpacity>
+      </View>
       {!!data?.stats && <Text style={styles.muted}>{statsLine(data.stats)}</Text>}
       {!!data?.cloud && (
         <Text style={[styles.muted, { marginTop: 4 }]} accessibilityRole="text">
@@ -326,7 +394,13 @@ export default function PracticeScreen({ client, active }) {
         <View style={styles.card}>
           <View style={styles.cardHead}>
             <Text style={styles.topic} numberOfLines={1}>{current.deck === 'job' ? `Job: ${current.topic}` : current.deck === 'custom' ? `Deck: ${current.topic}` : current.topic}</Text>
-            <Text style={styles.position}>{positionLabel(data, current)}</Text>
+            <View style={styles.cardHeadRight}>
+              <TouchableOpacity onPress={speakCard} hitSlop={10} accessibilityRole="button"
+                accessibilityLabel={speaking ? 'Stop reading' : revealed ? 'Read the question and answer aloud' : 'Read the question aloud'}>
+                <Text style={styles.speakButton}>{speaking ? '■' : '🔈'}</Text>
+              </TouchableOpacity>
+              <Text style={styles.position}>{positionLabel(data, current)}</Text>
+            </View>
           </View>
           <View style={styles.tags}>
             {!!current.category && <Text style={[styles.tag, styles.tagCategory]} accessibilityLabel={`Category: ${current.category}`}>Category: {current.category}</Text>}
@@ -351,9 +425,9 @@ export default function PracticeScreen({ client, active }) {
                   <TouchableOpacity key={r.key} disabled={busy} onPress={() => rate(r.key)}
                     style={[styles.rating, r.key === 'again' && styles.ratingAgain, r.key === 'good' && styles.ratingGood]}
                     accessibilityRole="button"
-                    accessibilityLabel={`${r.label}, ${r.hint}. Back in ${formatInterval(current.intervals[r.key])}`}>
+                    accessibilityLabel={`${r.label}, ${r.hint}. Back ${r.key === 'again' ? 'later today' : `in ${ratingWhen(r.key, current.intervals)}`}`}>
                     <Text style={[styles.ratingLabel, (r.key === 'again' || r.key === 'good') && styles.ratingLabelStrong]}>{r.label}</Text>
-                    <Text style={[styles.ratingHint, (r.key === 'again' || r.key === 'good') && styles.ratingLabelStrong]}>{formatInterval(current.intervals[r.key])}</Text>
+                    <Text style={[styles.ratingHint, (r.key === 'again' || r.key === 'good') && styles.ratingLabelStrong]}>{ratingWhen(r.key, current.intervals)}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
@@ -374,6 +448,11 @@ const makeStyles = (c) => StyleSheet.create({
   content: { padding: 16, paddingBottom: 32 },
   centered: { padding: 24, justifyContent: 'center' },
   title: { fontSize: 22, fontWeight: '700', color: c.text, marginBottom: 6 },
+  titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  readAloud: { borderWidth: 1, borderColor: c.border, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 5, marginBottom: 6 },
+  readAloudOn: { borderColor: c.accent, backgroundColor: c.surface2 },
+  readAloudText: { color: c.textMuted, fontSize: 12.5 },
+  readAloudTextOn: { color: c.accent, fontWeight: '600' },
   muted: { color: c.textMuted, fontSize: 13, lineHeight: 19 },
   error: { color: c.red, fontSize: 13, marginTop: 8 },
   stale: { color: c.text, fontSize: 13, lineHeight: 19, marginTop: 8, padding: 10, borderRadius: radius, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface },
@@ -384,6 +463,8 @@ const makeStyles = (c) => StyleSheet.create({
   cardHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
   topic: { color: c.accent, fontSize: 12.5, fontWeight: '600', flex: 1 },
   position: { color: c.textFaint, fontSize: 12 },
+  cardHeadRight: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  speakButton: { color: c.textMuted, fontSize: 16 },
   tags: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
   tag: { color: c.textMuted, fontSize: 11.5, borderWidth: 1, borderColor: c.border, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 2, overflow: 'hidden' },
   question: { color: c.text, fontSize: 18, fontWeight: '700', lineHeight: 25, marginTop: 12, marginBottom: 16 },

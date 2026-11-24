@@ -353,6 +353,8 @@ contextBridge.exposeInMainWorld('api', {
   getPracticeInsights: (opts) => ipcRenderer.invoke('practice:insights', opts),
   getPracticeReminder: () => ipcRenderer.invoke('practice:reminder'),
   savePracticeReminder: (settings) => ipcRenderer.invoke('practice:saveReminder', settings),
+  cramPractice: (topic, count) => ipcRenderer.invoke('practice:cram', topic, count),
+  exportPracticeCards: (ids, format) => ipcRenderer.invoke('practice:export', ids, format),
   getPracticeBankInfo: () => ipcRenderer.invoke('practice:bankInfo'),
   refreshPracticeBank: () => ipcRenderer.invoke('practice:refreshBank'),
   getChecklist: (id) => ipcRenderer.invoke('features:checklist', id),

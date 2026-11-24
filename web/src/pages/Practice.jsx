@@ -32,6 +32,13 @@ export function formatInterval(days) {
   return '1y'
 }
 
+// When a card comes back after each button. Again is always "today": a missed
+// card in today's set returns at the end of today's cards (practice.rate), even
+// though the schedule it sets is for tomorrow.
+export function ratingWhen(key, intervals) {
+  return key === 'again' ? 'today' : formatInterval(intervals?.[key])
+}
+
 const plain = s => String(s || '').replace(/<[^>]*>/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
 const topicLabel = c => (c.deck === 'job' ? `Job: ${c.topic}` : c.deck === 'custom' ? `Deck: ${c.topic}` : c.topic)
 
@@ -439,7 +446,7 @@ function StoriesView({ showToast, onChanged }) {
 
 const pct = n => `${Math.round(n * 100)}%`
 
-function InsightsView({ active, onPractise, onNavigate }) {
+function InsightsView({ active, onPractise, onCram, onNavigate }) {
   const [days, setDays] = useState(90)
   const [data, setData] = useState(null)
   useEffect(() => {
@@ -487,7 +494,10 @@ function InsightsView({ active, onPractise, onNavigate }) {
                     <td>{t.demand
                       ? <>{pct(t.demand.share)} of ads <span className="practice-muted">({t.demand.skill}{t.demand.inResume ? ', in your résumé' : ', not in your résumé'})</span></>
                       : <span className="practice-muted">—</span>}</td>
-                    <td style={{ textAlign: 'right' }}><button type="button" className="btn btn-ghost btn-sm" onClick={() => onPractise(t.name)}>Practise</button></td>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      <button type="button" className="btn btn-ghost btn-sm" onClick={() => onPractise(t.name)}>Practise</button>
+                      {onCram && <button type="button" className="btn btn-ghost btn-sm" onClick={() => onCram(t.name)} title="Go through this topic now, without changing your schedule">Cram</button>}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -768,7 +778,7 @@ function TodayView({ active, data, reload, showToast }) {
           <div role="group" aria-label="How well did you know it?" className="practice-ratings">
             {RATINGS.map((r, i) => (
               <button key={r.key} className={r.className} disabled={busy} onClick={() => rate(r.key)} title={`${r.hint} (${i + 1})`}>
-                {r.label} <span style={{ opacity: 0.7, fontWeight: 400 }}>· {formatInterval(current.intervals[r.key])}</span>
+                {r.label} <span style={{ opacity: 0.7, fontWeight: 400 }}>· {ratingWhen(r.key, current.intervals)}</span>
               </button>
             ))}
           </div>
@@ -782,6 +792,38 @@ function TodayView({ active, data, reload, showToast }) {
       <div style={{ marginTop: 16 }}>
         <CardTools card={current} showToast={showToast} onChanged={() => reload()} />
       </div>
+    </div>
+  )
+}
+
+// Export the questions Browse is showing, with your notes. CSV opens in Excel,
+// Sheets and Quizlet and imports back into Hiro unchanged; the Anki file goes
+// into a "Hiro::<topic>" deck per topic.
+function ExportControl({ ids, showToast }) {
+  const [format, setFormat] = useState('csv')
+  const [busy, setBusy] = useState(false)
+  async function run() {
+    setBusy(true)
+    try {
+      const res = await window.api.exportPracticeCards(ids, format)
+      if (!res || res.canceled) return
+      if (res.success) showToast?.(`Exported ${res.count} question${res.count === 1 ? '' : 's'}`, 'success')
+      else showToast?.(res.error || 'Export failed', 'error')
+    } catch (err) {
+      showToast?.(`Export failed: ${err.message}`, 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+      <select aria-label="Export format" className="practice-select" value={format} onChange={e => setFormat(e.target.value)}>
+        <option value="csv">CSV (Excel, Sheets, Quizlet)</option>
+        <option value="anki">Anki</option>
+      </select>
+      <button type="button" className="btn" disabled={busy || ids.length === 0} onClick={run}>
+        Export {ids.length === 1 ? '1 question' : `${ids.length} questions`}
+      </button>
     </div>
   )
 }
@@ -831,7 +873,10 @@ function BrowseView({ bank, onChanged, showToast }) {
           <option value="hard">Hard</option>
         </select>
       </div>
-      <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '10px 0 8px' }} role="status">{shown.length} of {bank.cards.length} questions</p>
+      <div className="practice-browse-bar">
+        <p style={{ fontSize: 12, color: 'var(--text-muted)' }} role="status">{shown.length} of {bank.cards.length} questions</p>
+        <ExportControl ids={shown.map(c => c.id)} showToast={showToast} />
+      </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {shown.map(c => (
           <details key={c.id} className="card practice-item">
@@ -1218,12 +1263,146 @@ function ReportedView({ bank, onChanged, showToast }) {
   )
 }
 
+const CRAM_SIZES = [10, 20, 50]
+
+// Cram: one topic, now, outside the schedule. "Missed it" sends a card to the
+// back of the session; "Got it" lets it go. Nothing is saved (the daily set,
+// its schedule and the streak are untouched), so it is safe the night before
+// an interview, however many times it is run.
+function CramView({ active, topics, initialTopic, showToast }) {
+  const [topic, setTopic] = useState(initialTopic || '')
+  const [size, setSize] = useState(20)
+  const [session, setSession] = useState(null)
+  const [queue, setQueue] = useState([])
+  const [missed, setMissed] = useState(() => new Set())
+  const [revealed, setRevealed] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => { if (initialTopic) { setTopic(initialTopic); setSession(null) } }, [initialTopic])
+  useEffect(() => { if (!topic && topics?.length) setTopic(topics[0].name) }, [topic, topics])
+
+  const current = session?.cards.find(c => c.id === queue[0]) || null
+  useEffect(() => { setRevealed(false) }, [current?.id, queue.length])
+
+  async function start(chosen = topic) {
+    if (!chosen) return
+    setBusy(true)
+    try {
+      const res = await window.api.cramPractice(chosen, size)
+      if (!res?.success) { showToast?.(res?.error || 'Could not start the session', 'error'); return }
+      setSession(res)
+      setQueue(res.cards.map(c => c.id))
+      setMissed(new Set())
+    } catch (err) {
+      showToast?.(`Could not start the session: ${err.message}`, 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const answer = useCallback((knewIt) => {
+    if (!current) return
+    if (knewIt) setQueue(q => q.slice(1))
+    else {
+      setMissed(m => new Set(m).add(current.id))
+      setQueue(q => [...q.slice(1), current.id])
+    }
+  }, [current])
+
+  // Space or Enter shows the answer; 1 is "Missed it", 2 is "Got it".
+  useEffect(() => {
+    if (!active || !current) return
+    function onKey(e) {
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+      const el = document.activeElement
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(el?.tagName) || el?.isContentEditable) return
+      if (document.querySelector('[aria-modal="true"]')) return
+      if (!revealed && (e.key === ' ' || e.key === 'Enter') && el?.tagName !== 'BUTTON') {
+        e.preventDefault(); setRevealed(true); return
+      }
+      if (revealed && (e.key === '1' || e.key === '2')) { e.preventDefault(); answer(e.key === '2') }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [active, current, revealed, answer])
+
+  const picker = (
+    <div className="card" style={{ padding: 20, marginBottom: 14 }}>
+      <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
+        Go through one topic now, whatever is due. Cards you have forgotten before are always included. Nothing here changes your schedule or your streak.
+      </p>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <select aria-label="Topic to cram" className="practice-select" value={topic} onChange={e => setTopic(e.target.value)}>
+          {(topics || []).map(t => <option key={t.name} value={t.name}>{t.name} ({t.count})</option>)}
+        </select>
+        <select aria-label="Cards in the session" className="practice-select" value={size} onChange={e => setSize(Number(e.target.value))}>
+          {CRAM_SIZES.map(n => <option key={n} value={n}>{n} cards</option>)}
+        </select>
+        <button type="button" className="btn btn-primary" disabled={busy || !topic} onClick={() => start()}>
+          {session ? 'Start again' : 'Start'}
+        </button>
+      </div>
+    </div>
+  )
+
+  if (!session) return picker
+
+  if (!current) {
+    const total = session.cards.length
+    const firstTime = total - missed.size
+    return (
+      <>
+        {picker}
+        <div className="card" style={{ textAlign: 'center', padding: 32 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 6 }}>Session done</h2>
+          <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 16 }} role="status">
+            {firstTime} of {total} first time{missed.size > 0 ? ` · ${missed.size} needed another look` : ''}.
+            {session.total > total ? ` ${session.topic} has ${session.total} cards; another session picks a new mix.` : ''}
+          </p>
+          <button type="button" className="btn btn-primary" disabled={busy} onClick={() => start(session.topic)}>Cram {session.topic} again</button>
+        </div>
+      </>
+    )
+  }
+
+  const done = session.cards.length - new Set(queue).size
+  return (
+    <>
+      {picker}
+      <div className="card practice-card">
+        <div className="practice-progress" aria-hidden="true"><div style={{ width: `${Math.round((done / Math.max(1, session.cards.length)) * 100)}%` }} /></div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 12, alignItems: 'flex-start' }}>
+          <CardMeta card={current} />
+          <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Cram · {queue.length} to go</span>
+        </div>
+        <h2 style={{ fontSize: 20, fontWeight: 700, lineHeight: 1.35, marginBottom: 18 }}>{current.question}</h2>
+        {!revealed ? (
+          <button type="button" className="btn btn-primary" onClick={() => setRevealed(true)}>Show answer <span style={{ opacity: 0.7 }}>(Space)</span></button>
+        ) : (
+          <>
+            <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16, marginBottom: 16 }}>
+              <SafeAnswer answer={current.answer} format={current.format} blocks={current.blocks} />
+              {current.note && <p className="practice-muted" style={{ marginTop: 10, whiteSpace: 'pre-wrap' }}>Your note: {current.note}</p>}
+            </div>
+            <div role="group" aria-label="Did you know it?" className="practice-cram-answers">
+              <button type="button" className="btn btn-danger" onClick={() => answer(false)} title="Comes round again in this session (1)">Missed it <span style={{ opacity: 0.7, fontWeight: 400 }}>· again</span></button>
+              <button type="button" className="btn btn-primary" onClick={() => answer(true)} title="Done for this session (2)">Got it</button>
+            </div>
+            <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>Keys 1–2. Nothing here is saved to your schedule.</p>
+          </>
+        )}
+      </div>
+    </>
+  )
+}
+
 export default function Practice({ active, showToast, onNavigate }) {
   const [tab, setTab] = useState('today')
   const [today, setToday] = useState(null)
   const [stats, setStats] = useState(null)
   const [bank, setBank] = useState(null)
   const [error, setError] = useState(null)
+  const [cramTopic, setCramTopic] = useState('')
   const available = typeof window.api?.getPracticeToday === 'function'
 
   const loadToday = useCallback(async (given) => {
@@ -1257,10 +1436,13 @@ export default function Practice({ active, showToast, onNavigate }) {
     setTab('today')
   }, [changeSettings, today])
 
+  const cramTopicNow = useCallback((topic) => { setCramTopic(topic); setTab('cram') }, [])
+
   if (!available) return null
 
   const tabs = [
     { id: 'today', label: 'Today' },
+    { id: 'cram', label: 'Cram' },
     { id: 'browse', label: 'Browse' },
     { id: 'decks', label: 'Decks' },
     { id: 'stories', label: 'Stories' },
@@ -1295,10 +1477,11 @@ export default function Practice({ active, showToast, onNavigate }) {
           <TodayView active={active !== false && tab === 'today'} data={today} reload={reloadToday} showToast={showToast} />
         </>
       )}
+      {tab === 'cram' && <CramView active={active !== false && tab === 'cram'} topics={today?.topics} initialTopic={cramTopic} showToast={showToast} />}
       {tab === 'browse' && <BrowseView bank={bank} onChanged={afterChange} showToast={showToast} />}
       {tab === 'decks' && <DecksView onPractise={practiseTopic} onChanged={() => { reloadToday() }} showToast={showToast} />}
       {tab === 'stories' && <StoriesView showToast={showToast} onChanged={() => reloadToday()} />}
-      {tab === 'insights' && <InsightsView active={active !== false} onPractise={practiseTopic} onNavigate={onNavigate} />}
+      {tab === 'insights' && <InsightsView active={active !== false} onPractise={practiseTopic} onCram={cramTopicNow} onNavigate={onNavigate} />}
       {tab === 'reported' && <ReportedView bank={bank} onChanged={afterChange} showToast={showToast} />}
       </div>
     </div>

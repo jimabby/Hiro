@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
-import { View, Text, TouchableOpacity, StyleSheet, Alert, AppState, BackHandler } from 'react-native'
+import { View, Text, TouchableOpacity, StyleSheet, Alert, AppState, BackHandler, Linking } from 'react-native'
 // React Native's own SafeAreaView is iOS-only and deprecated as of 0.80, and
 // SDK 54 draws Android edge-to-edge by default — so the old hardcoded 32px
 // Android padding would sit the header under some status bars and the tab bar
@@ -19,6 +19,8 @@ import { clearCaches } from './src/offlineCache'
 import { useAppLock } from './src/useAppLock'
 import { useIncomingImports } from './src/useIncomingImports'
 import { importJobLink } from './src/importJob'
+import { isPracticeLink } from './src/practice'
+import { clearPracticeWidget } from './src/widget'
 import LockScreen from './src/screens/LockScreen'
 import ConnectScreen from './src/screens/ConnectScreen'
 import DashboardScreen from './src/screens/DashboardScreen'
@@ -210,6 +212,7 @@ function AppContent() {
     }
     await secureStore.removeItem(STORAGE_KEY)
     await clearCaches()
+    await clearPracticeWidget()
     setConnection(null)
   }, [connection])
 
@@ -247,6 +250,7 @@ function AppContent() {
     if (await checkRevoked(userId)) {
       await clearCloudKey()
       await clearCaches()
+      await clearPracticeWidget()
       setConnection(null)
       Alert.alert(
         'Signed out',
@@ -281,6 +285,16 @@ function AppContent() {
       if (route.applicationId != null) setDeepLinkedApplication(route.applicationId)
     })
   }, [userId])
+
+  // hiro://practice (the home-screen widget's tap) opens the Practice tab, on
+  // a cold start as well as when the app is already running.
+  useEffect(() => {
+    if (!signedIn) return
+    const open = (url) => { if (isPracticeLink(url)) setTab('practice') }
+    Linking.getInitialURL().then(open).catch(() => {})
+    const sub = Linking.addEventListener('url', ({ url }) => open(url))
+    return () => sub.remove()
+  }, [signedIn])
 
   const [badges, refreshBadges] = useBadges(client, tab)
 

@@ -68,6 +68,31 @@ module.exports = function registerFeatureHandlers({ ipcMain, scheduler, getWindo
     if (result.success) scheduler.restart(getWindow())
     return result
   })
+  // Cram: one topic, outside the schedule. Nothing it does is saved.
+  ipcMain.handle('practice:cram', (_, topic, count) => practice().cram({ topic, count }))
+  // Export: the file is built here and written where the user chooses; the
+  // renderer only says which cards and which format.
+  ipcMain.handle('practice:export', async (_, ids, format) => {
+    const built = practice().exportCards({ ids, format })
+    if (!built.success) return built
+    const { dialog } = require('electron')
+    const stamp = database.localDateString()
+    const { canceled, filePath } = await dialog.showSaveDialog(getWindow(), {
+      title: format === 'anki' ? 'Export for Anki' : 'Export as CSV',
+      defaultPath: `hiro-questions-${stamp}${format === 'anki' ? '-anki' : ''}.${built.extension}`,
+      filters: format === 'anki'
+        ? [{ name: 'Anki notes in plain text', extensions: ['txt'] }]
+        : [{ name: 'CSV', extensions: ['csv'] }],
+    })
+    if (canceled || !filePath) return { canceled: true }
+    try {
+      require('fs').writeFileSync(filePath, built.text, 'utf8')
+      return { success: true, count: built.count, path: filePath }
+    } catch (err) {
+      // Most often a file still open in Excel.
+      return { success: false, error: `Could not save the file: ${err.message}` }
+    }
+  })
   ipcMain.handle('practice:bankInfo', () => practice().bankInfo())
   ipcMain.handle('practice:refreshBank', () => practice().refreshBank({ force: true }))
   ipcMain.handle('features:views', () => featureHub.savedViews())
