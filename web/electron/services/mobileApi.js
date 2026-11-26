@@ -881,6 +881,13 @@ async function route(req, res) {
       const result = practice.flag(String(body.cardId || '').slice(0, 80), String(body.reason || ''), typeof body.note === 'string' ? body.note : '')
       return json(res, result.success ? 200 : 400, result.success ? { ...result, practice: practice.forPhone() } : result)
     }
+    // Put a card aside (or back): for the one missed again and again.
+    if (req.method === 'POST' && path === '/api/practice/pause') {
+      const body = await readBody(req)
+      const practice = require('./practice')
+      const result = practice.pause(String(body.cardId || '').slice(0, 80), body.paused !== false)
+      return json(res, result.success ? 200 : 400, result.success ? { ...result, practice: practice.forPhone() } : result)
+    }
 
     // Queue a scan to run on the desktop. Runs immediately if idle, otherwise
     // as soon as the desktop is free (or on next launch if it's restarted).

@@ -69,6 +69,43 @@ async function main() {
   check('Hard never beats Good, even at the lowest ease', (() => { const p = core.previewIntervals({ ease: 1.3, interval_days: 2, reps: 2 }, today); return p.hard <= p.good && p.good < p.easy })(), true)
   check('Hard still moves a learned card on by at least a day', core.nextState({ ease: 1.3, interval_days: 10, reps: 4 }, 'hard', today).interval_days > 10, true)
 
+  // ─── FSRS ─────────────────────────────────────────────────────
+  const F = { algorithm: 'fsrs' }
+  check('FSRS: a new card on Good returns in 3 days, Easy in 16', core.previewIntervals(null, today, F), { again: 1, hard: 1, good: 3, easy: 16 })
+  check('FSRS: recall is 90% after exactly one stability', Math.round(core.fsrsRetrievability(10, 10) * 1000) / 1000, 0.9)
+  let fs1 = core.scheduleNext(null, 'good', today, F)
+  check('FSRS: the first Good sets stability to the published weight', fs1.stability, core.FSRS_WEIGHTS[2])
+  check('FSRS: the SM-2 bookkeeping still runs', [fs1.reps, fs1.ease, fs1.lapses], [1, 2.5, 0])
+  const fs2 = core.scheduleNext(fs1, 'good', fs1.due_on, F)
+  check('FSRS: a pass on time grows stability', fs2.stability > fs1.stability * 2, true)
+  const fsLapse = core.scheduleNext(fs2, 'again', fs2.due_on, F)
+  check('FSRS: a lapse brings the card back tomorrow', [fsLapse.interval_days, fsLapse.lapses, fsLapse.reps], [1, 1, 0])
+  check('FSRS: a lapse never makes a card more stable', fsLapse.stability <= fs2.stability, true)
+  check('FSRS: a lapse makes the card harder', fsLapse.difficulty > fs2.difficulty, true)
+  let invariant = true
+  for (const ease of [1.3, 1.8, 2.5, 3.1]) {
+    for (const interval of [1, 3, 15, 60, 300]) {
+      for (const late of [0, 5, 40]) {
+        const prev = { ease, interval_days: interval, reps: 3, lapses: 1, due_on: core.addDays(today, -late) }
+        const p = core.previewIntervals(prev, today, F)
+        const capped = p.easy === core.MAX_INTERVAL // at a year every pass lands on the cap
+        if (!(p.again === 1 && p.hard <= p.good && (p.good < p.easy || capped) && p.easy <= core.MAX_INTERVAL && p.hard >= 1)) invariant = false
+      }
+    }
+  }
+  check('FSRS: Hard ≤ Good < Easy for every state (ties only at the one-year cap)', invariant, true)
+  const learned = { ease: 2.5, interval_days: 15, reps: 3, lapses: 0, due_on: today }
+  const at85 = core.previewIntervals(learned, today, { ...F, retention: 0.85 })
+  const at95 = core.previewIntervals(learned, today, { ...F, retention: 0.95 })
+  check('FSRS: aiming for more recall reviews sooner', at95.good < at85.good, true)
+  check('FSRS: an SM-2 card starts from its interval and ease', core.fsrsMemory(learned, today), { s: 15, d: 5, lastDay: core.addDays(today, -15) })
+  check('FSRS: a card never seen has no memory yet', core.fsrsMemory(null, today), null)
+  check('SM-2 stays the default', core.scheduleNext(learned, 'good', today), core.nextState(learned, 'good', today))
+  let fsThrew = false
+  try { core.scheduleNext(null, 'meh', today, F) } catch { fsThrew = true }
+  check('FSRS refuses an unknown rating too', fsThrew, true)
+  check('struggling from the fifth miss', [4, 5, 9].map(lapses => core.isLeech({ lapses })), [false, true, true])
+
   // ─── Cram selection ───────────────────────────────────────────
   const cramCards = Array.from({ length: 12 }, (_, i) => ({ id: `c-${i}` }))
   const cramStates = new Map([
@@ -238,7 +275,69 @@ async function main() {
   practice.saveNote(exportId, '')
 
   check('saving settings drops unknown topics and clamps the count',
-    practice.saveSettings({ topics: ['Java', 'Made up'], dailyCount: 500 }).settings, { topics: ['Java'], dailyCount: 30 })
+    practice.saveSettings({ topics: ['Java', 'Made up'], dailyCount: 500 }).settings, { topics: ['Java'], dailyCount: 30, algorithm: 'sm2', retention: 0.9 })
+
+  // ─── Scheduler choice, paused cards, struggling cards, calendar ─
+  check('choosing FSRS is saved', practice.saveSettings({ algorithm: 'fsrs', retention: 0.85 }).settings, { topics: ['Java'], dailyCount: 30, algorithm: 'fsrs', retention: 0.85 })
+  // "Practise this deck" sends topics and a count only.
+  check('saving topics alone keeps the scheduler', practice.saveSettings({ topics: ['Node.js'], dailyCount: 5 }).settings.algorithm, 'fsrs')
+  check('an unknown scheduler or retention falls back', practice.saveSettings({ algorithm: 'leitner', retention: 0.5 }).settings, { topics: ['Node.js'], dailyCount: 5, algorithm: 'sm2', retention: 0.9 })
+  practice.saveSettings({ algorithm: 'fsrs', retention: 0.9 })
+  const fsrsDay = '2026-11-25'
+  const fsrsToday = practice.today({ now: at(fsrsDay), rng: seq() })
+  const fresh = fsrsToday.cards.find(c => !c.state && !c.done)
+  check('FSRS previews a new card', fresh.intervals, { again: 1, hard: 1, good: 3, easy: 16 })
+  const rated = practice.rate(fresh.id, 'good', { now: at(fsrsDay) })
+  const stored = db.getPracticeStates().find(r => r.card_id === fresh.id)
+  check('FSRS schedules from its own model', [rated.state.dueOn, stored.interval_days], ['2026-11-28', 3])
+  check('and stores stability, difficulty and the review day', [stored.stability > 3, stored.difficulty > 1, stored.last_review_on], [true, true, fsrsDay])
+  practice.saveSettings({ algorithm: 'sm2' })
+  const sm2Day = '2026-11-28'
+  practice.rate(fresh.id, 'good', { now: at(sm2Day) })
+  const back = db.getPracticeStates().find(r => r.card_id === fresh.id)
+  check('back on SM-2, the FSRS memory is cleared rather than left stale', [back.stability, back.last_review_on], [null, sm2Day])
+
+  const pauseDay = '2026-11-29'
+  let pd = practice.today({ now: at(pauseDay), rng: seq() })
+  const toPause = pd.queue[0]
+  check('pausing an unknown card is refused', practice.pause('nope-999').success, false)
+  check('a malformed id is refused', practice.pause('../x').success, false)
+  check('pausing a card', practice.pause(toPause).paused, true)
+  pd = practice.today({ now: at(pauseDay) })
+  check('a paused card leaves the queue at once', pd.queue.includes(toPause), false)
+  check('and is marked paused', pd.cards.find(c => c.id === toPause)?.paused, true)
+  check('stats count paused cards', practice.stats({ now: at(pauseDay) }).paused, 1)
+  check('a paused card is left out of a new day', practice.today({ now: at('2026-11-30'), rng: seq() }).cards.some(c => c.id === toPause), false)
+  check('and out of cram', practice.cram({ topic: 'Node.js', count: 50, now: at(pauseDay) }).cards.some(c => c.id === toPause), false)
+  check('the phone sees it paused', practice.forPhone({ now: at(pauseDay) }).cards.find(c => c.id === toPause)?.paused, true)
+  check('resuming', practice.pause(toPause, false).paused, false)
+  check('a resumed card is eligible again', practice.stats({ now: at(pauseDay) }).paused, 0)
+
+  // Missed five times: flagged as struggling on the card, in Insights and stats.
+  const struggler = pd.queue.find(id => id !== toPause)
+  for (const [i, d] of ['2026-12-01', '2026-12-02', '2026-12-03', '2026-12-04', '2026-12-05'].entries()) {
+    practice.rate(struggler, 'again', { now: at(d) })
+    check(`lapse ${i + 1} counted`, db.getPracticeStates().find(r => r.card_id === struggler).lapses >= i + 1, true)
+  }
+  const strugglingDay = practice.bank({ now: at('2026-12-06') }).cards.find(c => c.id === struggler)
+  check('five misses mark a card as struggling', strugglingDay.leech, true)
+  check('Insights lists it as struggling', practice.insights({ now: at('2026-12-06'), skillsGap: { enoughData: false } }).weakCards.find(c => c.id === struggler)?.leech, true)
+  check('stats count struggling cards', practice.stats({ now: at('2026-12-06') }).leeches, 1)
+  practice.pause(struggler)
+  check('a paused struggling card is not counted as still to deal with', practice.stats({ now: at('2026-12-06') }).leeches, 0)
+  practice.pause(struggler, false)
+
+  const cal = practice.stats({ now: at('2026-12-06') }).calendar
+  check('the calendar covers half a year of weeks', [cal.weeks, cal.counts.length], [practice.CALENDAR_WEEKS, practice.CALENDAR_WEEKS * 7])
+  check('the calendar starts on a Monday', new Date(`${cal.start}T12:00:00`).getDay(), 1)
+  const idx = d => core.daysBetween(cal.start, d)
+  check('a day with one rating counts one', cal.counts[idx('2026-12-03')], 1)
+  check('the busiest day is the max', cal.max, Math.max(...cal.counts))
+  const midweek = core.practiceCalendar([{ day: '2026-12-02', count: 3 }], '2026-12-03', 2)
+  check('days still to come this week are marked, today is not', midweek.counts.slice(-4), [0, -1, -1, -1])
+  check('a short calendar ends with the current week', [midweek.start, midweek.counts.length, midweek.activeDays], ['2026-11-23', 14, 1])
+  check('calendar shades scale with the busiest day', [0, 1, 4, 8].map(n => core.calendarLevel(n, 8)), [0, 1, 2, 4])
+  check('the calendar travels to the phone', Array.isArray(practice.forPhone({ now: at('2026-12-06') }).stats.calendar.counts), true)
 
   // ─── Job decks ────────────────────────────────────────────────
   db.insertApplication({ job_title: 'Backend Developer', company: 'Acme', platform: 'seek', job_url: 'https://example.com/job/1', status: 'Interview' })

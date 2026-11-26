@@ -1,7 +1,7 @@
 // Practice, on the phone: the desktop's interview flashcards.
 //
 // The same daily set as the desktop's Practice page, over the paired Wi-Fi
-// connection — the schedule (SM-2) lives in the desktop's database, so a card
+// connection — the schedule (SM-2 or FSRS, chosen on the desktop) lives in the desktop's database, so a card
 // rated here is done on the desktop too. Answers arrive as text blocks (the
 // desktop's practiceCore.answerBlocks), never as HTML, so nothing in a question
 // bank can become markup here.
@@ -24,8 +24,10 @@ import { randomKey } from '../secureProtocol'
 import * as Speech from 'expo-speech'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as haptics from '../haptics'
-import { ratingWhen, statsLine, currentCard, currentCountdown, isStale, positionLabel, speechText } from '../practice'
+import { ratingWhen, statsLine, currentCard, currentCountdown, isStale, positionLabel, speechText, speechChunks } from '../practice'
 import { updatePracticeWidget } from '../widget'
+import SwipeCard from '../components/SwipeCard'
+import PracticeCalendar from '../components/PracticeCalendar'
 
 // Read cards aloud: remembered on this phone. On, each new card's question is
 // read as it appears, and the answer when it is shown, for practice with the
@@ -64,8 +66,10 @@ function Blocks({ blocks, styles }) {
   })
 }
 
-// Note, Ask AI and Report for one card.
-function CardExtras({ client, card, styles, colors, onReport }) {
+// Note, Ask AI, Pause and Report for one card. A card missed five or more
+// times leads with what to do about it: another explanation, the answer in
+// the user's own words, or a pause.
+function CardExtras({ client, card, styles, colors, onReport, onPause }) {
   const [panel, setPanel] = useState(null) // 'note' | 'ask'
   const [note, setNote] = useState(card.note || '')
   const [draft, setDraft] = useState(card.note || '')
@@ -123,6 +127,27 @@ function CardExtras({ client, card, styles, colors, onReport }) {
 
   return (
     <View style={styles.extras}>
+      {!!card.leech && panel === null && (
+        <View style={styles.leech} accessibilityRole="text">
+          <Text style={styles.leechText}>
+            <Text style={styles.bold}>Missed {card.lapses || 'several'} times.</Text> Seeing a card like this again rarely makes it stick.
+            Try a different explanation, put the answer in your own words, or set it aside for now.
+          </Text>
+          <View style={[styles.extrasRow, { marginTop: 8 }]}>
+            {client?.canAsk && (
+              <TouchableOpacity style={styles.extraButton} onPress={openAsk} accessibilityRole="button">
+                <Text style={styles.extraText}>✦ Explain differently</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity style={styles.extraButton} onPress={() => setPanel('note')} accessibilityRole="button">
+              <Text style={styles.extraText}>✎ My own words</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.extraButton} onPress={onPause} accessibilityRole="button" accessibilityLabel="Pause this card">
+              <Text style={styles.extraText}>⏸ Pause it</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
       {!!note && panel !== 'note' && (
         <View style={styles.noteBox}>
           <Text style={styles.noteLabel}>Your note</Text>
@@ -140,6 +165,12 @@ function CardExtras({ client, card, styles, colors, onReport }) {
           accessibilityRole="button">
           <Text style={[styles.extraText, panel === 'note' && styles.extraTextOn]}>✎ {note ? 'Edit note' : 'Add note'}</Text>
         </TouchableOpacity>
+        {!card.leech && (
+          <TouchableOpacity style={styles.extraButton} onPress={onPause} accessibilityRole="button"
+            accessibilityLabel="Pause this card" accessibilityHint="Keeps it out of your daily cards until you resume it on the desktop">
+            <Text style={styles.extraText}>⏸ Pause</Text>
+          </TouchableOpacity>
+        )}
         <TouchableOpacity style={styles.extraButton} onPress={onReport} accessibilityRole="button" accessibilityLabel="Report outdated or wrong">
           <Text style={styles.extraText}>⚑ Report</Text>
         </TouchableOpacity>
@@ -217,7 +248,12 @@ export default function PracticeScreen({ client, active }) {
     const id = ++speakId.current
     setSpeaking(true)
     const finished = () => { if (speakId.current === id) setSpeaking(false) }
-    Speech.speak(text, { onDone: finished, onStopped: finished, onError: finished })
+    // Queued one after another; only the last one's end means "done".
+    const chunks = speechChunks(text, Speech.maxSpeechInputLength || 4000)
+    chunks.forEach((chunk, i) => {
+      const last = i === chunks.length - 1
+      Speech.speak(chunk, { onDone: last ? finished : undefined, onStopped: finished, onError: finished })
+    })
   }, [])
 
   function toggleReadAloud() {
@@ -301,6 +337,26 @@ export default function PracticeScreen({ client, active }) {
     } finally {
       setBusy(false)
     }
+  }
+
+  function pause() {
+    if (!current) return
+    const send = async () => {
+      try {
+        const res = await client.pausePracticeCard(current.id, true)
+        if (res?.practice) setData(res.practice)
+        else await load()
+        setError('')
+        haptics.success()
+      } catch (err) {
+        haptics.failure()
+        setError(Number(err?.status) === 404 ? 'Update Hiro on the desktop to pause cards from your phone.' : messageFor(err))
+      }
+    }
+    Alert.alert('Pause this card?', 'It stays out of your daily cards, with its schedule kept, until you resume it on the desktop (Practice → Browse → Paused).', [
+      { text: 'Pause', onPress: send },
+      { text: 'Cancel', style: 'cancel' },
+    ])
   }
 
   function report() {
@@ -387,11 +443,12 @@ export default function PracticeScreen({ client, active }) {
               <Text style={styles.buttonPrimaryText}>Practise {Math.min(data.dailyCount, data.available)} more</Text>
             </TouchableOpacity>
           )}
+          <PracticeCalendar calendar={data.stats?.calendar} colors={colors} />
         </View>
       )}
 
       {!!current && (
-        <View style={styles.card}>
+        <SwipeCard key={current.id} enabled={revealed && !busy} onRate={rate} style={styles.card} colors={colors}>
           <View style={styles.cardHead}>
             <Text style={styles.topic} numberOfLines={1}>{current.deck === 'job' ? `Job: ${current.topic}` : current.deck === 'custom' ? `Deck: ${current.topic}` : current.topic}</Text>
             <View style={styles.cardHeadRight}>
@@ -431,10 +488,11 @@ export default function PracticeScreen({ client, active }) {
                   </TouchableOpacity>
                 ))}
               </View>
+              <Text style={styles.hint}>Or swipe the card: right for Good, left for Again.</Text>
             </>
           )}
-          <CardExtras client={client} card={current} styles={styles} colors={colors} onReport={report} />
-        </View>
+          <CardExtras client={client} card={current} styles={styles} colors={colors} onReport={report} onPause={pause} />
+        </SwipeCard>
       )}
     </ScrollView>
   )
@@ -515,5 +573,7 @@ const makeStyles = (c) => StyleSheet.create({
   asked: { color: c.textMuted, fontSize: 12.5, marginBottom: 4 },
   hint: { color: c.textFaint, fontSize: 11.5, marginTop: 6 },
   reportLink: { marginTop: 14, alignSelf: 'flex-start', minHeight: 32, justifyContent: 'center' },
+  leech: { backgroundColor: c.surface2, borderRadius: 10, padding: 10, marginBottom: 10, borderLeftWidth: 3, borderLeftColor: c.yellow || c.accent },
+  leechText: { color: c.text, fontSize: 13.5, lineHeight: 19 },
   reportText: { color: c.textMuted, fontSize: 12.5, textDecorationLine: 'underline' },
 })

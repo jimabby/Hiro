@@ -18,12 +18,20 @@ const RATINGS = [
   { key: 'easy', label: 'Easy', hint: 'Instant', className: 'btn' },
 ]
 const COUNTS = [5, 8, 10, 15, 20]
+const RETENTIONS = [0.8, 0.85, 0.9, 0.95]
 const REASONS = [
   { key: 'outdated', label: 'Outdated' },
   { key: 'wrong', label: 'Wrong' },
   { key: 'other', label: 'Something else' },
 ]
 const DIFFICULTY_TONE = { easy: 'badge-green', medium: 'badge-yellow', hard: 'badge-red' }
+
+// Space on a focused button presses it. That is what the user means for a
+// button on the card itself (Show answer, a rating, Tab-ed to on purpose), but
+// not for one left focused by an earlier click elsewhere on the page: Cram's
+// Start stays on screen, and Space then restarted the session instead of
+// showing the answer.
+const ownButton = el => el?.tagName === 'BUTTON' && Boolean(el.closest('.practice-card'))
 const ACCEPT = '.pdf,.docx,.txt,.md'
 
 export function formatInterval(days) {
@@ -335,12 +343,39 @@ function StoryPanel({ card, onClose, onChanged, showToast }) {
 function CardTools({ card, onChanged, showToast, compact = false }) {
   const [panel, setPanel] = useState(null) // 'ask' | 'stories' | 'note' | 'report'
   const [note, setNote] = useState(card.note || '')
+  const [pausing, setPausing] = useState(false)
   useEffect(() => { setPanel(null); setNote(card.note || '') }, [card.id, card.note])
   const toggle = p => setPanel(cur => (cur === p ? null : p))
   const storyCount = card.storyIds?.length || 0
   const behavioural = STORY_CATEGORIES.has(card.category)
+
+  async function togglePause() {
+    setPausing(true)
+    try {
+      const res = await window.api.pausePracticeCard(card.id, !card.paused)
+      if (!res?.success) { showToast?.(res?.error || 'Could not change the card', 'error'); return }
+      showToast?.(res.paused ? 'Paused. It stays out of your daily cards until you resume it (Browse → Paused).' : 'Back in your daily cards', 'success')
+      onChanged?.({ paused: res.paused })
+    } catch (err) {
+      showToast?.(`Could not change the card: ${err.message}`, 'error')
+    } finally {
+      setPausing(false)
+    }
+  }
+
   return (
     <>
+      {card.leech && !card.paused && panel === null && (
+        <div className="practice-leech" role="note">
+          <strong>Missed {card.state?.lapses || 'several'} times.</strong> Seeing a card like this again rarely makes it stick.
+          Try a different explanation, put the answer in your own words, or set it aside for now.
+          <div className="practice-tools" style={{ marginTop: 8 }}>
+            <button type="button" className="btn btn-sm" onClick={() => setPanel('ask')}>✦ Explain it differently</button>
+            <button type="button" className="btn btn-sm" onClick={() => setPanel('note')}>✎ Write it in my words</button>
+            <button type="button" className="btn btn-sm" disabled={pausing} onClick={togglePause}>⏸ Pause it</button>
+          </div>
+        </div>
+      )}
       {panel !== 'note' && <SavedNote note={note} onEdit={() => setPanel('note')} />}
       <div className="practice-tools" style={compact ? { marginTop: 8 } : undefined}>
         <button type="button" className={`btn btn-sm ${panel === 'ask' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => toggle('ask')}>
@@ -353,6 +388,10 @@ function CardTools({ card, onChanged, showToast, compact = false }) {
         )}
         <button type="button" className={`btn btn-sm ${panel === 'note' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => toggle('note')}>
           ✎ {note ? 'Edit note' : 'Add note'}
+        </button>
+        <button type="button" className="btn btn-sm btn-ghost" disabled={pausing} onClick={togglePause}
+          title={card.paused ? 'Put it back in your daily cards' : 'Keep it out of your daily cards for now; its schedule is kept'}>
+          {card.paused ? '▶ Resume' : '⏸ Pause'}
         </button>
         {card.flag ? null : (
           <button type="button" className={`btn btn-sm ${panel === 'report' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => toggle('report')}>
@@ -384,6 +423,80 @@ function StatPills({ stats }) {
       <span title="Days in a row with practice"><strong>{stats.streak}</strong>-day streak</span>
       <span title="Cards due for review now"><strong>{stats.due}</strong> due</span>
       <span title="Cards you remember well enough to see three weeks or more apart"><strong>{stats.learned}</strong>/{stats.total} learned</span>
+      {stats.leeches > 0 && (
+        <span title="Cards missed five or more times. Each one offers a different explanation, a note in your own words, or a pause.">
+          <strong>{stats.leeches}</strong> struggling
+        </span>
+      )}
+    </div>
+  )
+}
+
+// ─── Practice calendar ─────────────────────────────────────────────
+//
+// Half a year of practice days, one square a day, Monday at the top: the
+// habit the weekly goal is about, at a glance. One hue, darker for busier
+// days. Every square has its date and count on hover, and the list below says
+// the same in words, so nothing depends on telling the shades apart.
+
+const CAL_DAYS = ['Mon', '', 'Wed', '', 'Fri', '', '']
+const calDate = (start, i) => {
+  const [y, m, d] = start.split('-').map(Number)
+  return new Date(y, m - 1, d + i)
+}
+export function calendarShade(count, max) {
+  if (!(count > 0)) return 0
+  if (!(max > 0)) return 1
+  return Math.min(4, Math.max(1, Math.ceil((count / max) * 4)))
+}
+
+export function PracticeCalendar({ calendar }) {
+  if (!calendar?.counts?.length || !calendar.start) return null
+  const { start, weeks, counts, max, activeDays, total } = calendar
+  const dayFmt = new Intl.DateTimeFormat(undefined, { weekday: 'short', day: 'numeric', month: 'short' })
+  const monthFmt = new Intl.DateTimeFormat(undefined, { month: 'short' })
+  const label = (count, i) => `${dayFmt.format(calDate(start, i))}: ${count === 0 ? 'no practice' : `${count} card${count === 1 ? '' : 's'} rated`}`
+  // A month's name over the first week that starts in it.
+  const months = Array.from({ length: weeks }, (_, w) => {
+    const monday = calDate(start, w * 7)
+    return monday.getDate() <= 7 ? monthFmt.format(monday) : ''
+  })
+  const active = counts.map((c, i) => ({ c, i })).filter(d => d.c > 0).reverse()
+  return (
+    <div className="card" style={{ padding: 20 }}>
+      <h2 style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>Practice days</h2>
+      <p style={{ fontSize: 12.5, color: 'var(--text-muted)', marginBottom: 12 }}>
+        {activeDays} day{activeDays === 1 ? '' : 's'} in the last {weeks} weeks · {total} card{total === 1 ? '' : 's'} rated
+      </p>
+      <div className="practice-calendar">
+        <div className="practice-cal-days" aria-hidden="true">
+          <span />
+          {CAL_DAYS.map((d, i) => <span key={i}>{d}</span>)}
+        </div>
+        <div>
+          <div className="practice-cal-months" aria-hidden="true">
+            {months.map((m, i) => <span key={i}>{m}</span>)}
+          </div>
+          <div className="practice-cal-grid" role="img" aria-label={`Practice calendar: ${activeDays} active days in the last ${weeks} weeks, ${total} cards rated`}>
+            {counts.map((count, i) => (
+              count < 0
+                ? <span key={i} className="practice-cal-cell future" />
+                : <span key={i} className={`practice-cal-cell l${calendarShade(count, max)}`} title={label(count, i)} />
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="practice-cal-legend" aria-hidden="true">
+        Less {[0, 1, 2, 3, 4].map(l => <span key={l} className={`practice-cal-cell l${l}`} />)} More
+      </div>
+      {active.length > 0 && (
+        <details style={{ marginTop: 10 }}>
+          <summary style={{ fontSize: 12.5, color: 'var(--text-muted)', cursor: 'pointer' }}>Show as a list</summary>
+          <ul className="practice-cal-list">
+            {active.map(({ c, i }) => <li key={i}>{label(c, i)}</li>)}
+          </ul>
+        </details>
+      )}
     </div>
   )
 }
@@ -446,19 +559,30 @@ function StoriesView({ showToast, onChanged }) {
 
 const pct = n => `${Math.round(n * 100)}%`
 
-function InsightsView({ active, onPractise, onCram, onNavigate }) {
+function InsightsView({ active, calendar, onPractise, onCram, onNavigate, onChanged, showToast }) {
   const [days, setDays] = useState(90)
   const [data, setData] = useState(null)
+  const [version, setVersion] = useState(0)
   useEffect(() => {
     if (active === false) return
     let live = true
     Promise.resolve(window.api.getPracticeInsights({ days })).then(d => { if (live) setData(d) })
     return () => { live = false }
-  }, [active, days])
+  }, [active, days, version])
   if (!data) return <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>Reading your ratings…</p>
   const priority = data.topics.filter(t => t.againRate >= 0.25 && t.demand)
+
+  async function togglePause(c) {
+    const res = await window.api.pausePracticeCard(c.id, !c.paused)
+    if (!res?.success) { showToast?.(res?.error || 'Could not change the card', 'error'); return }
+    showToast?.(res.paused ? 'Paused until you resume it' : 'Back in your daily cards', 'success')
+    setVersion(v => v + 1)
+    onChanged?.()
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <PracticeCalendar calendar={calendar} />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
           {data.totals.reviews} ratings on {data.totals.activeDays} day{data.totals.activeDays === 1 ? '' : 's'} · forgot {pct(data.totals.againRate)} overall
@@ -520,6 +644,13 @@ function InsightsView({ active, onPractise, onCram, onNavigate }) {
               {data.weakCards.map(c => (
                 <li key={c.id} style={{ fontSize: 13.5 }}>
                   {c.question} <span className="practice-muted">· {topicLabel(c)} · forgot {c.lapses}×</span>
+                  {c.leech && !c.paused && <span className="badge badge-yellow" style={{ marginLeft: 6 }}>Struggling</span>}
+                  {c.paused && <span className="badge" style={{ marginLeft: 6 }}>Paused</span>}
+                  {(c.leech || c.paused) && (
+                    <button type="button" className="btn btn-ghost btn-sm" style={{ marginLeft: 4 }} onClick={() => togglePause(c)}>
+                      {c.paused ? 'Resume' : 'Pause'}
+                    </button>
+                  )}
                 </li>
               ))}
             </ol>
@@ -580,6 +711,25 @@ function TopicPicker({ topics, settings, onChange, extra }) {
             {[...new Set([...COUNTS, settings.dailyCount])].sort((a, b) => a - b).map(n => <option key={n} value={n}>{n}</option>)}
           </select>
         </label>
+        <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+          title="SM-2 is the classic schedule. FSRS models how well you remember each card and usually needs fewer reviews for the same recall. Switching keeps every card's history.">
+          Scheduler
+          <select aria-label="Scheduler" value={settings.algorithm || 'sm2'} className="practice-select"
+            onChange={e => onChange({ ...settings, algorithm: e.target.value })}>
+            <option value="sm2">SM-2 (classic)</option>
+            <option value="fsrs">FSRS (fewer reviews)</option>
+          </select>
+        </label>
+        {settings.algorithm === 'fsrs' && (
+          <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            title="How likely you should be to remember a card when it comes back. Higher means more reviews.">
+            Aim to remember
+            <select aria-label="Target recall" value={settings.retention ?? 0.9} className="practice-select"
+              onChange={e => onChange({ ...settings, retention: Number(e.target.value) })}>
+              {RETENTIONS.map(r => <option key={r} value={r}>{Math.round(r * 100)}%</option>)}
+            </select>
+          </label>
+        )}
         {extra}
       </div>
       {open && (
@@ -716,11 +866,13 @@ function TodayView({ active, data, reload, showToast }) {
       const el = document.activeElement
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(el?.tagName) || el?.isContentEditable) return
       if (document.querySelector('[aria-modal="true"]')) return
-      if (!revealed && (e.key === ' ' || e.key === 'Enter') && el?.tagName !== 'BUTTON') {
+      if (!revealed && (e.key === ' ' || e.key === 'Enter') && !ownButton(el)) {
         e.preventDefault(); setRevealed(true); return
       }
       const idx = ['1', '2', '3', '4'].indexOf(e.key)
-      if (revealed && idx >= 0) { e.preventDefault(); rate(RATINGS[idx].key) }
+      // A rating key pressed a moment early is still meant for the card: it
+      // must not switch pages under it (the app-wide 1–9 shortcuts).
+      if (idx >= 0) { e.preventDefault(); if (revealed) rate(RATINGS[idx].key) }
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
@@ -833,6 +985,7 @@ function BrowseView({ bank, onChanged, showToast }) {
   const [topic, setTopic] = useState('')
   const [category, setCategory] = useState('')
   const [difficulty, setDifficulty] = useState('')
+  const [status, setStatus] = useState('')
   const shown = useMemo(() => {
     if (!bank) return []
     const needle = search.trim().toLowerCase()
@@ -840,10 +993,13 @@ function BrowseView({ bank, onChanged, showToast }) {
       if (topic && c.topicKey !== topic) return false
       if (category && c.category !== category) return false
       if (difficulty && c.difficulty !== difficulty) return false
+      if (status === 'struggling' && !c.leech) return false
+      if (status === 'paused' && !c.paused) return false
+      if (status === 'new' && c.state) return false
       if (!needle) return true
       return [c.question, plain(c.answer), c.topic, c.category, c.note, ...(c.tags || []), ...(c.versions || [])].join(' ').toLowerCase().includes(needle)
     })
-  }, [bank, search, topic, category, difficulty])
+  }, [bank, search, topic, category, difficulty, status])
 
   if (!bank) return <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading questions…</p>
 
@@ -872,6 +1028,12 @@ function BrowseView({ bank, onChanged, showToast }) {
           <option value="medium">Medium</option>
           <option value="hard">Hard</option>
         </select>
+        <select aria-label="Status" value={status} onChange={e => setStatus(e.target.value)}>
+          <option value="">Any status</option>
+          <option value="struggling">Struggling (missed 5+ times)</option>
+          <option value="paused">Paused</option>
+          <option value="new">Not practised yet</option>
+        </select>
       </div>
       <div className="practice-browse-bar">
         <p style={{ fontSize: 12, color: 'var(--text-muted)' }} role="status">{shown.length} of {bank.cards.length} questions</p>
@@ -885,6 +1047,8 @@ function BrowseView({ bank, onChanged, showToast }) {
               <span className="practice-item-meta">
                 {topicLabel(c)}{c.category && c.category !== c.topic ? ` · ${c.category}` : ''}{c.note ? ' · ✎ note' : ''}{c.explained ? ' · ✦ AI' : ''}
                 {c.flag && <span className="badge badge-red" style={{ marginLeft: 8 }}>Reported</span>}
+                {c.paused && <span className="badge" style={{ marginLeft: 8 }}>Paused</span>}
+                {c.leech && !c.paused && <span className="badge badge-yellow" style={{ marginLeft: 8 }}>Struggling</span>}
               </span>
             </summary>
             <div style={{ marginTop: 10 }}>
@@ -1317,10 +1481,10 @@ function CramView({ active, topics, initialTopic, showToast }) {
       const el = document.activeElement
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(el?.tagName) || el?.isContentEditable) return
       if (document.querySelector('[aria-modal="true"]')) return
-      if (!revealed && (e.key === ' ' || e.key === 'Enter') && el?.tagName !== 'BUTTON') {
+      if (!revealed && (e.key === ' ' || e.key === 'Enter') && !ownButton(el)) {
         e.preventDefault(); setRevealed(true); return
       }
-      if (revealed && (e.key === '1' || e.key === '2')) { e.preventDefault(); answer(e.key === '2') }
+      if (e.key === '1' || e.key === '2') { e.preventDefault(); if (revealed) answer(e.key === '2') }
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
@@ -1481,7 +1645,7 @@ export default function Practice({ active, showToast, onNavigate }) {
       {tab === 'browse' && <BrowseView bank={bank} onChanged={afterChange} showToast={showToast} />}
       {tab === 'decks' && <DecksView onPractise={practiseTopic} onChanged={() => { reloadToday() }} showToast={showToast} />}
       {tab === 'stories' && <StoriesView showToast={showToast} onChanged={() => reloadToday()} />}
-      {tab === 'insights' && <InsightsView active={active !== false} onPractise={practiseTopic} onCram={cramTopicNow} onNavigate={onNavigate} />}
+      {tab === 'insights' && <InsightsView active={active !== false} calendar={stats?.calendar} onPractise={practiseTopic} onCram={cramTopicNow} onNavigate={onNavigate} onChanged={() => loadToday()} showToast={showToast} />}
       {tab === 'reported' && <ReportedView bank={bank} onChanged={afterChange} showToast={showToast} />}
       </div>
     </div>

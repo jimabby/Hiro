@@ -112,9 +112,11 @@ function applyLoginItem(enabled, { startMinimised = false } = {}) {
     // Not meaningful for an unpackaged dev run — it would register the
     // electron binary rather than Hiro.
     if (!app.isPackaged) return { success: false, error: 'Available in the installed app only.' }
+    // Starting minimised is the --hidden argument main.js reads on launch.
+    // (Electron's openAsHidden only ever worked on macOS 12 and earlier, and
+    // was removed in Electron 44.)
     app.setLoginItemSettings({
       openAtLogin: !!enabled,
-      openAsHidden: !!startMinimised,
       args: startMinimised ? ['--hidden'] : [],
     })
     return { success: true }
@@ -127,7 +129,7 @@ function getLoginItem() {
   try {
     if (!app.isPackaged) return { openAtLogin: false, available: false }
     const s = app.getLoginItemSettings()
-    return { openAtLogin: !!s.openAtLogin, openAsHidden: !!s.openAsHidden, available: true }
+    return { openAtLogin: !!s.openAtLogin, available: true }
   } catch {
     return { openAtLogin: false, available: false }
   }

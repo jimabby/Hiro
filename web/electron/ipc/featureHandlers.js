@@ -29,6 +29,7 @@ module.exports = function registerFeatureHandlers({ ipcMain, scheduler, getWindo
   ipcMain.handle('practice:stats', () => practice().stats())
   ipcMain.handle('practice:flag', (_, cardId, reason, note) => practice().flag(cardId, reason, note))
   ipcMain.handle('practice:unflag', (_, cardId) => practice().unflag(cardId))
+  ipcMain.handle('practice:pause', (_, cardId, paused) => practice().pause(cardId, paused !== false))
   ipcMain.handle('practice:saveSettings', (_, settings) => practice().saveSettings(settings))
   ipcMain.handle('practice:saveNote', (_, cardId, note) => practice().saveNote(cardId, note))
   // Ask AI and deck generation spend on the user's AI key; both are refused

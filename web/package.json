@@ -80,7 +80,7 @@
     ]
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.115.0",
+    "@anthropic-ai/sdk": "^1.14.0",
     "@google/generative-ai": "^0.24.1",
     "@supabase/supabase-js": "^2.108.1",
     "adm-zip": "^0.6.1",
@@ -91,7 +91,7 @@
     "mammoth": "^1.11.0",
     "node-cron": "^4.6.0",
     "nodemailer": "^10.0.13",
-    "openai": "^6.49.0",
+    "openai": "^7.65.0",
     "pdf-parse": "^2.4.5",
     "pdfkit": "^0.17.2",
     "playwright": "^1.65.1",
@@ -106,7 +106,7 @@
     "@testing-library/react": "^16.3.2",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.2",
-    "electron": "^43.8.12",
+    "electron": "^45.5.0",
     "electron-builder": "^26.15.3",
     "eslint": "^9.39.5",
     "eslint-plugin-react": "^7.37.5",

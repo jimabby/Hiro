@@ -1,6 +1,6 @@
 // Pure helpers behind the Practice tab.
 const { createChecker } = require('./helpers')
-const { formatInterval, ratingWhen, statsLine, currentCard, applyPendingPractice, positionLabel, localDay, currentCountdown, isStale, speechText, widgetSummary, widgetView, isPracticeLink } = require('../src/practice')
+const { formatInterval, ratingWhen, statsLine, currentCard, applyPendingPractice, positionLabel, localDay, currentCountdown, isStale, speechText, speechChunks, swipeRating, swipeProgress, calendarTail, calendarShade, widgetSummary, widgetView, isPracticeLink } = require('../src/practice')
 const { check, done } = createChecker()
 
 check('days', formatInterval(6), '6d')
@@ -34,6 +34,10 @@ check('pending changes are counted; unknown cards ignored', over.pendingChanges,
 check('it is marked as coming through the cloud, with nothing more to add', [over.cloud, over.available], [true, 0])
 check('the snapshot itself is not changed', [snap.queue.length, snap.cards[0].done], [3, undefined])
 check('rating the same card twice counts it once', applyPendingPractice(snap, [{ type: 'rate', cardId: 'a' }, { type: 'rate', cardId: 'a' }]).doneCount, 1)
+const paused = applyPendingPractice(snap, [{ type: 'pause', cardId: 'b', paused: true }])
+check('a card paused away from home leaves the queue at once', [paused.queue, paused.cards[1].paused, paused.pendingChanges], [['a', 'c'], true, 1])
+const resumed = applyPendingPractice(snap, [{ type: 'pause', cardId: 'b', paused: false }])
+check('resuming waits for the desktop to place the card', [resumed.queue, resumed.cards[1].paused], [['a', 'b', 'c'], undefined])
 
 // ── A missed card comes back, as on the desktop ──
 const miss = applyPendingPractice(snap, [{ type: 'rate', cardId: 'a', rating: 'again' }])
@@ -70,6 +74,39 @@ const spoken = speechText([
 ])
 check('answers are read as sentences, code is announced not spelled out', spoken, 'A closure keeps its scope. Used for callbacks. Code example on screen.')
 check('no blocks, nothing to say', speechText(undefined), '')
+
+// ── Swipe to rate ──
+check('a long drag right is Good', swipeRating(140, 0, 360), 'good')
+check('a long drag left is Again', swipeRating(-140, 0, 360), 'again')
+check('a short drag springs back', swipeRating(60, 0.1, 360), null)
+check('a quick flick counts', swipeRating(-50, -1.2, 360), 'again')
+check('a flick against the drag does not', swipeRating(50, -1.2, 360), null)
+check('a twitch is not a flick', swipeRating(10, 2, 360), null)
+check('progress fills by a third of the width', [swipeProgress(0, 300), swipeProgress(50, 300), swipeProgress(-100, 300), swipeProgress(400, 300)], [0, 0.5, 1, 1])
+
+// ── Calendar on the phone ──
+const halfYear = { start: '2026-06-01', weeks: 26, counts: [...Array(25 * 7).fill(0), 3, 0, 5, -1, -1, -1, -1], max: 5, activeDays: 2, total: 8 }
+const tail = calendarTail(halfYear, 4)
+check('the phone shows the latest weeks', [tail.weeks, tail.counts.length, tail.start], [4, 28, '2026-11-02'])
+check('and recounts them', [tail.max, tail.activeDays, tail.total], [5, 2, 8])
+check('days to come stay marked', tail.counts.slice(-4), [-1, -1, -1, -1])
+check('asking for more weeks than sent gives what there is', calendarTail(halfYear, 99).weeks, 26)
+check('an older desktop sends no calendar', calendarTail(undefined), null)
+check('shades', [0, 1, 3, 5].map(n => calendarShade(n, 5)), [0, 1, 3, 4])
+
+// Android says nothing at all for text over its input limit, so long answers
+// are split, at sentence ends where possible.
+const longText = Array.from({ length: 200 }, (_, i) => `Sentence number ${i} explains one more detail.`).join(' ')
+const chunks = speechChunks(longText, 4000)
+check('long text is split', chunks.length > 1, true)
+check('every piece is under the limit', chunks.every(c => c.length <= 4000), true)
+check('pieces end at a sentence', chunks.slice(0, -1).every(c => c.endsWith('.')), true)
+check('nothing is lost', chunks.join(' '), longText)
+check('short text is one piece', speechChunks('Hello there.', 4000), ['Hello there.'])
+check('empty text is no pieces', speechChunks('', 4000), [])
+const noStops = 'word '.repeat(2000).trim()
+check('text without sentence ends splits at spaces', speechChunks(noStops, 4000).every(c => c.length <= 4000 && !c.startsWith(' ')), true)
+check('one unbroken run is cut at the limit', speechChunks('x'.repeat(9000), 4000).map(c => c.length), [4000, 4000, 1000])
 
 // ─── Home-screen widget ──────────────────────────────────────────
 const dayData = { day: '2026-11-24', cards: [{}, {}, {}, {}, {}], queue: ['a', 'b'], doneCount: 3, stats: { streak: 5, practisedToday: true, daysThisWeek: 2, weeklyGoalDays: 4, due: 6 } }

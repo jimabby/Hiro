@@ -372,6 +372,10 @@ export class HiroClient {
   flagPracticeCard(cardId, reason, note = '') {
     return this.request('/api/practice/flag', { method: 'POST', body: JSON.stringify({ cardId, reason, note }) })
   }
+  // Put a card aside (paused) or back. Answers with the refreshed day.
+  pausePracticeCard(cardId, paused = true) {
+    return this.request('/api/practice/pause', { method: 'POST', body: JSON.stringify({ cardId, paused }) })
+  }
   savePracticeNote(cardId, note) {
     return this.request('/api/practice/note', { method: 'POST', body: JSON.stringify({ cardId, note }) })
   }

@@ -65,6 +65,7 @@ const event = (id, body, contextId = id) => ({
     rate: (cardId, rating, { now }) => { calls.push(['rate', cardId, rating, now.toISOString()]); return { success: true } },
     saveNote: (cardId, note) => { calls.push(['note', cardId, note]); return { success: true } },
     flag: (cardId, reason) => { calls.push(['flag', cardId, reason]); return { success: true } },
+    pause: (cardId, paused) => { calls.push(['pause', cardId, paused]); return { success: true, paused } },
     forPhone: () => ({ day: '2026-11-21', cards: [{ id: 'node-001', question: 'What is Node.js?' }], queue: ['node-001'] }),
   }
   const { c, db } = fakeCloud()
@@ -72,16 +73,17 @@ const event = (id, body, contextId = id) => ({
     event('a0000000-0000-4000-8000-000000000001', { type: 'rate', cardId: 'node-001', rating: 'good', at: '2026-11-20T21:15:00.000Z' }),
     event('a0000000-0000-4000-8000-000000000002', { type: 'note', cardId: 'node-001', note: 'my example' }),
     event('a0000000-0000-4000-8000-000000000003', { type: 'flag', cardId: 'node-002', reason: 'wrong' }),
+    event('a0000000-0000-4000-8000-000000000005', { type: 'pause', cardId: 'node-003', paused: true }),
     // An envelope moved onto another row is refused, not applied.
     event('a0000000-0000-4000-8000-000000000004', { type: 'rate', cardId: 'node-009', rating: 'easy' }, 'a0000000-0000-4000-8000-000000000099'),
   )
 
   const first = await cloudSync._syncPractice(c, USER, { practice })
   check('the phone\'s rating is applied with the time it was made', calls[0], ['rate', 'node-001', 'good', '2026-11-20T21:15:00.000Z'])
-  check('notes and reports are applied too', calls.slice(1), [['note', 'node-001', 'my example'], ['flag', 'node-002', 'wrong']])
+  check('notes, reports and pauses are applied too', calls.slice(1), [['note', 'node-001', 'my example'], ['flag', 'node-002', 'wrong'], ['pause', 'node-003', true]])
   check('a moved envelope is dropped and logged', logs.some(l => /could not be read and was dropped/.test(l)), true)
   check('every event is claimed from the cloud', db.events.length, 0)
-  check('three changes applied', first.applied, ['rate', 'note', 'flag'])
+  check('four changes applied', first.applied, ['rate', 'note', 'flag', 'pause'])
 
   const opened = cloudCrypto.decrypt(KEY, db.snapshot.payload, cloudCrypto.rowContext('practice_snapshot', USER.id, 'payload'))
   check('today\'s cards are published, encrypted', [opened.day, opened.cards[0].id, typeof opened.generatedAt], ['2026-11-21', 'node-001', 'string'])
@@ -89,7 +91,7 @@ const event = (id, body, contextId = id) => ({
 
   await cloudSync._syncPractice(c, USER, { practice })
   check('an unchanged snapshot is not uploaded again', db.upserts, 1)
-  check('and events already applied are not applied twice', calls.length, 3)
+  check('and events already applied are not applied twice', calls.length, 4)
 
   cfg = {}
   check('nothing is published without a cloud key', (await cloudSync._syncPractice(fakeCloud().c, USER, { practice })).skipped, 'no-key')

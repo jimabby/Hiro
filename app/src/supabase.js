@@ -498,6 +498,11 @@ export class CloudClient {
     return { success: true, practice: await this.getPractice() }
   }
 
+  async pausePracticeCard(cardId, paused = true) {
+    await this._practiceEvent({ type: 'pause', cardId, paused: paused !== false })
+    return { success: true, practice: await this.getPractice() }
+  }
+
   async practiceMore() {
     throw new Error('Adding more cards needs the desktop. Connect on the same Wi-Fi to practise more.')
   }

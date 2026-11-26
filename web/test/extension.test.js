@@ -15,6 +15,26 @@ const html = fs.readFileSync(path.join(root, 'popup.html'), 'utf8')
 const { check, done } = createChecker()
 
 check('extension uses Manifest V3', manifest.manifest_version, 3)
+
+// ─── Icons and store packages ────────────────────────────────────
+// Without icons Chrome shows a grey letter tile in the toolbar and the store
+// refuses the upload.
+const iconPaths = [...Object.values(manifest.icons || {}), ...Object.values(manifest.action?.default_icon || {})]
+check('the manifest names its icons', ['16', '32', '48', '128'].every(n => manifest.icons?.[n]), true)
+check('every icon the manifest names exists', iconPaths.length > 0 && iconPaths.every(p => fs.existsSync(path.join(root, p))), true)
+const packager = require(path.join(root, 'scripts', 'package.js'))
+check('every packaged file exists', packager.FILES.every(f => fs.existsSync(path.join(root, f))), true)
+check('every icon is packaged', iconPaths.every(p => packager.FILES.includes(p)), true)
+check('every script popup.html loads is packaged', [...html.matchAll(/src="([^"]+)"/g)].every(m => packager.FILES.includes(m[1])), true)
+const firefox = packager.manifestFor('firefox')
+check('Firefox gets an add-on id', /@/.test(firefox.browser_specific_settings?.gecko?.id || ''), true)
+check('Firefox declares what data leaves the browser', Array.isArray(firefox.browser_specific_settings?.gecko?.data_collection_permissions?.required), true)
+check('Chrome does not get the Firefox-only block', 'browser_specific_settings' in packager.manifestFor('chrome'), false)
+check('Firefox is not told a Chrome version', 'minimum_chrome_version' in firefox, false)
+// The writer must produce a zip any tool can open: check the end record.
+const sample = packager.zip([{ name: 'a.txt', data: Buffer.from('hello hello hello hello') }])
+check('the zip ends with its directory record', sample.readUInt32LE(sample.length - 22), 0x06054b50)
+check('the zip lists one entry', sample.readUInt16LE(sample.length - 12), 1)
 check('desktop access is optional rather than installed globally', manifest.optional_host_permissions, ['http://*/*'])
 check('extension does not request all browsing data', JSON.stringify(manifest).includes('<all_urls>'), false)
 // Session storage by default; local storage only when the user opts in, so a

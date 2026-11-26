@@ -332,6 +332,7 @@ contextBridge.exposeInMainWorld('api', {
   getPracticeStats: () => ipcRenderer.invoke('practice:stats'),
   flagPracticeCard: (cardId, reason, note) => ipcRenderer.invoke('practice:flag', cardId, reason, note),
   unflagPracticeCard: (cardId) => ipcRenderer.invoke('practice:unflag', cardId),
+  pausePracticeCard: (cardId, paused = true) => ipcRenderer.invoke('practice:pause', cardId, paused),
   savePracticeSettings: (settings) => ipcRenderer.invoke('practice:saveSettings', settings),
   savePracticeNote: (cardId, note) => ipcRenderer.invoke('practice:saveNote', cardId, note),
   getPracticeExplanations: (cardId) => ipcRenderer.invoke('practice:explanations', cardId),

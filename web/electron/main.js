@@ -307,9 +307,13 @@ async function openDatabaseOrExplain() {
       const choice = buttons[response]
       if (choice === USE_RECOVERY_KEY) {
         const { clipboard } = require('electron')
-        const result = require('./services/dbCrypto').importRecoveryKey(clipboard.readText())
+        // Electron 44 made the clipboard asynchronous: readText() is a Promise.
+        // Unawaited, the recovery key handed over was "[object Promise]".
+        let pasted = ''
+        try { pasted = String(await clipboard.readText()) } catch { /* read as empty: reported as no key below */ }
+        const result = require('./services/dbCrypto').importRecoveryKey(pasted)
         // Whatever happened, the key should not linger on the clipboard.
-        try { if (/HIRO-RECOVERY-1:/.test(clipboard.readText())) clipboard.clear() } catch { /* best-effort */ }
+        try { if (/HIRO-RECOVERY-1:/.test(pasted)) await clipboard.clear() } catch { /* best-effort */ }
         note = result.success ? '' : `${result.reason}\n\n`
         continue
       }

@@ -105,6 +105,8 @@ module.exports = [
       'app/scripts/**/*.js',
       'app/babel.config.js',
       'app/app.config.js',
+      'app/targets/**/*.js',
+      'extension/scripts/**/*.js',
       'eslint.config.js',
     ],
     languageOptions: {

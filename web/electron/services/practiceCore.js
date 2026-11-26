@@ -75,11 +75,190 @@ function nextState(prev, rating, today) {
   }
 }
 
-// Days until the card returns for each button, for the button labels.
-function previewIntervals(prev, today) {
+// ─── FSRS ──────────────────────────────────────────────────────────
+//
+// The Free Spaced Repetition Scheduler (FSRS-5, the version Anki ships), as an
+// alternative to SM-2. Instead of one ease number it models each card's memory
+// with two: stability (days until the chance of recalling it falls to 90%)
+// and difficulty (1–10). Each rating updates both from how long it has been
+// since the last look, and the next review is set for when recall is expected
+// to drop to the chosen retention. With the published default weights it asks
+// for noticeably fewer reviews than SM-2 for the same recall.
+//
+// The SM-2 fields are still kept up to date alongside (nextState), so the
+// ease, repetitions and lapses that Cram, Insights and the stats read mean the
+// same under either scheduler, and switching back loses nothing.
+
+const FSRS_WEIGHTS = [
+  0.40255, 1.18385, 3.173, 15.69105, 7.1949, 0.5345, 1.4604, 0.0046, 1.54575, 0.1192,
+  1.01925, 1.9395, 0.11, 0.29605, 2.2698, 0.2315, 2.9898, 0.51655, 0.6621,
+]
+const FSRS_DECAY = -0.5
+const FSRS_FACTOR = 19 / 81
+const FSRS_GRADES = { again: 1, hard: 2, good: 3, easy: 4 }
+const ALGORITHMS = ['sm2', 'fsrs']
+const RETENTIONS = [0.8, 0.85, 0.9, 0.95]
+const DEFAULT_RETENTION = 0.9
+
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v))
+const round4 = v => Math.round(v * 10000) / 10000
+
+// The chance of recalling a card `elapsed` days after a review that left it
+// with this stability.
+function fsrsRetrievability(elapsed, stability) {
+  return Math.pow(1 + (FSRS_FACTOR * elapsed) / stability, FSRS_DECAY)
+}
+
+// Days until recall is expected to fall to `retention`. At 0.9 this is the
+// stability itself, by definition.
+function fsrsIntervalFor(stability, retention) {
+  return (stability / FSRS_FACTOR) * (Math.pow(retention, 1 / FSRS_DECAY) - 1)
+}
+
+const fsrsInitDifficulty = g => clamp(FSRS_WEIGHTS[4] - Math.exp(FSRS_WEIGHTS[5] * (g - 1)) + 1, 1, 10)
+const fsrsInitStability = g => Math.max(0.1, FSRS_WEIGHTS[g - 1])
+
+// Harder ratings push difficulty up, easier ones down, by less as it nears
+// either end; then it is pulled slightly back towards a new card's "Easy".
+function fsrsNextDifficulty(d, g) {
+  const w = FSRS_WEIGHTS
+  const next = d + (-w[6] * (g - 3) * (10 - d)) / 9
+  return clamp(w[7] * fsrsInitDifficulty(4) + (1 - w[7]) * next, 1, 10)
+}
+
+function fsrsRecallStability(d, s, r, g) {
+  const w = FSRS_WEIGHTS
+  const hard = g === 2 ? w[15] : 1
+  const easy = g === 4 ? w[16] : 1
+  return s * (1 + Math.exp(w[8]) * (11 - d) * Math.pow(s, -w[9]) * (Math.exp((1 - r) * w[10]) - 1) * hard * easy)
+}
+
+// A lapse never leaves a card more stable than it was.
+function fsrsForgetStability(d, s, r) {
+  const w = FSRS_WEIGHTS
+  return Math.min(s, w[11] * Math.pow(d, -w[12]) * (Math.pow(s + 1, w[13]) - 1) * Math.exp((1 - r) * w[14]))
+}
+
+// What FSRS knows about a card: its own stability and difficulty when it has
+// them, else a starting point read off its SM-2 history (a card scheduled 20
+// days out is about that stable; a low ease is a hard card). Null for a card
+// never seen.
+function fsrsMemory(prev, today) {
+  if (!prev) return null
+  const stability = Number(prev.stability)
+  const difficulty = Number(prev.difficulty)
+  const interval = Math.max(0, Number(prev.interval_days) || 0)
+  const lastDay = typeof prev.last_review_on === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(prev.last_review_on)
+    ? prev.last_review_on
+    : (prev.due_on ? addDays(prev.due_on, -interval) : today)
+  if (stability > 0 && difficulty >= 1) return { s: stability, d: clamp(difficulty, 1, 10), lastDay }
+  if (!(Number(prev.reps) > 0) && !(Number(prev.lapses) > 0)) return null
+  const ease = Number(prev.ease) || START_EASE
+  return {
+    s: Math.max(0.5, interval || 1),
+    d: clamp(10 - ((ease - MIN_EASE) / (START_EASE - MIN_EASE)) * 5, 1, 10),
+    lastDay,
+  }
+}
+
+// Memory after each rating, and the interval each would give, kept in order:
+// Hard never beyond Good, Good always beyond Hard, Easy always beyond Good.
+function fsrsOutcomes(prev, today, retention = DEFAULT_RETENTION) {
+  const target = RETENTIONS.includes(Number(retention)) ? Number(retention) : DEFAULT_RETENTION
+  const mem = fsrsMemory(prev, today)
   const out = {}
+  for (const [rating, g] of Object.entries(FSRS_GRADES)) {
+    let s, d
+    if (!mem) {
+      s = fsrsInitStability(g)
+      d = fsrsInitDifficulty(g)
+    } else {
+      const elapsed = Math.max(0, daysBetween(mem.lastDay, today))
+      const r = fsrsRetrievability(elapsed, mem.s)
+      s = g === 1 ? fsrsForgetStability(mem.d, mem.s, r) : fsrsRecallStability(mem.d, mem.s, r, g)
+      d = fsrsNextDifficulty(mem.d, g)
+    }
+    const days = g === 1 ? 1 : clamp(Math.round(fsrsIntervalFor(s, target)), 1, MAX_INTERVAL)
+    out[rating] = { stability: round4(s), difficulty: round4(d), interval: days }
+  }
+  out.hard.interval = Math.min(out.hard.interval, out.good.interval)
+  out.good.interval = Math.min(MAX_INTERVAL, Math.max(out.good.interval, out.hard.interval + 1))
+  out.easy.interval = Math.min(MAX_INTERVAL, Math.max(out.easy.interval, out.good.interval + 1))
+  return out
+}
+
+function nextStateFsrs(prev, rating, today, { retention } = {}) {
+  const sm2 = nextState(prev, rating, today)
+  const outcome = fsrsOutcomes(prev, today, retention)[rating]
+  return {
+    ...sm2,
+    interval_days: outcome.interval,
+    due_on: addDays(today, outcome.interval),
+    stability: outcome.stability,
+    difficulty: outcome.difficulty,
+    last_review_on: today,
+  }
+}
+
+// The next schedule under the user's chosen scheduler. `options` is
+// { algorithm: 'sm2' | 'fsrs', retention }.
+function scheduleNext(prev, rating, today, options = {}) {
+  if (!Object.prototype.hasOwnProperty.call(RATINGS, rating)) throw new Error(`Unknown rating: ${rating}`)
+  return options.algorithm === 'fsrs' ? nextStateFsrs(prev, rating, today, options) : nextState(prev, rating, today)
+}
+
+// Days until the card returns for each button, for the button labels.
+function previewIntervals(prev, today, options = {}) {
+  const out = {}
+  if (options.algorithm === 'fsrs') {
+    const outcomes = fsrsOutcomes(prev, today, options.retention)
+    for (const r of Object.keys(RATINGS)) out[r] = outcomes[r].interval
+    return out
+  }
   for (const r of Object.keys(RATINGS)) out[r] = nextState(prev, r, today).interval_days
   return out
+}
+
+// ─── Cards that keep being forgotten ───────────────────────────────
+//
+// A card missed this many times is not going to stick by being shown again:
+// the answer needs rewording, splitting, an example, or a break. The app says
+// so on the card and offers those, rather than letting it eat every day's set.
+const LEECH_LAPSES = 5
+const isLeech = state => Number(state?.lapses) >= LEECH_LAPSES
+
+// ─── Practice calendar ─────────────────────────────────────────────
+//
+// The last `weeks` weeks of ratings as a grid, Monday first, ending with the
+// current week: counts[i] is the number of ratings on day start + i, and -1
+// for a day still to come. Drawn the same way on the desktop and the phone.
+function practiceCalendar(rows, today, weeks = 26) {
+  const n = clamp(Math.floor(Number(weeks)) || 26, 1, 53)
+  const start = addDays(mondayOf(today), -(n - 1) * 7)
+  const byDay = new Map()
+  for (const r of rows || []) {
+    const count = Math.max(0, Math.floor(Number(r?.count)) || 0)
+    if (typeof r?.day === 'string') byDay.set(r.day.slice(0, 10), (byDay.get(r.day.slice(0, 10)) || 0) + count)
+  }
+  const counts = []
+  let activeDays = 0, total = 0, max = 0
+  for (let i = 0; i < n * 7; i++) {
+    const day = addDays(start, i)
+    if (day > today) { counts.push(-1); continue }
+    const c = byDay.get(day) || 0
+    counts.push(c)
+    if (c > 0) activeDays++
+    total += c
+    max = Math.max(max, c)
+  }
+  return { start, weeks: n, counts, activeDays, total, max }
+}
+
+// 0 (nothing) to 4 (a busy day), for the shade of a calendar square.
+function calendarLevel(count, max) {
+  if (!(count > 0)) return 0
+  if (!(max > 0)) return 1
+  return clamp(Math.ceil((count / max) * 4), 1, 4)
 }
 
 // Fisher–Yates with an injectable random source, so tests can pin the order.
@@ -711,6 +890,8 @@ function exportCards(cards, format) {
 
 module.exports = {
   RATINGS, START_EASE, MIN_EASE, MAX_INTERVAL, DIFFICULTIES,
+  ALGORITHMS, RETENTIONS, DEFAULT_RETENTION, FSRS_WEIGHTS, scheduleNext, nextStateFsrs, fsrsOutcomes, fsrsMemory, fsrsRetrievability,
+  LEECH_LAPSES, isLeech, practiceCalendar, calendarLevel,
   cramSet, exportCards, blocksHtml,
   addDays, nextState, previewIntervals, shuffle, buildSet, dayStats, mondayOf, daysBetween, weakTopics,
   cleanQuestion, cleanBank, answerBlocks, markdownBlocks, CATEGORIES, normalizeCategory, parseGeneratedQuestions,

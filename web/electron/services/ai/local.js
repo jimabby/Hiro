@@ -12,7 +12,7 @@
 //
 // Pointing this at localhost closes it: nothing leaves the machine, there is no
 // per-token cost, and no rate limit to back off from. The trade is quality —
-// a 7B model tailors a résumé noticeably less well than gpt-4o — so this is
+// a 7B model tailors a résumé noticeably less well than a frontier model — so this is
 // offered as a choice rather than a default.
 //
 // The wire protocol is identical to OpenAI's, so this is a thin descriptor over

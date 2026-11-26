@@ -652,6 +652,9 @@ function load() {
     const parsed = JSON.parse(raw)
     loadError = null
     const value = decryptForLoad({ ...DEFAULTS, ...parsed })
+    // A writing model the provider has since switched off reads as its
+    // successor, so Settings shows (and the next save keeps) what really runs.
+    value.aiWritingModel = require('./ai/models').migrateWritingModels(value.aiWritingModel)
     if (sig) cache = { ...sig, value, loadError, secretError }
     return { ...value }
   } catch (err) {

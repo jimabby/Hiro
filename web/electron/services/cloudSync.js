@@ -1024,6 +1024,7 @@ async function syncPractice(c, { practice = require('./practice') } = {}) {
         if (event?.type === 'rate') result = practice.rate(String(event.cardId || ''), String(event.rating || ''), { now })
         else if (event?.type === 'note') result = practice.saveNote(String(event.cardId || ''), typeof event.note === 'string' ? event.note : '')
         else if (event?.type === 'flag') result = practice.flag(String(event.cardId || ''), String(event.reason || ''), typeof event.note === 'string' ? event.note : '')
+        else if (event?.type === 'pause') result = practice.pause(String(event.cardId || ''), event.paused !== false)
         else result = { success: false, error: 'unknown event' }
       } catch (err) {
         result = { success: false, error: err?.message || String(err) }

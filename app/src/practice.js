@@ -66,6 +66,13 @@ export function applyPendingPractice(snapshot, events = []) {
       card.flagged = true
       queue = queue.filter(id => id !== card.id)
       pending++
+    } else if (e.type === 'pause') {
+      // Resuming waits for the desktop, which decides where the card goes.
+      if (e.paused !== false) {
+        card.paused = true
+        queue = queue.filter(id => id !== card.id)
+      }
+      pending++
     }
   }
   out.queue = queue
@@ -117,6 +124,58 @@ export function currentCard(data) {
   return data.cards.find(c => c.id === data.queue[0]) || null
 }
 
+// ─── Swipe to rate ────────────────────────────────────────────────
+//
+// Once the answer is showing, a card dragged right is Good and dragged left is
+// Again: the two answers that matter most, one thumb movement each. Hard and
+// Easy stay as buttons. A drag past a third of the card's width counts, or a
+// quick flick that has already moved a little; anything less springs back.
+export const SWIPE_RATINGS = { right: 'good', left: 'again' }
+
+export function swipeRating(dx, vx, width) {
+  const w = Number(width) > 0 ? Number(width) : 320
+  const far = Math.abs(dx) >= w / 3
+  const flick = Math.abs(vx) >= 0.6 && Math.abs(dx) >= 40 && Math.sign(vx) === Math.sign(dx)
+  if (!far && !flick) return null
+  return dx > 0 ? SWIPE_RATINGS.right : SWIPE_RATINGS.left
+}
+
+// How far a drag has got towards counting, 0 to 1, for fading in the label.
+export function swipeProgress(dx, width) {
+  const w = Number(width) > 0 ? Number(width) : 320
+  return Math.max(0, Math.min(1, Math.abs(dx) / (w / 3)))
+}
+
+// ─── Practice calendar ─────────────────────────────────────────────
+//
+// The desktop sends half a year (practiceCore.practiceCalendar); a phone screen
+// shows the most recent weeks of it. Returns the same shape, cut to `weeks`.
+export function calendarTail(calendar, weeks = 16) {
+  if (!calendar || !Array.isArray(calendar.counts) || !calendar.start) return null
+  const have = Math.floor(calendar.counts.length / 7)
+  const n = Math.max(1, Math.min(have, Math.floor(Number(weeks)) || 16))
+  const skip = (have - n) * 7
+  const counts = calendar.counts.slice(skip, skip + n * 7)
+  const [y, m, d] = String(calendar.start).split('-').map(Number)
+  const first = new Date(y, m - 1, d + skip)
+  const start = `${first.getFullYear()}-${String(first.getMonth() + 1).padStart(2, '0')}-${String(first.getDate()).padStart(2, '0')}`
+  const seen = counts.filter(c => c >= 0)
+  return {
+    start,
+    weeks: n,
+    counts,
+    max: Math.max(0, ...seen),
+    activeDays: seen.filter(c => c > 0).length,
+    total: seen.reduce((a, b) => a + b, 0),
+  }
+}
+
+export function calendarShade(count, max) {
+  if (!(count > 0)) return 0
+  if (!(max > 0)) return 1
+  return Math.min(4, Math.max(1, Math.ceil((count / max) * 4)))
+}
+
 // ─── Read aloud ────────────────────────────────────────────────────
 //
 // Text blocks → what the phone's text-to-speech says. Code is not read out
@@ -131,6 +190,28 @@ export function speechText(blocks) {
     parts.push(/[.!?:;]$/.test(text) ? text : `${text}.`)
   }
   return parts.join(' ')
+}
+
+// Android's text-to-speech refuses anything longer than its input limit
+// (Speech.maxSpeechInputLength, 4,000 characters on most phones) and says
+// nothing at all. Bank answers are short, but an imported or AI-written answer
+// can be twice that. So long text is split into pieces under the limit, at a
+// sentence end where one is near, else at a space, and the pieces are queued.
+export function speechChunks(text, max = 4000) {
+  const limit = Math.max(50, Math.floor(Number(max)) || 4000)
+  const out = []
+  let rest = String(text || '').trim()
+  while (rest.length > limit) {
+    const window = rest.slice(0, limit)
+    let cut = Math.max(window.lastIndexOf('. '), window.lastIndexOf('! '), window.lastIndexOf('? '))
+    if (cut < limit / 2) cut = window.lastIndexOf(' ')
+    else cut += 1
+    if (cut <= 0) cut = limit
+    out.push(rest.slice(0, cut).trim())
+    rest = rest.slice(cut).trim()
+  }
+  if (rest) out.push(rest)
+  return out
 }
 
 // ─── Home-screen widget ────────────────────────────────────────────

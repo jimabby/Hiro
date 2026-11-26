@@ -215,12 +215,21 @@ function topicList(cards) {
   return [...counts].map(([name, count]) => ({ name, count }))
 }
 
+// `algorithm` is the scheduler ('sm2', the default, or 'fsrs'); `retention` is
+// how likely FSRS aims for a card to be remembered when it comes back.
 function settingsFrom(cfg, known) {
   const raw = cfg?.practice || {}
   const n = Math.floor(Number(raw.dailyCount))
   const topics = Array.isArray(raw.topics) ? raw.topics.filter(t => typeof t === 'string' && (!known || known.has(t))) : []
-  return { topics, dailyCount: Number.isFinite(n) ? Math.min(MAX_COUNT, Math.max(1, n)) : DEFAULT_COUNT }
+  return {
+    topics,
+    dailyCount: Number.isFinite(n) ? Math.min(MAX_COUNT, Math.max(1, n)) : DEFAULT_COUNT,
+    algorithm: core.ALGORITHMS.includes(raw.algorithm) ? raw.algorithm : 'sm2',
+    retention: core.RETENTIONS.includes(Number(raw.retention)) ? Number(raw.retention) : core.DEFAULT_RETENTION,
+  }
 }
+
+const schedulerOf = settings => ({ algorithm: settings.algorithm, retention: settings.retention })
 
 const filterKey = s => JSON.stringify([...s.topics].sort())
 const matches = (card, topics) => topics.length === 0 || topics.includes(topicKey(card))
@@ -238,8 +247,9 @@ function snapshot({ now = new Date(), cfg = configService.load() } = {}) {
   const storyLinks = new Map()
   for (const l of database.getPracticeStoryLinks()) storyLinks.set(l.card_id, [...(storyLinks.get(l.card_id) || []), l.story_id])
   const reviewedToday = new Set(database.getPracticeReviewedOn(today))
-  const eligible = cards.filter(c => !flags.has(c.id) && matches(c, settings.topics))
-  return { today, cards, topics, settings, states, flags, notes, explained, storyLinks, reviewedToday, eligible }
+  const paused = new Set(database.getPracticePaused().map(p => p.card_id))
+  const eligible = cards.filter(c => !flags.has(c.id) && !paused.has(c.id) && matches(c, settings.topics))
+  return { today, cards, topics, settings, states, flags, paused, notes, explained, storyLinks, reviewedToday, eligible }
 }
 
 // ─── Interview countdown ───────────────────────────────────────────
@@ -255,7 +265,7 @@ function countdownFor(snap) {
   const nearest = new Map()
   for (const r of rows) if (!nearest.has(r.application_id)) nearest.set(r.application_id, r)
   return [...nearest.values()].map(r => {
-    const cards = snap.cards.filter(c => c.deck === 'job' && c.applicationId === r.application_id && !snap.flags.has(c.id))
+    const cards = snap.cards.filter(c => c.deck === 'job' && c.applicationId === r.application_id && !snap.flags.has(c.id) && !snap.paused.has(c.id))
     const left = cards.filter(c => {
       if (snap.reviewedToday.has(c.id)) return false
       const s = snap.states.get(c.id)
@@ -282,10 +292,12 @@ const view = (card, snap) => {
     blocks: card.format === 'html' ? undefined : core.answerBlocks(card.answer, card.format),
     state: state ? { ease: state.ease, interval: state.interval_days, reps: state.reps, lapses: state.lapses, dueOn: state.due_on } : null,
     flag: snap.flags.get(card.id) || null,
+    paused: snap.paused.has(card.id),
+    leech: core.isLeech(state),
     note: snap.notes.get(card.id)?.note || '',
     explained: snap.explained.has(card.id),
     storyIds: snap.storyLinks.get(card.id) || [],
-    intervals: core.previewIntervals(state, snap.today),
+    intervals: core.previewIntervals(state, snap.today, schedulerOf(snap.settings)),
   }
 }
 
@@ -309,7 +321,7 @@ function today({ now = new Date(), cfg = configService.load(), rng = Math.random
   const byId = new Map(snap.cards.map(c => [c.id, c]))
   const set = row.cardIds.filter(id => byId.has(id))
   // Cards missed earlier today, to be seen once more after the rest.
-  const relearn = (row.relearn || []).filter(id => set.includes(id) && done.has(id) && !snap.flags.has(id))
+  const relearn = (row.relearn || []).filter(id => set.includes(id) && done.has(id) && !snap.flags.has(id) && !snap.paused.has(id))
   const again = new Set(relearn)
   const cards = set.map(id => {
     const card = { ...view(byId.get(id), snap), done: done.has(id), relearn: again.has(id) }
@@ -321,7 +333,8 @@ function today({ now = new Date(), cfg = configService.load(), rng = Math.random
     }
     return card
   })
-  const queue = [...cards.filter(c => !c.done && !c.flag).map(c => c.id), ...relearn]
+  // A card paused (or reported) during the day leaves the queue at once.
+  const queue = [...cards.filter(c => !c.done && !c.flag && !c.paused).map(c => c.id), ...relearn]
   return {
     day,
     settings,
@@ -363,7 +376,7 @@ function findCard(cardId) {
   return found || loadBank().find(c => c.id === cardId) || null
 }
 
-function rate(cardId, rating, { now = new Date() } = {}) {
+function rate(cardId, rating, { now = new Date(), cfg = configService.load() } = {}) {
   if (!Object.prototype.hasOwnProperty.call(core.RATINGS, rating)) return { success: false, error: 'Unknown rating.' }
   if (!findCard(cardId)) return { success: false, error: 'That card no longer exists.' }
   const day = database.localDateString(now)
@@ -391,7 +404,7 @@ function rate(cardId, rating, { now = new Date() } = {}) {
   if (prev && database.getPracticeReviewedOn(day).includes(cardId)) {
     return { success: true, duplicate: true, state: publicState(prev) }
   }
-  const state = core.nextState(prev, rating, day)
+  const state = core.scheduleNext(prev, rating, day, schedulerOf(settingsFrom(cfg)))
   database.savePracticeReview({ cardId, state, rating, day })
   // Missed: it comes back at the end of today's cards, while the answer is
   // still fresh enough to fix. Only for a card in today's set.
@@ -406,6 +419,18 @@ function flag(cardId, reason, note = '') {
   if (!findCard(cardId)) return { success: false, error: 'That card no longer exists.' }
   database.setPracticeFlag(cardId, reason, String(note || '').trim().slice(0, 500))
   return { success: true }
+}
+
+// Takes a card out of the daily set, or puts it back. For the card missed again
+// and again: set aside until the user has reworded it, added a note, or is
+// simply ready for it. Its schedule is kept, so resuming picks up where it was.
+function pause(cardId, paused = true) {
+  if (typeof cardId !== 'string' || !CARD_ID.test(cardId)) return { success: false, error: 'Unknown card.' }
+  // Resuming is allowed for a card that has since gone (a regenerated job
+  // deck), so the leftover row can be cleared.
+  if (paused && !findCard(cardId)) return { success: false, error: 'That card no longer exists.' }
+  database.setPracticePaused(cardId, Boolean(paused))
+  return { success: true, paused: Boolean(paused) }
 }
 
 function unflag(cardId) {
@@ -773,7 +798,10 @@ function insights({ now = new Date(), cfg = configService.load(), days = 90, ski
     .filter(s => s.lapses > 0 && byId.has(s.card_id) && !snap.flags.has(s.card_id))
     .sort((a, b) => b.lapses - a.lapses || a.ease - b.ease)
     .slice(0, 8)
-    .map(s => { const c = byId.get(s.card_id); return { id: c.id, question: c.question, topic: c.topic, topicKey: topicKey(c), category: c.category, deck: c.deck, lapses: s.lapses } })
+    .map(s => {
+      const c = byId.get(s.card_id)
+      return { id: c.id, question: c.question, topic: c.topic, topicKey: topicKey(c), category: c.category, deck: c.deck, lapses: s.lapses, leech: core.isLeech(s), paused: snap.paused.has(c.id) }
+    })
 
   const again = reviews.filter(r => r.rating === 'again').length
   return {
@@ -868,7 +896,7 @@ const CRAM_MAX = 50
 function cram({ topic, count, now = new Date(), cfg = configService.load(), rng = Math.random } = {}) {
   if (typeof topic !== 'string' || !topic.trim()) return { success: false, error: 'Choose a topic to cram.' }
   const snap = snapshot({ now, cfg })
-  const cards = snap.cards.filter(c => !snap.flags.has(c.id) && topicKey(c) === topic)
+  const cards = snap.cards.filter(c => !snap.flags.has(c.id) && !snap.paused.has(c.id) && topicKey(c) === topic)
   if (!cards.length) return { success: false, error: 'There are no cards in that topic.' }
   const n = Math.floor(Number(count))
   const size = Number.isFinite(n) && n > 0 ? Math.min(CRAM_MAX, n) : CRAM_DEFAULT
@@ -907,6 +935,9 @@ function exportCards({ ids, format, now = new Date(), cfg = configService.load()
   return { success: true, count: cards.length, extension: EXPORT_EXTENSIONS[format], text: core.exportCards(cards, format) }
 }
 
+// The practice calendar: half a year of days, the span a habit shows in.
+const CALENDAR_WEEKS = 26
+
 // The habit the MVP is measured on: practising on at least 4 days a week.
 function stats({ now = new Date(), cfg = configService.load() } = {}) {
   const snap = snapshot({ now, cfg })
@@ -923,6 +954,10 @@ function stats({ now = new Date(), cfg = configService.load() } = {}) {
   return {
     streak, daysThisWeek, practisedToday, weeklyGoalDays: WEEKLY_GOAL_DAYS,
     due, learned, seen, total: snap.eligible.length, flagged: snap.flags.size,
+    paused: snap.paused.size,
+    leeches: snap.cards.filter(c => core.isLeech(snap.states.get(c.id)) && !snap.flags.has(c.id) && !snap.paused.has(c.id)).length,
+    algorithm: snap.settings.algorithm,
+    calendar: core.practiceCalendar(database.getPracticeReviewCounts(core.addDays(snap.today, -CALENDAR_WEEKS * 7)), snap.today, CALENDAR_WEEKS),
   }
 }
 
@@ -938,6 +973,7 @@ function forPhone({ now = new Date(), cfg = configService.load(), day } = {}) {
       id: c.id, deck: c.deck, topic: c.topic, question: c.question, difficulty: c.difficulty,
       versions: c.versions, category: c.category || null, blocks: core.answerBlocks(c.answer, c.format),
       intervals: c.intervals, isNew: !c.state, done: c.done, relearn: Boolean(c.relearn), flagged: Boolean(c.flag),
+      paused: Boolean(c.paused), leech: Boolean(c.leech), lapses: c.state?.lapses || 0,
       note: c.note || '', explained: Boolean(c.explained),
       stories: (c.storyIds || []).map(id => allStories.get(id)).filter(Boolean)
         .map(s => ({ id: s.id, title: s.title, situation: s.situation, task: s.task, action: s.action, result: s.result })),
@@ -952,16 +988,19 @@ function forPhone({ now = new Date(), cfg = configService.load(), day } = {}) {
   }
 }
 
-function saveSettings(input) {
+// Merged over what is saved: "Practise this deck" sends topics and a count,
+// and must not reset the scheduler the user chose.
+function saveSettings(input, { cfg = configService.load() } = {}) {
   const known = new Set(topicList(allCards()).map(t => t.name))
-  const settings = settingsFrom({ practice: input }, known)
+  const settings = settingsFrom({ practice: { ...(cfg.practice || {}), ...(input || {}) } }, known)
   configService.update({ practice: settings })
   return { success: true, settings }
 }
 
 module.exports = {
   JOB_TOPIC, DEFAULT_COUNT, MAX_COUNT, FLAG_REASONS, WEEKLY_GOAL_DAYS, DECK_SIZES,
-  loadBank, resetBank, jobCards, deckCards, today, more, rate, flag, unflag, bank, stats, saveSettings, forPhone,
+  loadBank, resetBank, jobCards, deckCards, today, more, rate, flag, unflag, pause, bank, stats, saveSettings, forPhone,
+  CALENDAR_WEEKS,
   saveNote, explanations, explain, clearExplanations, generateDeck, decks, renameDeck, deleteDeck,
   BANK_URL, bankInfo, refreshBank, COUNTDOWN_DAYS, prepareJobDeck,
   stories, saveStory, deleteStory, linkStory, unlinkStory, insights,

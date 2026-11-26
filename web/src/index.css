@@ -883,6 +883,27 @@ input[type="checkbox"] {
 .practice-progress > div { height: 100%; background: var(--accent); transition: width 0.3s var(--ease); }
 .practice-tools { display: flex; gap: 6px; flex-wrap: wrap; }
 .practice-relearn { font-size: 12.5px; color: var(--text); background: var(--accent-soft); border-radius: var(--radius-sm); padding: 8px 10px; margin-bottom: 12px; }
+/* A card missed again and again: what to do about it, above the card's tools. */
+.practice-leech {
+  font-size: 12.5px; color: var(--text); background: var(--yellow-soft);
+  border: 1px solid var(--yellow-soft); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 10px;
+}
+/* Practice calendar: one square a day, Monday at the top, one hue darker for
+   busier days. Squares are 11px with a 3px gap. */
+.practice-calendar { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+.practice-cal-days { display: grid; grid-template-rows: 14px repeat(7, 11px); gap: 3px; font-size: 10px; line-height: 11px; color: var(--text-muted); }
+.practice-cal-months { display: grid; grid-auto-flow: column; grid-auto-columns: 11px; gap: 3px; height: 14px; margin-bottom: 3px; font-size: 10px; color: var(--text-muted); }
+.practice-cal-months > span { white-space: nowrap; overflow: visible; }
+.practice-cal-grid { display: grid; grid-template-rows: repeat(7, 11px); grid-auto-flow: column; grid-auto-columns: 11px; gap: 3px; }
+.practice-cal-cell { display: inline-block; width: 11px; height: 11px; border-radius: 2px; background: var(--bg-subtle); box-shadow: inset 0 0 0 1px var(--border); }
+.practice-cal-cell.l1 { background: color-mix(in srgb, var(--accent) 35%, transparent); box-shadow: none; }
+.practice-cal-cell.l2 { background: color-mix(in srgb, var(--accent) 55%, transparent); box-shadow: none; }
+.practice-cal-cell.l3 { background: color-mix(in srgb, var(--accent) 78%, transparent); box-shadow: none; }
+.practice-cal-cell.l4 { background: var(--accent); box-shadow: none; }
+.practice-cal-cell.future { background: transparent; box-shadow: none; }
+.practice-cal-legend { display: flex; align-items: center; gap: 3px; justify-content: flex-end; font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+.practice-cal-legend > .practice-cal-cell { margin: 0 1px; }
+.practice-cal-list { margin: 8px 0 0; padding-left: 18px; font-size: 12.5px; columns: 2; max-height: 220px; overflow-y: auto; }
 .practice-panel {
   margin-top: 12px; padding: 12px 14px;
   border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface2);
@@ -891,7 +912,7 @@ input[type="checkbox"] {
   margin-bottom: 10px; padding: 10px 12px; border-radius: var(--radius-sm);
   background: var(--accent-soft); border: 1px solid var(--accent-soft);
 }
-.practice-filters { display: grid; grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(130px, 170px)); gap: 8px; }
+.practice-filters { display: grid; grid-template-columns: minmax(220px, 1fr) repeat(4, minmax(120px, 170px)); gap: 8px; }
 @media (max-width: 900px) { .practice-filters { grid-template-columns: 1fr 1fr; } }
 .practice-item { padding: 12px 16px; }
 .practice-item > summary { cursor: pointer; display: flex; flex-direction: column; gap: 2px; list-style: none; }

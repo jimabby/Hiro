@@ -712,6 +712,10 @@ const SCHEMA_MIGRATIONS = [
     name: 'practice relearning',
     up: () => { createPracticeTables(); ensureColumn('practice_days', 'relearn', "TEXT NOT NULL DEFAULT '[]'") },
   },
+  // FSRS scheduling (stability, difficulty and the day of the last review, kept
+  // beside the SM-2 fields so switching back and forth loses nothing) and
+  // cards the user paused. createPracticeTables adds both.
+  { version: 5, name: 'practice FSRS state and paused cards', up: () => createPracticeTables() },
 ]
 const SCHEMA_VERSION = SCHEMA_MIGRATIONS[SCHEMA_MIGRATIONS.length - 1].version
 
@@ -873,6 +877,19 @@ function createPracticeTables() {
     card_id TEXT NOT NULL,
     story_id INTEGER NOT NULL,
     PRIMARY KEY (card_id, story_id)
+  )`)
+  // FSRS: memory stability (days until recall falls to 90%), difficulty (1–10)
+  // and the day of the last scheduled review. Null for a card only SM-2 has
+  // seen; services/practiceCore.fsrsFromSm2 starts one from its SM-2 state.
+  ensureColumn('practice_cards', 'stability', 'REAL')
+  ensureColumn('practice_cards', 'difficulty', 'REAL')
+  ensureColumn('practice_cards', 'last_review_on', 'TEXT')
+  // Cards taken out of the daily set without reporting anything wrong with
+  // them: usually one missed again and again, put aside until the user is
+  // ready for it. Unlike a report, nothing about the card is in question.
+  db.run(`CREATE TABLE IF NOT EXISTS practice_paused (
+    card_id TEXT PRIMARY KEY,
+    paused_at TEXT DEFAULT (datetime('now'))
   )`)
 }
 
@@ -2976,9 +2993,10 @@ function getPracticeStates() {
 function savePracticeReview({ cardId, state, rating, day }) {
   batch(() => {
     run(`INSERT OR REPLACE INTO practice_cards
-           (card_id, ease, interval_days, reps, lapses, due_on, last_rating, last_reviewed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-    [cardId, state.ease, state.interval_days, state.reps, state.lapses, state.due_on, rating])
+           (card_id, ease, interval_days, reps, lapses, due_on, last_rating, last_reviewed_at, stability, difficulty, last_review_on)
+         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)`,
+    [cardId, state.ease, state.interval_days, state.reps, state.lapses, state.due_on, rating,
+      state.stability ?? null, state.difficulty ?? null, state.last_review_on ?? day])
     run('INSERT INTO practice_reviews (card_id, rating, reviewed_on) VALUES (?, ?, ?)', [cardId, rating, day])
   })
 }
@@ -3011,6 +3029,20 @@ function setPracticeRelearn(day, cardIds) {
 
 function getPracticeReviewedOn(day) {
   return query('SELECT DISTINCT card_id FROM practice_reviews WHERE reviewed_on = ?', [day]).map(r => r.card_id)
+}
+
+// Ratings per day since `sinceDay`, for the practice calendar.
+function getPracticeReviewCounts(sinceDay) {
+  return query('SELECT reviewed_on AS day, COUNT(*) AS count FROM practice_reviews WHERE reviewed_on >= ? GROUP BY reviewed_on ORDER BY reviewed_on', [sinceDay])
+}
+
+function getPracticePaused() {
+  return query('SELECT card_id, paused_at FROM practice_paused ORDER BY paused_at DESC')
+}
+
+function setPracticePaused(cardId, paused) {
+  if (paused) run('INSERT OR IGNORE INTO practice_paused (card_id) VALUES (?)', [cardId])
+  else run('DELETE FROM practice_paused WHERE card_id = ?', [cardId])
 }
 
 function getPracticeReviewDays(sinceDay) {
@@ -5294,7 +5326,7 @@ module.exports = {
   getApplicationsAwaitingReply, setLastReplyUid, markStaleApplications, OPEN_STATUSES,
   saveInterviewPrep, getInterviewPrep, deleteInterviewPrep, getInterviewPrepWithAnswers,
   getPracticeStates, savePracticeReview, getPracticeDay, savePracticeDay, getPracticeReviewedOn,
-  getPracticeReviewDays, getPracticeFlags, setPracticeFlag, clearPracticeFlag, getPracticeJobApplications,
+  getPracticeReviewDays, getPracticeReviewCounts, getPracticePaused, setPracticePaused, getPracticeFlags, setPracticeFlag, clearPracticeFlag, getPracticeJobApplications,
   getPracticeNotes, savePracticeNote, getPracticeExplanations, addPracticeExplanation, clearPracticeExplanations,
   getPracticeExplainedIds, getPracticeDecks, getPracticeDeckCards, createPracticeDeck, renamePracticeDeck, deletePracticeDeck,
   getPracticeReviewsSince, getPracticeStories, savePracticeStory, deletePracticeStory, getPracticeStoryLinks,

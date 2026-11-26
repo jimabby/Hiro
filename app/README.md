@@ -71,6 +71,40 @@ Your phone and computer must be on the same network.
 - **Import a job** (paired with the desktop) — share a job link into Hiro from another app (Android), open `hiro://import?url=<encoded URL>` (any platform, e.g. from an iOS Shortcut), or tap **Import job from clipboard** on the Dashboard. It lands in the desktop's Needs Attention list through `POST /api/import-job`, the route the browser extension uses, and waits on the phone if the desktop is out of reach. The iOS share-sheet entry is not built yet: it needs an App Group and a share-extension target (`disableIOS` on the `expo-share-intent` plugin in app.json)
 - **Offline** — the last Applications list and Dashboard figures are kept on the phone (titles, companies, statuses and counts only — never tokens, documents or notes) and shown with a "cached · 5 min ago" badge when the desktop or cloud can't be reached, refreshing on their own when it is back
 - **Add to calendar** — on each upcoming interview on the Dashboard, in the phone's time zone; a date-only interview becomes an all-day event
+- **Practice** — the desktop's daily interview cards. Show the answer, then rate it with the buttons or **swipe the card: right for Good, left for Again** (a label fades in on the side it is heading, and the phone ticks as the drag crosses the line; screen readers get both as card actions). A card missed five or more times leads with what to do about it: a different explanation from the AI, the answer in your own words, or **Pause** to set it aside until you resume it on the desktop. The done screen shows the last 16 weeks of practice days. **Read aloud** reads each question and answer; long answers are split so Android's speech engine reads all of it. Cards rated away from home Wi-Fi go through the cloud and reach the desktop when it next syncs
+- **Practice widget** (Android) — cards left today, the streak and the week, on the home screen. Counts only. An iOS widget is written (`targets/practice-widget`) but not switched on yet; see [iOS widget](#ios-widget)
+
+## iOS widget
+
+The Practice widget's iOS half is in `targets/practice-widget/` (SwiftUI and
+WidgetKit, iOS 17+). It is off until three things are in place, so nothing
+about today's builds changes:
+
+1. Install the plugin that builds the widget extension and shares data with it:
+   `npm install @bacons/apple-targets` (in `app/`).
+2. Give EAS your Apple team: set `APPLE_TEAM_ID` (Apple Developer → Membership)
+   in the build environment, for example in `eas.json` → `build.production.env`.
+   `app.config.js` then adds the plugin, the team and the App Group
+   `group.com.cessleigh.hiro`; EAS registers the group with Apple on the next
+   build.
+3. Write the summary to the App Group. In `src/widget/index.js`, after the
+   Android `AsyncStorage` write in `updatePracticeWidget` (and in
+   `clearPracticeWidget`), add:
+
+   ```js
+   if (Platform.OS === 'ios') {
+     const { ExtensionStorage } = require('@bacons/apple-targets')
+     new ExtensionStorage('group.com.cessleigh.hiro').set('hiro.practiceWidget.v1', JSON.stringify(summary)) // .remove(key) when clearing
+     ExtensionStorage.reloadWidget()
+   }
+   ```
+
+   and let `supported()` return true on iOS as well. (This step waits for step
+   1 because the bundler refuses an import of a package that is not installed.)
+
+The widget reads that summary and words it exactly as the Android widget does
+(`widgetView` in `src/practice.js`, ported in `PracticeWidget.swift`), and
+redraws just after midnight so yesterday's numbers are never shown as today's.
 
 ## Desktop contract for queued requests
 

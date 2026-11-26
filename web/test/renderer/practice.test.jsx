@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, fireEvent, screen, waitFor } from '@testing-library/react'
 import SafeAnswer from '../../src/components/SafeAnswer'
-import Practice, { formatInterval, ratingWhen } from '../../src/pages/Practice'
+import Practice, { formatInterval, ratingWhen, PracticeCalendar, calendarShade } from '../../src/pages/Practice'
 import Setup from '../../src/pages/Setup'
 import App from '../../src/App'
 
@@ -124,14 +124,44 @@ describe('Practice page', () => {
     expect(screen.queryByText(/Card 3 of 2/)).toBeNull()
   })
 
-  it('leaves digits alone before the answer is shown', async () => {
+  it('does not rate before the answer is shown, nor let an early digit switch pages', async () => {
     window.api.getPracticeToday = vi.fn(async () => dayWith([card()]))
     window.api.getPracticeStats = vi.fn(async () => stats)
     window.api.ratePracticeCard = vi.fn()
     render(<Practice active showToast={() => {}} />)
     await screen.findByText('What is Node.js?')
-    expect(fireEvent.keyDown(window, { key: '2' })).toBe(true)
+    // Marked handled (false), so the app-wide 1–9 page shortcuts leave it alone.
+    expect(fireEvent.keyDown(window, { key: '2' })).toBe(false)
     expect(window.api.ratePracticeCard).not.toHaveBeenCalled()
+    expect(screen.queryByText('runtime')).toBeNull()
+  })
+
+  it('reveals with Space even while a button outside the card has focus', async () => {
+    window.api.getPracticeToday = vi.fn(async () => dayWith([card()]))
+    window.api.getPracticeStats = vi.fn(async () => stats)
+    window.api.cramPractice = vi.fn(async (topic) => ({ success: true, topic, total: 2, cards: [card({ id: 'node-010', question: 'What is libuv?' })] }))
+    render(<Practice active showToast={() => {}} />)
+    await screen.findByText('What is Node.js?')
+    fireEvent.click(screen.getByRole('tab', { name: 'Cram' }))
+    const start = await screen.findByRole('button', { name: 'Start' })
+    fireEvent.click(start)
+    expect(await screen.findByText('What is libuv?')).toBeTruthy()
+    // Start (now "Start again") keeps focus after the click. Space must show
+    // the answer, not press it and restart the session.
+    const again = screen.getByRole('button', { name: 'Start again' })
+    again.focus()
+    expect(fireEvent.keyDown(window, { key: ' ' })).toBe(false)
+    expect(await screen.findByText('runtime')).toBeTruthy()
+    expect(window.api.cramPractice).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves Space to a button on the card itself', async () => {
+    window.api.getPracticeToday = vi.fn(async () => dayWith([card()]))
+    window.api.getPracticeStats = vi.fn(async () => stats)
+    render(<Practice active showToast={() => {}} />)
+    await screen.findByText('What is Node.js?')
+    screen.getByRole('button', { name: /Show answer/ }).focus()
+    expect(fireEvent.keyDown(window, { key: ' ' })).toBe(true)
   })
 
   it('reports a card with a reason and note', async () => {
@@ -493,5 +523,110 @@ describe('Practice page', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Make cards' }))
     await waitFor(() => expect(window.api.practiceDeckFromUrl).toHaveBeenCalledWith({ url: 'https://example.com/event-loop', title: '', count: 10 }))
     expect(await screen.findByText(/“Event loop explained” is ready: 12 questions/)).toBeTruthy()
+  })
+})
+
+describe('Practice: struggling cards, pausing, scheduler and calendar', () => {
+  it('offers ways out on a card missed five times, and pauses it', async () => {
+    let today = dayWith([card({ leech: true, state: { ease: 1.3, interval: 1, reps: 0, lapses: 6, dueOn: '2026-11-21' } }), card({ id: 'node-002', question: 'What is a Buffer?' })])
+    window.api.getPracticeToday = vi.fn(async () => today)
+    window.api.getPracticeStats = vi.fn(async () => ({ ...stats, leeches: 1 }))
+    window.api.pausePracticeCard = vi.fn(async (id, paused) => {
+      today = { ...dayWith(today.cards.map(c => c.id === id ? { ...c, paused } : c)), queue: ['node-002'] }
+      return { success: true, paused }
+    })
+    const showToast = vi.fn()
+    render(<Practice active showToast={showToast} />)
+    expect(await screen.findByText('Missed 6 times.')).toBeTruthy()
+    expect(screen.getByLabelText('Practice progress').textContent).toContain('1 struggling')
+    // "Explain it differently" opens the AI panel, the banner steps aside.
+    window.api.getPracticeExplanations = vi.fn(async () => [])
+    window.api.explainPracticeCard = vi.fn(async () => ({ success: true, entry: { id: 1, prompt: '', reply: 'Think of it as…', blocks: [{ type: 'p', spans: [{ text: 'Think of it as…' }] }] } }))
+    fireEvent.click(screen.getByRole('button', { name: '✦ Explain it differently' }))
+    await waitFor(() => expect(screen.queryByText('Missed 6 times.')).toBeNull())
+    // With nothing saved yet, opening the panel asks straight away.
+    await waitFor(() => expect(window.api.explainPracticeCard).toHaveBeenCalledWith('node-001', ''))
+    fireEvent.click(screen.getByRole('button', { name: /Ask AI/ }))
+    fireEvent.click(await screen.findByRole('button', { name: '⏸ Pause it' }))
+    await waitFor(() => expect(window.api.pausePracticeCard).toHaveBeenCalledWith('node-001', true))
+    expect(await screen.findByText('What is a Buffer?')).toBeTruthy()
+    expect(showToast).toHaveBeenCalledWith(expect.stringMatching(/^Paused/), 'success')
+  })
+
+  it('shows no banner on a card that is not struggling', async () => {
+    window.api.getPracticeToday = vi.fn(async () => dayWith([card()]))
+    window.api.getPracticeStats = vi.fn(async () => stats)
+    render(<Practice active showToast={() => {}} />)
+    await screen.findByText('What is Node.js?')
+    expect(screen.queryByText(/Missed \d+ times/)).toBeNull()
+    expect(screen.getByRole('button', { name: '⏸ Pause' })).toBeTruthy()
+  })
+
+  it('switches to FSRS and offers a recall target', async () => {
+    let settings = { topics: [], dailyCount: 8, algorithm: 'sm2', retention: 0.9 }
+    window.api.getPracticeToday = vi.fn(async () => ({ ...dayWith([card()]), settings }))
+    window.api.getPracticeStats = vi.fn(async () => stats)
+    window.api.savePracticeSettings = vi.fn(async (next) => { settings = next; return { success: true, settings } })
+    render(<Practice active showToast={() => {}} />)
+    await screen.findByText('What is Node.js?')
+    expect(screen.queryByLabelText('Target recall')).toBeNull()
+    fireEvent.change(screen.getByLabelText('Scheduler'), { target: { value: 'fsrs' } })
+    await waitFor(() => expect(window.api.savePracticeSettings).toHaveBeenCalledWith(expect.objectContaining({ algorithm: 'fsrs' })))
+    fireEvent.change(await screen.findByLabelText('Target recall'), { target: { value: '0.95' } })
+    await waitFor(() => expect(window.api.savePracticeSettings).toHaveBeenLastCalledWith(expect.objectContaining({ algorithm: 'fsrs', retention: 0.95 })))
+  })
+
+  it('filters Browse to struggling and paused cards', async () => {
+    window.api.getPracticeToday = vi.fn(async () => dayWith([card()]))
+    window.api.getPracticeStats = vi.fn(async () => stats)
+    window.api.getPracticeBank = vi.fn(async () => ({
+      day: '2026-11-21', topics: [{ name: 'Node.js', count: 3 }], settings: { topics: [], dailyCount: 8 }, orphanFlags: [],
+      cards: [card(), card({ id: 'node-002', question: 'What is a Buffer?', leech: true }), card({ id: 'node-003', question: 'What is libuv?', paused: true })],
+    }))
+    render(<Practice active showToast={() => {}} />)
+    await screen.findByText('What is Node.js?')
+    fireEvent.click(screen.getByRole('tab', { name: 'Browse' }))
+    await screen.findByText('3 of 3 questions')
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'struggling' } })
+    expect(await screen.findByText('1 of 3 questions')).toBeTruthy()
+    expect(screen.getByText('What is a Buffer?')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'paused' } })
+    expect(screen.getByText('What is libuv?')).toBeTruthy()
+    expect(screen.getByText('Paused', { selector: '.badge' })).toBeTruthy()
+  })
+
+  it('draws the practice calendar with a square per day and a list view', () => {
+    // Two weeks from Monday 9 Nov; Thursday 19th is today, so three days to come.
+    const counts = [0, 2, 0, 0, 0, 0, 0, 5, 1, 0, 3, -1, -1, -1]
+    render(<PracticeCalendar calendar={{ start: '2026-11-09', weeks: 2, counts, max: 5, activeDays: 4, total: 11 }} />)
+    const grid = screen.getByRole('img', { name: /4 active days in the last 2 weeks, 11 cards rated/ })
+    const cells = grid.querySelectorAll('.practice-cal-cell')
+    expect(cells.length).toBe(14)
+    expect(grid.querySelectorAll('.future').length).toBe(3)
+    expect(grid.querySelectorAll('.l4').length).toBe(1)
+    expect(cells[1].getAttribute('title')).toMatch(/2 cards rated/)
+    expect(cells[0].getAttribute('title')).toMatch(/no practice/)
+    expect(screen.getByText('4 days in the last 2 weeks · 11 cards rated')).toBeTruthy()
+    // The list view says the same in words, newest first.
+    const items = screen.getAllByRole('listitem', { hidden: true })
+    expect(items.length).toBe(4)
+    expect(items[0].textContent).toMatch(/3 cards rated/)
+  })
+
+  it('shades by share of the busiest day', () => {
+    expect([0, 1, 3, 5, 9].map(n => calendarShade(n, 9))).toEqual([0, 1, 2, 3, 4])
+    expect(calendarShade(-1, 4)).toBe(0)
+  })
+
+  it('shows the calendar on Insights', async () => {
+    window.api.getPracticeToday = vi.fn(async () => dayWith([card()]))
+    window.api.getPracticeStats = vi.fn(async () => ({ ...stats, calendar: { start: '2026-11-16', weeks: 1, counts: [1, 0, 0, 0, 0, -1, -1], max: 1, activeDays: 1, total: 1 } }))
+    window.api.getPracticeInsights = vi.fn(async () => ({
+      days: 90, totals: { reviews: 1, again: 0, againRate: 0, activeDays: 1 }, skillsGap: { available: false, sample: 0 }, topics: [], weakCards: [],
+    }))
+    render(<Practice active showToast={() => {}} />)
+    await screen.findByText('What is Node.js?')
+    fireEvent.click(screen.getByRole('tab', { name: 'Insights' }))
+    expect(await screen.findByText('Practice days')).toBeTruthy()
   })
 })

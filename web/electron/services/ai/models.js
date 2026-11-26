@@ -27,7 +27,9 @@
 
 const DEFAULT_MODELS = {
   claude: { fast: 'claude-haiku-5-5', smart: 'claude-sonnet-5-5' },
-  chatgpt: { fast: 'gpt-4o-mini', smart: 'gpt-4o' },
+  // GPT-5 mini for the short calls: OpenAI switches off gpt-4o, gpt-4o-mini
+  // and gpt-4.1 on 14 January 2027 (see RETIRED_MODELS).
+  chatgpt: { fast: 'gpt-5-mini', smart: 'gpt-5' },
   deepseek: { fast: 'deepseek-chat', smart: 'deepseek-chat' },
   // OpenRouter ids are vendor/model, with dots where Anthropic uses dashes.
   openrouter: { fast: 'anthropic/claude-haiku-5.5', smart: 'anthropic/claude-sonnet-5.5' },
@@ -42,11 +44,8 @@ const MODEL_CHOICES = {
     { id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5 — cheapest' },
   ],
   chatgpt: [
-    { id: 'gpt-4o', label: 'GPT-4o' },
-    { id: 'gpt-4.1', label: 'GPT-4.1' },
-    { id: 'gpt-5', label: 'GPT-5 (reasoning)' },
-    { id: 'gpt-5-mini', label: 'GPT-5 mini (reasoning)' },
-    { id: 'gpt-4o-mini', label: 'GPT-4o mini — cheapest' },
+    { id: 'gpt-5', label: 'GPT-5 — recommended' },
+    { id: 'gpt-5-mini', label: 'GPT-5 mini — cheapest' },
   ],
   deepseek: [
     { id: 'deepseek-chat', label: 'DeepSeek Chat' },
@@ -64,6 +63,47 @@ const MODEL_CHOICES = {
 
 const LOCAL_DEFAULT_MODEL = 'llama3.1:8b'
 
+// Models a provider has switched off, and what takes their place. A model the
+// user chose in Settings stays chosen until the provider removes it; after
+// that every call to it fails, so the saved choice is read as its successor
+// (and config.load rewrites it, so Settings shows what actually runs).
+// OpenAI retires gpt-4o, gpt-4o-mini, gpt-4.1 and gpt-4.1-mini, with their
+// dated snapshots, on 14 January 2027.
+const RETIRED_MODELS = {
+  chatgpt: [
+    [/^gpt-4o-mini(-\d{4}-\d{2}-\d{2})?$/i, 'gpt-5-mini'],
+    [/^gpt-4\.1-(mini|nano)(-\d{4}-\d{2}-\d{2})?$/i, 'gpt-5-mini'],
+    [/^(gpt-4o|chatgpt-4o-latest|gpt-4\.1|gpt-4-turbo|gpt-4)(-\d{4}-\d{2}-\d{2})?$/i, 'gpt-5'],
+  ],
+  openrouter: [
+    [/^openai\/gpt-4o-mini$/i, 'openai/gpt-5-mini'],
+    [/^openai\/(gpt-4o|gpt-4\.1)$/i, 'openai/gpt-5'],
+  ],
+}
+
+// The model to use in place of `model` for `provider`: its successor if the
+// provider has retired it, otherwise the model itself.
+function currentModel(provider, model) {
+  const id = String(model || '').trim()
+  for (const [pattern, successor] of RETIRED_MODELS[provider] || []) {
+    if (pattern.test(id)) return successor
+  }
+  return id
+}
+
+// A saved writing-model map with every retired choice replaced. Returns the
+// same object when nothing changed.
+function migrateWritingModels(map) {
+  if (!map || typeof map !== 'object') return map
+  let changed = false
+  const out = { ...map }
+  for (const [provider, model] of Object.entries(map)) {
+    const next = currentModel(provider, model)
+    if (typeof model === 'string' && next !== model.trim()) { out[provider] = next; changed = true }
+  }
+  return changed ? out : map
+}
+
 function loadConfig() {
   try { return require('../config').load() } catch { return {} }
 }
@@ -71,7 +111,7 @@ function loadConfig() {
 // The writing model for a provider that Hiro names models for. `cfg` is
 // optional: adapters call this without one and get the saved settings.
 function smartModel(provider, cfg = loadConfig()) {
-  const chosen = String(cfg?.aiWritingModel?.[provider] || '').trim()
+  const chosen = currentModel(provider, cfg?.aiWritingModel?.[provider])
   return chosen || DEFAULT_MODELS[provider]?.smart || ''
 }
 
@@ -114,4 +154,4 @@ function isOpenAiReasoningModel(model) {
   return /^(gpt-5|o\d)/i.test(String(model || ''))
 }
 
-module.exports = { DEFAULT_MODELS, MODEL_CHOICES, LOCAL_DEFAULT_MODEL, smartModel, fastModel, writingModel, writingProvider, isOpenAiReasoningModel }
+module.exports = { DEFAULT_MODELS, MODEL_CHOICES, LOCAL_DEFAULT_MODEL, RETIRED_MODELS, currentModel, migrateWritingModels, smartModel, fastModel, writingModel, writingProvider, isOpenAiReasoningModel }

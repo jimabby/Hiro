@@ -22,7 +22,7 @@ const { check, done } = createChecker()
 check('Claude records its default writing model', models.writingModel({ aiProvider: 'claude' }), 'claude-sonnet-5-5')
 check('Claude records the chosen model', models.writingModel({ aiProvider: 'claude', aiWritingModel: { claude: 'claude-opus-5-5' } }), 'claude-opus-5-5')
 check('a leftover Gemini name never labels Claude', models.writingModel({ aiProvider: 'claude', geminiModel: 'gemini-2.5-flash' }), 'claude-sonnet-5-5')
-check('ChatGPT records its model', models.writingModel({ aiProvider: 'chatgpt' }), 'gpt-4o')
+check('ChatGPT records its model', models.writingModel({ aiProvider: 'chatgpt' }), 'gpt-5')
 check('Gemini records its own field', models.writingModel({ aiProvider: 'gemini', geminiModel: 'gemini-2.5-pro' }), 'gemini-2.5-pro')
 check('a local model records the local setting, not a Gemini leftover',
   models.writingModel({ aiProvider: 'local', geminiModel: 'gemini-2.5-flash', localAiModel: 'qwen2.5:14b' }), 'qwen2.5:14b')
@@ -50,12 +50,29 @@ check('gpt-4o is sent unchanged', openai.adaptForModel('chatgpt', { model: 'gpt-
 check('DeepSeek is never rewritten', openai.adaptForModel('deepseek', { model: 'gpt-5', max_tokens: 5 }).max_tokens, 5)
 
 // ─── The adapters read the saved choice at call time ─────────────
-savedConfig = { aiWritingModel: { chatgpt: 'gpt-4.1', deepseek: 'deepseek-reasoner' } }
-check('ChatGPT writes with the saved model', openai.resolve().smart, 'gpt-4.1')
-check('ChatGPT still scores on the cheap model', openai.resolve().fast, 'gpt-4o-mini')
+savedConfig = { aiWritingModel: { chatgpt: 'gpt-5.1', deepseek: 'deepseek-reasoner' } }
+check('ChatGPT writes with the saved model', openai.resolve().smart, 'gpt-5.1')
+check('ChatGPT still scores on the cheap model', openai.resolve().fast, 'gpt-5-mini')
 check('DeepSeek writes with the saved model', openai.resolve('https://api.deepseek.com').smart, 'deepseek-reasoner')
 savedConfig = {}
-check('with nothing saved ChatGPT uses the default', openai.resolve().smart, 'gpt-4o')
+check('with nothing saved ChatGPT uses the default', openai.resolve().smart, 'gpt-5')
+
+// ─── Retired models ──────────────────────────────────────────────
+// OpenAI switches gpt-4o, gpt-4o-mini and gpt-4.1 off on 14 January 2027.
+check('no retired model is offered', models.MODEL_CHOICES.chatgpt.some(m => /^gpt-4/.test(m.id)), false)
+check('no retired model is a default', [models.DEFAULT_MODELS.chatgpt.fast, models.DEFAULT_MODELS.chatgpt.smart].some(m => /^gpt-4/.test(m)), false)
+check('a saved gpt-4o writes with GPT-5', models.smartModel('chatgpt', { aiWritingModel: { chatgpt: 'gpt-4o' } }), 'gpt-5')
+check('a saved dated gpt-4o snapshot too', models.currentModel('chatgpt', 'gpt-4o-2024-08-06'), 'gpt-5')
+check('a saved gpt-4.1 writes with GPT-5', models.currentModel('chatgpt', 'gpt-4.1'), 'gpt-5')
+check('gpt-4o-mini becomes GPT-5 mini', models.currentModel('chatgpt', 'gpt-4o-mini'), 'gpt-5-mini')
+check('gpt-4.1-mini becomes GPT-5 mini', models.currentModel('chatgpt', 'gpt-4.1-mini'), 'gpt-5-mini')
+check('a current model is left alone', models.currentModel('chatgpt', 'gpt-5.1'), 'gpt-5.1')
+check('only that provider is rewritten', models.currentModel('deepseek', 'gpt-4o'), 'gpt-4o')
+check('OpenRouter ids are mapped too', models.currentModel('openrouter', 'openai/gpt-4o'), 'openai/gpt-5')
+const saved = { chatgpt: 'gpt-4o', claude: 'claude-opus-5-5' }
+check('the saved map is migrated', models.migrateWritingModels(saved), { chatgpt: 'gpt-5', claude: 'claude-opus-5-5' })
+const current = { chatgpt: 'gpt-5' }
+check('an up-to-date map comes back as the same object', models.migrateWritingModels(current) === current, true)
 
 // ─── Cost estimates ──────────────────────────────────────────────
 check('Sonnet 5.5 is priced as itself', usage.estimateCost('claude-sonnet-5-5', 1e6, 0), 2)
