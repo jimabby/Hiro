@@ -34,6 +34,10 @@ const FLAG_LABELS = {
   credential: 'A qualification the base resume does not claim',
   'job-title': 'A job title the base resume does not list',
   employer: 'An employer the base resume does not mention',
+  heading: 'A job title, employer, date or contact line that was changed',
+  'moved-claim': 'A skill or name added to a line, or a job, your resume does not mention it in',
+  'moved-bullet': 'A bullet from another job in your resume, placed under this one',
+  figure: 'A number added to a line, or a job, your resume does not have it in',
   'listing-injection': 'Instructions aimed at the AI, found in the job ad',
 }
 

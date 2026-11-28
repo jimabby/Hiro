@@ -26,7 +26,7 @@ check('ChatGPT records its model', models.writingModel({ aiProvider: 'chatgpt' }
 check('Gemini records its own field', models.writingModel({ aiProvider: 'gemini', geminiModel: 'gemini-2.5-pro' }), 'gemini-2.5-pro')
 check('a local model records the local setting, not a Gemini leftover',
   models.writingModel({ aiProvider: 'local', geminiModel: 'gemini-2.5-flash', localAiModel: 'qwen2.5:14b' }), 'qwen2.5:14b')
-check('a local model with nothing set records the default', models.writingModel({ aiProvider: 'local' }), 'llama3.1:8b')
+check('a local model with nothing set records the default', models.writingModel({ aiProvider: 'local' }), 'qwen2.5:7b')
 check('another provider\'s choice is ignored', models.writingModel({ aiProvider: 'deepseek', aiWritingModel: { claude: 'claude-opus-5-5' } }), 'deepseek-chat')
 check('no provider records nothing', models.writingModel({}), '')
 

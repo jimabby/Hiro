@@ -40,6 +40,8 @@ const { check, done } = createChecker()
   check('nothing invented when only dropping', diffSummary(dropped).added, 0)
 
   check('identical documents produce no changes', diffSummary(diffLines('A\nB', 'A\nB')).added, 0)
+  // Qwen3 ends every line with two spaces; the review diff showed every line changed.
+  check('trailing spaces alone change no line', diffSummary(diffLines('A\nB', 'A  \nB  ')), { added: 0, removed: 0, unchanged: 2 })
   check('empty base is all additions', diffSummary(diffLines('', 'A\nB')).added, 2)
   check('empty tailored is all removals', diffSummary(diffLines('A\nB', '')).removed, 2)
   check('both empty is an empty diff', diffLines('', '').length, 0)

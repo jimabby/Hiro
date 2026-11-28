@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from 'react'
 import HiroLogo from '../components/HiroLogo'
 import ApiKeyHelp, { SAVED_KEY } from '../components/ApiKeyHelp'
 import ModelPicker from '../components/ModelPicker'
+import LocalModels from '../components/LocalModels'
 import { AI_PROVIDERS } from '../aiProviders'
 import { exportCsv } from '../exportCsv'
 import { answerAgeDays } from './settings/answerAge'
@@ -11,6 +12,7 @@ import { ParseCheck } from './settings/ParseCheck'
 import { ApplicationProfile } from './settings/ApplicationProfile'
 import { ContactDetails } from './settings/ContactDetails'
 import { ResumeTemplate } from './settings/ResumeTemplate'
+import { ExtraSkills } from './settings/ExtraSkills'
 import { ProxySettings } from './settings/ProxySettings'
 import { AnswerBank } from './settings/AnswerBank'
 import { AtsBoards } from './settings/AtsBoards'
@@ -433,9 +435,10 @@ export default function Settings({ showToast, active, focusTab, onFocusTabHandle
               value={form.localAiModel}
               onChange={v => set('localAiModel', v)}
               provider="local" apiKey="" overrides={{ localAiBaseUrl: form.localAiBaseUrl }}
-              placeholder="e.g. llama3.1:8b"
-              help={<>Must already be pulled on the server — <code>ollama list</code> shows what is available.</>}
+              placeholder="e.g. qwen2.5:7b"
+              help={<>Any model the server already has, or download a recommended one below.</>}
             />
+            <LocalModels baseUrl={form.localAiBaseUrl} value={form.localAiModel} onUse={v => set('localAiModel', v)} />
           </>
         )}
         {['claude', 'chatgpt', 'deepseek', 'openrouter'].includes(form.aiProvider) && (
@@ -2103,6 +2106,8 @@ export default function Settings({ showToast, active, focusTab, onFocusTabHandle
           </div>
         )}
       </div>
+
+      <ExtraSkills form={form} set={set} />
 
       {/* Resume routing rules — pick a different base resume per job type */}
       <div className="card" style={{ marginBottom: 16 }}>

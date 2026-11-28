@@ -256,6 +256,12 @@ ${String(masterResume || '').slice(0, 1500)}`
 // the new lines back into the candidate's own paragraphs (scraper/utils.js
 // tailorDocx), and every line that is added, dropped or merged is one that has
 // to be guessed into place instead of keeping its original formatting.
+//
+// A job in another field gets its own rule because "truthful" alone did not
+// hold there. Asked to fit a developer's résumé to an IT support role, a local
+// Qwen3-30B retitled all five jobs "IT Support Analyst", replaced every bullet
+// with the advert's duties and swapped the real certifications for a CompTIA
+// A+. The honest version keeps the titles and leads with what transfers.
 const TAILOR_RESUME_RULES = `Keep it truthful — only rephrase and emphasise existing experience to match the job.
 Do NOT invent experience, employers, dates, numbers, tools or achievements.
 
@@ -263,10 +269,21 @@ KEEP THE DOCUMENT'S SHAPE:
 - Preserve the EXACT section names, section order and structure. Do not add, remove or reorder sections.
 - Keep the same number of lines, in the same order: one output line for each line of the original.
   Edit a line in place rather than splitting, merging, adding or deleting lines.
-- Copy the name, contact details, job titles, employers, locations, dates, education and
-  certifications exactly as written, character for character, including any tab characters.
+- Copy the name and the headline under it, contact details, job titles, employers, locations,
+  dates, education and certifications exactly as written, character for character, including
+  any tab characters.
 - Keep the same bullet character and the same "Label: value" layout in skill lines.
   You may reorder items within a skills line to put the job's tools first.
+
+IF THE JOB IS IN A DIFFERENT FIELD from the résumé (for example a developer applying for an
+IT support role), do not make the résumé look as if it came from that field:
+- Every bullet keeps the work it describes. Never replace a bullet with one of the job's duties,
+  and name no tool, system or certification that the résumé does not already name.
+- A requirement the résumé does not meet stays unmet.
+- Where a bullet already involves work the job values (troubleshooting, access control,
+  supporting users, working with non-technical people, deployment), reword it so that part
+  comes first. Leave the other bullets as they are.
+- The summary may say which of these real strengths suit the role.
 
 KEEP THE CANDIDATE'S VOICE — this must read as written by the candidate, not by an AI:
 - Change only what makes the résumé fit this job better. Most lines should stay as they are,
@@ -282,8 +299,46 @@ KEEP THE CANDIDATE'S VOICE — this must read as written by the candidate, not b
 
 Return ONLY the plain text resume. No commentary, no markdown, no asterisks, no pound signs.`
 
+// How the scan's match score (scoreMatchWithExplanation) is judged. It used to
+// show `{ "score": 85, ... }` as its format example, and models copied the
+// number: a local Qwen3-30B gave six of eight test jobs exactly 85, and
+// qwen2.5:7b put an IT-support and a senior Java role over a 70 threshold in
+// 6 of 9 runs, swinging 55 points between runs on one job. With this rubric
+// and no example score, 0 of 9 runs passed 70 and the widest swing was 7.
+// The bands line up with the usual 70 threshold: 70 means "meets most
+// must-haves". Sending the full résumé and job instead of the cut-down ones
+// made the 7b score more loosely, so the cuts stay.
+const SCORE_RUBRIC = `Judge the job's must-have requirements first: required skills, years of experience,
+seniority, licences and certifications.
+- 85-100: meets every must-have
+- 70-84: meets most must-haves; the gaps could be learned on the job
+- 40-69: meets some must-haves but misses an important one
+- 10-39: a different field or seniority level; few must-haves met
+- 0-9: no meaningful overlap
+A skill the resume only lists counts for less than one used in a job.`
+
+const SCORE_FORMAT = 'Return JSON only: {"score": <integer 0-100>, "explanation": "<one sentence>"}'
+
+// Skills the user ticked in Settings as true though no résumé lists them
+// (config.extraSkills). Asked to fit a .NET job, a local Qwen3-30B could only
+// leave SQL Server out or invent it, and invented it. Told it is true, a model
+// can add it where a skills line or the summary names skills, and nowhere that
+// would claim a particular job used it. Empty when nothing is ticked, so the
+// prompt is then exactly what it was.
+function extraSkillsNote(kind, skills) {
+  const list = (Array.isArray(skills) ? skills : []).filter(Boolean)
+  if (!list.length) return ''
+  const head = `\n\nOTHER SKILLS THE CANDIDATE HAS, which the résumé does not list: ${list.join(', ')}.\nThey are true.`
+  if (kind === 'resume') {
+    return `${head} Where the job asks for one, you may add it to the skills line it belongs in, or name it in
+the summary. Never add one to a job's bullets: the résumé does not say where it was used.`
+  }
+  if (kind === 'letter') return `${head} The letter may mention any the job asks for, without saying where or when it was used.`
+  return `${head} Treat them as part of the résumé, but do not guess how long or where one was used.`
+}
+
 module.exports = {
-  TAILOR_RESUME_RULES,
+  TAILOR_RESUME_RULES, SCORE_RUBRIC, SCORE_FORMAT, extraSkillsNote,
   interviewQuestionsPrompt, followUpEmailPrompt, FOLLOW_UP_STAGE_GUIDANCE,
   counterOfferPrompt, interviewAnswerPrompt,
 }

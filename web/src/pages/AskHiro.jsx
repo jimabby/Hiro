@@ -57,7 +57,10 @@ const EMPTY_DOCS = { resumeName: '', resumeText: '', jobText: '' }
 // A long pasted message (a résumé, a job ad) is folded in the history.
 const FOLD_AT = 1500
 
-const FLAG_LABELS = { date: 'date', credential: 'qualification', employer: 'employer', 'job-title': 'job title' }
+const FLAG_LABELS = {
+  date: 'date', credential: 'qualification', employer: 'employer', 'job-title': 'job title',
+  heading: 'changed heading', 'moved-claim': 'moved claim', 'moved-bullet': 'bullet from another job', figure: 'new figure',
+}
 
 function newRequestId() {
   try { return crypto.randomUUID() } catch { return `r${Date.now()}${Math.random().toString(36).slice(2, 10)}` }

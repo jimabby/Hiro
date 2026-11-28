@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import HiroLogo from '../components/HiroLogo'
 import ApiKeyHelp, { SAVED_KEY } from '../components/ApiKeyHelp'
 import ModelPicker from '../components/ModelPicker'
+import LocalModels from '../components/LocalModels'
 import { AI_PROVIDERS } from '../aiProviders'
 
 const STEPS = ['AI Provider', 'Email', 'Job Criteria', 'Resume', 'Review']
@@ -15,7 +16,7 @@ export default function Setup({ onComplete, onPracticeOnly }) {
     // Ollama's default OpenAI-compatible endpoint, so choosing "local" with a
     // stock install needs no typing at all.
     localAiBaseUrl: 'http://localhost:11434/v1',
-    localAiModel: 'llama3.1:8b',
+    localAiModel: 'qwen2.5:7b',
     gmailAddress: '',
     gmailAppPassword: '',
     jobKeywords: '',
@@ -226,8 +227,9 @@ export default function Setup({ onComplete, onPracticeOnly }) {
                     value={form.localAiModel}
                     onChange={v => set('localAiModel', v)}
                     provider="local" apiKey="" overrides={{ localAiBaseUrl: form.localAiBaseUrl }}
-                    placeholder="e.g. llama3.1:8b"
+                    placeholder="e.g. qwen2.5:7b"
                   />
+                  <LocalModels baseUrl={form.localAiBaseUrl} value={form.localAiModel} onUse={v => set('localAiModel', v)} />
                 </>
               ) : (
                 <div className="form-group">

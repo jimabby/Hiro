@@ -69,7 +69,7 @@ export const KEY_GUIDES = {
     linkText: 'Download Ollama',
     steps: [
       'Install Ollama (or LM Studio) and start it.',
-      'Pull a model, e.g. run: ollama pull llama3.1:8b',
+      'Download a recommended model below, or run: ollama pull qwen2.5:7b',
       'Enter that model name below. No key is needed.',
     ],
   },

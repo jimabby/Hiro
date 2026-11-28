@@ -642,6 +642,29 @@ ipcMain.handle('ai:listModels', async (_, provider, apiKey, overrides) => {
   }
 })
 
+// The recommended local models, and downloading one through Ollama (see
+// services/ai/localModels.js). The server address may be one on screen that is
+// not saved yet, as for the model list above.
+const localBaseUrl = (overrides) => (typeof overrides?.localAiBaseUrl === 'string' && overrides.localAiBaseUrl.trim()
+  ? overrides.localAiBaseUrl : configService.load().localAiBaseUrl)
+ipcMain.handle('local-ai:status', async (_, overrides) => {
+  try {
+    return { success: true, ...(await require('./services/ai/localModels').status(localBaseUrl(overrides))) }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+ipcMain.handle('local-ai:pull', async (event, model, overrides) => {
+  try {
+    return await require('./services/ai/localModels').pull(localBaseUrl(overrides), model, {
+      onProgress: (progress) => { if (!event.sender.isDestroyed()) event.sender.send('local-ai:pull-progress', progress) },
+    })
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+ipcMain.handle('local-ai:pull-cancel', (_, model) => require('./services/ai/localModels').cancel(model))
+
 // "Sign in with OpenRouter": the browser does the sign-in, and the key it
 // issues is stored as the OpenRouter key without the renderer ever seeing it.
 ipcMain.handle('openrouter:signIn', () => require('./services/openrouterAuth').signIn())

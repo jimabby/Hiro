@@ -22,6 +22,7 @@
     "test:renderer": "vitest run",
     "smoke": "node test/smoke/run.js",
     "verify:signature": "node scripts/verify-signature.js",
+    "training-data": "node scripts/generate-training-data.js",
     "test:contract": "node test/contract/run.js"
   },
   "build": {

@@ -61,7 +61,7 @@ const MODEL_CHOICES = {
   ],
 }
 
-const LOCAL_DEFAULT_MODEL = 'llama3.1:8b'
+const LOCAL_DEFAULT_MODEL = 'qwen2.5:7b' // see ./local.js
 
 // Models a provider has switched off, and what takes their place. A model the
 // user chose in Settings stays chosen until the provider removes it; after

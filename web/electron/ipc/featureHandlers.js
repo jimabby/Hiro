@@ -19,6 +19,9 @@ module.exports = function registerFeatureHandlers({ ipcMain, scheduler, getWindo
     const days = [30, 60, 90, 180].includes(Number(opts?.days)) ? Number(opts.days) : 90
     return require('../services/skillsGap').analyse({ days })
   })
+  // The "Other skills you have" picker: the catalog, marked with what a résumé
+  // already names and how many recent ads ask for each skill.
+  ipcMain.handle('features:skillChoices', () => require('../services/skillsGap').choices())
   // Practice flashcards. Arguments are checked again in the service; nothing
   // here reaches a model or the network.
   const practice = () => require('../services/practice')

@@ -26,6 +26,11 @@ contextBridge.exposeInMainWorld('api', {
   testAiConnection: (provider, apiKey, model) => ipcRenderer.invoke('ai:test', provider, apiKey, model),
   getModelChoices: () => ipcRenderer.invoke('ai:modelChoices'),
   listAiModels: (provider, apiKey, overrides) => ipcRenderer.invoke('ai:listModels', provider, apiKey, overrides),
+  // Recommended local models, and downloading one through Ollama.
+  localAiStatus: (overrides) => ipcRenderer.invoke('local-ai:status', overrides),
+  pullLocalModel: (model, overrides) => ipcRenderer.invoke('local-ai:pull', model, overrides),
+  cancelLocalModelPull: (model) => ipcRenderer.invoke('local-ai:pull-cancel', model),
+  onLocalModelPullProgress: (cb) => subscribe('local-ai:pull-progress', cb),
   openRouterSignIn: () => ipcRenderer.invoke('openrouter:signIn'),
   openRouterCancel: () => ipcRenderer.invoke('openrouter:cancel'),
   // Night-before interview brief, and recent news about an employer.
@@ -325,6 +330,7 @@ contextBridge.exposeInMainWorld('api', {
   getWeeklyGoals: () => ipcRenderer.invoke('features:weeklyGoals'),
   saveWeeklyGoals: (targets) => ipcRenderer.invoke('features:saveWeeklyGoals', targets),
   getSkillsGap: (opts) => ipcRenderer.invoke('features:skillsGap', opts),
+  getSkillChoices: () => ipcRenderer.invoke('features:skillChoices'),
   getPracticeToday: () => ipcRenderer.invoke('practice:today'),
   practiceMore: (count) => ipcRenderer.invoke('practice:more', count),
   ratePracticeCard: (cardId, rating) => ipcRenderer.invoke('practice:rate', cardId, rating),

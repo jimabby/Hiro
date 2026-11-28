@@ -20,7 +20,9 @@
 const openai = require('./openai')
 
 const DEFAULT_BASE_URL = 'http://localhost:11434/v1' // Ollama's OpenAI-compatible endpoint
-const DEFAULT_MODEL = 'llama3.1:8b'
+// The smaller of the two models Settings recommends (./localModels.js), and
+// the one measured on real job ads. llama3.1:8b was the default before, untested.
+const DEFAULT_MODEL = 'qwen2.5:7b'
 
 // Local servers almost universally ignore the key, but the OpenAI SDK refuses
 // to construct without one. A placeholder keeps that from becoming a setup step

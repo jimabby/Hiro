@@ -5,3 +5,6 @@ dist-electron
 # Playwright Chromium, downloaded by web/scripts/install-browser.js and bundled
 # into the installer by electron-builder. ~150 MB of binaries, not source.
 web/browsers
+# Fine-tuning datasets from web/scripts/generate-training-data.js. They hold
+# the résumé and every job ad it was run on.
+training-data/

@@ -637,9 +637,9 @@ async function doRun(cfg, { log, notifyAttention }) {
       //
       // The third is not evidence that anything went wrong — it is the reason
       // not to find out the hard way. See ai/untrusted.js.
-      const fabrication = inspectTailoring(jobCfg.masterResume, tailoredResume)
+      const fabrication = inspectTailoring(jobCfg.masterResume, tailoredResume, { extraSkills: jobCfg.extraSkills })
       const letterClaims = inspectCoverLetter(jobCfg.masterResume, coverLetter, {
-        company: job.company, jobTitle: job.job_title,
+        company: job.company, jobTitle: job.job_title, extraSkills: jobCfg.extraSkills,
       })
       const reasons = []
       if (!fabrication.safe) reasons.push(`resume — ${describeFlags(fabrication.flags)}`)
@@ -900,9 +900,9 @@ async function tailorAndApply(job, cfg, log, { reuseDrafts = false } = {}) {
   // The same three checks the scan path applies, for the same reason: this
   // submits to a real employer, and a manual retry from Needs Attention is not
   // a lesser event than a scheduled one.
-  const fabrication = inspectTailoring(cfg.masterResume, tailoredResume)
+  const fabrication = inspectTailoring(cfg.masterResume, tailoredResume, { extraSkills: cfg.extraSkills })
   const letterClaims = inspectCoverLetter(cfg.masterResume, coverLetter, {
-    company: job.company, jobTitle: job.job_title,
+    company: job.company, jobTitle: job.job_title, extraSkills: cfg.extraSkills,
   })
   const injection = detectInjection(job.job_description || '')
   const reasons = []
@@ -1118,6 +1118,12 @@ async function doApproveHeld(id, cfg, log) {
 // still shown, because the user may approve it anyway, knowingly. Objections
 // about the LISTING are kept as they were: no edit to a résumé changes what
 // the advert said.
+// The skills ticked in Settings, for a check made outside a scan, where no
+// config was passed in. Unreadable means none ticked, which only checks harder.
+function savedExtraSkills() {
+  try { return require('./config').load().extraSkills || [] } catch { return [] }
+}
+
 function editHeldDraft(id, { tailoredResume, coverLetter } = {}) {
   const row = database.getApplication(id)
   if (!row) return { success: false, reason: 'Application not found' }
@@ -1130,9 +1136,10 @@ function editHeldDraft(id, { tailoredResume, coverLetter } = {}) {
   const listingFlags = (Array.isArray(previous) ? previous : []).filter(f => f?.kind === 'listing-injection')
 
   const base = database.getDraftOrigin(id).base_resume || ''
-  const fabrication = inspectTailoring(base, resume)
+  const extraSkills = savedExtraSkills()
+  const fabrication = inspectTailoring(base, resume, { extraSkills })
   const letterClaims = inspectCoverLetter(base, letter, {
-    company: row.company, jobTitle: row.job_title,
+    company: row.company, jobTitle: row.job_title, extraSkills,
   })
   const flags = [
     ...fabrication.flags,

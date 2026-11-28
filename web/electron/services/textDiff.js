@@ -51,12 +51,19 @@ function diffLines(base, tailored) {
     ]
   }
 
-  const table = lcsTable(a, b)
+  // Lines that differ only in trailing whitespace are the same line. Qwen3
+  // ends every line with two spaces (a Markdown line break), which made an
+  // untouched résumé diff as rewritten from top to bottom. The fabrication
+  // guard pairs the lines of each changed run, so one inserted line then
+  // misaligned every pair below it.
+  const ka = a.map(line => line.trimEnd())
+  const kb = b.map(line => line.trimEnd())
+  const table = lcsTable(ka, kb)
   const out = []
   let i = 0
   let j = 0
   while (i < a.length && j < b.length) {
-    if (a[i] === b[j]) {
+    if (ka[i] === kb[j]) {
       out.push({ type: 'same', line: a[i] })
       i++; j++
     } else if (table[i + 1][j] >= table[i][j + 1]) {

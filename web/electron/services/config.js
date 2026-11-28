@@ -219,7 +219,7 @@ const DEFAULTS = {
   // services/ai/local.js for why this is the one privacy gap the user could not
   // otherwise close.
   localAiBaseUrl: 'http://localhost:11434/v1',
-  localAiModel: 'llama3.1:8b',
+  localAiModel: 'qwen2.5:7b',
   gmailAddress: '',
   gmailAppPassword: '',
   // Mail servers. 'auto' looks the address domain up in services/mailProvider.js;
@@ -281,6 +281,12 @@ const DEFAULTS = {
   // Extra skills for the skills-gap report (services/skillsGap.js), on top of
   // its built-in vocabulary. Comma-separated, matched literally.
   skillTerms: '',
+  // Skills the user really has that no résumé lists, ticked in Settings from
+  // services/skillCatalog.js. Tailoring may add one to a skills line or the
+  // summary, a cover letter or screening answer may mention it, and the
+  // fabrication guard accepts it there. Never in a job's bullets: nothing says
+  // where it was used.
+  extraSkills: [],
   // Which country's Indeed to search — see scraper/indeedRegion.js.
   indeedRegion: 'au',
   masterResume: '',

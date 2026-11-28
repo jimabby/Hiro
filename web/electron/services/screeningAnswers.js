@@ -229,7 +229,7 @@ async function resolveAnswer({ question, options = null, optionHint = '', cfg, l
         + 'review it in Settings if the facts have changed.')
     }
     if (cached.source === 'user') return { answer: cachedFit, source: 'cache' }
-    const verdict = inspectScreeningAnswer(cfg.masterResume || '', cachedFit)
+    const verdict = inspectScreeningAnswer(cfg.masterResume || '', cachedFit, { extraSkills: cfg.extraSkills })
     if (verdict.safe) return { answer: cachedFit, source: 'cache' }
     // A cached model answer that no longer passes. Drop it rather than keep
     // serving it — it is being replayed to employers who never saw the ad it
@@ -262,7 +262,7 @@ async function resolveAnswer({ question, options = null, optionHint = '', cfg, l
       // The OPTION is what gets submitted, so it is what is checked — an
       // employer's "Yes, I hold a clearance" is a claim even if the model only
       // said "Yes".
-      const verdict = inspectScreeningAnswer(cfg.masterResume || '', fitted)
+      const verdict = inspectScreeningAnswer(cfg.masterResume || '', fitted, { extraSkills: cfg.extraSkills })
       if (verdict.safe) {
         database.saveCachedAnswer(question, fitted, 'ai')
         return { answer: fitted, source: 'ai' }

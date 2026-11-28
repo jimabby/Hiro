@@ -181,11 +181,11 @@ function extractDrafts(text) {
 // date, credential or employer the résumé never mentioned is named, so a
 // "polished" line that quietly grew a degree is caught before it is saved.
 // Advisory here — the user is looking at the draft and decides.
-function checkDrafts(reply, baseResume) {
+function checkDrafts(reply, baseResume, extraSkills = []) {
   const base = String(baseResume || '').trim()
   return extractDrafts(reply).slice(0, 4).map(d => {
     if (!base) return { type: 'draft', kind: d.kind, checked: false, flags: [] }
-    const res = d.kind === 'resume' ? inspectTailoring(base, d.text) : inspectCoverLetter(base, d.text)
+    const res = d.kind === 'resume' ? inspectTailoring(base, d.text, { extraSkills }) : inspectCoverLetter(base, d.text, { extraSkills })
     return {
       type: 'draft', kind: d.kind, checked: true,
       flags: res.flags.slice(0, 8).map(f => ({ kind: f.kind, value: String(f.value).slice(0, 80) })),
@@ -313,7 +313,7 @@ async function ask(question, history = [], { cfg = configService.load(), now = D
   const finished = stopped ? String(text).replace(/\n?\s*ACTIONS:[^\n]*$/, '') : text
   const parsed = parseActions(String(finished || '').replace(/\*\*/g, ''), validIds, { now })
   const reference = docs?.resumeText || pastedReference(kept, q)
-  return { ...parsed, actions: [...parsed.actions, ...checkDrafts(parsed.reply, reference)], ...(stopped ? { stopped: true } : {}) }
+  return { ...parsed, actions: [...parsed.actions, ...checkDrafts(parsed.reply, reference, cfg.extraSkills)], ...(stopped ? { stopped: true } : {}) }
 }
 
 // Settles as soon as `signal` aborts, whether or not the provider's own request

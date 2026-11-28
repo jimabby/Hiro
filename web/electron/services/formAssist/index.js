@@ -78,9 +78,9 @@ async function prepareDocuments(job, cfg, log) {
   tailoredResume = tailoredResume || cfg.masterResume || ''
 
   const warnings = []
-  const fabrication = inspectTailoring(cfg.masterResume || '', tailoredResume)
+  const fabrication = inspectTailoring(cfg.masterResume || '', tailoredResume, { extraSkills: cfg.extraSkills })
   if (!fabrication.safe) warnings.push(`Résumé: ${describeFlags(fabrication.flags)}`)
-  const letter = inspectCoverLetter(cfg.masterResume || '', coverLetter, { company: job.company, jobTitle: job.job_title })
+  const letter = inspectCoverLetter(cfg.masterResume || '', coverLetter, { company: job.company, jobTitle: job.job_title, extraSkills: cfg.extraSkills })
   if (coverLetter && !letter.safe) warnings.push(`Cover letter: ${describeFlags(letter.flags)}`)
   const injection = detectInjection(job.job_description || '')
   if (!injection.clean) warnings.push(`The listing contains instructions aimed at AI (${describeInjection(injection.hits)}) — check every answer.`)

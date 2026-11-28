@@ -20,78 +20,9 @@
 const configService = require('./config')
 const database = require('./database')
 
-// canonical name → the spellings that count for it. Matched as whole words,
-// case-insensitively. Short or ambiguous names ("Go", "R", "C") are left out on
-// purpose: "go" and "r" match ordinary English, and a report that says half the
-// market wants Go because every ad says "go above and beyond" is worse than none.
-// For the same reason React, REST, Excel, Swift and Node are only counted in
-// spellings English does not use ("react to change", "the rest of the team",
-// "you will excel", "a swift turnaround"), and a word straight after a dot is
-// not a match ("js" in "Node.js" is not JavaScript).
-const VOCABULARY = {
-  // Languages
-  'JavaScript': ['javascript', 'js', 'es6'], 'TypeScript': ['typescript'], 'Python': ['python'], 'Java': ['java'],
-  'C#': ['c#', 'csharp'], 'C++': ['c\\+\\+', 'cpp'], 'Golang': ['golang'], 'Rust': ['rust'], 'Ruby': ['ruby'], 'PHP': ['php'],
-  'Kotlin': ['kotlin'], 'Swift': ['swiftui', 'swift developer', 'swift/objective-c', 'swift and objective-c'], 'Scala': ['scala'], 'SQL': ['sql', 't-sql', 'pl/sql'], 'Bash': ['bash', 'shell scripting'],
-  'PowerShell': ['powershell'], 'MATLAB': ['matlab'], 'SAS': ['sas'], 'VBA': ['vba'],
-  // Front end / back end frameworks
-  'React': ['react(?!\\s+(?:to|quickly|swiftly|fast|calmly))', 'react\\.js', 'reactjs'], 'Angular': ['angular'], 'Vue': ['vue', 'vue\\.js', 'vuejs'], 'Next.js': ['next\\.js', 'nextjs'],
-  'Node.js': ['node\\.js', 'nodejs'], 'Express': ['express\\.js', 'expressjs'], 'Django': ['django'], 'Flask': ['flask'],
-  'FastAPI': ['fastapi'], 'Spring': ['spring boot', 'spring framework'], '.NET': ['\\.net', 'dotnet', 'asp\\.net'],
-  'Ruby on Rails': ['rails', 'ruby on rails'], 'Laravel': ['laravel'], 'GraphQL': ['graphql'], 'REST APIs': ['restful', 'rest api', 'rest apis', 'rest services'],
-  'HTML': ['html', 'html5'], 'CSS': ['css', 'css3', 'sass', 'scss'], 'Tailwind': ['tailwind'], 'Redux': ['redux'],
-  'React Native': ['react native'], 'Flutter': ['flutter'], 'iOS': ['ios'], 'Android': ['android'],
-  // Cloud, infrastructure, delivery
-  'AWS': ['aws', 'amazon web services'], 'Azure': ['azure'], 'Google Cloud': ['gcp', 'google cloud'], 'Docker': ['docker', 'containers?'],
-  'Kubernetes': ['kubernetes', 'k8s', 'eks', 'aks', 'gke'], 'Terraform': ['terraform'], 'CloudFormation': ['cloudformation'],
-  'Ansible': ['ansible'], 'CI/CD': ['ci/cd', 'cicd', 'continuous integration', 'continuous delivery', 'continuous deployment'],
-  'GitHub Actions': ['github actions'], 'Jenkins': ['jenkins'], 'GitLab': ['gitlab'], 'Git': ['git'], 'Linux': ['linux', 'unix'],
-  'Serverless': ['serverless', 'lambda'], 'Microservices': ['microservices?'], 'Observability': ['observability', 'datadog', 'prometheus', 'grafana', 'new relic', 'splunk'],
-  'Networking': ['tcp/ip', 'networking', 'dns', 'vpn'], 'DevOps': ['devops'], 'SRE': ['sre', 'site reliability'],
-  // Data
-  'PostgreSQL': ['postgres', 'postgresql'], 'MySQL': ['mysql'], 'SQL Server': ['sql server', 'mssql'], 'Oracle': ['oracle'],
-  'MongoDB': ['mongodb', 'mongo'], 'Redis': ['redis'], 'Elasticsearch': ['elasticsearch', 'opensearch'], 'DynamoDB': ['dynamodb'],
-  'Snowflake': ['snowflake'], 'Databricks': ['databricks'], 'BigQuery': ['bigquery'], 'Redshift': ['redshift'],
-  'Spark': ['spark', 'pyspark'], 'Kafka': ['kafka'], 'Airflow': ['airflow'], 'dbt': ['dbt'], 'ETL': ['etl', 'elt', 'data pipelines?'],
-  'Data modelling': ['data model(?:l)?ing', 'dimensional model(?:l)?ing'], 'Data warehousing': ['data warehous(?:e|ing)'],
-  'Power BI': ['power bi', 'powerbi'], 'Tableau': ['tableau'], 'Looker': ['looker'], 'Excel': ['microsoft excel', 'ms excel', 'advanced excel', 'excel (?:skills|modell?ing|formulas|macros)', 'spreadsheets?'],
-  'pandas': ['pandas'], 'NumPy': ['numpy'], 'Statistics': ['statistics', 'statistical'],
-  'Machine learning': ['machine learning', 'ml'], 'Deep learning': ['deep learning'], 'NLP': ['nlp', 'natural language processing'],
-  'LLMs': ['llms?', 'large language models?', 'generative ai', 'genai'], 'PyTorch': ['pytorch'], 'TensorFlow': ['tensorflow'],
-  'scikit-learn': ['scikit-learn', 'sklearn'], 'MLOps': ['mlops'], 'A/B testing': ['a/b testing', 'experimentation'],
-  // Quality and security
-  'Automated testing': ['automated testing', 'test automation', 'unit testing', 'integration testing', 'tdd'],
-  'Cypress': ['cypress'], 'Playwright': ['playwright'], 'Selenium': ['selenium'], 'Jest': ['jest'],
-  'Security': ['cyber ?security', 'information security', 'appsec', 'owasp'], 'IAM': ['iam', 'identity and access management', 'okta', 'active directory', 'entra'],
-  'ISO 27001': ['iso ?27001'], 'SOC 2': ['soc ?2'], 'Penetration testing': ['penetration testing', 'pen testing', 'pentesting'],
-  // Ways of working
-  'Agile': ['agile'], 'Scrum': ['scrum'], 'Kanban': ['kanban'], 'Jira': ['jira'], 'Confluence': ['confluence'],
-  'System design': ['system design', 'distributed systems', 'software architecture', 'solution architecture'],
-  'Code review': ['code reviews?'], 'Mentoring': ['mentor(?:ing)?', 'coaching'], 'Stakeholder management': ['stakeholder management', 'stakeholder engagement'],
-  'Product management': ['product management', 'product roadmap', 'roadmapping'], 'Project management': ['project management', 'pmp', 'prince2'],
-  'Requirements analysis': ['requirements gathering', 'business analysis', 'requirements analysis', 'user stories'],
-  'Change management': ['change management'], 'Vendor management': ['vendor management', 'procurement'],
-  'Budget management': ['budget management', 'budgeting', 'p&l'], 'Customer service': ['customer service', 'customer experience'],
-  'Sales': ['sales', 'business development'], 'CRM': ['crm', 'salesforce', 'hubspot', 'dynamics 365'], 'SAP': ['sap'],
-  'Xero': ['xero'], 'MYOB': ['myob'], 'Financial modelling': ['financial model(?:l)?ing'], 'Forecasting': ['forecasting'],
-  // Design and content
-  'Figma': ['figma'], 'UX research': ['ux research', 'user research', 'usability testing'], 'UI design': ['ui design', 'interaction design'],
-  'Accessibility': ['accessibility', 'wcag', 'a11y'], 'Adobe Creative Suite': ['photoshop', 'illustrator', 'indesign', 'adobe creative'],
-  'SEO': ['seo'], 'Content strategy': ['content strategy', 'copywriting'], 'Google Analytics': ['google analytics', 'ga4'],
-  'Digital marketing': ['digital marketing', 'sem', 'paid social', 'performance marketing'],
-}
+// The skills counted, and how each is spotted, live in ./skillCatalog.js.
+const { VOCABULARY, REPORT_GROUPS, PICKER_GROUPS, compile, escapeRegExp, matcherFor, cleanSkills } = require('./skillCatalog')
 
-const escapeRegExp = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-
-// One regex per skill: any of its spellings as a whole word. The spellings
-// above are regex fragments (so "containers?" covers both); a user's own term is
-// escaped and matched literally.
-function compile(vocabulary) {
-  return Object.entries(vocabulary).map(([skill, spellings]) => ({
-    skill,
-    re: new RegExp(`(?:^|[^\\p{L}\\p{N}+#.])(?:${spellings.join('|')})(?=$|[^\\p{L}\\p{N}+#])`, 'iu'),
-  }))
-}
 const COMPILED = compile(VOCABULARY)
 
 function customTerms(list) {
@@ -153,4 +84,27 @@ function analyse({ cfg = configService.load(), jobs, days = 90, minShare = 0.1, 
   }
 }
 
-module.exports = { analyse, VOCABULARY, customTerms, resumesOf }
+// What the "Other skills you have" picker in Settings shows: every skill in the
+// catalog, whether a résumé already names it (then there is nothing to tick),
+// and how many recent ads ask for it, so the ones employers want can lead. A
+// ticked skill the catalog no longer has stays listed, so it can be unticked.
+function choices({ cfg = configService.load(), jobs, days = 90 } = {}) {
+  const ads = (jobs || database.getRecentJobDescriptions(days))
+    .map(ad => `${ad.job_title || ''}\n${ad.job_description || ''}`)
+  const resumes = resumesOf(cfg)
+  const ticked = new Set(cleanSkills(cfg.extraSkills))
+  const listed = new Set()
+  const groups = Object.entries({ ...REPORT_GROUPS, ...PICKER_GROUPS }).map(([group, skills]) => ({
+    group,
+    skills: Object.keys(skills).map(name => {
+      listed.add(name)
+      const re = matcherFor(name)
+      return { name, onResume: resumes.some(r => re.test(r.text)), ads: ads.filter(text => re.test(text)).length, ticked: ticked.has(name) }
+    }),
+  }))
+  const orphans = [...ticked].filter(name => !listed.has(name))
+  if (orphans.length) groups.push({ group: 'Ticked earlier', skills: orphans.map(name => ({ name, onResume: false, ads: 0, ticked: true })) })
+  return { groups, sample: ads.length, hasResume: resumes.length > 0 }
+}
+
+module.exports = { analyse, choices, VOCABULARY, customTerms, resumesOf }
